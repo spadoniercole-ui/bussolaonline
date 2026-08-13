@@ -1,0 +1,2274 @@
+// build/entry.mjs
+import express from "express";
+
+// server/db.js
+import { DatabaseSync } from "node:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+var raw = process.env.KOINE_DB || "data/koine.db";
+var IN_MEMORY = raw === ":memory:";
+var DB_PATH = IN_MEMORY ? ":memory:" : resolve(process.cwd(), raw);
+if (!IN_MEMORY) mkdirSync(dirname(DB_PATH), { recursive: true });
+var db = new DatabaseSync(DB_PATH);
+if (!IN_MEMORY) db.exec("PRAGMA journal_mode = WAL;");
+db.exec("PRAGMA foreign_keys = ON;");
+function initSchema() {
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS casate (
+    id         INTEGER PRIMARY KEY,
+    nome       TEXT NOT NULL UNIQUE,
+    colore     TEXT NOT NULL,
+    motto      TEXT,
+    punti      INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS soci (
+    id                 INTEGER PRIMARY KEY,
+    tessera_code       TEXT NOT NULL UNIQUE,
+    nome               TEXT NOT NULL,
+    cognome            TEXT NOT NULL,
+    email              TEXT,
+    telefono           TEXT,
+    data_nascita       TEXT,
+    casata_id          INTEGER REFERENCES casate(id) ON DELETE SET NULL,
+    ruolo              TEXT NOT NULL DEFAULT 'socio',      -- socio | capitano | staff
+    tipo_profilo       TEXT NOT NULL DEFAULT 'socio',       -- socio | ospite_temporaneo | genitore | under14
+    tutore_id          INTEGER REFERENCES soci(id) ON DELETE CASCADE, -- per i profili under14
+    lingua             TEXT NOT NULL DEFAULT 'it',
+    consenso_privacy   INTEGER NOT NULL DEFAULT 0,          -- GDPR: base necessaria
+    consenso_marketing INTEGER NOT NULL DEFAULT 0,          -- GDPR: opt-in separato
+    consenso_foto      INTEGER NOT NULL DEFAULT 0,          -- immagini eventi
+    notifiche_push     INTEGER NOT NULL DEFAULT 0,          -- consenso notifiche (casata/eventi)
+    dinieghi           INTEGER NOT NULL DEFAULT 0,          -- rifiuti convocazione nella stagione
+    attivo             INTEGER NOT NULL DEFAULT 1,
+    valida_fino        TEXT,                                -- tessera annuale
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS eventi (
+    id          INTEGER PRIMARY KEY,
+    chiave      TEXT UNIQUE,
+    giorno      TEXT NOT NULL,
+    titolo      TEXT NOT NULL,
+    ambiente    TEXT,
+    colore      TEXT,
+    sottotitolo TEXT,
+    descrizione TEXT,
+    cta         TEXT,
+    azione      TEXT,                                       -- sheet-vinile | sheet-openmic | go-coppa | null
+    tipo        TEXT NOT NULL DEFAULT 'serata',             -- serata | benvenuto | cinema
+    data_ora    TEXT,
+    capienza    INTEGER,
+    attivo      INTEGER NOT NULL DEFAULT 1,
+    ordine      INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS risorse (
+    id          INTEGER PRIMARY KEY,
+    chiave      TEXT UNIQUE,
+    nome        TEXT NOT NULL,
+    tipo        TEXT NOT NULL,                              -- sport | coworking | tavolo | evento
+    sottotitolo TEXT,
+    slots       TEXT,                                       -- JSON array di turni
+    nota        TEXT,
+    attivo      INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE IF NOT EXISTS prenotazioni (
+    id          INTEGER PRIMARY KEY,
+    socio_id    INTEGER REFERENCES soci(id) ON DELETE CASCADE,
+    risorsa_id  INTEGER REFERENCES risorse(id) ON DELETE SET NULL,
+    risorsa_nome TEXT,
+    giorno      TEXT,
+    turno       TEXT,
+    ospiti      INTEGER NOT NULL DEFAULT 0,
+    stato       TEXT NOT NULL DEFAULT 'confermata',         -- confermata | annullata | lista_attesa
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS discipline (
+    id            INTEGER PRIMARY KEY,
+    dominio       TEXT NOT NULL,                            -- sport | giochi
+    chiave        TEXT NOT NULL,
+    nome          TEXT NOT NULL,
+    attivo        INTEGER NOT NULL DEFAULT 1,               -- 1 = in cartellone quest'anno
+    min_giocatori INTEGER NOT NULL DEFAULT 1,               -- partecipanti minimi per casata/partita
+    max_giocatori INTEGER NOT NULL DEFAULT 1,               -- partecipanti massimi
+    punti_vitt    INTEGER NOT NULL DEFAULT 3,               -- punti vittoria (per la graduatoria)
+    punti_par     INTEGER NOT NULL DEFAULT 1,               -- punti pareggio
+    ordine        INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(dominio, chiave)
+  );
+
+  CREATE TABLE IF NOT EXISTS gironi (
+    id            INTEGER PRIMARY KEY,
+    disciplina_id INTEGER REFERENCES discipline(id) ON DELETE CASCADE,
+    nome          TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS classifica (
+    id         INTEGER PRIMARY KEY,
+    girone_id  INTEGER REFERENCES gironi(id) ON DELETE CASCADE,
+    casata_id  INTEGER REFERENCES casate(id) ON DELETE CASCADE,
+    pg         INTEGER NOT NULL DEFAULT 0,
+    v          INTEGER NOT NULL DEFAULT 0,
+    p          INTEGER NOT NULL DEFAULT 0,                  -- pareggi
+    gf         INTEGER NOT NULL DEFAULT 0,                  -- gol/punti fatti
+    gs         INTEGER NOT NULL DEFAULT 0,                  -- gol/punti subiti
+    pt         INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS partite (
+    id            INTEGER PRIMARY KEY,
+    disciplina_id INTEGER REFERENCES discipline(id) ON DELETE CASCADE,
+    girone_id     INTEGER REFERENCES gironi(id) ON DELETE CASCADE,
+    fase          TEXT NOT NULL DEFAULT 'girone',           -- girone | semifinale | finale
+    giornata      INTEGER,
+    casata_a_id   INTEGER REFERENCES casate(id),
+    casata_b_id   INTEGER REFERENCES casate(id),
+    casa_a        TEXT NOT NULL,
+    casa_b        TEXT NOT NULL,
+    quando        TEXT,
+    luogo         TEXT,
+    gol_a         INTEGER,
+    gol_b         INTEGER,
+    punteggio     TEXT,
+    stato         TEXT NOT NULL DEFAULT 'da_giocare'        -- da_giocare | giocata
+  );
+
+  CREATE TABLE IF NOT EXISTS convocazioni (
+    id            INTEGER PRIMARY KEY,
+    socio_id      INTEGER REFERENCES soci(id) ON DELETE CASCADE,
+    disciplina_id INTEGER REFERENCES discipline(id) ON DELETE CASCADE,
+    match_label   TEXT,
+    quando        TEXT,
+    luogo         TEXT,
+    stato         TEXT NOT NULL DEFAULT 'aperta',           -- aperta | disponibile | non_disponibile | obbligatoria
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS bussola (
+    id        INTEGER PRIMARY KEY,
+    sezione   TEXT NOT NULL,                                -- servizi | vedere | rifiuti | orari | lingua
+    titolo    TEXT NOT NULL,
+    dettaglio TEXT,
+    distanza  TEXT,
+    ordine    INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS luoghi (
+    id       INTEGER PRIMARY KEY,
+    chiave   TEXT UNIQUE,                                  -- chiosco | isola | ...
+    nome     TEXT NOT NULL,
+    lat      REAL,
+    lng      REAL,
+    ordine   INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS proposte (
+    id         INTEGER PRIMARY KEY,
+    socio_id   INTEGER REFERENCES soci(id) ON DELETE SET NULL,
+    tipo       TEXT NOT NULL,                               -- vinile | openmic
+    titolo     TEXT,
+    dettaglio  TEXT,
+    stato      TEXT NOT NULL DEFAULT 'ricevuta',            -- ricevuta | in_scaletta | scartata
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS utenti_admin (
+    id            INTEGER PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,                            -- scrypt: salt:hash
+    ruolo         TEXT NOT NULL DEFAULT 'gestore',          -- gestore | staff | sola_lettura
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS otp (
+    id         INTEGER PRIMARY KEY,
+    email      TEXT NOT NULL,
+    code       TEXT NOT NULL,
+    exp        INTEGER NOT NULL,                            -- epoch ms
+    used       INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS notifiche (
+    id         INTEGER PRIMARY KEY,
+    socio_id   INTEGER REFERENCES soci(id) ON DELETE CASCADE,
+    canale     TEXT NOT NULL DEFAULT 'push',                -- push | email
+    tipo       TEXT NOT NULL,                               -- casata | evento | sistema
+    titolo     TEXT NOT NULL,
+    corpo      TEXT,
+    letta      INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id       INTEGER PRIMARY KEY,
+    utente   TEXT,
+    azione   TEXT NOT NULL,
+    entita   TEXT,
+    entita_id TEXT,
+    dettaglio TEXT,
+    ts       TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS ix_soci_casata ON soci(casata_id);
+  CREATE INDEX IF NOT EXISTS ix_pren_socio ON prenotazioni(socio_id);
+  CREATE INDEX IF NOT EXISTS ix_conv_socio ON convocazioni(socio_id);
+  `);
+}
+function audit(utente, azione, entita, entita_id, dettaglio = "") {
+  db.prepare(
+    "INSERT INTO audit_log (utente, azione, entita, entita_id, dettaglio) VALUES (?,?,?,?,?)"
+  ).run(utente || "sistema", azione, entita || "", String(entita_id ?? ""), dettaglio);
+}
+
+// server/auth.js
+import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${hash}`;
+}
+function verifyPassword(password, stored) {
+  const [salt, hash] = String(stored).split(":");
+  if (!salt || !hash) return false;
+  const test = scryptSync(password, salt, 64);
+  const ref = Buffer.from(hash, "hex");
+  return test.length === ref.length && timingSafeEqual(test, ref);
+}
+var sessions = /* @__PURE__ */ new Map();
+var TTL = 8 * 60 * 60 * 1e3;
+function createSession(user) {
+  const token = randomBytes(24).toString("hex");
+  sessions.set(token, { user: { id: user.id, username: user.username, ruolo: user.ruolo }, exp: Date.now() + TTL });
+  return token;
+}
+function getSession(token) {
+  const s = sessions.get(token);
+  if (!s) return null;
+  if (Date.now() > s.exp) {
+    sessions.delete(token);
+    return null;
+  }
+  return s.user;
+}
+function destroySession(token) {
+  sessions.delete(token);
+}
+function requireAdmin(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  const user = token && getSession(token);
+  if (!user) return res.status(401).json({ error: "Autenticazione richiesta" });
+  req.adminUser = user;
+  next();
+}
+var userSessions = /* @__PURE__ */ new Map();
+function createUserSession(socio) {
+  const token = randomBytes(24).toString("hex");
+  userSessions.set(token, { socio: { id: socio.id, tessera_code: socio.tessera_code, nome: socio.nome }, exp: Date.now() + TTL });
+  return token;
+}
+function getUserSession(token) {
+  const s = userSessions.get(token);
+  if (!s) return null;
+  if (Date.now() > s.exp) {
+    userSessions.delete(token);
+    return null;
+  }
+  return s.socio;
+}
+function genOtp() {
+  return String(randomBytes(3).readUIntBE(0, 3) % 1e6).padStart(6, "0");
+}
+
+// server/tournament.js
+var SPLIT_A = ["Aretusa", "Ortigia", "Ciane", "Epipoli"];
+var SPLIT_B = ["Neapolis", "Dionisio", "Plemmirio", "Anapo"];
+var ROUNDS = [[[0, 3], [1, 2]], [[0, 2], [3, 1]], [[0, 1], [2, 3]]];
+function casateByName() {
+  const rows = db.prepare("SELECT id,nome FROM casate").all();
+  const m = {};
+  rows.forEach((r) => m[r.nome] = r.id);
+  return m;
+}
+function generaCalendario(disciplinaId) {
+  const disc = db.prepare("SELECT id FROM discipline WHERE id=?").get(disciplinaId);
+  if (!disc) throw new Error("Disciplina inesistente");
+  db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
+  const oldGironi = db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
+  for (const g of oldGironi) db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
+  db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
+  const idByName = casateByName();
+  const insGir = db.prepare("INSERT INTO gironi (disciplina_id,nome) VALUES (?,?)");
+  const insCla = db.prepare("INSERT INTO classifica (girone_id,casata_id) VALUES (?,?)");
+  const insPar = db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
+    VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`);
+  [["Girone A", SPLIT_A], ["Girone B", SPLIT_B]].forEach(([nome, squadre]) => {
+    const gid = insGir.run(disciplinaId, nome).lastInsertRowid;
+    squadre.forEach((n) => insCla.run(gid, idByName[n]));
+    ROUNDS.forEach((round, ri) => {
+      round.forEach(([i, j]) => {
+        const a = squadre[i], b = squadre[j];
+        insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b);
+      });
+    });
+  });
+  return getTabellone(disciplinaId);
+}
+function recomputeGirone(gironeId) {
+  const disc = db.prepare(`SELECT d.punti_vitt pv, d.punti_par pp FROM gironi g JOIN discipline d ON d.id=g.disciplina_id WHERE g.id=?`).get(gironeId);
+  const rows = db.prepare("SELECT casata_id FROM classifica WHERE girone_id=?").all(gironeId);
+  const st = {};
+  rows.forEach((r) => st[r.casata_id] = { pg: 0, v: 0, p: 0, gf: 0, gs: 0, pt: 0 });
+  const partite = db.prepare("SELECT * FROM partite WHERE girone_id=? AND stato='giocata'").all(gironeId);
+  for (const m of partite) {
+    const A = st[m.casata_a_id], B = st[m.casata_b_id];
+    if (!A || !B) continue;
+    A.pg++;
+    B.pg++;
+    A.gf += m.gol_a;
+    A.gs += m.gol_b;
+    B.gf += m.gol_b;
+    B.gs += m.gol_a;
+    if (m.gol_a > m.gol_b) {
+      A.v++;
+      A.pt += disc.pv;
+    } else if (m.gol_a < m.gol_b) {
+      B.v++;
+      B.pt += disc.pv;
+    } else {
+      A.p++;
+      B.p++;
+      A.pt += disc.pp;
+      B.pt += disc.pp;
+    }
+  }
+  const upd = db.prepare("UPDATE classifica SET pg=?,v=?,p=?,gf=?,gs=?,pt=? WHERE girone_id=? AND casata_id=?");
+  for (const cid of Object.keys(st)) {
+    const s = st[cid];
+    upd.run(s.pg, s.v, s.p, s.gf, s.gs, s.pt, gironeId, cid);
+  }
+}
+function registraRisultato(partitaId, golA, golB) {
+  const m = db.prepare("SELECT * FROM partite WHERE id=?").get(partitaId);
+  if (!m) throw new Error("Partita inesistente");
+  db.prepare("UPDATE partite SET gol_a=?,gol_b=?,punteggio=?,stato='giocata' WHERE id=?").run(golA, golB, `${golA}\u2013${golB}`, partitaId);
+  if (m.girone_id) recomputeGirone(m.girone_id);
+  return true;
+}
+function classificaOrdinata(gironeId) {
+  return db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
+    WHERE c.girone_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(gironeId);
+}
+function getTabellone(disciplinaId) {
+  const gironi = db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId).map((g) => ({
+    id: g.id,
+    nome: g.nome,
+    classifica: classificaOrdinata(g.id),
+    partite: db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
+  }));
+  const tuttiGiocati = db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId).n === 0;
+  let finali = null;
+  if (gironi.length === 2 && tuttiGiocati) {
+    const A = gironi[0].classifica, B = gironi[1].classifica;
+    finali = {
+      semifinali: [
+        { casa: A[0]?.nome, ospite: B[1]?.nome, cA: A[0]?.colore, cB: B[1]?.colore },
+        { casa: B[0]?.nome, ospite: A[1]?.nome, cA: B[0]?.colore, cB: A[1]?.colore }
+      ]
+    };
+  }
+  return { gironi, finali, completo: tuttiGiocati };
+}
+
+// server/seed.js
+var force = process.argv.includes("--force");
+function seed({ verbose = false } = {}) {
+  initSchema();
+  const already = db.prepare("SELECT count(*) c FROM casate").get().c;
+  if (already > 0 && !force) {
+    if (verbose) console.log("DB gi\xE0 popolato \u2014 salto il seed (usa --force per riscrivere).");
+    return;
+  }
+  if (force) {
+    for (const t of ["audit_log", "proposte", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "casate", "utenti_admin"]) {
+      db.exec(`DELETE FROM ${t};`);
+    }
+  }
+  const CASATE = [
+    ["Aretusa", "#2E6DA4", "l'onda", 62],
+    ["Ortigia", "#B7791F", "la rosa dei venti", 66],
+    ["Neapolis", "#C0553F", "il teatro", 54],
+    ["Dionisio", "#6E5AA6", "la maschera", 50],
+    ["Ciane", "#4d7a4a", "il papiro", 47],
+    ["Plemmirio", "#12324F", "il faro", 44],
+    ["Epipoli", "#7A8790", "le mura", 40],
+    ["Anapo", "#2E7D77", "il fiume", 37]
+  ];
+  const insCasata = db.prepare("INSERT INTO casate (nome,colore,motto,punti) VALUES (?,?,?,?)");
+  const casataId = {};
+  for (const c of CASATE) {
+    const r = insCasata.run(...c);
+    casataId[c[0]] = r.lastInsertRowid;
+  }
+  const EVENTI = [
+    ["lun", "Luned\xEC", "Incontro di Benvenuto", "Bussola Garden", "#2E7D77", "Ti presentiamo le attivit\xE0 del residence", "Un incontro dedicato ai nuovi ospiti: ti raccontiamo le attivit\xE0 del residence \u2014 il cartellone, i tornei, la Coppa delle Casate \u2014 e come usare l'app. Non \xE8 un aperitivo: \xE8 il benvenuto e le informazioni utili.", "Ci sar\xF2", null, "benvenuto", 1],
+    ["mar", "Marted\xEC", "Vinile & Vino", "Bussola Garden", "#C0553F", "Scegli tu la musica della serata", "La serata la costruisci tu: proponi un vinile, i brani e il perch\xE9. Le proposte della settimana diventano la scaletta di quella successiva.", "Proponi un vinile", "sheet-vinile", "serata", 2],
+    ["mer", "Mercoled\xEC", "Cinema d'autore sotto le stelle", "Bussola Stage", "#12324F", "Ortigia Film Festival & titoli d'autore", "Una proiezione a settimana: opere premiate all'Ortigia Film Festival, alternate a titoli pi\xF9 leggeri ma sempre d'autore.", "Prenota un posto", null, "cinema", 3],
+    ["gio", "Gioved\xEC", "Jazz & Cocktail", "Bussola Garden", "#2E7D77", "La serata-firma \xB7 trio live", "La serata-firma della Bussola: trio live acustico, luci basse, cocktail. Si cena prima dello spettacolo.", "Prenota un tavolo", null, "serata", 4],
+    ["ven", "Venerd\xEC", "Serata dei Clan", "Bussola Stage", "#6E5AA6", "Le otto casate si sfidano", "Le otto casate si sfidano dall\u2019apericena a tarda sera. Questa settimana: gara di karaoke. Coinvolgi un ospite e la tua casata guadagna punti extra.", "Vai alla Coppa", "go-coppa", "serata", 5],
+    ["sab", "Sabato", "Live Session", "Bussola Stage", "#B7791F", "Band e cantautori emergenti", "Band e cantautori emergenti dal vivo sul Bussola Stage.", "Prenota un posto", null, "serata", 6],
+    ["dom", "Domenica", "Open Mic", "Bussola Stage", "#B7791F", "Tre minuti di palco per te", "Microfono aperto: tre minuti a testa per cantare, recitare un monologo, fare stand-up (linguaggio moderato) o suonare.", "Salgo sul palco", "sheet-openmic", "serata", 7]
+  ];
+  const insEvento = db.prepare("INSERT INTO eventi (chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+  for (const e of EVENTI) insEvento.run(...e);
+  const RISORSE = [
+    ["pickleball", "Campo di Pickleball", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera sul palco."],
+    ["soft", "Campo di Soft tennis", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera."],
+    ["cowo", "Postazione Coworking", "coworking", "Casa di Carta \xB7 wi-fi e caff\xE8", JSON.stringify(["Mattina (9\u201313)", "Pomeriggio (14\u201318)", "Giornata intera"]), null],
+    ["tavolo", "Tavolo per la cena", "tavolo", "~40 coperti serviti \xB7 prenota per le serate", JSON.stringify(["19:30", "20:30", "21:30"]), "La prenotazione del tavolo non comporta consumazione obbligatoria."]
+  ];
+  const insRis = db.prepare("INSERT INTO risorse (chiave,nome,tipo,sottotitolo,slots,nota) VALUES (?,?,?,?,?,?)");
+  for (const r of RISORSE) insRis.run(...r);
+  const CAS_A = ["Aretusa", "Ortigia", "Ciane", "Epipoli"];
+  const CAS_B = ["Neapolis", "Dionisio", "Plemmirio", "Anapo"];
+  const SPORT = [
+    [
+      "pickle",
+      "Pickleball",
+      [[3, 3, 9], [3, 2, 6], [3, 1, 3], [3, 0, 0]],
+      [[3, 2, 6], [3, 2, 6], [3, 1, 3], [3, 1, 3]],
+      [["Aretusa", "Ortigia", "Dom 17:30", "Campo 1"], ["Neapolis", "Dionisio", "Dom 19:00", "Campo 1"], ["Ciane", "Epipoli", "Mar 17:30", "Campo 1"]],
+      [["Aretusa", "Ciane", "11\u20136"], ["Ortigia", "Epipoli", "11\u20139"], ["Plemmirio", "Anapo", "9\u201311"]]
+    ],
+    [
+      "soft",
+      "Soft tennis",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [["Aretusa", "Plemmirio", "Gio 18:00", "Campo 1"], ["Ortigia", "Ciane", "Sab 17:30", "Campo 1"]],
+      [["Neapolis", "Anapo", "6\u20132"], ["Dionisio", "Epipoli", "6\u20134"]]
+    ],
+    [
+      "pingpong",
+      "Ping pong",
+      [[3, 3, 6], [3, 2, 4], [3, 1, 2], [3, 0, 0]],
+      [[3, 2, 4], [3, 2, 4], [3, 1, 2], [3, 1, 2]],
+      [["Ciane", "Aretusa", "Lun 18:30", "Bussola Bar"], ["Anapo", "Neapolis", "Mer 18:30", "Bussola Bar"]],
+      [["Ortigia", "Epipoli", "3\u20131"], ["Dionisio", "Plemmirio", "3\u20132"]]
+    ],
+    [
+      "balilla",
+      "Calcio balilla",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
+      [["Aretusa", "Epipoli", "Ven 19:00", "Bussola Bar"], ["Neapolis", "Plemmirio", "Ven 19:30", "Bussola Bar"]],
+      [["Ortigia", "Ciane", "10\u20137"], ["Dionisio", "Anapo", "10\u20134"]]
+    ],
+    [
+      "basket",
+      "Basket 3\xD73",
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [["Aretusa", "Ciane", "Sab 18:00", "Campo del residence"], ["Neapolis", "Plemmirio", "Dom 18:00", "Campo del residence"]],
+      [["Ortigia", "Epipoli", "21\u201315"], ["Dionisio", "Anapo", "21\u201312"]]
+    ],
+    [
+      "calcetto",
+      "Calcetto a 5",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
+      [["Aretusa", "Epipoli", "Ven 18:30", "Campo del residence"], ["Neapolis", "Dionisio", "Sab 19:00", "Campo del residence"]],
+      [["Ortigia", "Ciane", "5\u20133"], ["Plemmirio", "Anapo", "4\u20134"]]
+    ]
+  ];
+  const GIOCHI = [
+    [
+      "burraco",
+      "Burraco",
+      [[3, 3, 9], [3, 2, 6], [3, 1, 3], [3, 0, 0]],
+      [[3, 2, 6], [3, 2, 6], [3, 1, 3], [3, 1, 3]],
+      [["Aretusa", "Neapolis", "Mar 21:00", "Casa di Carta"], ["Ortigia", "Dionisio", "Gio 21:00", "Casa di Carta"]],
+      [["Ciane", "Epipoli", "2\u20130"], ["Plemmirio", "Anapo", "1\u20132"]]
+    ],
+    [
+      "scala",
+      "Scala 40",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
+      [["Aretusa", "Epipoli", "Gio 21:30", "Casa di Carta"], ["Neapolis", "Anapo", "Sab 21:00", "Casa di Carta"]],
+      [["Ortigia", "Ciane", "1\u20130"], ["Dionisio", "Plemmirio", "1\u20131"]]
+    ],
+    [
+      "briscola",
+      "Briscola/Scopa",
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [["Aretusa", "Ciane", "Ven 21:00", "Casa di Carta"], ["Neapolis", "Dionisio", "Dom 21:00", "Casa di Carta"]],
+      [["Ortigia", "Epipoli", "2\u20131"], ["Plemmirio", "Anapo", "2\u20130"]]
+    ],
+    [
+      "scacchi",
+      "Scacchi/Dama",
+      [[3, 3, 6], [3, 2, 4], [3, 1, 2], [3, 0, 0]],
+      [[3, 2, 4], [3, 2, 4], [3, 1, 2], [3, 1, 2]],
+      [["Aretusa", "Ortigia", "Lun 21:00", "Casa di Carta"], ["Ciane", "Epipoli", "Mer 21:00", "Casa di Carta"]],
+      [["Dionisio", "Plemmirio", "1\u20130"], ["Neapolis", "Anapo", "\xBD\u2013\xBD"]]
+    ]
+  ];
+  const MINMAX = {
+    pickle: [2, 2],
+    soft: [2, 2],
+    pingpong: [1, 2],
+    balilla: [2, 2],
+    basket: [3, 4],
+    calcetto: [5, 7],
+    burraco: [2, 4],
+    scala: [2, 4],
+    briscola: [2, 4],
+    scacchi: [1, 1]
+  };
+  const insDisc = db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,ordine) VALUES (?,?,?,?,?,?,?)");
+  const discIds = [];
+  function loadDomain(dom, list) {
+    list.forEach((d, i) => {
+      const mm = MINMAX[d[0]] || [1, 1];
+      discIds.push(insDisc.run(dom, d[0], d[1], 1, mm[0], mm[1], i).lastInsertRowid);
+    });
+  }
+  loadDomain("sport", SPORT);
+  loadDomain("giochi", GIOCHI);
+  const demoScores = [[2, 1], [1, 1], [2, 0], [1, 0]];
+  for (const did of discIds) {
+    generaCalendario(did);
+    const g1 = db.prepare("SELECT id FROM partite WHERE disciplina_id=? AND giornata=1").all(did);
+    g1.forEach((m, k) => registraRisultato(m.id, demoScores[k % demoScores.length][0], demoScores[k % demoScores.length][1]));
+  }
+  const BUSSOLA = [
+    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1],
+    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2],
+    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3],
+    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4],
+    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5],
+    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1],
+    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2],
+    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3],
+    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4],
+    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5],
+    ["rifiuti", "Lun \xB7 Organico", "", "", 1],
+    ["rifiuti", "Mar \xB7 Plastica", "", "", 2],
+    ["rifiuti", "Mer \xB7 Carta", "", "", 3],
+    ["rifiuti", "Gio \xB7 Organico", "", "", 4],
+    ["rifiuti", "Ven \xB7 Vetro", "", "", 5],
+    ["rifiuti", "Sab \xB7 Indifferenziato", "", "", 6],
+    ["orari", "Silenzio pomeridiano", "Dalle 14:00 alle 17:00 \u2014 riposo per tutti.", "", 1],
+    ["orari", "Silenzio notturno", "Dopo le 23:30 \u2014 si abbassano voci e musica.", "", 2]
+  ];
+  const insBus = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)");
+  for (const b of BUSSOLA) insBus.run(...b);
+  const insLuogo = db.prepare("INSERT INTO luoghi (chiave,nome,lat,lng,ordine) VALUES (?,?,?,?,?)");
+  insLuogo.run("chiosco", "Chiosco La Bussola", 36.967766, 15.221669, 1);
+  insLuogo.run("isola", "Isola ecologica", 36.967209, 15.221206, 2);
+  const insSocio = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,notifiche_push,valida_fino)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  insSocio.run("BR-2026-0001", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
+  insSocio.run("BR-2026-0002", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
+  const genitoreId = insSocio.run("BR-2026-0003", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01").lastInsertRowid;
+  insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
+  insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, "2026-09-30");
+  const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
+  const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo) VALUES (?,?,?)");
+  insAdmin.run("gestore", hashPassword(adminPwd), "gestore");
+  insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff");
+  insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura");
+  audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
+  if (verbose) console.log("Seed completato: 8 casate, 7 eventi, 10 discipline, guida Bussola, 3 soci demo, 1 utente back office.");
+}
+if (import.meta.url === `file://${process.argv[1]}`) {
+  seed({ verbose: true });
+}
+
+// server/routes/public.js
+import { Router } from "express";
+var publicRouter = Router();
+publicRouter.get("/casate", (req, res) => {
+  const rows = db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
+  res.json(rows);
+});
+publicRouter.get("/eventi", (req, res) => {
+  const rows = db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo FROM eventi WHERE attivo=1 ORDER BY ordine").all();
+  res.json(rows);
+});
+publicRouter.get("/risorse", (req, res) => {
+  const rows = db.prepare("SELECT chiave,nome,tipo,sottotitolo,slots,nota FROM risorse WHERE attivo=1").all().map((r) => ({ ...r, slots: r.slots ? JSON.parse(r.slots) : [] }));
+  res.json(rows);
+});
+publicRouter.get("/bussola", (req, res) => {
+  const rows = db.prepare("SELECT sezione,titolo,dettaglio,distanza FROM bussola ORDER BY sezione,ordine").all();
+  const out = {};
+  for (const r of rows) (out[r.sezione] ??= []).push(r);
+  res.json(out);
+});
+publicRouter.get("/luoghi", (req, res) => {
+  res.json(db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
+});
+publicRouter.get("/discipline/:dominio", (req, res) => {
+  const dominio = req.params.dominio === "giochi" ? "giochi" : "sport";
+  const discs = db.prepare("SELECT id,chiave,nome,min_giocatori,max_giocatori FROM discipline WHERE dominio=? AND attivo=1 ORDER BY ordine").all(dominio);
+  const out = discs.map((d) => {
+    const gironi = db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(d.id).map((g) => ({
+      nome: g.nome,
+      rows: db.prepare(`SELECT c.nome AS t, c.colore AS c, cl.pg, cl.v, cl.pt
+                        FROM classifica cl JOIN casate c ON c.id=cl.casata_id
+                        WHERE cl.girone_id=? ORDER BY cl.pt DESC, (cl.gf-cl.gs) DESC, cl.gf DESC, c.nome`).all(g.id)
+    }));
+    const next = db.prepare("SELECT casa_a a,casa_b b,('G'||giornata) wh,luogo court FROM partite WHERE disciplina_id=? AND stato='da_giocare' ORDER BY giornata,id LIMIT 6").all(d.id);
+    const results = db.prepare("SELECT casa_a a,casa_b b,punteggio s FROM partite WHERE disciplina_id=? AND stato='giocata' ORDER BY id DESC LIMIT 6").all(d.id);
+    return { chiave: d.chiave, name: d.nome, min: d.min_giocatori, max: d.max_giocatori, gironi, next, results };
+  });
+  res.json(out);
+});
+publicRouter.get("/tessera/:code", (req, res) => {
+  const s = db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,c.nome AS casata,c.colore
+                        FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
+                        WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
+  if (!s) return res.status(404).json({ error: "Tessera non trovata" });
+  res.json(s);
+});
+publicRouter.get("/convocazioni/:code", (req, res) => {
+  const socio = db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.params.code);
+  if (!socio) return res.json([]);
+  const rows = db.prepare(`SELECT cv.id,cv.match_label,cv.quando,cv.luogo,cv.stato,d.nome disciplina,d.dominio
+                           FROM convocazioni cv JOIN discipline d ON d.id=cv.disciplina_id
+                           WHERE cv.socio_id=? ORDER BY cv.created_at DESC`).all(socio.id);
+  res.json(rows);
+});
+publicRouter.post("/prenotazioni", (req, res) => {
+  const { tessera_code, risorsa, giorno, turno, ospiti } = req.body || {};
+  const socio = tessera_code ? db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
+  const ris = risorsa ? db.prepare("SELECT id,nome FROM risorse WHERE chiave=?").get(risorsa) : null;
+  const info = db.prepare(`INSERT INTO prenotazioni (socio_id,risorsa_id,risorsa_nome,giorno,turno,ospiti)
+                           VALUES (?,?,?,?,?,?)`).run(socio?.id ?? null, ris?.id ?? null, ris?.nome ?? risorsa ?? "Evento", giorno ?? null, turno ?? null, Number(ospiti) || 0);
+  audit(tessera_code || "ospite", "prenotazione", "prenotazioni", info.lastInsertRowid, ris?.nome || "");
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+publicRouter.post("/convocazioni/:id/risposta", (req, res) => {
+  const { stato } = req.body || {};
+  const val = stato === "disponibile" ? "disponibile" : "non_disponibile";
+  const cv = db.prepare("SELECT socio_id FROM convocazioni WHERE id=?").get(req.params.id);
+  db.prepare("UPDATE convocazioni SET stato=? WHERE id=?").run(val, req.params.id);
+  let dinieghi = 0, obbligatoria = false;
+  if (cv?.socio_id) {
+    const so = db.prepare("SELECT tipo_profilo,dinieghi FROM soci WHERE id=?").get(cv.socio_id);
+    if (so) {
+      if (val === "non_disponibile" && so.tipo_profilo !== "ospite_temporaneo") {
+        dinieghi = so.dinieghi + 1;
+        db.prepare("UPDATE soci SET dinieghi=? WHERE id=?").run(dinieghi, cv.socio_id);
+      } else dinieghi = so.dinieghi;
+      obbligatoria = so.tipo_profilo !== "ospite_temporaneo" && dinieghi >= 3;
+    }
+  }
+  audit("socio", "risposta_convocazione", "convocazioni", req.params.id, val);
+  res.json({ ok: true, stato: val, dinieghi, obbligatoria });
+});
+publicRouter.post("/proposte", (req, res) => {
+  const { tessera_code, tipo, titolo, dettaglio } = req.body || {};
+  const socio = tessera_code ? db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
+  const info = db.prepare("INSERT INTO proposte (socio_id,tipo,titolo,dettaglio) VALUES (?,?,?,?)").run(socio?.id ?? null, tipo === "openmic" ? "openmic" : "vinile", titolo ?? "", dettaglio ?? "");
+  audit(tessera_code || "ospite", "proposta", "proposte", info.lastInsertRowid, tipo || "");
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+
+// server/routes/admin.js
+import { Router as Router2 } from "express";
+var adminRouter = Router2();
+adminRouter.post("/login", (req, res) => {
+  const { username, password } = req.body || {};
+  const u = db.prepare("SELECT * FROM utenti_admin WHERE username=?").get(username || "");
+  if (!u || !verifyPassword(password || "", u.password_hash)) {
+    audit(username || "?", "login_fallito", "utenti_admin", u?.id ?? "");
+    return res.status(401).json({ error: "Credenziali non valide" });
+  }
+  const token = createSession(u);
+  audit(u.username, "login", "utenti_admin", u.id);
+  res.json({ token, user: { username: u.username, ruolo: u.ruolo } });
+});
+adminRouter.post("/logout", requireAdmin, (req, res) => {
+  const token = (req.headers.authorization || "").slice(7);
+  destroySession(token);
+  res.json({ ok: true });
+});
+adminRouter.use(requireAdmin);
+function requireRole(...roles) {
+  return (req, res, next) => roles.includes(req.adminUser.ruolo) ? next() : res.status(403).json({ error: "Permesso insufficiente per il tuo ruolo" });
+}
+adminRouter.use((req, res, next) => {
+  if (req.adminUser.ruolo === "sola_lettura" && !["GET", "HEAD"].includes(req.method) && req.path !== "/logout")
+    return res.status(403).json({ error: "Account in sola lettura" });
+  next();
+});
+adminRouter.get("/me", (req, res) => res.json({ user: req.adminUser }));
+adminRouter.get("/stats", (req, res) => {
+  const one = (q) => db.prepare(q).get().n;
+  res.json({
+    soci: one("SELECT count(*) n FROM soci WHERE attivo=1"),
+    soci_marketing: one("SELECT count(*) n FROM soci WHERE consenso_marketing=1"),
+    prenotazioni: one("SELECT count(*) n FROM prenotazioni"),
+    prenotazioni_oggi: one("SELECT count(*) n FROM prenotazioni WHERE date(created_at)=date('now')"),
+    proposte: one("SELECT count(*) n FROM proposte WHERE stato='ricevuta'"),
+    convocazioni_aperte: one("SELECT count(*) n FROM convocazioni WHERE stato='aperta'"),
+    per_casata: db.prepare(`SELECT c.nome,c.colore,c.punti,count(s.id) soci
+                            FROM casate c LEFT JOIN soci s ON s.casata_id=c.id AND s.attivo=1
+                            GROUP BY c.id ORDER BY c.punti DESC`).all()
+  });
+});
+adminRouter.get("/soci", (req, res) => {
+  const q = `%${(req.query.q || "").toString()}%`;
+  const rows = db.prepare(`SELECT s.*, c.nome AS casata_nome FROM soci s LEFT JOIN casate c ON c.id=s.casata_id
+    WHERE s.nome LIKE ? OR s.cognome LIKE ? OR s.email LIKE ? OR s.tessera_code LIKE ?
+    ORDER BY s.created_at DESC`).all(q, q, q, q);
+  res.json(rows);
+});
+adminRouter.post("/soci", (req, res) => {
+  const b = req.body || {};
+  if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
+  const code = b.tessera_code || nextTessera();
+  try {
+    const info = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,telefono,data_nascita,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,consenso_foto,notifiche_push,valida_fino)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      code,
+      b.nome,
+      b.cognome,
+      b.email ?? null,
+      b.telefono ?? null,
+      b.data_nascita ?? null,
+      b.casata_id ?? null,
+      b.ruolo ?? "socio",
+      b.tipo_profilo ?? "socio",
+      b.tutore_id ?? null,
+      b.lingua ?? "it",
+      b.consenso_privacy ? 1 : 0,
+      b.consenso_marketing ? 1 : 0,
+      b.consenso_foto ? 1 : 0,
+      b.notifiche_push ? 1 : 0,
+      b.valida_fino ?? null
+    );
+    audit(req.adminUser.username, "crea", "soci", info.lastInsertRowid, code);
+    res.status(201).json({ ok: true, id: info.lastInsertRowid, tessera_code: code });
+  } catch (e) {
+    res.status(400).json({ error: "Tessera duplicata o dati non validi" });
+  }
+});
+adminRouter.put("/soci/:id", (req, res) => {
+  const b = req.body || {};
+  const exists = db.prepare("SELECT id FROM soci WHERE id=?").get(req.params.id);
+  if (!exists) return res.status(404).json({ error: "Socio non trovato" });
+  db.prepare(`UPDATE soci SET nome=?,cognome=?,email=?,telefono=?,data_nascita=?,casata_id=?,ruolo=?,tipo_profilo=?,tutore_id=?,lingua=?,
+    consenso_privacy=?,consenso_marketing=?,consenso_foto=?,notifiche_push=?,attivo=?,valida_fino=? WHERE id=?`).run(
+    b.nome,
+    b.cognome,
+    b.email ?? null,
+    b.telefono ?? null,
+    b.data_nascita ?? null,
+    b.casata_id ?? null,
+    b.ruolo ?? "socio",
+    b.tipo_profilo ?? "socio",
+    b.tutore_id ?? null,
+    b.lingua ?? "it",
+    b.consenso_privacy ? 1 : 0,
+    b.consenso_marketing ? 1 : 0,
+    b.consenso_foto ? 1 : 0,
+    b.notifiche_push ? 1 : 0,
+    b.attivo ? 1 : 0,
+    b.valida_fino ?? null,
+    req.params.id
+  );
+  audit(req.adminUser.username, "modifica", "soci", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/soci/:id/export", (req, res) => {
+  const s = db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Socio non trovato" });
+  const prenotazioni = db.prepare("SELECT * FROM prenotazioni WHERE socio_id=?").all(req.params.id);
+  const convocazioni = db.prepare("SELECT * FROM convocazioni WHERE socio_id=?").all(req.params.id);
+  const proposte = db.prepare("SELECT * FROM proposte WHERE socio_id=?").all(req.params.id);
+  audit(req.adminUser.username, "export_gdpr", "soci", req.params.id);
+  res.json({ socio: s, prenotazioni, convocazioni, proposte });
+});
+adminRouter.delete("/soci/:id", requireRole("gestore"), (req, res) => {
+  const s = db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Socio non trovato" });
+  db.prepare("DELETE FROM soci WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella_gdpr", "soci", req.params.id, s.tessera_code);
+  res.json({ ok: true });
+});
+adminRouter.put("/casate/:id/punti", (req, res) => {
+  const { punti } = req.body || {};
+  db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
+  audit(req.adminUser.username, "punti", "casate", req.params.id, String(punti));
+  res.json({ ok: true });
+});
+adminRouter.get("/eventi", (req, res) => {
+  res.json(db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
+});
+adminRouter.put("/eventi/:id", (req, res) => {
+  const b = req.body || {};
+  db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.attivo ? 1 : 0, req.params.id);
+  audit(req.adminUser.username, "modifica", "eventi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/prenotazioni", (req, res) => {
+  res.json(db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
+    LEFT JOIN soci s ON s.id=p.socio_id ORDER BY p.created_at DESC LIMIT 200`).all());
+});
+adminRouter.post("/convocazioni", (req, res) => {
+  const { disciplina_chiave, dominio, casata_id, match_label, quando, luogo } = req.body || {};
+  const disc = db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio || "sport");
+  if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
+  const soci = db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(casata_id);
+  const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
+  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+  let notificati = 0;
+  for (const s of soci) {
+    ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
+    if (s.notifiche_push) {
+      insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
+      notificati++;
+    }
+  }
+  audit(req.adminUser.username, "convoca", "convocazioni", casata_id, `${soci.length} soci \xB7 ${notificati} notificati`);
+  res.status(201).json({ ok: true, convocati: soci.length, notificati });
+});
+adminRouter.get("/proposte", (req, res) => {
+  res.json(db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
+    LEFT JOIN soci s ON s.id=pr.socio_id ORDER BY pr.created_at DESC`).all());
+});
+adminRouter.put("/proposte/:id", (req, res) => {
+  const { stato } = req.body || {};
+  db.prepare("UPDATE proposte SET stato=? WHERE id=?").run(stato || "ricevuta", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/bussola", (req, res) => {
+  res.json(db.prepare("SELECT * FROM bussola ORDER BY sezione,ordine").all());
+});
+adminRouter.post("/bussola", (req, res) => {
+  const b = req.body || {};
+  const info = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
+  audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.delete("/bussola/:id", (req, res) => {
+  db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "bussola", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/luoghi", (req, res) => {
+  res.json(db.prepare("SELECT * FROM luoghi ORDER BY ordine").all());
+});
+adminRouter.put("/luoghi/:id", (req, res) => {
+  const b = req.body || {};
+  db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
+  audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
+  res.json({ ok: true });
+});
+adminRouter.get("/discipline", (req, res) => {
+  res.json(db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
+});
+adminRouter.post("/discipline", requireRole("gestore", "staff"), (req, res) => {
+  const b = req.body || {};
+  if (!b.nome || !b.chiave || !b.dominio) return res.status(400).json({ error: "Dominio, chiave e nome obbligatori" });
+  try {
+    const ord = db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM discipline WHERE dominio=?").get(b.dominio).n || 0;
+    const info = db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,punti_vitt,punti_par,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.dominio === "giochi" ? "giochi" : "sport", b.chiave, b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, ord);
+    audit(req.adminUser.username, "crea", "discipline", info.lastInsertRowid, b.nome);
+    res.status(201).json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: "Chiave gi\xE0 esistente per questo dominio" });
+  }
+});
+adminRouter.put("/discipline/:id", requireRole("gestore", "staff"), (req, res) => {
+  const b = req.body || {};
+  db.prepare("UPDATE discipline SET nome=?,attivo=?,min_giocatori=?,max_giocatori=?,punti_vitt=?,punti_par=? WHERE id=?").run(b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, req.params.id);
+  audit(req.adminUser.username, "modifica", "discipline", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/discipline/:id", requireRole("gestore", "staff"), (req, res) => {
+  db.prepare("DELETE FROM discipline WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "discipline", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/tabellone/:disciplinaId", requireRole("gestore", "staff"), (req, res) => {
+  res.json(getTabellone(Number(req.params.disciplinaId)));
+});
+adminRouter.post("/tabellone/:disciplinaId/genera", requireRole("gestore", "staff"), (req, res) => {
+  try {
+    const t = generaCalendario(Number(req.params.disciplinaId));
+    audit(req.adminUser.username, "genera_calendario", "discipline", req.params.disciplinaId);
+    res.json({ ok: true, tabellone: t });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.put("/partite/:id", requireRole("gestore", "staff"), (req, res) => {
+  const a = Number(req.body?.gol_a), b = Number(req.body?.gol_b);
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return res.status(400).json({ error: "Punteggi non validi" });
+  try {
+    registraRisultato(Number(req.params.id), a, b);
+    audit(req.adminUser.username, "risultato", "partite", req.params.id, `${a}-${b}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.get("/audit", (req, res) => {
+  res.json(db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
+});
+function nextTessera() {
+  const year = 2026;
+  const n = db.prepare("SELECT count(*) c FROM soci").get().c + 1;
+  return `BR-${year}-${String(n).padStart(4, "0")}`;
+}
+
+// server/routes/authuser.js
+import { Router as Router3 } from "express";
+var authUserRouter = Router3();
+var DEV = (process.env.KOINE_ENV || "dev") !== "prod";
+function requireUser(req, res, next) {
+  const token = (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
+  const u = token && getUserSession(token);
+  if (!u) return res.status(401).json({ error: "Accesso richiesto" });
+  req.user = u;
+  next();
+}
+authUserRouter.post("/request-otp", (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!email || !email.includes("@")) return res.status(400).json({ error: "E-mail non valida" });
+  const socio = db.prepare("SELECT id FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+  const code = genOtp();
+  const exp = Date.now() + 10 * 60 * 1e3;
+  db.prepare("INSERT INTO otp (email,code,exp) VALUES (?,?,?)").run(email, code, exp);
+  audit(email, "otp_richiesto", "otp", "", socio ? "utente noto" : "email sconosciuta");
+  res.json({ ok: true, ...DEV ? { dev_code: code, dev_note: "In produzione arriva via e-mail/SMS; qui \xE8 mostrato solo per test." } : {} });
+});
+authUserRouter.post("/verify-otp", (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const code = String(req.body?.code || "").trim();
+  const row = db.prepare("SELECT * FROM otp WHERE email=? AND code=? AND used=0 ORDER BY id DESC").get(email, code);
+  if (!row || Date.now() > row.exp) return res.status(401).json({ error: "Codice non valido o scaduto" });
+  db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
+  const socio = db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+  if (!socio) return res.status(404).json({ error: "Nessun profilo associato a questa e-mail" });
+  const token = createUserSession(socio);
+  audit(socio.tessera_code, "login_utente", "soci", socio.id);
+  const casata = db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
+  res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
+});
+authUserRouter.post("/notifiche/consenso", requireUser, (req, res) => {
+  const on = req.body?.attivo ? 1 : 0;
+  db.prepare("UPDATE soci SET notifiche_push=? WHERE tessera_code=?").run(on, req.user.tessera_code);
+  audit(req.user.tessera_code, "consenso_notifiche", "soci", "", on ? "attivo" : "disattivo");
+  res.json({ ok: true, attivo: !!on });
+});
+authUserRouter.post("/convoca", requireUser, (req, res) => {
+  const me = db.prepare("SELECT id, casata_id, ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+  if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
+  if (!me.casata_id) return res.status(400).json({ error: "Nessuna casata associata" });
+  const { dominio, disciplina_chiave, match_label, quando, luogo } = req.body || {};
+  const disc = db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio === "giochi" ? "giochi" : "sport");
+  if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
+  const soci = db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(me.casata_id);
+  const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
+  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+  let notificati = 0;
+  for (const s of soci) {
+    ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
+    if (s.notifiche_push) {
+      insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
+      notificati++;
+    }
+  }
+  audit(req.user.tessera_code, "convoca_capitano", "convocazioni", me.casata_id, `${soci.length} soci`);
+  res.status(201).json({ ok: true, convocati: soci.length, notificati });
+});
+authUserRouter.get("/notifiche", requireUser, (req, res) => {
+  const socio = db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+  const rows = socio ? db.prepare("SELECT id,tipo,titolo,corpo,letta,created_at FROM notifiche WHERE socio_id=? ORDER BY created_at DESC LIMIT 50").all(socio.id) : [];
+  res.json(rows);
+});
+
+// build/frontend.html
+var frontend_default = `<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#12324F">
+<meta name="description" content="Bussola Residence \u2014 l'app del residence di Fontane Bianche: eventi, sport, Coppa delle Casate, tessera e guida.">
+<title>Bussola Residence \u2014 App</title>
+
+<style>
+:root{
+  --navy:#12324F; --gold:#8a5a12; --teal:#256b65; --coral:#b14a35;
+  --plum:#5f4f95; --sage:#3f6b3d; --ink:#17242c; --paper:#F7F4EC;
+  --mute:#4a5a64; --line:#E3E1D6; --card:#FFFFFF;
+  --scale:1;                 /* controllo dimensione testo (accessibilit\xE0) */
+  --tap:46px;                /* area tocco minima */
+  --focus:#0a66c2;
+}
+/* Alto contrasto (attivabile dall'utente) */
+body.hc{--navy:#0a1f33; --gold:#6b4406; --teal:#12433f; --mute:#33414a; --line:#b9b6a8; --paper:#fbf9f2; --ink:#0c141a;}
+body.hc .card{border-color:#8f8b7c;}
+*{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+html,body{height:100%;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:calc(16px * var(--scale));
+  background:radial-gradient(1200px 800px at 50% -10%, #1c3e5c 0%, #0d2137 55%, #0a1a2b 100%);
+  color:var(--ink); display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px 10px;
+}
+@media (prefers-reduced-motion: reduce){*{animation:none !important; transition:none !important;}}
+.serif{font-family:Georgia,"Times New Roman",serif;}
+.phone{width:400px; max-width:100%; height:calc(100vh - 40px); max-height:860px; background:var(--paper); border-radius:40px; position:relative; overflow:hidden;
+  box-shadow:0 30px 80px rgba(0,0,0,.5), 0 0 0 10px #0c0f13, 0 0 0 12px #23272e; display:flex; flex-direction:column;}
+.notch{position:absolute; top:0; left:50%; transform:translateX(-50%); width:140px; height:24px; background:#0c0f13; border-radius:0 0 16px 16px; z-index:40;}
+header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; padding:30px 16px 13px; position:relative; z-index:20; flex:0 0 auto;}
+.brandrow{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+.brand{font-family:Georgia,serif; font-weight:700; letter-spacing:3px; font-size:1.05rem;}
+.brand small{display:block; letter-spacing:5px; font-size:.52rem; color:#e2b45a; font-weight:700; margin-top:1px;}
+.brand .byk{font-size:.72em; letter-spacing:2px; opacity:.82; text-transform:none; font-style:italic;}
+.hgreet{margin-top:12px; display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
+.hgreet h1{font-family:Georgia,serif; font-size:1.25rem; font-weight:600;}
+.hgreet .gsub{font-size:.72rem; color:#c9d6e2; margin-top:2px;}
+.hstack{display:flex; flex-direction:column; gap:7px; align-items:flex-end; flex:0 0 auto;}
+.tesschip{display:flex; align-items:center; gap:7px; background:linear-gradient(135deg,#caa24f,#8a5f18); color:#fff; padding:8px 12px; border-radius:20px; font-size:.72rem; font-weight:700; cursor:pointer; min-height:var(--tap); box-shadow:0 3px 8px rgba(0,0,0,.25);}
+.tesschip svg{width:15px; height:15px;}
+.casatapill{display:flex; align-items:center; gap:7px; background:rgba(255,255,255,.14); padding:7px 10px; border-radius:20px; font-size:.72rem; cursor:pointer; color:#fff; min-height:var(--tap);}
+.casatapill .sh{width:15px;height:19px;border-radius:4px 4px 8px 8px; display:inline-block;}
+.iconbtn{display:inline-flex; align-items:center; justify-content:center; gap:5px; background:rgba(255,255,255,.14); border:none; color:#fff; padding:8px 11px; border-radius:20px; font-size:.7rem; font-weight:700; cursor:pointer; min-height:var(--tap);}
+.iconbtn svg{width:16px;height:16px;}
+.topicons{display:flex; gap:8px; align-items:center;}
+
+/* Barra accessibilit\xE0 */
+.a11y{display:flex; gap:6px; align-items:center; margin-top:10px; background:rgba(255,255,255,.10); padding:6px; border-radius:14px;}
+.a11y button{flex:1; background:rgba(255,255,255,.14); border:none; color:#fff; border-radius:10px; padding:8px 4px; font-weight:700; cursor:pointer; font-size:.72rem; min-height:40px;}
+.a11y button.on{background:#e2b45a; color:#12324F;}
+.a11y .lbl{font-size:.6rem; color:#c9d6e2; padding:0 4px; text-transform:uppercase; letter-spacing:.5px;}
+
+.scroll{flex:1 1 auto; overflow-y:auto; padding:14px 14px 92px; -webkit-overflow-scrolling:touch;}
+.scroll::-webkit-scrollbar{display:none;}
+.screen{display:none; animation:fade .28s ease;}
+.screen.active{display:block;}
+@keyframes fade{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;}}
+.card{background:var(--card); border-radius:16px; padding:15px; box-shadow:0 4px 14px rgba(18,50,79,.07); border:1px solid var(--line);}
+.card + .card{margin-top:11px;}
+.eyebrow{font-size:.66rem; letter-spacing:1.4px; text-transform:uppercase; color:var(--gold); font-weight:700;}
+.sect-title{font-family:Georgia,serif; font-size:1.02rem; font-weight:700; color:var(--navy); margin:18px 2px 9px; display:flex; align-items:center; gap:8px;}
+.sect-title::after{content:""; flex:1; height:1px; background:var(--line);}
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:6px; border:none; border-radius:22px; padding:11px 16px; font-size:.82rem; font-weight:700; cursor:pointer; font-family:inherit; min-height:var(--tap);}
+.btn.gold{background:var(--gold); color:#fff;} .btn.navy{background:var(--navy); color:#fff;}
+.btn.ghost{background:transparent; color:var(--navy); border:1.5px solid var(--line);}
+.btn.block{width:100%; padding:14px; font-size:.95rem; border-radius:14px;}
+.btn.sm{padding:9px 13px; font-size:.75rem;}
+.btn:focus-visible, a:focus-visible, .chip:focus-visible, .tab:focus-visible, [tabindex]:focus-visible{outline:3px solid var(--focus); outline-offset:2px;}
+.muted{color:var(--mute);} .tiny{font-size:.72rem;}
+.welcome{background:linear-gradient(135deg,#fbf4e6,#f3ead6); border:1px solid #ecdcbd; border-radius:16px; padding:14px 15px; display:flex; gap:12px; align-items:center;}
+.welcome .wl{flex:1;} .welcome .eyebrow{color:var(--coral);}
+.welcome h3{font-family:Georgia,serif; color:var(--navy); font-size:1rem; margin:2px 0 3px;}
+.welcome p{font-size:.75rem; color:var(--mute);}
+.hero{position:relative; border-radius:18px; overflow:hidden; color:#fff; padding:18px; min-height:150px; display:flex; flex-direction:column; justify-content:flex-end; margin-top:14px;
+  background:linear-gradient(180deg, rgba(18,50,79,.2), rgba(18,50,79,.9)), linear-gradient(135deg,#5f4f95,#256b65); cursor:pointer;}
+.hero .eyebrow{color:#ffe1ac;}
+.hero h2{font-family:Georgia,serif; font-size:1.5rem; margin:4px 0 2px;} .hero p{font-size:.82rem; opacity:.95;}
+.hero .btn{margin-top:12px; align-self:flex-start;}
+.pgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px;}
+.ptile{background:var(--card); border:1px solid var(--line); border-radius:15px; padding:14px 8px; text-align:center; cursor:pointer; box-shadow:0 3px 9px rgba(18,50,79,.05); min-height:var(--tap);}
+.ptile .ic{font-size:1.4rem;} .ptile b{display:block; font-size:.78rem; color:var(--navy); margin-top:5px;} .ptile span{display:block; font-size:.62rem; color:var(--mute); margin-top:1px;}
+.evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
+.evcard .stripe{width:6px; flex:0 0 6px;}
+.evcard .body{flex:1; padding:12px 4px 12px 13px; min-width:0;}
+.evcard .dl{font-size:.66rem; letter-spacing:.6px; text-transform:uppercase; color:var(--mute); font-weight:700;}
+.evcard h4{font-size:.98rem; color:var(--ink); margin:2px 0 1px;}
+.evcard p{font-size:.76rem; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.evcard .cta{display:flex; align-items:center; padding:0 12px; flex:0 0 auto;} .evcard .chev{color:#c3cdd6;}
+.myclan{background:linear-gradient(135deg,var(--navy),#1d4a6e); color:#fff; border-radius:18px; padding:16px; display:flex; align-items:center; gap:14px;}
+.shield{width:52px; height:60px; flex:0 0 auto; border-radius:10px 10px 26px 26px/10px 10px 40px 40px; display:flex; align-items:center; justify-content:center; font-family:Georgia,serif; font-weight:700; color:#fff; font-size:1.35rem; border:2px solid rgba(255,255,255,.5);}
+.myclan .info h3{font-family:Georgia,serif; font-size:1.2rem;} .myclan .info p{font-size:.75rem; opacity:.85; margin-top:2px;}
+.posbig{margin-left:auto; text-align:center;} .posbig .n{font-family:Georgia,serif; font-size:1.9rem; font-weight:700; color:#e2b45a; line-height:1;} .posbig .l{font-size:.56rem; text-transform:uppercase; letter-spacing:1px; opacity:.85;}
+.rank{display:flex; align-items:center; gap:10px; padding:9px 2px;}
+.rank .rn{width:18px; font-family:Georgia,serif; font-weight:700; color:var(--mute); font-size:.82rem; text-align:center;}
+.rank .sh{width:24px; height:28px; border-radius:6px 6px 12px 12px; flex:0 0 auto;}
+.rank .nm{width:84px; font-size:.78rem; font-weight:600;}
+.bar{flex:1; height:12px; background:#e6e6e6; border-radius:6px; overflow:hidden;} .bar span{display:block; height:100%; border-radius:6px;}
+.rank .pt{width:32px; text-align:right; font-size:.78rem; font-weight:700; color:var(--navy);}
+.tessera{border-radius:20px; padding:20px; color:#fff; background:linear-gradient(135deg,#123a5c 0%, #0d2740 60%, #123a5c 100%); position:relative; overflow:hidden; box-shadow:0 12px 30px rgba(9,20,33,.35);}
+.tessera .lab{font-size:.62rem; letter-spacing:2px; text-transform:uppercase; color:#e2b45a; font-weight:700;}
+.tessera h2{font-family:Georgia,serif; font-size:1.4rem; margin:10px 0 2px;} .tessera .role{font-size:.75rem; opacity:.85;}
+.tessera .qr{width:88px; height:88px; background:#fff; border-radius:12px; margin-top:16px; padding:8px;} .qr svg{width:100%; height:100%;}
+.tessera .foot{display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;}
+.benefit{display:flex; gap:10px; align-items:flex-start; padding:11px 2px; border-bottom:1px solid var(--line);}
+.benefit:last-child{border-bottom:none;} .benefit .bic{color:var(--teal); flex:0 0 auto; margin-top:1px; font-weight:800;}
+.benefit b{font-size:.85rem;} .benefit p{font-size:.76rem; color:var(--mute); margin-top:1px;}
+nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(255,255,255,.97); backdrop-filter:blur(10px); border-top:1px solid var(--line); display:flex; z-index:30; padding-bottom:6px;}
+.tab{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; color:var(--mute); font-size:.66rem; font-weight:600; min-height:var(--tap); background:none; border:none; font-family:inherit;}
+.tab svg{width:23px; height:23px;} .tab.on{color:var(--navy);} .tab.on svg{color:var(--gold);}
+.ov{position:absolute; inset:0; z-index:60; display:none;} .ov.show{display:block;}
+.ov .bg{position:absolute; inset:0; background:rgba(9,20,33,.5);}
+.sheet{position:absolute; left:0; right:0; bottom:0; background:var(--paper); border-radius:22px 22px 0 0; padding:10px 16px 22px; max-height:90%; overflow-y:auto; animation:up .3s ease;}
+.sheet::-webkit-scrollbar{display:none;}
+@keyframes up{from{transform:translateY(100%);} to{transform:none;}}
+.grab{width:42px; height:5px; background:#d8d3c4; border-radius:3px; margin:6px auto 12px;}
+.sheet h2{font-family:Georgia,serif; color:var(--navy); font-size:1.35rem;} .sheet .sub{color:var(--mute); font-size:.8rem; margin:3px 0 14px;}
+.field{margin-bottom:12px;} .field label{font-size:.75rem; font-weight:700; color:var(--navy); display:block; margin-bottom:6px;}
+.field input,.field textarea{width:100%; border:1.5px solid var(--line); border-radius:12px; padding:12px; font-size:.9rem; font-family:inherit; background:#fff; color:var(--ink); min-height:var(--tap);}
+.field textarea{resize:none; height:70px;}
+.chips{display:flex; flex-wrap:wrap; gap:8px;}
+.chip{border:1.5px solid var(--line); background:#fff; border-radius:20px; padding:10px 14px; font-size:.8rem; cursor:pointer; font-weight:600; min-height:var(--tap); display:inline-flex; align-items:center;}
+.chip.sel{background:var(--navy); color:#fff; border-color:var(--navy);}
+.okmsg .big{width:60px;height:60px;border-radius:50%;background:var(--sage);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;}
+.note{background:#f3ead6; border-left:3px solid var(--gold); border-radius:8px; padding:11px 12px; font-size:.76rem; color:#5c4d2a; margin-top:10px;}
+.discrow{display:flex; gap:8px; overflow-x:auto; padding:2px 0 4px; margin-bottom:6px;} .discrow::-webkit-scrollbar{display:none;}
+.disc{flex:0 0 auto; border:1.5px solid var(--line); background:#fff; border-radius:20px; padding:10px 15px; font-size:.8rem; font-weight:700; color:var(--mute); cursor:pointer; white-space:nowrap; min-height:var(--tap);}
+.disc.on{background:var(--navy); color:#fff; border-color:var(--navy);}
+.gtable{width:100%; border-collapse:collapse; margin-top:6px;}
+.gtable th{font-size:.6rem; text-transform:uppercase; letter-spacing:.4px; color:var(--mute); padding:3px 2px; font-weight:700;}
+.gtable td{padding:8px 2px; font-size:.8rem; border-top:1px solid var(--line); text-align:center;}
+.gtable td.team{text-align:left; font-weight:600; white-space:nowrap;}
+.gtable td.team .gpos{color:var(--mute); font-family:Georgia,serif; font-weight:700; margin-right:6px;}
+.gtable td.team .d{display:inline-block; width:9px;height:9px;border-radius:50%; margin-right:6px; vertical-align:middle;}
+.matchrow{display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line);} .matchrow:last-child{border-bottom:none;}
+.matchrow .wh{width:58px; text-align:center; font-size:.68rem; color:var(--navy); font-weight:700;}
+.matchrow .vs{flex:1; font-size:.8rem;} .matchrow .vs small{color:var(--mute);} .matchrow .ct{font-size:.68rem; color:var(--mute); margin-top:1px;}
+.matchrow .sc{font-weight:700; color:var(--navy); font-size:.88rem;}
+/* Banner offline / stato */
+.banner{position:absolute; top:0; left:0; right:0; z-index:50; background:var(--coral); color:#fff; text-align:center; font-size:.72rem; padding:5px; transform:translateY(-100%); transition:transform .3s;}
+.banner.show{transform:none;}
+/* Onboarding */
+.onb{position:absolute; inset:0; z-index:70; background:rgba(9,20,33,.72); display:none; align-items:center; justify-content:center; padding:22px;}
+.onb.show{display:flex;}
+.onb .box{background:var(--paper); border-radius:20px; padding:22px; max-width:320px; text-align:center;}
+.onb .box h2{font-family:Georgia,serif; color:var(--navy); font-size:1.3rem; margin-bottom:6px;}
+.onb .box p{font-size:.85rem; color:var(--mute); line-height:1.5; margin-bottom:8px;}
+.onb ul{text-align:left; font-size:.82rem; color:var(--ink); margin:10px 0 14px; padding-left:2px; list-style:none;}
+.onb ul li{padding:6px 0; display:flex; gap:9px; align-items:flex-start;}
+.onb ul li b{color:var(--navy);}
+.sos{display:block; width:100%; text-align:left; background:#fff; border:1.5px solid var(--line); border-radius:14px; padding:12px 14px; margin-top:11px; cursor:pointer;}
+.sos b{color:var(--coral); font-size:.85rem;} .sos p{font-size:.72rem; color:var(--mute); margin-top:2px;}
+.skip-link{position:absolute; left:-999px; top:0; background:#fff; color:var(--navy); padding:8px 12px; z-index:100;}
+.skip-link:focus{left:8px; top:8px;}
+
+</style>
+</head>
+<body>
+<a href="#main" class="skip-link">Salta al contenuto</a>
+<div class="phone" role="application" aria-label="App KOIN\xC8 Village">
+  <div class="notch" aria-hidden="true"></div>
+  <div class="banner" id="banner" role="status" aria-live="polite">Sei offline \u2014 mostro gli ultimi dati salvati</div>
+
+  <header>
+    <div class="brandrow">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <svg width="26" height="26" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="20" r="18" stroke="#e2b45a" stroke-width="1.5"/><path d="M20 4 L23 17 L36 20 L23 23 L20 36 L17 23 L4 20 L17 17 Z" fill="#e2b45a"/><circle cx="20" cy="20" r="2.4" fill="#12324F"/></svg>
+        <div class="brand">BUSSOLA<small>RESIDENCE<span class="byk"> \xB7 by KOIN\xC8</span></small></div>
+      </div>
+      <div class="topicons">
+        <button class="iconbtn" id="helpBtn" aria-label="Aiuto e guida rapida"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7M12 17h.01"/></svg></button>
+        <button class="iconbtn" id="langBtn" aria-label="Cambia lingua"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.8 3.4 2.8 14.6 0 18M12 3c-2.8 3.4-2.8 14.6 0 18"/></svg><span id="langLbl">IT</span></button>
+      </div>
+    </div>
+    <div class="hgreet">
+      <div><h1 id="greetName">Ciao</h1><div class="gsub" id="greetSub">Benvenuto alla Bussola</div></div>
+      <div class="hstack">
+        <button class="tesschip" id="tesseraBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/></svg>Tessera</button>
+        <button class="casatapill" id="casataBtn"><span class="sh" id="casataSh" style="background:#2E6DA4"></span><span id="casataNm">Aretusa</span></button>
+      </div>
+    </div>
+    <div class="a11y" role="group" aria-label="Dimensione testo e contrasto">
+      <span class="lbl">Testo</span>
+      <button data-scale="1" aria-label="Testo normale">A</button>
+      <button data-scale="1.15" aria-label="Testo grande">A+</button>
+      <button data-scale="1.3" aria-label="Testo molto grande">A++</button>
+      <button id="hcBtn" aria-label="Alto contrasto" aria-pressed="false">\u25D1 Contrasto</button>
+    </div>
+  </header>
+
+  <main class="scroll" id="main">
+    <section class="screen active" id="s-home" aria-label="Home"></section>
+    <section class="screen" id="s-eventi" aria-label="Eventi"></section>
+    <section class="screen" id="s-sport" aria-label="Sport e tornei"></section>
+    <section class="screen" id="s-giochi" aria-label="Giochi da tavolo"></section>
+    <section class="screen" id="s-coppa" aria-label="Coppa delle Casate"></section>
+    <section class="screen" id="s-bussola" aria-label="Guida del residence"></section>
+  </main>
+
+  <nav aria-label="Navigazione principale">
+    <button class="tab on" data-t="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 10.5L12 4l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
+    <button class="tab" data-t="eventi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>Eventi</button>
+    <button class="tab" data-t="sport"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M4 8c5 2.2 11 2.2 16 0M4 16c5-2.2 11-2.2 16 0M12 3v18"/></svg>Sport</button>
+    <button class="tab" data-t="giochi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="4.5" y="7" width="10.5" height="13.5" rx="2"/><rect x="9" y="3.5" width="10.5" height="13.5" rx="2"/></svg>Giochi</button>
+    <button class="tab" data-t="bussola"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z" fill="currentColor" stroke="none"/></svg>Guida</button>
+  </nav>
+
+  <div class="ov" id="ov"><div class="bg" id="ovBg"></div><div class="sheet" id="sheetbox" role="dialog" aria-modal="true"></div></div>
+
+  <div class="onb" id="onb" role="dialog" aria-modal="true" aria-label="Guida rapida">
+    <div class="box">
+      <div class="eyebrow" style="color:var(--coral)">Benvenuto</div>
+      <h2 class="serif">Come funziona</h2>
+      <p>Tre passi e sei pronto. Puoi ingrandire il testo dai pulsanti <b>A / A+</b> in alto.</p>
+      <ul>
+        <li><span>\u{1F3E0}</span><div><b>Home & Eventi:</b> il programma della settimana, prenoti con un tocco.</div></li>
+        <li><span>\u{1F3C6}</span><div><b>Sport & Giochi:</b> tornei e Coppa delle Casate della tua squadra.</div></li>
+        <li><span>\u{1F9ED}</span><div><b>Guida:</b> orari, servizi vicini, cosa vedere e i numeri utili.</div></li>
+      </ul>
+      <button class="btn gold block" id="onbClose">Ho capito, inizia</button>
+      <button class="sos" id="onbSos"><b>Numeri utili & emergenze</b><p>Guardia medica, farmacia, spiaggia \u2014 sempre a portata di mano.</p></button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* KOIN\xC8 Village \u2014 front-end utente.
+   Legge i dati dalle API del server; se il server non \xE8 raggiungibile
+   (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
+'use strict';
+
+// ---- Stato & preferenze (persistite quando possibile) ---------------------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('koine_' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('koine_' + k, JSON.stringify(v)); } catch {} },
+};
+const state = {
+  tessera: store.get('tessera', 'BR-2026-0001'),
+  token: store.get('token', null),
+  authed: false,
+  socio: null,
+  online: true,
+  lang: store.get('lang_code', 'it'),
+  data: {},          // casate, eventi, risorse, sport, giochi, bussola
+  conv: {},          // stato convocazioni locale: chiave -> stato
+  rifiuti: 0,
+};
+
+// ---- Dati incorporati (fallback anteprima) --------------------------------
+const SEED = {
+  socio: { tessera_code: 'BR-2026-0001', nome: 'Ercole', cognome: '\u2014', ruolo: 'Socio', tipo_profilo: 'socio', casata: 'Aretusa', colore: '#2E6DA4', valida_fino: '2027-05-01', notifiche_push: true },
+  luoghi: [ { chiave:'chiosco', nome:'Chiosco La Bussola', lat:36.967766, lng:15.221669 }, { chiave:'isola', nome:'Isola ecologica', lat:36.967209, lng:15.221206 } ],
+  casate: [
+    { nome: 'Ortigia', colore: '#B7791F', punti: 66 }, { nome: 'Aretusa', colore: '#2E6DA4', punti: 62 },
+    { nome: 'Neapolis', colore: '#C0553F', punti: 54 }, { nome: 'Dionisio', colore: '#6E5AA6', punti: 50 },
+    { nome: 'Ciane', colore: '#4d7a4a', punti: 47 }, { nome: 'Plemmirio', colore: '#12324F', punti: 44 },
+    { nome: 'Epipoli', colore: '#7A8790', punti: 40 }, { nome: 'Anapo', colore: '#2E7D77', punti: 37 },
+  ],
+  eventi: [
+    { chiave:'lun', giorno:'Luned\xEC', titolo:'Incontro di Benvenuto', ambiente:'Bussola Garden', colore:'#2E7D77', sottotitolo:'Ti presentiamo le attivit\xE0 del residence', descrizione:"Un incontro per i nuovi ospiti: il cartellone, i tornei, la Coppa delle Casate e come usare l'app. Non \xE8 un aperitivo: \xE8 il benvenuto.", cta:'Ci sar\xF2', azione:null },
+    { chiave:'mar', giorno:'Marted\xEC', titolo:'Vinile & Vino', ambiente:'Bussola Garden', colore:'#C0553F', sottotitolo:'Scegli tu la musica della serata', descrizione:'Proponi un vinile, i brani e il perch\xE9. Le proposte della settimana diventano la scaletta di quella dopo.', cta:'Proponi un vinile', azione:'sheet-vinile' },
+    { chiave:'mer', giorno:'Mercoled\xEC', titolo:"Cinema d'autore sotto le stelle", ambiente:'Bussola Stage', colore:'#12324F', sottotitolo:"Ortigia Film Festival & titoli d'autore", descrizione:"Una proiezione a settimana: opere premiate all'Ortigia Film Festival, alternate a titoli pi\xF9 leggeri ma d'autore.", cta:'Prenota un posto', azione:null },
+    { chiave:'gio', giorno:'Gioved\xEC', titolo:'Jazz & Cocktail', ambiente:'Bussola Garden', colore:'#2E7D77', sottotitolo:'La serata-firma \xB7 trio live', descrizione:'Trio live acustico, luci basse, cocktail. Si cena prima dello spettacolo.', cta:'Prenota un tavolo', azione:null },
+    { chiave:'ven', giorno:'Venerd\xEC', titolo:'Serata dei Clan', ambiente:'Bussola Stage', colore:'#6E5AA6', sottotitolo:'Le otto casate si sfidano', descrizione:'Dall\u2019apericena a tarda sera. Questa settimana: karaoke. Coinvolgi un ospite e la tua casata guadagna punti.', cta:'Vai alla Coppa', azione:'go-coppa' },
+    { chiave:'sab', giorno:'Sabato', titolo:'Live Session', ambiente:'Bussola Stage', colore:'#B7791F', sottotitolo:'Band e cantautori emergenti', descrizione:'Band e cantautori emergenti dal vivo sul Bussola Stage.', cta:'Prenota un posto', azione:null },
+    { chiave:'dom', giorno:'Domenica', titolo:'Open Mic', ambiente:'Bussola Stage', colore:'#B7791F', sottotitolo:'Tre minuti di palco per te', descrizione:'Microfono aperto: canto, monologo, stand-up (linguaggio moderato) o strumento.', cta:'Salgo sul palco', azione:'sheet-openmic' },
+  ],
+  risorse: [
+    { chiave:'pickleball', nome:'Campo di Pickleball', tipo:'sport', sottotitolo:'Turni da 90\u2032 \xB7 gioco 17\u201320', slots:['17:00\u201318:30','18:30\u201320:00'], nota:'Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano.' },
+    { chiave:'soft', nome:'Campo di Soft tennis', tipo:'sport', sottotitolo:'Turni da 90\u2032 \xB7 gioco 17\u201320', slots:['17:00\u201318:30','18:30\u201320:00'], nota:'Si gioca dalle 17 alle 20.' },
+    { chiave:'cowo', nome:'Postazione Coworking', tipo:'coworking', sottotitolo:'Casa di Carta \xB7 wi-fi e caff\xE8', slots:['Mattina (9\u201313)','Pomeriggio (14\u201318)','Giornata intera'], nota:null },
+    { chiave:'tavolo', nome:'Tavolo per la cena', tipo:'tavolo', sottotitolo:'~40 coperti serviti', slots:['19:30','20:30','21:30'], nota:'Nessuna consumazione obbligatoria.' },
+  ],
+  bussola: {
+    servizi: [ {titolo:'Farmacia',dettaglio:'Fontane Bianche',distanza:'~600 m'},{titolo:'Guardia medica',dettaglio:'Cassibile',distanza:'~5 km'},{titolo:'Spiaggia',dettaglio:'Fontane Bianche',distanza:'~300 m'},{titolo:'Market & alimentari',dettaglio:'Viale dei Lidi',distanza:'~700 m'},{titolo:'Bar & tabacchi',dettaglio:'Fontane Bianche',distanza:'~500 m'} ],
+    vedere: [ {titolo:'Ortigia',dettaglio:'Centro storico \xB7 cultura',distanza:'~20 km'},{titolo:'Parco della Neapolis',dettaglio:'Teatro Greco \xB7 Orecchio di Dioniso',distanza:'~22 km'},{titolo:'Duomo di Siracusa',dettaglio:'Barocco',distanza:'~20 km'},{titolo:'Riserva del Plemmirio',dettaglio:'Area marina protetta',distanza:'~12 km'},{titolo:'Cavagrande del Cassibile',dettaglio:'Laghetti e sentieri',distanza:'~18 km'} ],
+    rifiuti: ['Lun \xB7 Organico','Mar \xB7 Plastica','Mer \xB7 Carta','Gio \xB7 Organico','Ven \xB7 Vetro','Sab \xB7 Indifferenziato'].map(t=>({titolo:t})),
+    orari: [ {titolo:'Silenzio pomeridiano',dettaglio:'Dalle 14:00 alle 17:00 \u2014 riposo per tutti.'},{titolo:'Silenzio notturno',dettaglio:'Dopo le 23:30 \u2014 si abbassano voci e musica.'} ],
+  },
+  sport: seedDisc([
+    ['Pickleball',[['Aretusa','#2E6DA4',3,3,9],['Ortigia','#B7791F',3,2,6],['Ciane','#4d7a4a',3,1,3],['Epipoli','#7A8790',3,0,0]],[['Neapolis','#C0553F',3,2,6],['Dionisio','#6E5AA6',3,2,6],['Plemmirio','#12324F',3,1,3],['Anapo','#2E7D77',3,1,3]],[['Aretusa','Ortigia','Dom 17:30','Campo 1'],['Neapolis','Dionisio','Dom 19:00','Campo 1']],[['Aretusa','Ciane','11\u20136'],['Ortigia','Epipoli','11\u20139']]],
+    ['Soft tennis',[['Aretusa','#2E6DA4',2,2,6],['Ortigia','#B7791F',2,1,3],['Ciane','#4d7a4a',2,1,3],['Epipoli','#7A8790',2,0,0]],[['Neapolis','#C0553F',2,2,6],['Dionisio','#6E5AA6',2,1,3],['Plemmirio','#12324F',2,1,3],['Anapo','#2E7D77',2,0,0]],[['Aretusa','Plemmirio','Gio 18:00','Campo 1']],[['Neapolis','Anapo','6\u20132']]],
+    ['Basket 3\xD73',[['Aretusa','#2E6DA4',2,2,4],['Ortigia','#B7791F',2,1,2],['Ciane','#4d7a4a',2,1,2],['Epipoli','#7A8790',2,0,0]],[['Neapolis','#C0553F',2,2,4],['Dionisio','#6E5AA6',2,1,2],['Plemmirio','#12324F',2,1,2],['Anapo','#2E7D77',2,0,0]],[['Aretusa','Ciane','Sab 18:00','Campo residence']],[['Ortigia','Epipoli','21\u201315']]],
+    ['Calcetto a 5',[['Aretusa','#2E6DA4',2,2,6],['Ortigia','#B7791F',2,1,3],['Ciane','#4d7a4a',2,1,3],['Epipoli','#7A8790',2,0,0]],[['Neapolis','#C0553F',2,2,6],['Dionisio','#6E5AA6',2,1,3],['Plemmirio','#12324F',2,0,1],['Anapo','#2E7D77',2,0,1]],[['Aretusa','Epipoli','Ven 18:30','Campo residence']],[['Ortigia','Ciane','5\u20133']]],
+  ]),
+  giochi: seedDisc([
+    ['Burraco',[['Aretusa','#2E6DA4',3,3,9],['Ortigia','#B7791F',3,2,6],['Ciane','#4d7a4a',3,1,3],['Epipoli','#7A8790',3,0,0]],[['Neapolis','#C0553F',3,2,6],['Dionisio','#6E5AA6',3,2,6],['Plemmirio','#12324F',3,1,3],['Anapo','#2E7D77',3,1,3]],[['Aretusa','Neapolis','Mar 21:00','Casa di Carta']],[['Ciane','Epipoli','2\u20130']]],
+    ['Scala 40',[['Aretusa','#2E6DA4',2,2,6],['Ortigia','#B7791F',2,1,3],['Ciane','#4d7a4a',2,1,3],['Epipoli','#7A8790',2,0,0]],[['Neapolis','#C0553F',2,2,6],['Dionisio','#6E5AA6',2,1,3],['Plemmirio','#12324F',2,0,1],['Anapo','#2E7D77',2,0,1]],[['Aretusa','Epipoli','Gio 21:30','Casa di Carta']],[['Ortigia','Ciane','1\u20130']]],
+    ['Briscola/Scopa',[['Aretusa','#2E6DA4',2,2,4],['Ortigia','#B7791F',2,1,2],['Ciane','#4d7a4a',2,1,2],['Epipoli','#7A8790',2,0,0]],[['Neapolis','#C0553F',2,2,4],['Dionisio','#6E5AA6',2,1,2],['Plemmirio','#12324F',2,1,2],['Anapo','#2E7D77',2,0,0]],[['Aretusa','Ciane','Ven 21:00','Casa di Carta']],[['Ortigia','Epipoli','2\u20131']]],
+    ['Scacchi/Dama',[['Aretusa','#2E6DA4',3,3,6],['Ortigia','#B7791F',3,2,4],['Ciane','#4d7a4a',3,1,2],['Epipoli','#7A8790',3,0,0]],[['Neapolis','#C0553F',3,2,4],['Dionisio','#6E5AA6',3,2,4],['Plemmirio','#12324F',3,1,2],['Anapo','#2E7D77',3,1,2]],[['Aretusa','Ortigia','Lun 21:00','Casa di Carta']],[['Dionisio','Plemmirio','1\u20130']]],
+  ]),
+};
+function seedDisc(list) {
+  return list.map(d => ({
+    name: d[0],
+    gironi: [ { nome:'Girone A', rows: d[1].map(r=>({t:r[0],c:r[1],pg:r[2],v:r[3],pt:r[4]})) },
+              { nome:'Girone B', rows: d[2].map(r=>({t:r[0],c:r[1],pg:r[2],v:r[3],pt:r[4]})) } ],
+    next: d[3].map(m=>({a:m[0],b:m[1],wh:m[2],court:m[3]})),
+    results: d[4].map(m=>({a:m[0],b:m[1],s:m[2]})),
+  }));
+}
+
+// ---- Helper API -----------------------------------------------------------
+// Base del server: vuota = stessa origine (web); nell'APK collegata viene impostata
+// window.KOINE_API con l'indirizzo del server online.
+const API_BASE = (typeof window !== 'undefined' && window.KOINE_API) ? String(window.KOINE_API).replace(/\\/$/, '') : '';
+async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}), ...(opts.headers || {}) };
+  const r = await fetch(API_BASE + '/api' + path, { ...opts, headers });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+async function loadAll() {
+  try {
+    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, socio] = await Promise.all([
+      api('/casate'), api('/eventi'), api('/risorse'), api('/discipline/sport'),
+      api('/discipline/giochi'), api('/bussola'), api('/luoghi').catch(() => SEED.luoghi),
+      api('/tessera/' + state.tessera).catch(() => SEED.socio),
+    ]);
+    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi };
+    state.socio = socio || SEED.socio;
+    state.online = true;
+  } catch (e) {
+    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi };
+    state.socio = SEED.socio;
+    state.online = false;
+  }
+  document.getElementById('banner').classList.toggle('show', !state.online);
+}
+
+// ---- Utility --------------------------------------------------------------
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+// ---- Navigazione ----------------------------------------------------------
+function go(t) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('s-' + t).classList.add('active');
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.t === t));
+  $('#main').scrollTop = 0; closeOv();
+}
+
+// ---- Rendering schermate --------------------------------------------------
+function renderHeader() {
+  const s = state.socio;
+  $('#greetName').textContent = tr('ciao') + ', ' + (s.nome || '');
+  $('#greetSub').textContent = s.casata ? ('Casata ' + s.casata) : 'Benvenuto alla Bussola';
+  $('#casataNm').textContent = s.casata || '\u2014';
+  $('#casataSh').style.background = s.colore || '#2E6DA4';
+}
+function evCardHTML(e, withAction) {
+  const action = withAction && e.azione
+    ? \`<button class="btn gold sm" data-ev="\${e.chiave}" data-act="\${e.azione}">\${e.azione==='sheet-vinile'?'Proponi':(e.azione==='sheet-openmic'?'Salgo':(e.azione==='go-coppa'?'Coppa':'Info'))}</button>\`
+    : \`<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>\`;
+  return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${esc(e.giorno)} \xB7 \${esc(e.ambiente)}</div><h4>\${esc(e.titolo)}</h4><p>\${esc(e.sottotitolo)}</p></div><div class="cta">\${action}</div></div>\`;
+}
+function renderHome() {
+  const evs = state.data.eventi;
+  const first = evs[0], hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
+  $('#s-home').innerHTML = \`
+    <div class="welcome"><div class="wl"><div class="eyebrow">Benvenuti alla Bussola</div><h3>\${esc(first.giorno)} \xB7 \${esc(first.titolo)}</h3><p>\${esc(first.sottotitolo)}</p></div><button class="btn gold sm" data-open="\${first.chiave}">Vedi</button></div>
+    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">Stasera alla Bussola</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
+    <div class="sect-title">Prenota</div>
+    <div class="pgrid">
+      <div class="ptile" role="button" tabindex="0" data-book="pickleball"><div class="ic">\u{1F3BE}</div><b>Pickleball</b><span>turni 90\u2032</span></div>
+      <div class="ptile" role="button" tabindex="0" data-book="soft"><div class="ic">\u{1F3BE}</div><b>Soft tennis</b><span>turni 90\u2032</span></div>
+      <div class="ptile" role="button" tabindex="0" data-book="cowo"><div class="ic">\u{1F4BB}</div><b>Coworking</b><span>postazione</span></div>
+    </div>
+    <div class="sect-title">Questa settimana</div>
+    <div>\${evs.map(e => evCardHTML(e, true)).join('')}</div><div style="height:6px"></div>\`;
+}
+function renderEventi() {
+  $('#s-eventi').innerHTML = \`
+    <div class="eyebrow" style="margin:4px 2px 2px">Il cartellone</div>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:4px">Il programma</h2>
+    <p class="tiny muted" style="margin-bottom:12px">Tocca una serata per i dettagli e per prenotare.</p>
+    <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
+    <div class="note">Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.</div>\`;
+}
+function renderCoppa() {
+  const sorted = [...state.data.casate].sort((a, b) => b.punti - a.punti);
+  const max = sorted[0].punti;
+  const mine = state.socio.casata;
+  const myPos = sorted.findIndex(c => c.nome === mine) + 1;
+  const myClan = sorted.find(c => c.nome === mine) || sorted[0];
+  const isCap = String(state.socio.ruolo || '').toLowerCase() === 'capitano';
+  const capCard = isCap ? \`<div class="card" style="background:linear-gradient(135deg,#8a5a12,#6b4406); color:#fff; border:none; margin-top:12px">
+      <div class="eyebrow" style="color:#ffe9c2">Strumenti del capitano \xB7 \${esc(mine)}</div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+        <button class="btn sm" style="background:#fff; color:var(--navy); flex:1" data-cap="convoca">\u{1F4E3} Convoca la casata</button>
+        <button class="btn sm" style="background:rgba(255,255,255,.2); color:#fff; flex:1" data-cap="serata">\u{1F3C6} Serata dei Clan</button>
+      </div></div>\` : '';
+  $('#s-coppa').innerHTML = \`
+    <div class="eyebrow" style="margin:4px 2px 2px">La comunit\xE0</div>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">Coppa delle Casate</h2>
+    <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}</h3><p>La tua casata \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">posto</div></div></div>
+    \${capCard}
+    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">Classifica generale</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${i+1}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>Campionati sport</b><p class="tiny muted">Gironi, calendario e risultati.</p></div><button class="btn navy sm" data-go="sport">Apri</button></div>
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>Giochi da Tavolo</b><p class="tiny muted">Burraco, scala 40, briscola, scacchi.</p></div><button class="btn navy sm" data-go="giochi">Apri</button></div>\`;
+}
+function renderBussola() {
+  const b = state.data.bussola;
+  const rows = (arr) => (arr||[]).map(x => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.8rem">\${esc(x.titolo)}</b>\${x.dettaglio?\`<div class="ct">\${esc(x.dettaglio)}</div>\`:''}</div>\${x.distanza?\`<span class="ct">\${esc(x.distanza)}</span>\`:''}</div>\`).join('');
+  const luoghi = state.data.luoghi || SEED.luoghi;
+  const iconFor = (k) => k === 'isola' ? '\u267B\uFE0F' : '\u{1F4CD}';
+  const siamoQui = luoghi.map(l => {
+    const label = tr(l.chiave) || l.nome;
+    const has = l.lat != null && l.lng != null;
+    const right = l.chiave === 'chiosco'
+      ? \`<span style="background:var(--coral);color:#fff;padding:3px 10px;border-radius:12px;font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px">\${esc(tr('siamo_qui'))}</span>\`
+      : \`<span style="color:var(--teal);font-size:1.1rem">\u2197</span>\`;
+    return \`<div class="matchrow" \${has ? \`role="button" tabindex="0" data-map="\${l.lat},\${l.lng}" style="cursor:pointer"\` : ''}><div style="flex:1"><b style="font-size:.9rem">\${iconFor(l.chiave)} \${esc(label)}</b>\${has ? \`<div class="ct">\${esc(tr('apri_mappa'))}</div>\` : ''}</div>\${right}</div>\`;
+  }).join('');
+  $('#s-bussola').innerHTML = \`
+    <div class="eyebrow" style="margin:4px 2px 2px">Guida del residence</div>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">Bussola Residence</h2>
+    <div class="sect-title" style="margin-top:2px">\${esc(tr('siamo_qui'))}</div>
+    <div class="card" style="padding:4px 14px">\${siamoQui}</div>
+    <div class="card" style="background:#fbf4e6; border-color:#ecdcbd; margin-top:11px">
+      <div class="benefit" style="border-color:#ecdcbd"><span style="font-size:1.1rem">\u{1F92B}</span><div><b>Silenzio pomeridiano</b><p style="color:#5c4d2a">\${esc(b.orari?.[0]?.dettaglio||'14:00\u201317:00')}</p></div></div>
+      <div class="benefit"><span style="font-size:1.1rem">\u{1F319}</span><div><b>Silenzio notturno</b><p style="color:#5c4d2a">\${esc(b.orari?.[1]?.dettaglio||'dopo le 23:30')}</p></div></div>
+    </div>
+    <div class="sect-title">Numeri utili & servizi</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
+    <div class="sect-title">Raccolta rifiuti</div><div class="card"><div class="chips">\${(b.rifiuti||[]).map(r=>\`<span class="chip" style="cursor:default">\${esc(r.titolo)}</span>\`).join('')}</div></div>
+    <div class="sect-title">Cosa vedere</div><div class="card" style="padding:4px 14px">\${rows(b.vedere)}</div>
+    <div style="height:6px"></div>\`;
+}
+
+/* Sport & Giochi con convocazione */
+const DOMAINS = { sport: { cur: 0 }, giochi: { cur: 0 } };
+function renderDom(dom) {
+  const list = state.data[dom]; if (!list || !list.length) return;
+  const D = DOMAINS[dom]; const s = list[D.cur];
+  const key = dom + '/' + D.cur; const st = state.conv[key] || 'open';
+  const el = document.getElementById('s-' + dom);
+  const disc = \`<div class="discrow" role="tablist">\${list.map((d,i)=>\`<button class="disc\${i===D.cur?' on':''}" data-dom="\${dom}" data-i="\${i}">\${esc(d.name)}</button>\`).join('')}</div>\`;
+  const conv = s.next[0] || { a: state.socio.casata, b: '\u2014', wh: 'prossimamente', court: '' };
+  const matchLabel = \`\${conv.a} vs \${conv.b}\`;
+  const isOspite = state.socio.tipo_profilo === 'ospite_temporaneo';
+  let personal;
+  if (st === 'ok') {
+    personal = \`<div class="card" style="background:linear-gradient(135deg,#5f9a5c,#3f6b3d); color:#fff; border:none"><div class="eyebrow" style="color:#e8f3e2">Presenza confermata \u2713</div><div style="margin-top:6px"><b style="font-size:.9rem">\${esc(matchLabel)}</b><div class="tiny" style="opacity:.9">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div></div>\`;
+  } else if (!isOspite && state.rifiuti >= 3) {
+    personal = \`<div class="card" style="background:linear-gradient(135deg,#c0553f,#9c3f2c); color:#fff; border:none"><div class="eyebrow" style="color:#ffd9cf">Convocazione vincolante</div><div style="margin-top:6px"><b>\${esc(matchLabel)}</b><div class="tiny" style="opacity:.9">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div><div class="tiny" style="margin-top:8px">Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.</div><button class="btn gold sm" style="margin-top:10px" data-conv="ok" data-key="\${key}">Confermo</button></div>\`;
+  } else if (st === 'no') {
+    personal = \`<div class="card" style="display:flex; align-items:center; gap:12px"><div style="flex:1"><b>Hai declinato</b><p class="tiny muted">\${esc(matchLabel)}\${isOspite?'' :\` \xB7 dinieghi \${state.rifiuti}/3\`}</p></div><button class="btn gold sm" data-conv="ok" data-key="\${key}">Ci ripenso</button></div>\`;
+  } else {
+    const footer = isOspite
+      ? \`<div class="tiny" style="opacity:.85; margin-top:9px">Sei nostro ospite: partecipa quando vuoi, nessun obbligo.</div>\`
+      : \`<div class="tiny" style="opacity:.8; margin-top:9px">Dinieghi: \${state.rifiuti}/3 \xB7 diventa vincolante solo dopo il terzo</div>\`;
+    personal = \`<div class="card" style="background:linear-gradient(135deg,var(--navy),#1d4a6e); color:#fff; border:none"><div class="eyebrow" style="color:#ffe1ac">La tua casata ti invita</div><div style="margin-top:6px"><b>\${esc(matchLabel)}</b><div class="tiny" style="opacity:.85">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div><div style="display:flex; gap:8px; margin-top:12px"><button class="btn gold sm" data-conv="ok" data-key="\${key}">Disponibile</button><button class="btn ghost sm" style="color:#fff; border-color:rgba(255,255,255,.45)" data-conv="no" data-key="\${key}">Non disponibile</button></div>\${footer}</div>\`;
+  }
+  const gironi = s.gironi.map(g => \`<div class="card"><div class="eyebrow" style="color:var(--navy)">\${esc(g.nome)}</div><table class="gtable"><thead><tr><th style="text-align:left; padding-left:2px">Squadra</th><th>PG</th><th>V</th><th>Pt</th></tr></thead><tbody>\${g.rows.map((r,i)=>\`<tr><td class="team"><span class="gpos">\${i+1}</span><span class="d" style="background:\${r.c}"></span>\${esc(r.t)}</td><td>\${r.pg}</td><td>\${r.v}</td><td style="font-weight:700; color:var(--navy)">\${r.pt}</td></tr>\`).join('')}</tbody></table></div>\`).join('');
+  const next = \`<div class="sect-title">Prossime partite</div><div class="card" style="padding:4px 14px">\${s.next.map(m=>\`<div class="matchrow"><div class="wh">\${esc(m.wh)}</div><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}<div class="ct">\${esc(m.court)}</div></div></div>\`).join('')||'<p class="tiny muted" style="padding:8px 0">Calendario in aggiornamento.</p>'}</div>\`;
+  const res = \`<div class="sect-title">Risultati recenti</div><div class="card" style="padding:4px 14px">\${s.results.map(m=>\`<div class="matchrow"><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}</div><div class="sc">\${esc(m.s)}</div></div>\`).join('')||'<p class="tiny muted" style="padding:8px 0">Nessun risultato ancora.</p>'}</div>\`;
+  const note = \`<div class="note">Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.</div>\`;
+  const head = \`<div class="eyebrow" style="margin:4px 2px 2px">\${dom==='sport'?'Campionati sociali':'Tornei \xB7 Casa di Carta'}</div><h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${dom==='sport'?'Sport & Tornei':'Giochi da Tavolo'}</h2>\`;
+  el.innerHTML = head + disc + personal + gironi + next + res + note;
+}
+
+// ---- Overlay / sheet ------------------------------------------------------
+function setSheet(html) { $('#sheetbox').innerHTML = html; }
+function showOv() { $('#ov').classList.add('show'); $('.sheet').scrollTop = 0; }
+function closeOv() { $('#ov').classList.remove('show'); }
+function openEvent(k) {
+  const e = state.data.eventi.find(x => x.chiave === k); if (!e) return;
+  let btn;
+  if (e.azione === 'go-coppa') btn = \`<button class="btn gold block" data-go="coppa">\${esc(e.cta)}</button>\`;
+  else if (e.azione) btn = \`<button class="btn gold block" data-sheet="\${e.azione}">\${esc(e.cta)}</button>\`;
+  else btn = \`<button class="btn gold block" data-confirm="\${esc(e.titolo)}">\${esc(e.cta)}</button>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:\${e.colore}">\${esc(e.giorno)} \xB7 \${esc(e.ambiente)}</div><h2>\${esc(e.titolo)}</h2><p class="sub">\${esc(e.descrizione)}</p>\${btn}<button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  showOv();
+}
+function openBooking(kind) {
+  const b = state.data.risorse.find(r => r.chiave === kind) || SEED.risorse.find(r => r.chiave === kind);
+  if (!b) return;
+  const days = ['Oggi','Domani','Sab','Dom','Lun'];
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Prenotazione</div><h2>\${esc(b.nome)}</h2><p class="sub">\${esc(b.sottotitolo)}</p>
+    <div class="field"><label>Giorno</label><div class="chips" data-group="day">\${days.map((d,i)=>\`<button class="chip\${i===0?' sel':''}" data-chip>\${d}</button>\`).join('')}</div></div>
+    <div class="field"><label>Turno</label><div class="chips" data-group="slot">\${b.slots.map((s,i)=>\`<button class="chip\${i===0?' sel':''}" data-chip>\${esc(s)}</button>\`).join('')}</div></div>
+    \${b.nota?\`<div class="note">\${esc(b.nota)}</div>\`:''}
+    <button class="btn gold block" style="margin-top:10px" data-do-book="\${b.chiave}">Conferma prenotazione</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`);
+  showOv();
+}
+async function openTessera() {
+  const s = state.socio;
+  const pushOn = !!s.notifiche_push;
+  let notifHtml = '';
+  if (state.token) {
+    try {
+      const list = await api('/auth/notifiche');
+      notifHtml = \`<div class="sect-title" style="margin-top:12px">Le mie notifiche</div><div class="card" style="padding:4px 14px">\${list.length ? list.map(n => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.82rem">\${esc(n.titolo)}</b><div class="ct">\${esc(n.corpo || '')}</div></div>\${n.letta ? '' : '<span style="background:var(--gold);color:#fff;padding:2px 8px;border-radius:10px;font-size:.58rem;font-weight:700">nuovo</span>'}</div>\`).join('') : '<p class="tiny muted" style="padding:8px 0">Nessuna notifica.</p>'}</div>\`;
+    } catch {}
+  }
+  setSheet(\`<div class="grab"></div>
+    <div class="tessera"><div class="lab">BUSSOLA \xB7 by KOIN\xC8</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||'Socio')} \xB7 Casata \${esc(s.casata||'')}</div>
+      <div class="qr">\${qrSvg(s.tessera_code)}</div>
+      <div class="foot"><span class="tiny" style="opacity:.85">Tessera \${esc(s.tessera_code)}</span><span class="tiny" style="opacity:.85">Valida fino al \${esc((s.valida_fino||'').split('-').reverse().join('/'))}</span></div></div>
+    <div class="card" style="margin-top:12px; display:flex; align-items:center; gap:12px">
+      <div style="flex:1"><b style="font-size:.86rem">Notifiche casata & eventi</b><p class="tiny muted">Convocazioni, cambi orario e serate. Con il tuo consenso.</p></div>
+      <button class="btn \${pushOn?'gold':'ghost'} sm" data-push="\${pushOn?'off':'on'}">\${pushOn?'Attive \u2713':'Attiva'}</button>
+    </div>
+    \${notifHtml}
+    <div class="sect-title" style="margin-top:12px">Cosa ti d\xE0</div>
+    <div class="card">
+      <div class="benefit"><span class="bic">\u2713</span><div><b>Giochi la Coppa delle Casate</b><p>Sport, giochi da tavolo e prove artistiche con il tuo clan.</p></div></div>
+      <div class="benefit"><span class="bic">\u2713</span><div><b>Inviti della casata</b><p>Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.</p></div></div>
+      <div class="benefit"><span class="bic">\u25CB</span><div><b>Copertura infortuni <span class="tiny" style="color:var(--coral)">in definizione</span></b><p>Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.</p></div></div>
+      <div class="benefit"><span class="bic">\u2713</span><div><b>Il tuo posto nell'Albo d'Oro</b><p>I vincitori della stagione restano scritti alla Bussola.</p></div></div>
+    </div>
+    <button class="btn ghost block" style="margin-top:12px" data-login>Accedi / cambia profilo (e-mail)</button>
+    <button class="btn navy block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  showOv();
+}
+function openLoginOtp() {
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Accesso</div><h2>Entra con la tua e-mail</h2><p class="sub">Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.</p>
+    <div class="field"><label>La tua e-mail</label><input id="ol_email" type="email" placeholder="nome@example.com" value="socio@example.com"></div>
+    <div class="err" id="ol_err" style="color:var(--coral); font-size:.75rem; min-height:16px"></div>
+    <button class="btn gold block" data-otp-req>Invia il codice</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`);
+  showOv();
+}
+async function requestOtp() {
+  const email = $('#ol_email').value.trim();
+  if (!email.includes('@')) { $('#ol_err').textContent = 'Inserisci un\u2019e-mail valida'; return; }
+  let devCode = '';
+  try { const r = await api('/auth/request-otp', { method:'POST', body: JSON.stringify({ email }) }); devCode = r.dev_code || ''; } catch {}
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Verifica</div><h2>Inserisci il codice</h2><p class="sub">Ti abbiamo inviato un codice a \${esc(email)}.</p>
+    \${devCode?\`<div class="note">Modalit\xE0 test: il codice \xE8 <b>\${esc(devCode)}</b> (in produzione arriva via e-mail/SMS).</div>\`:''}
+    <div class="field"><label>Codice a 6 cifre</label><input id="ol_code" inputmode="numeric" placeholder="______" value="\${esc(devCode)}"></div>
+    <div class="err" id="ol_err" style="color:var(--coral); font-size:.75rem; min-height:16px"></div>
+    <button class="btn gold block" data-otp-verify="\${esc(email)}">Entra</button>
+    <button class="btn ghost block" style="margin-top:8px" data-login>Cambia e-mail</button>\`);
+  showOv();
+}
+async function verifyOtp(email) {
+  const code = $('#ol_code').value.trim();
+  try {
+    const r = await api('/auth/verify-otp', { method:'POST', body: JSON.stringify({ email, code }) });
+    state.token = r.token; state.tessera = r.socio.tessera_code; state.authed = true;
+    store.set('token', r.token); store.set('tessera', r.socio.tessera_code);
+    await loadAll(); renderHeader(); renderHome(); renderCoppa(); renderDom('sport'); renderDom('giochi');
+    okThen('Bentornato, ' + r.socio.nome);
+  } catch { $('#ol_err').textContent = 'Codice non valido o scaduto'; }
+}
+async function togglefPush(to) {
+  const on = to === 'on';
+  if (state.token) { try { await api('/auth/notifiche/consenso', { method:'POST', body: JSON.stringify({ attivo: on }) }); } catch {} }
+  state.socio.notifiche_push = on;
+  okThen(on ? 'Notifiche attivate: ti avviseremo per casata ed eventi' : 'Notifiche disattivate');
+}
+const SHEETS = {
+  'sheet-vinile': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">Marted\xEC \xB7 Vinile & Vino</div><h2>Proponi un vinile</h2><p class="sub">Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.</p>
+    <div class="field"><label>Quale vinile?</label><input id="in1" placeholder="Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4"></div>
+    <div class="field"><label>I brani che vuoi ascoltare</label><input id="in2" placeholder="Es. Cr\xEAuza de m\xE4, Sid\xFAn"></div>
+    <div class="field"><label>Perch\xE9 lo proponi?</label><textarea id="in3" placeholder="In due righe cosa significa per te..."></textarea></div>
+    <button class="btn gold block" data-proposta="vinile">Invia la proposta</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`,
+  'sheet-openmic': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Domenica \xB7 Open Mic</div><h2>Salgo sul palco</h2><p class="sub">Hai tre minuti. Scegli cosa porti sul Bussola Stage.</p>
+    <div class="field"><label>La tua esibizione</label><div class="chips" data-group="tipo"><button class="chip" data-chip>\u{1F3A4} Canto</button><button class="chip" data-chip>\u{1F3AD} Monologo</button><button class="chip" data-chip>\u{1F604} Stand-up</button><button class="chip" data-chip>\u{1F3B8} Strumento</button></div></div>
+    <div class="field"><label>Titolo / cosa presenti</label><input id="in1" placeholder="Es. 'Caruso' alla chitarra"></div>
+    <div class="note">La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.</div>
+    <button class="btn gold block" style="margin-top:12px" data-proposta="openmic">Prenota i miei tre minuti</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`,
+};
+function openSheet(id) { setSheet(SHEETS[id]()); showOv(); }
+function okThen(msg) {
+  setSheet(\`<div class="grab"></div><div class="okmsg" style="text-align:center; padding:12px 0 4px"><div class="big"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg></div><h2 style="text-align:center">Fatto!</h2><p class="sub" style="text-align:center">\${esc(msg)}. Lo trovi nell'app e te lo ricordiamo noi.</p></div><button class="btn navy block" style="margin-top:6px" data-close>Perfetto</button>\`);
+  showOv();
+}
+// Lingue: 5 con traduzione fissa salvata + 2 (zh/ja) con traduzione automatica.
+const LANGS = [['it','Italiano','fixed'],['en','English','fixed'],['fr','Fran\xE7ais','fixed'],['de','Deutsch','fixed'],['es','Espa\xF1ol','fixed'],['zh','\u4E2D\u6587 \xB7 auto','auto'],['ja','\u65E5\u672C\u8A9E \xB7 auto','auto']];
+const I18N = {
+  it:{home:'Home',eventi:'Eventi',sport:'Sport',giochi:'Giochi',bussola:'Guida',ciao:'Ciao',testo:'Testo',contrasto:'Contrasto',siamo_qui:'Siamo qui',chiosco:'Chiosco La Bussola',isola:'Isola ecologica',qui:'sei qui',apri_mappa:'Tocca per aprire la mappa'},
+  en:{home:'Home',eventi:'Events',sport:'Sport',giochi:'Games',bussola:'Guide',ciao:'Hi',testo:'Text',contrasto:'Contrast',siamo_qui:'You are here',chiosco:'La Bussola kiosk',isola:'Recycling point',qui:'you are here',apri_mappa:'Tap to open the map'},
+  fr:{home:'Accueil',eventi:'\xC9v\xE9nements',sport:'Sport',giochi:'Jeux',bussola:'Guide',ciao:'Bonjour',testo:'Texte',contrasto:'Contraste',siamo_qui:'Vous \xEAtes ici',chiosco:'Kiosque La Bussola',isola:'Point de tri',qui:'vous \xEAtes ici',apri_mappa:'Touchez pour ouvrir la carte'},
+  de:{home:'Start',eventi:'Events',sport:'Sport',giochi:'Spiele',bussola:'Guide',ciao:'Hallo',testo:'Text',contrasto:'Kontrast',siamo_qui:'Sie sind hier',chiosco:'Kiosk La Bussola',isola:'Wertstoffinsel',qui:'Sie sind hier',apri_mappa:'Zum \xD6ffnen der Karte tippen'},
+  es:{home:'Inicio',eventi:'Eventos',sport:'Deporte',giochi:'Juegos',bussola:'Gu\xEDa',ciao:'Hola',testo:'Texto',contrasto:'Contraste',siamo_qui:'Est\xE1s aqu\xED',chiosco:'Quiosco La Bussola',isola:'Punto de reciclaje',qui:'est\xE1s aqu\xED',apri_mappa:'Toca para abrir el mapa'},
+};
+function tr(k){ return (I18N[state.lang] || I18N.it)[k] || I18N.it[k]; }
+function applyLang(code){
+  state.lang = code; store.set('lang_code', code);
+  const el = $('#langLbl'); if (el) el.textContent = code.toUpperCase().slice(0,2);
+  const src = I18N[code] || I18N.en; // zh/ja: senza dizionario salvato ricadono sull'inglese finch\xE9 non c'\xE8 il motore online
+  document.querySelectorAll('.tab').forEach(b => { const k = b.dataset.t; if (src[k]) { const svg = b.querySelector('svg'); b.textContent=''; if (svg) b.appendChild(svg); b.appendChild(document.createTextNode(src[k])); } });
+  const lbl = document.querySelector('.a11y .lbl'); if (lbl) lbl.textContent = src.testo || 'Testo';
+  const hc = $('#hcBtn'); if (hc) hc.textContent = '\u25D1 ' + (src.contrasto || 'Contrasto');
+  renderHeader();
+  // Ridisegno le schermate con testi tradotti (es. la sezione "Siamo qui" della Guida).
+  try { renderBussola(); } catch {}
+}
+function openLang() {
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Lingua \xB7 Language</div><h2>Scegli la lingua</h2><p class="sub">Le prime cinque hanno traduzione salvata; cinese e giapponese sono tradotti automaticamente.</p>
+    <div class="chips" style="flex-direction:column; align-items:stretch">\${LANGS.map(l=>\`<button class="chip" style="text-align:left; display:flex; justify-content:space-between; align-items:center" data-lang="\${l[0]}">\${l[1]}\${l[2]==='auto'?' <span class="tiny muted">automatica</span>':''}</button>\`).join('')}</div>
+    <button class="btn ghost block" style="margin-top:10px" data-close>Chiudi</button>\`);
+  showOv();
+}
+function openSos() {
+  const serv = state.data.bussola?.servizi || SEED.bussola.servizi;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">Numeri utili</div><h2>Emergenze & servizi</h2><p class="sub">In caso di necessit\xE0.</p>
+    <div class="card" style="padding:4px 14px">\${serv.map(x=>\`<div class="matchrow"><div style="flex:1"><b style="font-size:.85rem">\${esc(x.titolo)}</b><div class="ct">\${esc(x.dettaglio||'')}</div></div><span class="ct">\${esc(x.distanza||'')}</span></div>\`).join('')}
+      <div class="matchrow"><div style="flex:1"><b style="font-size:.85rem; color:var(--coral)">Emergenze (112)</b><div class="ct">Numero unico europeo</div></div></div></div>
+    <button class="btn navy block" style="margin-top:12px" data-close>Chiudi</button>\`);
+  showOv();
+}
+
+// ---- Modalit\xE0 CAPITANO ----------------------------------------------------
+let _serataText = '';
+function openCapConvoca() {
+  const discs = [];
+  (state.data.sport || []).forEach(d => discs.push({ dom: 'sport', chiave: d.chiave, name: d.name }));
+  (state.data.giochi || []).forEach(d => discs.push({ dom: 'giochi', chiave: d.chiave, name: d.name }));
+  const opts = discs.map(d => \`<option value="\${d.dom}|\${d.chiave}">\${esc(d.name)}</option>\`).join('');
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Capitano \xB7 \${esc(state.socio.casata || '')}</div><h2>Convoca la tua casata</h2><p class="sub">Avvisi i tuoi per una disciplina. Chi ha attivato le notifiche riceve l'avviso.</p>
+    <div class="field"><label>Disciplina</label><select id="cap_disc" style="width:100%;border:1.5px solid var(--line);border-radius:12px;padding:12px;font-size:.9rem;background:#fff;min-height:var(--tap)">\${opts}</select></div>
+    <div class="field"><label>Partita / sfida</label><input id="cap_match" placeholder="Es. \${esc(state.socio.casata || 'la tua casata')} vs Ortigia"></div>
+    <div class="field"><label>Quando</label><input id="cap_when" placeholder="Es. Ven 18:30"></div>
+    <div class="field"><label>Dove</label><input id="cap_where" placeholder="Es. Campo del residence"></div>
+    <button class="btn gold block" data-cap="send">Invia la convocazione</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`);
+  showOv();
+}
+async function capSend() {
+  const v = ($('#cap_disc')?.value || 'sport|').split('|');
+  try {
+    const r = await api('/auth/convoca', { method: 'POST', body: JSON.stringify({ dominio: v[0], disciplina_chiave: v[1], match_label: $('#cap_match')?.value || '', quando: $('#cap_when')?.value || '', luogo: $('#cap_where')?.value || '' }) });
+    okThen(\`Casata convocata \xB7 \${r.convocati} soci (\${r.notificati} avvisati)\`);
+  } catch { okThen('Per convocare serve l\u2019accesso da capitano e il server online'); }
+}
+function openCapSerata() {
+  const sorted = [...state.data.casate].sort((a, b) => b.punti - a.punti);
+  const mine = state.socio.casata; const pos = sorted.findIndex(c => c.nome === mine) + 1;
+  const my = sorted.find(c => c.nome === mine) || sorted[0];
+  const ven = (state.data.eventi || []).find(e => e.chiave === 'ven') || {};
+  const sfida = ven.descrizione || ven.sottotitolo || 'La sfida di venerd\xEC';
+  _serataText = \`\u{1F3C6} Serata dei Clan \u2014 Casata \${mine}\\nSiamo \${pos}\xB0 con \${my.punti} punti.\\n\${sfida}\\nCi vediamo venerd\xEC al Bussola Stage. Forza \${mine}! \u{1F4AA}\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Capitano \xB7 Serata dei Clan</div><h2>La prova da condividere</h2>
+    <div class="card" style="background:linear-gradient(135deg,\${my.colore || '#12324F'},#0d2740); color:#fff; border:none">
+      <div class="eyebrow" style="color:#ffe1ac">Casata \${esc(mine)} \xB7 \${pos}\xB0 posto</div>
+      <div style="font-family:Georgia,serif; font-size:1.5rem; margin:6px 0">\${my.punti} punti</div>
+      <p style="font-size:.85rem; opacity:.92">\${esc(sfida)}</p>
+      <p style="font-size:.8rem; opacity:.85; margin-top:8px">Venerd\xEC \xB7 Bussola Stage \u2014 Forza \${esc(mine)}!</p>
+    </div>
+    <button class="btn gold block" style="margin-top:12px" data-cap="share">Condividi con la casata</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  showOv();
+}
+async function capShare() {
+  try { if (navigator.share) { await navigator.share({ title: 'Serata dei Clan', text: _serataText }); } else { await navigator.clipboard.writeText(_serataText); okThen('Testo copiato: incollalo nel gruppo'); } } catch {}
+}
+
+// QR semplice (segnaposto grafico \u2014 in produzione libreria QR reale)
+function qrSvg(text) {
+  let h = 0; for (const ch of String(text)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  let cells = '';
+  for (let y = 0; y < 11; y++) for (let x = 0; x < 11; x++) { h = (h * 1103515245 + 12345) & 0x7fffffff; if ((h >> 6) & 1) cells += \`<rect x="\${8+x*7}" y="\${8+y*7}" width="7" height="7"/>\`; }
+  const finder = (x,y)=>\`<rect x="\${x}" y="\${y}" width="21" height="21"/><rect x="\${x+4}" y="\${y+4}" width="13" height="13" fill="#fff"/><rect x="\${x+7}" y="\${y+7}" width="7" height="7" fill="#12324F"/>\`;
+  return \`<svg viewBox="0 0 100 100" shape-rendering="crispEdges" aria-label="QR tessera"><rect width="100" height="100" fill="#fff"/><g fill="#12324F">\${finder(6,6)}\${finder(73,6)}\${finder(6,73)}\${cells}</g></svg>\`;
+}
+
+// ---- Accessibilit\xE0 --------------------------------------------------------
+function applyScale(v) {
+  document.documentElement.style.setProperty('--scale', v);
+  // La dimensione va applicata alla radice (html): cos\xEC TUTTI i testi in rem scalano davvero.
+  document.documentElement.style.fontSize = (16 * v) + 'px';
+  store.set('scale', v);
+  document.querySelectorAll('.a11y button[data-scale]').forEach(b => b.classList.toggle('on', b.dataset.scale === String(v)));
+}
+function applyContrast(on) {
+  document.body.classList.toggle('hc', on); store.set('hc', on);
+  const btn = $('#hcBtn'); btn.classList.toggle('on', on); btn.setAttribute('aria-pressed', on);
+}
+
+// ---- Azioni scrittura (best-effort verso API) -----------------------------
+async function doBook(kind) {
+  const day = $('[data-group="day"] .sel')?.textContent || '';
+  const slot = $('[data-group="slot"] .sel')?.textContent || '';
+  const nome = state.data.risorse.find(r=>r.chiave===kind)?.nome || kind;
+  try { await api('/prenotazioni', { method:'POST', body: JSON.stringify({ tessera_code: state.tessera, risorsa: kind, giorno: day, turno: slot }) }); } catch {}
+  okThen(\`Prenotazione registrata \xB7 \${nome}\${day?\` \xB7 \${day} \${slot}\`:''}\`);
+}
+async function doProposta(tipo) {
+  const titolo = $('#in1')?.value || '';
+  const dettaglio = tipo==='vinile' ? [$('#in2')?.value, $('#in3')?.value].filter(Boolean).join(' \u2014 ') : ($('[data-group="tipo"] .sel')?.textContent || '');
+  try { await api('/proposte', { method:'POST', body: JSON.stringify({ tessera_code: state.tessera, tipo, titolo, dettaglio }) }); } catch {}
+  okThen(tipo==='vinile' ? 'La tua proposta \xE8 in lista' : 'Sei in scaletta per domenica');
+}
+function convOk(key) { state.conv[key] = 'ok'; const [dom]=key.split('/'); renderDom(dom); okThen('Presenza confermata'); }
+function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[key]='no'; const [dom]=key.split('/'); renderDom(dom); }
+
+// ---- Delegazione eventi (un solo listener) --------------------------------
+document.addEventListener('click', (ev) => {
+  const t = ev.target.closest('[data-open],[data-book],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap]');
+  if (!t) return;
+  if (t.dataset.cap) { const a = t.dataset.cap; if (a === 'convoca') return openCapConvoca(); if (a === 'serata') return openCapSerata(); if (a === 'send') return capSend(); if (a === 'share') return capShare(); return; }
+  if (t.dataset.login != null) return openLoginOtp();
+  if (t.dataset.otpReq != null) return requestOtp();
+  if (t.dataset.otpVerify) return verifyOtp(t.dataset.otpVerify);
+  if (t.dataset.push) return togglefPush(t.dataset.push);
+  if (t.dataset.map) { const url = 'https://www.google.com/maps?q=' + encodeURIComponent(t.dataset.map); try { window.open(url, '_blank'); } catch { location.href = url; } return; }
+  if (t.dataset.act) { ev.stopPropagation(); if (t.dataset.act==='go-coppa') return go('coppa'); return openSheet(t.dataset.act); }
+  if (t.dataset.open != null) return openEvent(t.dataset.open);
+  if (t.dataset.book != null) return openBooking(t.dataset.book);
+  if (t.dataset.sheet) return openSheet(t.dataset.sheet);
+  if (t.dataset.go) return go(t.dataset.go);
+  if (t.dataset.close != null) return closeOv();
+  if (t.dataset.confirm != null) return okThen('Prenotazione registrata \xB7 ' + t.dataset.confirm);
+  if (t.dataset.chip != null) { t.parentElement.querySelectorAll('.chip').forEach(c=>c.classList.remove('sel')); t.classList.add('sel'); return; }
+  if (t.dataset.doBook) return doBook(t.dataset.doBook);
+  if (t.dataset.proposta) return doProposta(t.dataset.proposta);
+  if (t.dataset.lang) { applyLang(t.dataset.lang); return okThen('Lingua impostata'); }
+  if (t.dataset.conv) return t.dataset.conv==='ok' ? convOk(t.dataset.key) : convNo(t.dataset.key);
+  if (t.dataset.dom) { DOMAINS[t.dataset.dom].cur = Number(t.dataset.i); return renderDom(t.dataset.dom); }
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') closeOv();
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('[role="button"][data-open],[role="button"][data-book]')) { ev.preventDefault(); ev.target.click(); }
+});
+
+// ---- Bootstrap ------------------------------------------------------------
+function bindStatic() {
+  document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => go(b.dataset.t)));
+  $('#tesseraBtn').addEventListener('click', openTessera);
+  $('#casataBtn').addEventListener('click', () => go('coppa'));
+  $('#langBtn').addEventListener('click', openLang);
+  $('#helpBtn').addEventListener('click', () => $('#onb').classList.add('show'));
+  $('#onbClose').addEventListener('click', () => { $('#onb').classList.remove('show'); store.set('seen', true); });
+  $('#onbSos').addEventListener('click', () => { $('#onb').classList.remove('show'); openSos(); });
+  $('#ovBg').addEventListener('click', closeOv);
+  document.querySelectorAll('.a11y button[data-scale]').forEach(b => b.addEventListener('click', () => applyScale(Number(b.dataset.scale))));
+  $('#hcBtn').addEventListener('click', () => applyContrast(!document.body.classList.contains('hc')));
+}
+async function init() {
+  bindStatic();
+  applyScale(store.get('scale', 1));
+  applyContrast(store.get('hc', false));
+  await loadAll();
+  renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
+  if (state.token) state.authed = true;
+  if (state.lang && state.lang !== 'it') applyLang(state.lang);
+  if (!store.get('seen', false)) $('#onb').classList.add('show');
+  const h = location.hash.replace('#',''); if (h && document.getElementById('s-'+h)) go(h);
+  /* SW off nel file unico */
+}
+init();
+
+</script>
+</body>
+</html>
+`;
+
+// build/admin.html
+var admin_default = `<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bussola Residence \u2014 Back office</title>
+<style>
+  :root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--mute:#5a6b75;--line:#e3e1d6;--bg:#f4f2ea;--card:#fff;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;}
+  a{color:var(--navy);}
+  /* Login */
+  #login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(900px 600px at 50% -10%,#1c3e5c,#0a1a2b);}
+  #login .box{background:#fff;border-radius:18px;padding:30px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.4);}
+  #login h1{font-family:Georgia,serif;color:var(--navy);font-size:22px;margin-bottom:4px;}
+  #login p{color:var(--mute);font-size:13px;margin-bottom:18px;}
+  label{display:block;font-size:13px;font-weight:700;color:var(--navy);margin:12px 0 5px;}
+  input,select,textarea{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;font-size:14px;font-family:inherit;}
+  button{cursor:pointer;font-family:inherit;}
+  .btn{background:var(--navy);color:#fff;border:none;border-radius:10px;padding:11px 16px;font-weight:700;font-size:14px;}
+  .btn.gold{background:var(--gold);} .btn.sm{padding:7px 11px;font-size:13px;border-radius:8px;}
+  .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--line);}
+  .btn.danger{background:var(--coral);}
+  .err{color:var(--coral);font-size:13px;margin-top:10px;min-height:18px;}
+  /* App shell */
+  #app{display:none;grid-template-columns:220px 1fr;min-height:100vh;}
+  aside{background:var(--navy);color:#fff;padding:20px 12px;}
+  aside .brand{font-family:Georgia,serif;font-weight:700;letter-spacing:2px;font-size:16px;padding:0 8px 16px;border-bottom:1px solid rgba(255,255,255,.15);}
+  aside .brand small{display:block;letter-spacing:4px;font-size:9px;color:#e2b45a;margin-top:2px;}
+  nav.menu{margin-top:14px;display:flex;flex-direction:column;gap:2px;}
+  nav.menu button{background:none;border:none;color:#cdd8e3;text-align:left;padding:11px 12px;border-radius:9px;font-size:14px;display:flex;gap:9px;align-items:center;}
+  nav.menu button.on,nav.menu button:hover{background:rgba(255,255,255,.12);color:#fff;}
+  main{padding:26px 30px;overflow:auto;}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
+  .top h2{font-family:Georgia,serif;color:var(--navy);font-size:24px;}
+  .who{font-size:13px;color:var(--mute);}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px;}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;}
+  .stat .n{font-family:Georgia,serif;font-size:30px;color:var(--navy);font-weight:700;}
+  .stat .l{font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:18px;}
+  .panel h3{font-family:Georgia,serif;color:var(--navy);font-size:17px;margin-bottom:12px;}
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);padding:8px 8px;border-bottom:2px solid var(--line);}
+  td{padding:9px 8px;border-bottom:1px solid var(--line);font-size:14px;}
+  tr:hover td{background:#faf8f1;}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;}
+  .tag.ok{background:#e2f0e0;color:#3f6b3d;} .tag.no{background:#f7e0da;color:#9c3f2c;} .tag.mid{background:#f3ead6;color:#6b5a33;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .modal{position:fixed;inset:0;background:rgba(9,20,33,.5);display:none;align-items:center;justify-content:center;padding:20px;z-index:50;}
+  .modal.show{display:flex;}
+  .modal .box{background:#fff;border-radius:16px;padding:24px;width:520px;max-width:100%;max-height:90vh;overflow:auto;}
+  .modal h3{font-family:Georgia,serif;color:var(--navy);font-size:20px;margin-bottom:14px;}
+  .check{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:14px;}
+  .check input{width:auto;}
+  .muted{color:var(--mute);font-size:13px;}
+  .barwrap{background:#eee;border-radius:6px;height:10px;overflow:hidden;width:120px;display:inline-block;vertical-align:middle;}
+  .barwrap span{display:block;height:100%;}
+</style>
+</head>
+<body>
+  <div id="login">
+    <div class="box">
+      <h1>KOIN\xC8 Village</h1>
+      <p>Back office \xB7 gestione soci e progetto</p>
+      <label for="u">Utente</label><input id="u" value="gestore" autocomplete="username">
+      <label for="p">Password</label><input id="p" type="password" value="koine2026" autocomplete="current-password">
+      <div class="err" id="loginErr"></div>
+      <button class="btn gold" style="width:100%;margin-top:14px" id="loginBtn">Entra</button>
+      <p class="muted" style="margin-top:12px">Demo: gestore / koine2026 \u2014 da cambiare al primo accesso reale.</p>
+    </div>
+  </div>
+
+  <div id="app">
+    <aside>
+      <div class="brand">BUSSOLA<small>RESIDENCE \xB7 ADMIN</small></div>
+      <nav class="menu" id="menu">
+        <button data-v="dashboard" class="on">\u{1F4CA} Cruscotto</button>
+        <button data-v="soci">\u{1F464} Soci</button>
+        <button data-v="casate">\u{1F6E1}\uFE0F Casate & punti</button>
+        <button data-v="prenotazioni">\u{1F4C5} Prenotazioni</button>
+        <button data-v="convocazioni">\u{1F4E3} Convocazioni</button>
+        <button data-v="discipline">\u{1F3C5} Discipline</button>
+        <button data-v="tabellone">\u{1F3C6} Tabellone</button>
+        <button data-v="proposte">\u{1F3B5} Proposte</button>
+        <button data-v="eventi">\u{1F3AD} Eventi</button>
+        <button data-v="bussola">\u{1F9ED} Guida</button>
+        <button data-v="luoghi">\u{1F4CD} Luoghi (Siamo qui)</button>
+        <button data-v="audit">\u{1F5C2}\uFE0F Registro</button>
+      </nav>
+    </aside>
+    <main>
+      <div class="top"><h2 id="viewTitle">Cruscotto</h2><div class="who">Accesso: <b id="whoName"></b> \xB7 <a href="#" id="logout">esci</a></div></div>
+      <div id="view"></div>
+    </main>
+  </div>
+
+  <div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
+
+  <script>
+/* Back office KOIN\xC8 Village \u2014 SPA minimale su fetch/API. */
+'use strict';
+let TOKEN = null, USER = null, CASATE = [];
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+async function api(path, opts = {}) {
+  const r = await fetch('/api/admin' + path, {
+    headers: { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}) },
+    ...opts,
+  });
+  if (r.status === 401) { logout(); throw new Error('non autorizzato'); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  return r.json();
+}
+
+// ---- Login ----
+async function login() {
+  $('#loginErr').textContent = '';
+  try {
+    const res = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
+    if (!res.ok) throw new Error('Credenziali non valide');
+    const j = await res.json(); TOKEN = j.token; USER = j.user;
+    $('#login').style.display = 'none'; $('#app').style.display = 'grid';
+    $('#whoName').textContent = USER.username + ' (' + USER.ruolo + ')';
+    CASATE = await api('/../casate').catch(() => []);   // riusa endpoint pubblico
+    show('dashboard');
+  } catch (e) { $('#loginErr').textContent = e.message; }
+}
+function logout() { TOKEN = null; USER = null; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
+
+// ---- Router ----
+const VIEWS = {};
+async function show(v) {
+  document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Soci', casate:'Casate & punti', prenotazioni:'Prenotazioni', convocazioni:'Convocazioni', discipline:'Discipline', tabellone:'Tabellone', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', audit:'Registro attivit\xE0' }[v] || v;
+  $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
+  try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
+}
+
+// ---- Cruscotto ----
+VIEWS.dashboard = async () => {
+  const s = await api('/stats');
+  const cards = [
+    ['Soci attivi', s.soci], ['Consenso marketing', s.soci_marketing], ['Prenotazioni', s.prenotazioni],
+    ['Oggi', s.prenotazioni_oggi], ['Proposte da leggere', s.proposte], ['Convocazioni aperte', s.convocazioni_aperte],
+  ];
+  const max = Math.max(...s.per_casata.map(c => c.punti), 1);
+  $('#view').innerHTML = \`
+    <div class="cards">\${cards.map(c => \`<div class="stat"><div class="n">\${c[1]}</div><div class="l">\${c[0]}</div></div>\`).join('')}</div>
+    <div class="panel"><h3>Coppa delle Casate & soci per casata</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
+      \${s.per_casata.map(c => \`<tr><td><b>\${esc(c.nome)}</b></td><td>\${c.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(c.punti/max*100)}%;background:\${c.colore}"></span></span></td><td>\${c.soci}</td></tr>\`).join('')}
+    </tbody></table></div>\`;
+};
+
+// ---- Soci ----
+VIEWS.soci = async () => {
+  const render = async (q = '') => {
+    const list = await api('/soci?q=' + encodeURIComponent(q));
+    $('#view').innerHTML = \`
+      <div class="row"><input id="q" placeholder="Cerca nome, email, tessera\u2026" style="max-width:280px" value="\${esc(q)}"><button class="btn ghost sm" id="search">Cerca</button><button class="btn gold sm" id="new">+ Nuovo socio</button></div>
+      <div class="panel"><table><thead><tr><th>Tessera</th><th>Nome</th><th>Casata</th><th>Ruolo</th><th>Consensi</th><th>Stato</th><th></th></tr></thead><tbody>
+        \${list.map(s => \`<tr>
+          <td>\${esc(s.tessera_code)}</td><td><b>\${esc(s.nome)} \${esc(s.cognome)}</b><br><span class="muted">\${esc(s.email||'')}</span></td>
+          <td>\${esc(s.casata_nome||'\u2014')}</td><td>\${esc(s.ruolo)}\${s.tipo_profilo&&s.tipo_profilo!=='socio'?\`<br><span class="tag mid">\${esc(s.tipo_profilo.replace('_',' '))}</span>\`:''}</td>
+          <td>\${s.consenso_privacy?'<span class="tag ok">privacy</span> ':''}\${s.consenso_marketing?'<span class="tag mid">mktg</span> ':''}\${s.consenso_foto?'<span class="tag mid">foto</span>':''}</td>
+          <td>\${s.attivo?'<span class="tag ok">attivo</span>':'<span class="tag no">inattivo</span>'}</td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="\${s.id}">\u270E</button> <button class="btn ghost sm" data-exp="\${s.id}">\u2B07\uFE0E</button> <button class="btn danger sm" data-del="\${s.id}">\u{1F5D1}</button></td>
+        </tr>\`).join('') || '<tr><td colspan="7" class="muted">Nessun socio.</td></tr>'}
+      </tbody></table></div>\`;
+    $('#search').onclick = () => render($('#q').value);
+    $('#q').onkeydown = (e) => { if (e.key === 'Enter') render($('#q').value); };
+    $('#new').onclick = () => editSocio(null, list);
+    document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editSocio(list.find(x => x.id == b.dataset.edit), list));
+    document.querySelectorAll('[data-exp]').forEach(b => b.onclick = () => exportSocio(b.dataset.exp));
+    document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delSocio(b.dataset.del, render));
+  };
+  await render();
+};
+function casataOptions(sel) { return \`<option value="">\u2014 nessuna \u2014</option>\` + CASATE.map(c => \`<option value="\${c.id}" \${sel==c.id?'selected':''}>\${esc(c.nome)}</option>\`).join(''); }
+function editSocio(s, all) {
+  const isNew = !s;
+  const genitori = (all || []).filter(x => x.tipo_profilo === 'genitore');
+  const profili = [['socio','Socio'],['ospite_temporaneo','Ospite temporaneo'],['genitore','Genitore'],['under14','Under 14 (figlio)']];
+  const tutOpts = \`<option value="">\u2014 nessuno \u2014</option>\` + genitori.map(g => \`<option value="\${g.id}" \${s?.tutore_id==g.id?'selected':''}>\${esc(g.nome)} \${esc(g.cognome)}</option>\`).join('');
+  modal(\`<h3>\${isNew?'Nuovo profilo':'Modifica profilo'}</h3>
+    <div class="grid2">
+      <div><label>Nome*</label><input id="f_nome" value="\${esc(s?.nome||'')}"></div>
+      <div><label>Cognome*</label><input id="f_cognome" value="\${esc(s?.cognome||'')}"></div>
+      <div><label>Email</label><input id="f_email" value="\${esc(s?.email||'')}"></div>
+      <div><label>Telefono</label><input id="f_tel" value="\${esc(s?.telefono||'')}"></div>
+      <div><label>Data di nascita</label><input id="f_nasc" type="date" value="\${esc(s?.data_nascita||'')}"></div>
+      <div><label>Casata</label><select id="f_casata">\${casataOptions(s?.casata_id)}</select></div>
+      <div><label>Tipo profilo</label><select id="f_tipo">\${profili.map(p=>\`<option value="\${p[0]}" \${s?.tipo_profilo===p[0]?'selected':''}>\${p[1]}</option>\`).join('')}</select></div>
+      <div id="tutoreWrap"><label>Genitore (per Under 14)</label><select id="f_tutore">\${tutOpts}</select></div>
+      <div><label>Ruolo</label><select id="f_ruolo"><option \${s?.ruolo==='socio'?'selected':''}>socio</option><option \${s?.ruolo==='capitano'?'selected':''}>capitano</option><option \${s?.ruolo==='staff'?'selected':''}>staff</option></select></div>
+      <div><label>Lingua</label><select id="f_lingua">\${['it','en','fr','de','es','zh','ja'].map(l=>\`<option \${s?.lingua===l?'selected':''}>\${l}</option>\`).join('')}</select></div>
+      <div><label>Tessera valida fino</label><input id="f_valida" type="date" value="\${esc(s?.valida_fino||'2027-05-01')}"></div>
+    </div>
+    <label class="check"><input type="checkbox" id="f_privacy" \${(!s||s.consenso_privacy)?'checked':''}> Consenso privacy (necessario)</label>
+    <label class="check"><input type="checkbox" id="f_mktg" \${s?.consenso_marketing?'checked':''}> Consenso comunicazioni marketing</label>
+    <label class="check"><input type="checkbox" id="f_foto" \${s?.consenso_foto?'checked':''}> Consenso uso immagini eventi</label>
+    <label class="check"><input type="checkbox" id="f_push" \${s?.notifiche_push?'checked':''}> Consenso notifiche (casata & eventi)</label>
+    \${isNew?'':'<label class="check"><input type="checkbox" id="f_attivo" '+(s.attivo?'checked':'')+'> Profilo attivo</label>'}
+    <p class="muted" id="under14note" style="display:none">Per gli under-14 la responsabilit\xE0 del trattamento \xE8 del genitore indicato: seleziona il genitore e la casata del figlio.</p>
+    <div class="err" id="mErr"></div>
+    <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
+  const syncTipo = () => { const u = $('#f_tipo').value === 'under14'; $('#tutoreWrap').style.opacity = u ? '1' : '.5'; $('#under14note').style.display = u ? 'block' : 'none'; };
+  $('#f_tipo').onchange = syncTipo; syncTipo();
+  $('#mCancel').onclick = closeModal;
+  $('#mSave').onclick = async () => {
+    const body = {
+      nome:$('#f_nome').value, cognome:$('#f_cognome').value, email:$('#f_email').value, telefono:$('#f_tel').value,
+      data_nascita:$('#f_nasc').value, casata_id:$('#f_casata').value||null, ruolo:$('#f_ruolo').value, lingua:$('#f_lingua').value,
+      tipo_profilo:$('#f_tipo').value, tutore_id: $('#f_tipo').value==='under14' ? ($('#f_tutore').value||null) : null,
+      valida_fino:$('#f_valida').value, consenso_privacy:$('#f_privacy').checked, consenso_marketing:$('#f_mktg').checked,
+      consenso_foto:$('#f_foto').checked, notifiche_push:$('#f_push').checked, attivo: isNew ? true : $('#f_attivo').checked,
+    };
+    try { await api(isNew?'/soci':'/soci/'+s.id, { method:isNew?'POST':'PUT', body:JSON.stringify(body) }); closeModal(); show('soci'); }
+    catch (e) { $('#mErr').textContent = e.message; }
+  };
+}
+async function exportSocio(id) {
+  const data = await api('/soci/' + id + '/export');
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'socio_' + data.socio.tessera_code + '.json'; a.click();
+}
+async function delSocio(id, render) {
+  if (!confirm('Cancellare il socio e i suoi dati (diritto all\\'oblio GDPR)? Operazione irreversibile.')) return;
+  await api('/soci/' + id, { method: 'DELETE' }); render();
+}
+
+// ---- Casate ----
+VIEWS.casate = async () => {
+  const list = await api('/../casate');
+  $('#view').innerHTML = \`<div class="panel"><h3>Punti Coppa delle Casate</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th></tr></thead><tbody>
+    \${list.map(c => \`<tr><td><b>\${esc(c.nome)}</b> <span class="muted">\${esc(c.motto||'')}</span></td>
+      <td><input type="number" value="\${c.punti}" id="pt_\${c.id}" style="width:90px"></td>
+      <td><button class="btn gold sm" data-save="\${c.id}">Salva</button></td></tr>\`).join('')}
+  </tbody></table></div>\`;
+  document.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
+    await api('/casate/' + b.dataset.save + '/punti', { method:'PUT', body:JSON.stringify({ punti: Number($('#pt_'+b.dataset.save).value) }) });
+    b.textContent = '\u2713 Salvato'; setTimeout(() => b.textContent = 'Salva', 1200);
+  });
+};
+
+// ---- Prenotazioni ----
+VIEWS.prenotazioni = async () => {
+  const list = await api('/prenotazioni');
+  $('#view').innerHTML = \`<div class="panel"><h3>Prenotazioni recenti</h3><table><thead><tr><th>Quando</th><th>Risorsa</th><th>Socio</th><th>Giorno/Turno</th><th>Stato</th></tr></thead><tbody>
+    \${list.map(p => \`<tr><td class="muted">\${esc(p.created_at)}</td><td><b>\${esc(p.risorsa_nome||'')}</b></td>
+      <td>\${esc((p.nome||'Ospite')+' '+(p.cognome||''))}<br><span class="muted">\${esc(p.tessera_code||'')}</span></td>
+      <td>\${esc(p.giorno||'')} \${esc(p.turno||'')}</td><td><span class="tag ok">\${esc(p.stato)}</span></td></tr>\`).join('') || '<tr><td colspan="5" class="muted">Nessuna prenotazione.</td></tr>'}
+  </tbody></table></div>\`;
+};
+
+// ---- Convocazioni ----
+VIEWS.convocazioni = async () => {
+  const [sport, giochi] = await Promise.all([api('/../discipline/sport'), api('/../discipline/giochi')]);
+  const opts = [['sport', sport], ['giochi', giochi]].flatMap(([dom, arr]) => arr.map(d => \`<option value="\${dom}|\${d.chiave}">\${dom} \xB7 \${esc(d.name)}</option>\`)).join('');
+  $('#view').innerHTML = \`<div class="panel"><h3>Convoca una casata</h3>
+    <div class="grid2">
+      <div><label>Disciplina</label><select id="c_disc">\${opts}</select></div>
+      <div><label>Casata</label><select id="c_casata">\${CASATE.map(c=>\`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('')}</select></div>
+      <div><label>Partita</label><input id="c_match" placeholder="Es. Aretusa vs Ortigia"></div>
+      <div><label>Quando</label><input id="c_when" placeholder="Es. Dom 17:30"></div>
+      <div><label>Luogo</label><input id="c_court" placeholder="Es. Campo 1"></div>
+    </div>
+    <div class="err" id="cErr"></div>
+    <button class="btn gold sm" id="c_send" style="margin-top:12px">Invia convocazione</button>
+    <span class="muted" id="c_ok" style="margin-left:10px"></span></div>\`;
+  $('#c_send').onclick = async () => {
+    const [dom, chiave] = $('#c_disc').value.split('|');
+    try {
+      const r = await api('/convocazioni', { method:'POST', body:JSON.stringify({ dominio:dom, disciplina_chiave:chiave, casata_id:Number($('#c_casata').value), match_label:$('#c_match').value, quando:$('#c_when').value, luogo:$('#c_court').value }) });
+      $('#c_ok').textContent = \`Convocati \${r.convocati} soci.\`;
+    } catch (e) { $('#cErr').textContent = e.message; }
+  };
+};
+
+// ---- Proposte ----
+VIEWS.proposte = async () => {
+  const list = await api('/proposte');
+  const render = () => \`<div class="panel"><h3>Proposte (Vinile & Open Mic)</h3><table><thead><tr><th>Tipo</th><th>Titolo</th><th>Da</th><th>Stato</th><th></th></tr></thead><tbody>
+    \${list.map(p => \`<tr><td>\${esc(p.tipo)}</td><td><b>\${esc(p.titolo||'')}</b><br><span class="muted">\${esc(p.dettaglio||'')}</span></td>
+      <td>\${esc((p.nome||'Ospite')+' '+(p.cognome||''))}</td><td><span class="tag \${p.stato==='in_scaletta'?'ok':p.stato==='scartata'?'no':'mid'}">\${esc(p.stato)}</span></td>
+      <td style="white-space:nowrap"><button class="btn gold sm" data-st="\${p.id}|in_scaletta">In scaletta</button> <button class="btn ghost sm" data-st="\${p.id}|scartata">Scarta</button></td></tr>\`).join('') || '<tr><td colspan="5" class="muted">Nessuna proposta.</td></tr>'}
+  </tbody></table></div>\`;
+  $('#view').innerHTML = render();
+  document.querySelectorAll('[data-st]').forEach(b => b.onclick = async () => {
+    const [id, stato] = b.dataset.st.split('|'); await api('/proposte/' + id, { method:'PUT', body:JSON.stringify({ stato }) }); show('proposte');
+  });
+};
+
+// ---- Eventi ----
+VIEWS.eventi = async () => {
+  const list = await api('/eventi');
+  $('#view').innerHTML = \`<div class="panel"><h3>Cartellone</h3><table><thead><tr><th>Giorno</th><th>Titolo</th><th>Ambiente</th><th>Attivo</th><th></th></tr></thead><tbody>
+    \${list.map(e => \`<tr><td>\${esc(e.giorno)}</td><td><b>\${esc(e.titolo)}</b><br><span class="muted">\${esc(e.sottotitolo||'')}</span></td>
+      <td>\${esc(e.ambiente||'')}</td><td>\${e.attivo?'<span class="tag ok">s\xEC</span>':'<span class="tag no">no</span>'}</td>
+      <td><button class="btn ghost sm" data-ev="\${e.id}">\u270E</button></td></tr>\`).join('')}
+  </tbody></table></div>\`;
+  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => {
+    const e = list.find(x => x.id == b.dataset.ev);
+    modal(\`<h3>Modifica evento</h3>
+      <label>Titolo</label><input id="e_t" value="\${esc(e.titolo)}">
+      <label>Sottotitolo</label><input id="e_s" value="\${esc(e.sottotitolo||'')}">
+      <label>Ambiente</label><input id="e_a" value="\${esc(e.ambiente||'')}">
+      <label>Descrizione</label><textarea id="e_d" rows="4">\${esc(e.descrizione||'')}</textarea>
+      <label class="check"><input type="checkbox" id="e_on" \${e.attivo?'checked':''}> Visibile nell'app</label>
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
+    $('#mCancel').onclick = closeModal;
+    $('#mSave').onclick = async () => { await api('/eventi/'+e.id, { method:'PUT', body:JSON.stringify({ titolo:$('#e_t').value, sottotitolo:$('#e_s').value, ambiente:$('#e_a').value, descrizione:$('#e_d').value, attivo:$('#e_on').checked }) }); closeModal(); show('eventi'); };
+  });
+};
+
+// ---- Bussola ----
+VIEWS.bussola = async () => {
+  const list = await api('/bussola');
+  $('#view').innerHTML = \`<div class="panel"><h3>Contenuti guida</h3>
+    <div class="row"><select id="b_sez"><option value="servizi">servizi</option><option value="vedere">vedere</option><option value="orari">orari</option><option value="rifiuti">rifiuti</option></select>
+      <input id="b_tit" placeholder="Titolo"><input id="b_det" placeholder="Dettaglio"><input id="b_dist" placeholder="Distanza" style="max-width:110px"><button class="btn gold sm" id="b_add">+ Aggiungi</button></div>
+    <table><thead><tr><th>Sezione</th><th>Titolo</th><th>Dettaglio</th><th>Distanza</th><th></th></tr></thead><tbody>
+    \${list.map(b => \`<tr><td>\${esc(b.sezione)}</td><td><b>\${esc(b.titolo)}</b></td><td>\${esc(b.dettaglio||'')}</td><td>\${esc(b.distanza||'')}</td><td><button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}
+  </tbody></table></div>\`;
+  $('#b_add').onclick = async () => { await api('/bussola', { method:'POST', body:JSON.stringify({ sezione:$('#b_sez').value, titolo:$('#b_tit').value, dettaglio:$('#b_det').value, distanza:$('#b_dist').value }) }); show('bussola'); };
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api('/bussola/'+b.dataset.del, { method:'DELETE' }); show('bussola'); });
+};
+
+// ---- Luoghi "Siamo qui" ----
+function parseCoords(s) {
+  if (!s) return null;
+  // link Google Maps con @lat,lng  oppure  q=lat,lng  oppure  "lat, lng"
+  let m = s.match(/@(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/) || s.match(/[?&]q=(-?\\d+\\.\\d+),\\s*(-?\\d+\\.\\d+)/) || s.match(/(-?\\d+\\.\\d+)\\s*,\\s*(-?\\d+\\.\\d+)/);
+  return m ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]) } : null;
+}
+VIEWS.luoghi = async () => {
+  const list = await api('/luoghi');
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>Punti "Siamo qui" \u2014 coordinate</h3>
+      <p class="muted" style="margin-bottom:12px">Su Google Maps: tasto destro sul punto \u2192 <b>clic sulle coordinate per copiarle</b>, poi incollale qui sotto (accetto anche il link della mappa). Al clic nell'app si aprir\xE0 il punto esatto.</p>
+      \${list.map(l => \`<div class="card" style="border:1px solid var(--line);padding:14px;margin-bottom:12px">
+        <div class="row" style="margin-bottom:8px"><b style="color:var(--navy)">\${esc(l.chiave === 'chiosco' ? '\u{1F4CD}' : '\u267B\uFE0F')} \${esc(l.nome)}</b></div>
+        <div class="grid2">
+          <div><label>Nome</label><input id="n_\${l.id}" value="\${esc(l.nome)}"></div>
+          <div><label>Incolla link o coordinate</label><input id="p_\${l.id}" placeholder="es. 37.0335, 15.2969 oppure link Maps"></div>
+          <div><label>Latitudine</label><input id="lat_\${l.id}" value="\${l.lat ?? ''}"></div>
+          <div><label>Longitudine</label><input id="lng_\${l.id}" value="\${l.lng ?? ''}"></div>
+        </div>
+        <div class="row" style="margin-top:10px;align-items:center">
+          <button class="btn gold sm" data-save="\${l.id}">Salva</button>
+          <a class="btn ghost sm" id="prev_\${l.id}" href="https://www.google.com/maps?q=\${l.lat ?? ''},\${l.lng ?? ''}" target="_blank" style="text-decoration:none">Anteprima mappa \u2197</a>
+          <span class="muted" id="ok_\${l.id}"></span>
+        </div>
+      </div>\`).join('')}
+    </div>\`;
+  list.forEach(l => {
+    const pasteEl = document.getElementById('p_' + l.id);
+    pasteEl.addEventListener('input', () => { const c = parseCoords(pasteEl.value); if (c) { $('#lat_' + l.id).value = c.lat; $('#lng_' + l.id).value = c.lng; } });
+    document.getElementById('prev_' + l.id).onclick = (e) => { e.preventDefault(); window.open('https://www.google.com/maps?q=' + $('#lat_' + l.id).value + ',' + $('#lng_' + l.id).value, '_blank'); };
+    document.querySelector(\`[data-save="\${l.id}"]\`).onclick = async () => {
+      await api('/luoghi/' + l.id, { method: 'PUT', body: JSON.stringify({ nome: $('#n_' + l.id).value, lat: $('#lat_' + l.id).value, lng: $('#lng_' + l.id).value }) });
+      $('#ok_' + l.id).textContent = '\u2713 Salvato'; setTimeout(() => $('#ok_' + l.id).textContent = '', 1500);
+    };
+  });
+};
+
+// ---- Discipline parametriche ----
+VIEWS.discipline = async () => {
+  const list = await api('/discipline');
+  const row = (d) => \`<tr>
+    <td>\${esc(d.dominio)}</td>
+    <td><input id="dn_\${d.id}" value="\${esc(d.nome)}" style="min-width:150px"></td>
+    <td style="text-align:center"><input type="checkbox" id="da_\${d.id}" \${d.attivo?'checked':''}></td>
+    <td><input type="number" id="dmin_\${d.id}" value="\${d.min_giocatori}" style="width:60px"></td>
+    <td><input type="number" id="dmax_\${d.id}" value="\${d.max_giocatori}" style="width:60px"></td>
+    <td><input type="number" id="dpv_\${d.id}" value="\${d.punti_vitt}" style="width:55px"></td>
+    <td><input type="number" id="dpp_\${d.id}" value="\${d.punti_par}" style="width:55px"></td>
+    <td style="white-space:nowrap"><button class="btn gold sm" data-dsave="\${d.id}">Salva</button> <button class="btn danger sm" data-ddel="\${d.id}">\u{1F5D1}</button></td>
+  </tr>\`;
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>Discipline \u2014 attiva/disattiva e partecipanti</h3>
+      <p class="muted" style="margin-bottom:10px">Disattiva una disciplina per non giocarla quest'anno (resta in archivio). Min/Max = partecipanti per casata a partita; Pt V / Pt P = punti per vittoria e pareggio in graduatoria.</p>
+      <table><thead><tr><th>Dominio</th><th>Nome</th><th>Attiva</th><th>Min</th><th>Max</th><th>Pt V</th><th>Pt P</th><th></th></tr></thead>
+      <tbody>\${list.map(row).join('')}</tbody></table>
+    </div>
+    <div class="panel"><h3>Aggiungi disciplina</h3>
+      <div class="row">
+        <select id="nd_dom"><option value="sport">sport</option><option value="giochi">giochi</option></select>
+        <input id="nd_chiave" placeholder="chiave (es. backgammon)" style="max-width:200px">
+        <input id="nd_nome" placeholder="Nome (es. Backgammon)" style="max-width:220px">
+        <input id="nd_min" type="number" placeholder="min" value="2" style="width:70px">
+        <input id="nd_max" type="number" placeholder="max" value="2" style="width:70px">
+        <button class="btn gold sm" id="nd_add">+ Aggiungi</button>
+      </div><div class="err" id="nd_err"></div>
+    </div>\`;
+  document.querySelectorAll('[data-dsave]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.dsave;
+    await api('/discipline/' + id, { method:'PUT', body: JSON.stringify({ nome:$('#dn_'+id).value, attivo:$('#da_'+id).checked, min_giocatori:$('#dmin_'+id).value, max_giocatori:$('#dmax_'+id).value, punti_vitt:$('#dpv_'+id).value, punti_par:$('#dpp_'+id).value }) });
+    b.textContent='\u2713'; setTimeout(()=>b.textContent='Salva',1200);
+  });
+  document.querySelectorAll('[data-ddel]').forEach(b => b.onclick = async () => { if(!confirm('Eliminare la disciplina (e i suoi gironi/partite)?'))return; await api('/discipline/'+b.dataset.ddel,{method:'DELETE'}); show('discipline'); });
+  $('#nd_add').onclick = async () => {
+    try { await api('/discipline', { method:'POST', body: JSON.stringify({ dominio:$('#nd_dom').value, chiave:$('#nd_chiave').value, nome:$('#nd_nome').value, attivo:true, min_giocatori:$('#nd_min').value, max_giocatori:$('#nd_max').value }) }); show('discipline'); }
+    catch(e){ $('#nd_err').textContent = e.message; }
+  };
+};
+
+// ---- Tabellone: gironi, calendario, risultati (auto-graduatoria) ----
+function gironeHtml(g) {
+  const cls = \`<table><thead><tr><th>Squadra</th><th>PG</th><th>V</th><th>N</th><th>Pt</th></tr></thead><tbody>\${g.classifica.map((r, i) => \`<tr><td><b>\${i + 1}.</b> \${esc(r.nome)}</td><td>\${r.pg}</td><td>\${r.v}</td><td>\${r.p}</td><td><b>\${r.pt}</b></td></tr>\`).join('')}</tbody></table>\`;
+  const byG = {}; g.partite.forEach(p => { (byG[p.giornata] ??= []).push(p); });
+  const cal = Object.keys(byG).map(gn => \`<div style="margin-top:10px"><b class="muted">Giornata \${gn}</b>\${byG[gn].map(p => \`
+    <div style="display:flex;gap:8px;align-items:center;padding:5px 0">
+      <span style="flex:1;text-align:right">\${esc(p.casa_a)}</span>
+      <input id="ga_\${p.id}" type="number" min="0" value="\${p.gol_a ?? ''}" style="width:48px;text-align:center">
+      <span>\u2013</span>
+      <input id="gb_\${p.id}" type="number" min="0" value="\${p.gol_b ?? ''}" style="width:48px;text-align:center">
+      <span style="flex:1">\${esc(p.casa_b)}</span>
+      <button class="btn gold sm" data-psave="\${p.id}">\${p.stato === 'giocata' ? '\u2713' : 'Salva'}</button>
+    </div>\`).join('')}</div>\`).join('');
+  return \`<div class="panel"><h3>\${esc(g.nome)}</h3>\${cls}\${cal}</div>\`;
+}
+VIEWS.tabellone = async () => {
+  const discs = await api('/discipline');
+  if (!discs.length) { $('#view').innerHTML = '<p class="muted">Nessuna disciplina.</p>'; return; }
+  let cur = discs[0].id;
+  const render = async () => {
+    const t = await api('/tabellone/' + cur);
+    const finali = t.finali ? \`<div class="panel"><h3>Fase finale \xB7 qualificate</h3>\${t.finali.semifinali.map((s, i) => \`<div style="padding:6px 0"><b>Semifinale \${i + 1}:</b> \${esc(s.casa || '\u2014')} vs \${esc(s.ospite || '\u2014')}</div>\`).join('')}</div>\` : '';
+    $('#view').innerHTML = \`
+      <div class="row">
+        <select id="tb_disc">\${discs.map(d => \`<option value="\${d.id}" \${d.id == cur ? 'selected' : ''}>\${d.dominio} \xB7 \${esc(d.nome)}\${d.attivo ? '' : ' (disattivata)'}</option>\`).join('')}</select>
+        <button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>
+        \${t.completo ? '<span class="tag ok">gironi completi</span>' : '<span class="tag mid">gironi in corso</span>'}
+      </div>
+      \${t.gironi.length ? t.gironi.map(gironeHtml).join('') : '<p class="muted">Nessun calendario: premi \u201CGenera\u201D.</p>'}
+      \${finali}\`;
+    $('#tb_disc').onchange = (e) => { cur = e.target.value; render(); };
+    $('#tb_gen').onclick = async () => { if (!confirm('Rigenerare il calendario AZZERA i risultati di questa disciplina. Procedo?')) return; await api('/tabellone/' + cur + '/genera', { method: 'POST' }); render(); };
+    document.querySelectorAll('[data-psave]').forEach(b => b.onclick = async () => {
+      const id = b.dataset.psave;
+      try { await api('/partite/' + id, { method: 'PUT', body: JSON.stringify({ gol_a: $('#ga_' + id).value, gol_b: $('#gb_' + id).value }) }); render(); }
+      catch (e) { alert(e.message); }
+    });
+  };
+  await render();
+};
+
+// ---- Audit ----
+VIEWS.audit = async () => {
+  const list = await api('/audit');
+  $('#view').innerHTML = \`<div class="panel"><h3>Registro attivit\xE0 (accountability GDPR)</h3><table><thead><tr><th>Quando</th><th>Utente</th><th>Azione</th><th>Entit\xE0</th><th>Dettaglio</th></tr></thead><tbody>
+    \${list.map(a => \`<tr><td class="muted">\${esc(a.ts)}</td><td>\${esc(a.utente)}</td><td><b>\${esc(a.azione)}</b></td><td>\${esc(a.entita)} \${esc(a.entita_id||'')}</td><td class="muted">\${esc(a.dettaglio||'')}</td></tr>\`).join('')}
+  </tbody></table></div>\`;
+};
+
+// ---- Modal helpers ----
+function modal(html) { $('#modalBox').innerHTML = html; $('#modal').classList.add('show'); }
+function closeModal() { $('#modal').classList.remove('show'); }
+
+// ---- Bind ----
+$('#loginBtn').onclick = login;
+$('#p').onkeydown = (e) => { if (e.key === 'Enter') login(); };
+$('#logout').onclick = (e) => { e.preventDefault(); api('/logout', { method:'POST' }).catch(()=>{}); logout(); };
+document.querySelectorAll('#menu button').forEach(b => b.onclick = () => show(b.dataset.v));
+$('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
+
+</script>
+</body>
+</html>
+`;
+
+// build/entry.mjs
+var MAJOR = Number(process.versions.node.split(".")[0]);
+if (Number.isNaN(MAJOR) || MAJOR < 22) {
+  console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
+  process.exit(1);
+}
+var PORT = process.env.PORT || 4e3;
+initSchema();
+seed();
+var app = express();
+app.disable("x-powered-by");
+app.use(express.json({ limit: "256kb" }));
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'"
+  );
+  next();
+});
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+app.get("/api/health", (req, res) => res.json({ ok: true, env: process.env.KOINE_ENV || "online", ts: (/* @__PURE__ */ new Date()).toISOString() }));
+app.use("/api/auth", authUserRouter);
+app.use("/api", publicRouter);
+app.use("/api/admin", adminRouter);
+app.get(["/", "/index.html"], (req, res) => res.type("html").send(frontend_default));
+app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => res.type("html").send(admin_default));
+app.use((req, res) => res.status(404).json({ error: "Non trovato" }));
+app.listen(PORT, () => {
+  console.log("\n  Bussola Residence \xB7 by KOIN\xC8 \u2014 online");
+  console.log(`  App ospiti:   porta ${PORT}, percorso /`);
+  console.log(`  Back office:  porta ${PORT}, percorso /admin/`);
+});
