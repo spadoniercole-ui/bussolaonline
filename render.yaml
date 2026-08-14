@@ -1,21 +1,20 @@
-# Blueprint Render — Bussola Residence (beta con dati persistenti)
+# Blueprint Render — Bussola Residence (dati su database gestito Turso/libSQL)
+# Con un database gestito non serve il disco: il web può restare sul piano free.
 services:
   - type: web
     name: bussola-residence
     runtime: node
     region: frankfurt            # data center in UE (GDPR)
-    plan: starter                # i dischi richiedono un piano a pagamento (~7 $/mese)
+    plan: free                   # con Turso il disco non serve; scegli 'starter' per evitare i risvegli lenti
     buildCommand: npm install
     startCommand: npm start
     autoDeploy: true
-    disk:
-      name: bussola-data
-      mountPath: /var/data       # il disco persistente vive qui
-      sizeGB: 1
     envVars:
-      - key: KOINE_DB            # il database vive sul disco persistente
-        value: /var/data/koine.db
-      - key: ADMIN_PASSWORD      # password del gestore (impostala nel pannello, non nel file)
+      - key: TURSO_DATABASE_URL  # es. libsql://<db>-<org>.turso.io  (dal pannello Turso)
+        sync: false
+      - key: TURSO_AUTH_TOKEN    # token del database Turso
+        sync: false
+      - key: ADMIN_PASSWORD      # password del gestore
         sync: false
       - key: STAFF_PASSWORD      # password dell'account staff
         sync: false

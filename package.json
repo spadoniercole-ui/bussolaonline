@@ -1,15 +1,16 @@
 {
   "name": "bussola-residence",
-  "version": "3.04.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": "22.x"
   },
   "scripts": {
-    "start": "node --experimental-sqlite --no-warnings bussola.mjs || node --no-warnings bussola.mjs"
+    "start": "node --no-warnings bussola.mjs"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "@libsql/client": "^0.17.4"
   }
 }

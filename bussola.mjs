@@ -2,18 +2,60 @@
 import express from "express";
 
 // server/db.js
-import { DatabaseSync } from "node:sqlite";
+import { createClient } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-var raw = process.env.KOINE_DB || "data/koine.db";
-var IN_MEMORY = raw === ":memory:";
-var DB_PATH = IN_MEMORY ? ":memory:" : resolve(process.cwd(), raw);
-if (!IN_MEMORY) mkdirSync(dirname(DB_PATH), { recursive: true });
-var db = new DatabaseSync(DB_PATH);
-if (!IN_MEMORY) db.exec("PRAGMA journal_mode = WAL;");
-db.exec("PRAGMA foreign_keys = ON;");
-function initSchema() {
-  db.exec(`
+var TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.KOINE_DB_URL || "";
+var AUTH = process.env.TURSO_AUTH_TOKEN || void 0;
+var url;
+var LOCAL_FILE = null;
+if (TURSO_URL) {
+  url = TURSO_URL;
+} else {
+  const raw = process.env.KOINE_DB || "data/koine.db";
+  if (raw === ":memory:") {
+    url = ":memory:";
+  } else {
+    LOCAL_FILE = resolve(process.cwd(), raw);
+    mkdirSync(dirname(LOCAL_FILE), { recursive: true });
+    url = "file:" + LOCAL_FILE;
+  }
+}
+var IS_REMOTE = !!TURSO_URL;
+var DB_PATH = TURSO_URL ? TURSO_URL : LOCAL_FILE || ":memory:";
+var client = createClient(AUTH ? { url, authToken: AUTH } : { url });
+var flat = (a) => a.map((v) => v === void 0 ? null : v);
+var db = {
+  prepare(sql) {
+    return {
+      get: async (...args) => (await client.execute({ sql, args: flat(args) })).rows[0],
+      all: async (...args) => (await client.execute({ sql, args: flat(args) })).rows,
+      run: async (...args) => {
+        const r = await client.execute({ sql, args: flat(args) });
+        return { lastInsertRowid: r.lastInsertRowid == null ? void 0 : Number(r.lastInsertRowid), changes: Number(r.rowsAffected || 0) };
+      }
+    };
+  },
+  async exec(sql) {
+    await client.executeMultiple(sql);
+  },
+  get raw() {
+    return client;
+  }
+};
+function audit(utente, azione, entita, entita_id, dettaglio = "") {
+  client.execute({
+    sql: "INSERT INTO audit_log (utente, azione, entita, entita_id, dettaglio) VALUES (?,?,?,?,?)",
+    args: [utente || "sistema", azione, entita || "", String(entita_id ?? ""), dettaglio]
+  }).catch(() => {
+  });
+}
+async function initSchema() {
+  try {
+    await client.execute("PRAGMA foreign_keys = ON");
+  } catch (_) {
+  }
+  await db.exec(`
   CREATE TABLE IF NOT EXISTS casate (
     id         INTEGER PRIMARY KEY,
     nome       TEXT NOT NULL UNIQUE,
@@ -340,35 +382,30 @@ function initSchema() {
   CREATE INDEX IF NOT EXISTS ix_esiti_contest ON contest_esiti(contest_id);
   CREATE INDEX IF NOT EXISTS ix_serpren_serata ON serate_prenotazioni(serata_id);
   `);
-  migrate();
+  await migrate();
 }
-function migrate() {
-  const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
-  const addIfMissing = (t, name, ddl) => {
-    if (!cols(t).includes(name)) {
+async function migrate() {
+  const cols = async (t) => (await db.prepare(`PRAGMA table_info(${t})`).all()).map((c) => c.name);
+  const addIfMissing = async (t, name, ddl) => {
+    if (!(await cols(t)).includes(name)) {
       try {
-        db.exec(`ALTER TABLE ${t} ADD COLUMN ${ddl}`);
+        await db.exec(`ALTER TABLE ${t} ADD COLUMN ${ddl}`);
       } catch (_) {
       }
     }
   };
-  addIfMissing("contest", "punti_scala", "punti_scala TEXT");
-  addIfMissing("contest", "esito_assegnato", "esito_assegnato INTEGER NOT NULL DEFAULT 0");
-  addIfMissing("soci", "soggiorno_dal", "soggiorno_dal TEXT");
-  addIfMissing("soci", "soggiorno_al", "soggiorno_al TEXT");
+  await addIfMissing("contest", "punti_scala", "punti_scala TEXT");
+  await addIfMissing("contest", "esito_assegnato", "esito_assegnato INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("soci", "soggiorno_dal", "soggiorno_dal TEXT");
+  await addIfMissing("soci", "soggiorno_al", "soggiorno_al TEXT");
   try {
-    db.exec("UPDATE soci SET tipo_profilo='residente' WHERE tipo_profilo='visitatore'");
+    await db.exec("UPDATE soci SET tipo_profilo='residente' WHERE tipo_profilo='visitatore'");
   } catch (_) {
   }
   try {
-    db.exec("INSERT OR IGNORE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,0,40,100)");
+    await db.exec("INSERT OR IGNORE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,0,40,100)");
   } catch (_) {
   }
-}
-function audit(utente, azione, entita, entita_id, dettaglio = "") {
-  db.prepare(
-    "INSERT INTO audit_log (utente, azione, entita, entita_id, dettaglio) VALUES (?,?,?,?,?)"
-  ).run(utente || "sistema", azione, entita || "", String(entita_id ?? ""), dettaglio);
 }
 
 // server/auth.js
@@ -439,8 +476,8 @@ function giornateGirone(sq) {
     [[sq[1], sq[2]], [sq[3], sq[0]]]
   ];
 }
-function casateByName() {
-  const rows = db.prepare("SELECT id,nome FROM casate").all();
+async function casateByName() {
+  const rows = await db.prepare("SELECT id,nome FROM casate").all();
   const m = {};
   rows.forEach((r) => m[r.nome] = r.id);
   return m;
@@ -464,14 +501,14 @@ function roundRobinRounds(teams) {
   }
   return rounds;
 }
-function generaCalendario(disciplinaId) {
-  const disc = db.prepare("SELECT id FROM discipline WHERE id=?").get(disciplinaId);
+async function generaCalendario(disciplinaId) {
+  const disc = await db.prepare("SELECT id FROM discipline WHERE id=?").get(disciplinaId);
   if (!disc) throw new Error("Disciplina inesistente");
-  db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
-  const oldGironi = db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
-  for (const g of oldGironi) db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
-  db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
-  const idByName = casateByName();
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
+  const oldGironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
+  for (const g of oldGironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
+  const idByName = await casateByName();
   const nomi = [
     ...ORDINE_CASATE.filter((n) => idByName[n]),
     ...Object.keys(idByName).filter((n) => !ORDINE_CASATE.includes(n))
@@ -484,23 +521,23 @@ function generaCalendario(disciplinaId) {
   const insCla = db.prepare("INSERT INTO classifica (girone_id,casata_id) VALUES (?,?)");
   const insPar = db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
     VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`);
-  [["Girone A", gA], ["Girone B", gB]].forEach(([nome, sq]) => {
-    if (!sq.length) return;
-    const gid = insGir.run(disciplinaId, nome).lastInsertRowid;
-    sq.forEach((n) => insCla.run(gid, idByName[n]));
+  for (const [nome, sq] of [["Girone A", gA], ["Girone B", gB]]) {
+    if (!sq.length) continue;
+    const gid = (await insGir.run(disciplinaId, nome)).lastInsertRowid;
+    for (const n of sq) await insCla.run(gid, idByName[n]);
     const giornate = sq.length === 4 ? giornateGirone(sq) : roundRobinRounds(sq);
-    giornate.forEach((round, ri) => {
-      round.forEach(([a, b]) => insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b));
-    });
-  });
+    for (let ri = 0; ri < giornate.length; ri++) {
+      for (const [a, b] of giornate[ri]) await insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b);
+    }
+  }
   return getTabellone(disciplinaId);
 }
-function recomputeGirone(gironeId) {
-  const disc = db.prepare(`SELECT d.punti_vitt pv, d.punti_par pp FROM gironi g JOIN discipline d ON d.id=g.disciplina_id WHERE g.id=?`).get(gironeId);
-  const rows = db.prepare("SELECT casata_id FROM classifica WHERE girone_id=?").all(gironeId);
+async function recomputeGirone(gironeId) {
+  const disc = await db.prepare(`SELECT d.punti_vitt pv, d.punti_par pp FROM gironi g JOIN discipline d ON d.id=g.disciplina_id WHERE g.id=?`).get(gironeId);
+  const rows = await db.prepare("SELECT casata_id FROM classifica WHERE girone_id=?").all(gironeId);
   const st = {};
   rows.forEach((r) => st[r.casata_id] = { pg: 0, v: 0, p: 0, gf: 0, gs: 0, pt: 0 });
-  const partite = db.prepare("SELECT * FROM partite WHERE girone_id=? AND stato='giocata'").all(gironeId);
+  const partite = await db.prepare("SELECT * FROM partite WHERE girone_id=? AND stato='giocata'").all(gironeId);
   for (const m of partite) {
     const A = st[m.casata_a_id], B = st[m.casata_b_id];
     if (!A || !B) continue;
@@ -526,28 +563,32 @@ function recomputeGirone(gironeId) {
   const upd = db.prepare("UPDATE classifica SET pg=?,v=?,p=?,gf=?,gs=?,pt=? WHERE girone_id=? AND casata_id=?");
   for (const cid of Object.keys(st)) {
     const s = st[cid];
-    upd.run(s.pg, s.v, s.p, s.gf, s.gs, s.pt, gironeId, cid);
+    await upd.run(s.pg, s.v, s.p, s.gf, s.gs, s.pt, gironeId, cid);
   }
 }
-function registraRisultato(partitaId, golA, golB) {
-  const m = db.prepare("SELECT * FROM partite WHERE id=?").get(partitaId);
+async function registraRisultato(partitaId, golA, golB) {
+  const m = await db.prepare("SELECT * FROM partite WHERE id=?").get(partitaId);
   if (!m) throw new Error("Partita inesistente");
-  db.prepare("UPDATE partite SET gol_a=?,gol_b=?,punteggio=?,stato='giocata' WHERE id=?").run(golA, golB, `${golA}\u2013${golB}`, partitaId);
-  if (m.girone_id) recomputeGirone(m.girone_id);
+  await db.prepare("UPDATE partite SET gol_a=?,gol_b=?,punteggio=?,stato='giocata' WHERE id=?").run(golA, golB, `${golA}\u2013${golB}`, partitaId);
+  if (m.girone_id) await recomputeGirone(m.girone_id);
   return true;
 }
-function classificaOrdinata(gironeId) {
-  return db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
+async function classificaOrdinata(gironeId) {
+  return await db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
     WHERE c.girone_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(gironeId);
 }
-function getTabellone(disciplinaId) {
-  const gironi = db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId).map((g) => ({
-    id: g.id,
-    nome: g.nome,
-    classifica: classificaOrdinata(g.id),
-    partite: db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
-  }));
-  const tuttiGiocati = db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId).n === 0;
+async function getTabellone(disciplinaId) {
+  const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
+  const gironi = [];
+  for (const g of gironiRows) {
+    gironi.push({
+      id: g.id,
+      nome: g.nome,
+      classifica: await classificaOrdinata(g.id),
+      partite: await db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
+    });
+  }
+  const tuttiGiocati = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0;
   let finali = null;
   if (gironi.length === 2 && tuttiGiocati) {
     const A = gironi[0].classifica, B = gironi[1].classifica;
@@ -563,16 +604,16 @@ function getTabellone(disciplinaId) {
 
 // server/seed.js
 var force = process.argv.includes("--force");
-function seed({ verbose = false } = {}) {
-  initSchema();
-  const already = db.prepare("SELECT count(*) c FROM casate").get().c;
+async function seed({ verbose = false } = {}) {
+  await initSchema();
+  const already = (await db.prepare("SELECT count(*) c FROM casate").get()).c;
   if (already > 0 && !force) {
     if (verbose) console.log("DB gi\xE0 popolato \u2014 salto il seed (usa --force per riscrivere).");
     return;
   }
   if (force) {
     for (const t of ["audit_log", "allegati", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
-      db.exec(`DELETE FROM ${t};`);
+      await db.exec(`DELETE FROM ${t};`);
     }
   }
   const CASATE = [
@@ -588,7 +629,7 @@ function seed({ verbose = false } = {}) {
   const insCasata = db.prepare("INSERT INTO casate (nome,colore,motto,punti) VALUES (?,?,?,?)");
   const casataId = {};
   for (const c of CASATE) {
-    const r = insCasata.run(...c);
+    const r = await insCasata.run(...c);
     casataId[c[0]] = r.lastInsertRowid;
   }
   const EVENTI = [
@@ -602,7 +643,7 @@ function seed({ verbose = false } = {}) {
     ["dom", "Domenica", "Open Mic", "Bussola Stage", "#B7791F", "Tre minuti di palco per te", "Microfono aperto: tre minuti a testa per cantare, recitare un monologo, fare stand-up (linguaggio moderato) o suonare.", "Salgo sul palco", "sheet-openmic", "serata", 7]
   ];
   const insEvento = db.prepare("INSERT INTO eventi (chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
-  for (const e of EVENTI) insEvento.run(...e);
+  for (const e of EVENTI) await insEvento.run(...e);
   const RISORSE = [
     ["pickleball", "Campo di Pickleball", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera sul palco."],
     ["soft", "Campo di Soft tennis", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera."],
@@ -610,7 +651,7 @@ function seed({ verbose = false } = {}) {
     ["tavolo", "Tavolo per la cena", "tavolo", "~40 coperti serviti \xB7 turni 20:00 e 21:30", JSON.stringify(["20:00", "21:30"]), "Indica il numero di persone. All\u2019apertura di stagione c\u2019\xE8 un unico turno alle 20:00 (segue la sfilata dei clan)."]
   ];
   const insRis = db.prepare("INSERT INTO risorse (chiave,nome,tipo,sottotitolo,slots,nota) VALUES (?,?,?,?,?,?)");
-  for (const r of RISORSE) insRis.run(...r);
+  for (const r of RISORSE) await insRis.run(...r);
   const CAS_A = ["Aretusa", "Ortigia", "Ciane", "Epipoli"];
   const CAS_B = ["Neapolis", "Dionisio", "Plemmirio", "Anapo"];
   const SPORT = [
@@ -711,19 +752,22 @@ function seed({ verbose = false } = {}) {
   };
   const insDisc = db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,ordine) VALUES (?,?,?,?,?,?,?)");
   const discIds = [];
-  function loadDomain(dom, list) {
-    list.forEach((d, i) => {
+  async function loadDomain(dom, list) {
+    for (let i = 0; i < list.length; i++) {
+      const d = list[i];
       const mm = MINMAX[d[0]] || [1, 1];
-      discIds.push(insDisc.run(dom, d[0], d[1], 1, mm[0], mm[1], i).lastInsertRowid);
-    });
+      discIds.push((await insDisc.run(dom, d[0], d[1], 1, mm[0], mm[1], i)).lastInsertRowid);
+    }
   }
-  loadDomain("sport", SPORT);
-  loadDomain("giochi", GIOCHI);
+  await loadDomain("sport", SPORT);
+  await loadDomain("giochi", GIOCHI);
   const demoScores = [[2, 1], [1, 1], [2, 0], [1, 0]];
   for (const did of discIds) {
-    generaCalendario(did);
-    const g1 = db.prepare("SELECT id FROM partite WHERE disciplina_id=? AND giornata=1").all(did);
-    g1.forEach((m, k) => registraRisultato(m.id, demoScores[k % demoScores.length][0], demoScores[k % demoScores.length][1]));
+    await generaCalendario(did);
+    const g1 = await db.prepare("SELECT id FROM partite WHERE disciplina_id=? AND giornata=1").all(did);
+    for (let k = 0; k < g1.length; k++) {
+      await registraRisultato(g1[k].id, demoScores[k % demoScores.length][0], demoScores[k % demoScores.length][1]);
+    }
   }
   const BUSSOLA = [
     ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1],
@@ -746,9 +790,9 @@ function seed({ verbose = false } = {}) {
     ["orari", "Silenzio notturno", "Dopo le 23:30 \u2014 si abbassano voci e musica.", "", 2]
   ];
   const insBus = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)");
-  for (const b of BUSSOLA) insBus.run(...b);
+  for (const b of BUSSOLA) await insBus.run(...b);
   const insContest = db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,vincitore,punti_scala,esito_assegnato,attivo) VALUES (?,?,?,?,?,?,?,?,1)");
-  insContest.run(
+  await insContest.run(
     "Apertura di stagione \u2014 Sfilata dei Clan",
     "sfilata",
     "apertura stagione",
@@ -758,7 +802,7 @@ function seed({ verbose = false } = {}) {
     JSON.stringify([10, 0, 0, 0, 0, 0, 0, 0]),
     0
   );
-  insContest.run(
+  await insContest.run(
     "Il mio nome \xE8 Bond, James Bond",
     "cocktail",
     "25\u201331 agosto",
@@ -769,7 +813,7 @@ function seed({ verbose = false } = {}) {
     0
   );
   const insSerata = db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,ordine) VALUES (?,?,?,?,?,?,?,?,?)");
-  insSerata.run(
+  await insSerata.run(
     "apertura",
     "Apertura di stagione",
     "2026-05-30",
@@ -780,7 +824,7 @@ function seed({ verbose = false } = {}) {
     120,
     1
   );
-  insSerata.run(
+  await insSerata.run(
     "tema_luglio",
     "Serata a tema \xB7 fine luglio",
     "2026-07-25",
@@ -791,7 +835,7 @@ function seed({ verbose = false } = {}) {
     100,
     2
   );
-  insSerata.run(
+  await insSerata.run(
     "ferragosto",
     "Cena di Ferragosto",
     "2026-08-15",
@@ -802,7 +846,7 @@ function seed({ verbose = false } = {}) {
     140,
     3
   );
-  insSerata.run(
+  await insSerata.run(
     "fine_stagione",
     "Chiusura di stagione",
     "2026-09-12",
@@ -814,22 +858,26 @@ function seed({ verbose = false } = {}) {
     4
   );
   const insLuogo = db.prepare("INSERT INTO luoghi (chiave,nome,lat,lng,ordine) VALUES (?,?,?,?,?)");
-  insLuogo.run("chiosco", "Chiosco La Bussola", 36.967766, 15.221669, 1);
-  insLuogo.run("isola", "Isola ecologica", 36.967209, 15.221206, 2);
+  await insLuogo.run("chiosco", "Chiosco La Bussola", 36.967766, 15.221669, 1);
+  await insLuogo.run("isola", "Isola ecologica", 36.967209, 15.221206, 2);
   const insSocio = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,notifiche_push,valida_fino)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  insSocio.run("BR-2026-0001", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
-  insSocio.run("BR-2026-0002", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
-  const genitoreId = insSocio.run("BR-2026-0003", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01").lastInsertRowid;
-  insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
-  insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
-  db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='BR-2026-0005'").run();
-  insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30");
+  await insSocio.run("BR-2026-0001", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
+  await insSocio.run("BR-2026-0002", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
+  const genitoreId = (await insSocio.run("BR-2026-0003", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01")).lastInsertRowid;
+  await insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
+  await insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
+  await db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='BR-2026-0005'").run();
+  await insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30");
   const ort = casataId["Ortigia"];
-  [["Anna", "B."], ["Paolo", "C."], ["Elena", "D."], ["Davide", "F."], ["Marta", "G."], ["Sara", "L."]].forEach((n, i) => insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01"));
-  db.prepare("INSERT OR REPLACE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,?,?,?)").run(120, 50, 100);
+  const compagni = [["Anna", "B."], ["Paolo", "C."], ["Elena", "D."], ["Davide", "F."], ["Marta", "G."], ["Sara", "L."]];
+  for (let i = 0; i < compagni.length; i++) {
+    const n = compagni[i];
+    await insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
+  }
+  await db.prepare("INSERT OR REPLACE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,?,?,?)").run(120, 50, 100);
   const insGioco = db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,ordine) VALUES (?,?,?,?,?)");
-  [
+  const GIOCHI_INV = [
     ["Mazzi di carte francesi", "carte", 4, "ok"],
     ["Mazzi di carte italiane", "carte", 2, "ok"],
     ["Cluedo", "gioco_tavolo", 1, "ok"],
@@ -838,49 +886,67 @@ function seed({ verbose = false } = {}) {
     ["Indovina Chi", "gioco_tavolo", 1, "ok"],
     ["Scacchiere", "scacchi", 2, "ok"],
     ["Set di pedine e scacchi", "scacchi", 2, "ok"]
-  ].forEach((g, i) => insGioco.run(g[0], g[1], g[2], g[3], i));
+  ];
+  for (let i = 0; i < GIOCHI_INV.length; i++) {
+    const g = GIOCHI_INV[i];
+    await insGioco.run(g[0], g[1], g[2], g[3], i);
+  }
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
   const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo) VALUES (?,?,?)");
-  insAdmin.run("gestore", hashPassword(adminPwd), "gestore");
-  insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff");
-  insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura");
+  await insAdmin.run("gestore", hashPassword(adminPwd), "gestore");
+  await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff");
+  await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura");
   audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
   if (verbose) console.log("Seed completato: 8 casate, 7 eventi, 10 discipline, guida Bussola, 3 soci demo, 1 utente back office.");
 }
 if (import.meta.url === `file://${process.argv[1]}`) {
-  seed({ verbose: true });
+  seed({ verbose: true }).catch((e) => {
+    console.error("Seed fallito:", e);
+    process.exit(1);
+  });
 }
 
 // server/routes/public.js
 import { Router } from "express";
-var publicRouter = Router();
-publicRouter.get("/casate", (req, res) => {
-  const rows = db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
+
+// server/asyncroute.js
+function asyncify(router) {
+  for (const m of ["get", "post", "put", "delete", "patch"]) {
+    const orig = router[m].bind(router);
+    router[m] = (path, ...handlers) => orig(path, ...handlers.map((h) => typeof h === "function" && h.length < 4 ? (req, res, next) => Promise.resolve(h(req, res, next)).catch(next) : h));
+  }
+  return router;
+}
+
+// server/routes/public.js
+var publicRouter = asyncify(Router());
+publicRouter.get("/casate", async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
   res.json(rows);
 });
-publicRouter.get("/eventi", (req, res) => {
-  const rows = db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo FROM eventi WHERE attivo=1 ORDER BY ordine").all();
+publicRouter.get("/eventi", async (req, res) => {
+  const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo FROM eventi WHERE attivo=1 ORDER BY ordine").all();
   res.json(rows);
 });
-publicRouter.get("/risorse", (req, res) => {
-  const rows = db.prepare("SELECT chiave,nome,tipo,sottotitolo,slots,nota FROM risorse WHERE attivo=1").all().map((r) => ({ ...r, slots: r.slots ? JSON.parse(r.slots) : [] }));
+publicRouter.get("/risorse", async (req, res) => {
+  const rows = (await db.prepare("SELECT chiave,nome,tipo,sottotitolo,slots,nota FROM risorse WHERE attivo=1").all()).map((r) => ({ ...r, slots: r.slots ? JSON.parse(r.slots) : [] }));
   res.json(rows);
 });
-publicRouter.get("/bussola", (req, res) => {
-  const rows = db.prepare("SELECT sezione,titolo,dettaglio,distanza FROM bussola ORDER BY sezione,ordine").all();
+publicRouter.get("/bussola", async (req, res) => {
+  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza FROM bussola ORDER BY sezione,ordine").all();
   const out = {};
   for (const r of rows) (out[r.sezione] ??= []).push(r);
   res.json(out);
 });
-publicRouter.get("/contest/corrente", (req, res) => {
-  const c = db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest WHERE attivo=1 ORDER BY id DESC LIMIT 1").get();
+publicRouter.get("/contest/corrente", async (req, res) => {
+  const c = await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest WHERE attivo=1 ORDER BY id DESC LIMIT 1").get();
   res.json(c || null);
 });
-publicRouter.get("/contest", (req, res) => {
-  res.json(db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest ORDER BY id DESC").all());
+publicRouter.get("/contest", async (req, res) => {
+  res.json(await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest ORDER BY id DESC").all());
 });
-publicRouter.get("/luoghi", (req, res) => {
-  res.json(db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
+publicRouter.get("/luoghi", async (req, res) => {
+  res.json(await db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
 });
 var COWO_MAX = 8;
 var TAVOLO_MAX_COPERTI = 40;
@@ -890,8 +956,8 @@ function periodiDi(turno) {
   if (t.startsWith("pomerig")) return ["pomeriggio"];
   return ["mattina"];
 }
-function cowoUsati(giorno) {
-  const rows = db.prepare(`SELECT p.turno FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
+async function cowoUsati(giorno) {
+  const rows = await db.prepare(`SELECT p.turno FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
     WHERE r.tipo='coworking' AND p.stato='confermata' AND p.giorno=?`).all(giorno || "");
   let mattina = 0, pomeriggio = 0;
   for (const r of rows) {
@@ -901,8 +967,8 @@ function cowoUsati(giorno) {
   }
   return { mattina, pomeriggio };
 }
-publicRouter.get("/coworking/disponibilita", (req, res) => {
-  const u = cowoUsati(req.query.giorno);
+publicRouter.get("/coworking/disponibilita", async (req, res) => {
+  const u = await cowoUsati(req.query.giorno);
   res.json({
     giorno: req.query.giorno || null,
     max: COWO_MAX,
@@ -910,67 +976,74 @@ publicRouter.get("/coworking/disponibilita", (req, res) => {
     pomeriggio: { usati: u.pomeriggio, liberi: Math.max(0, COWO_MAX - u.pomeriggio) }
   });
 });
-function seratePostiUsati(serataId) {
-  return db.prepare("SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").get(serataId).n;
+async function seratePostiUsati(serataId) {
+  return (await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").get(serataId)).n;
 }
-publicRouter.get("/serate", (req, res) => {
-  const rows = db.prepare("SELECT id,chiave,titolo,data,quando,tema,descrizione,quota,capienza FROM serate WHERE attivo=1 ORDER BY ordine,data").all();
-  res.json(rows.map((s) => {
-    const usati = seratePostiUsati(s.id);
-    return { ...s, posti_liberi: Math.max(0, s.capienza - usati) };
-  }));
+publicRouter.get("/serate", async (req, res) => {
+  const rows = await db.prepare("SELECT id,chiave,titolo,data,quando,tema,descrizione,quota,capienza FROM serate WHERE attivo=1 ORDER BY ordine,data").all();
+  const out = [];
+  for (const s of rows) {
+    const usati = await seratePostiUsati(s.id);
+    out.push({ ...s, posti_liberi: Math.max(0, s.capienza - usati) });
+  }
+  res.json(out);
 });
-publicRouter.post("/serate/:id/prenota", (req, res) => {
-  const s = db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
+publicRouter.post("/serate/:id/prenota", async (req, res) => {
+  const s = await db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
   if (!s) return res.status(404).json({ error: "Serata non trovata" });
   const persone = Math.max(1, Number(req.body?.persone) || 1);
-  const usati = seratePostiUsati(s.id);
+  const usati = await seratePostiUsati(s.id);
   if (usati + persone > s.capienza) return res.status(409).json({ ok: false, error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.`, posti_liberi: Math.max(0, s.capienza - usati) });
   const tessera = req.body?.tessera_code || null;
-  const socio = tessera ? db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(tessera) : null;
+  const socio = tessera ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(tessera) : null;
   const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
   const importo = Math.round(s.quota * persone * 100) / 100;
-  const info = db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato) VALUES (?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare");
+  const info = await db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato) VALUES (?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare");
   audit(tessera || "ospite", "prenota_serata", "serate", s.id, `${persone}p \xB7 \u20AC${importo}`);
   res.status(201).json({ ok: true, id: info.lastInsertRowid, importo, persone, stato: "da_saldare", titolo: s.titolo });
 });
-publicRouter.get("/discipline/:dominio", (req, res) => {
+publicRouter.get("/discipline/:dominio", async (req, res) => {
   const dominio = req.params.dominio === "giochi" ? "giochi" : "sport";
-  const discs = db.prepare("SELECT id,chiave,nome,min_giocatori,max_giocatori FROM discipline WHERE dominio=? AND attivo=1 ORDER BY ordine").all(dominio);
-  const out = discs.map((d) => {
-    const gironi = db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(d.id).map((g) => ({
-      nome: g.nome,
-      rows: db.prepare(`SELECT c.nome AS t, c.colore AS c, cl.pg, cl.v, cl.pt
+  const discs = await db.prepare("SELECT id,chiave,nome,min_giocatori,max_giocatori FROM discipline WHERE dominio=? AND attivo=1 ORDER BY ordine").all(dominio);
+  const out = [];
+  for (const d of discs) {
+    const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(d.id);
+    const gironi = [];
+    for (const g of gironiRows) {
+      gironi.push({
+        nome: g.nome,
+        rows: await db.prepare(`SELECT c.nome AS t, c.colore AS c, cl.pg, cl.v, cl.pt
                         FROM classifica cl JOIN casate c ON c.id=cl.casata_id
                         WHERE cl.girone_id=? ORDER BY cl.pt DESC, (cl.gf-cl.gs) DESC, cl.gf DESC, c.nome`).all(g.id)
-    }));
-    const next = db.prepare("SELECT casa_a a,casa_b b,('G'||giornata) wh,luogo court FROM partite WHERE disciplina_id=? AND stato='da_giocare' ORDER BY giornata,id LIMIT 6").all(d.id);
-    const results = db.prepare("SELECT casa_a a,casa_b b,punteggio s FROM partite WHERE disciplina_id=? AND stato='giocata' ORDER BY id DESC LIMIT 6").all(d.id);
-    return { chiave: d.chiave, name: d.nome, min: d.min_giocatori, max: d.max_giocatori, gironi, next, results };
-  });
+      });
+    }
+    const next = await db.prepare("SELECT casa_a a,casa_b b,('G'||giornata) wh,luogo court FROM partite WHERE disciplina_id=? AND stato='da_giocare' ORDER BY giornata,id LIMIT 6").all(d.id);
+    const results = await db.prepare("SELECT casa_a a,casa_b b,punteggio s FROM partite WHERE disciplina_id=? AND stato='giocata' ORDER BY id DESC LIMIT 6").all(d.id);
+    out.push({ chiave: d.chiave, name: d.nome, min: d.min_giocatori, max: d.max_giocatori, gironi, next, results });
+  }
   res.json(out);
 });
-publicRouter.get("/tessera/:code", (req, res) => {
-  const s = db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,c.nome AS casata,c.colore
+publicRouter.get("/tessera/:code", async (req, res) => {
+  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,c.nome AS casata,c.colore
                         FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
                         WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
   if (!s) return res.status(404).json({ error: "Tessera non trovata" });
   res.json(s);
 });
-publicRouter.get("/convocazioni/:code", (req, res) => {
-  const socio = db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.params.code);
+publicRouter.get("/convocazioni/:code", async (req, res) => {
+  const socio = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.params.code);
   if (!socio) return res.json([]);
-  const rows = db.prepare(`SELECT cv.id,cv.match_label,cv.quando,cv.luogo,cv.stato,d.nome disciplina,d.dominio
+  const rows = await db.prepare(`SELECT cv.id,cv.match_label,cv.quando,cv.luogo,cv.stato,d.nome disciplina,d.dominio
                            FROM convocazioni cv JOIN discipline d ON d.id=cv.disciplina_id
                            WHERE cv.socio_id=? ORDER BY cv.created_at DESC`).all(socio.id);
   res.json(rows);
 });
-publicRouter.post("/prenotazioni", (req, res) => {
+publicRouter.post("/prenotazioni", async (req, res) => {
   const { tessera_code, risorsa, giorno, turno, ospiti } = req.body || {};
-  const socio = tessera_code ? db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
-  const ris = risorsa ? db.prepare("SELECT id,nome,tipo FROM risorse WHERE chiave=?").get(risorsa) : null;
+  const socio = tessera_code ? await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
+  const ris = risorsa ? await db.prepare("SELECT id,nome,tipo FROM risorse WHERE chiave=?").get(risorsa) : null;
   if (ris?.tipo === "coworking") {
-    const u = cowoUsati(giorno);
+    const u = await cowoUsati(giorno);
     const richiesti = periodiDi(turno);
     const pieno = richiesti.filter((p) => (u[p] || 0) >= COWO_MAX);
     if (pieno.length) {
@@ -983,30 +1056,30 @@ publicRouter.post("/prenotazioni", (req, res) => {
   }
   if (ris?.tipo === "tavolo") {
     const persone = Math.max(1, Number(req.body?.persone || ospiti) || 1);
-    const usati = db.prepare(`SELECT COALESCE(SUM(CASE WHEN ospiti>0 THEN ospiti ELSE 1 END),0) n FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
-      WHERE r.tipo='tavolo' AND p.stato='confermata' AND p.giorno=? AND p.turno=?`).get(giorno || "", turno || "").n;
+    const usati = (await db.prepare(`SELECT COALESCE(SUM(CASE WHEN ospiti>0 THEN ospiti ELSE 1 END),0) n FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
+      WHERE r.tipo='tavolo' AND p.stato='confermata' AND p.giorno=? AND p.turno=?`).get(giorno || "", turno || "")).n;
     if (usati + persone > TAVOLO_MAX_COPERTI) {
       return res.status(409).json({ ok: false, error: `Turno ${turno || ""} al completo: restano ${Math.max(0, TAVOLO_MAX_COPERTI - usati)} coperti.`, posti_liberi: Math.max(0, TAVOLO_MAX_COPERTI - usati) });
     }
   }
   const coperti = ris?.tipo === "tavolo" ? Math.max(1, Number(req.body?.persone || ospiti) || 1) : Number(ospiti) || 0;
-  const info = db.prepare(`INSERT INTO prenotazioni (socio_id,risorsa_id,risorsa_nome,giorno,turno,ospiti)
+  const info = await db.prepare(`INSERT INTO prenotazioni (socio_id,risorsa_id,risorsa_nome,giorno,turno,ospiti)
                            VALUES (?,?,?,?,?,?)`).run(socio?.id ?? null, ris?.id ?? null, ris?.nome ?? risorsa ?? "Evento", giorno ?? null, turno ?? null, coperti);
   audit(tessera_code || "ospite", "prenotazione", "prenotazioni", info.lastInsertRowid, ris?.nome || "");
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-publicRouter.post("/convocazioni/:id/risposta", (req, res) => {
+publicRouter.post("/convocazioni/:id/risposta", async (req, res) => {
   const { stato } = req.body || {};
   const val = stato === "disponibile" ? "disponibile" : "non_disponibile";
-  const cv = db.prepare("SELECT socio_id FROM convocazioni WHERE id=?").get(req.params.id);
-  db.prepare("UPDATE convocazioni SET stato=? WHERE id=?").run(val, req.params.id);
+  const cv = await db.prepare("SELECT socio_id FROM convocazioni WHERE id=?").get(req.params.id);
+  await db.prepare("UPDATE convocazioni SET stato=? WHERE id=?").run(val, req.params.id);
   let dinieghi = 0, obbligatoria = false;
   if (cv?.socio_id) {
-    const so = db.prepare("SELECT tipo_profilo,dinieghi FROM soci WHERE id=?").get(cv.socio_id);
+    const so = await db.prepare("SELECT tipo_profilo,dinieghi FROM soci WHERE id=?").get(cv.socio_id);
     if (so) {
       if (val === "non_disponibile" && so.tipo_profilo !== "ospite_temporaneo") {
         dinieghi = so.dinieghi + 1;
-        db.prepare("UPDATE soci SET dinieghi=? WHERE id=?").run(dinieghi, cv.socio_id);
+        await db.prepare("UPDATE soci SET dinieghi=? WHERE id=?").run(dinieghi, cv.socio_id);
       } else dinieghi = so.dinieghi;
       obbligatoria = so.tipo_profilo !== "ospite_temporaneo" && dinieghi >= 3;
     }
@@ -1014,10 +1087,10 @@ publicRouter.post("/convocazioni/:id/risposta", (req, res) => {
   audit("socio", "risposta_convocazione", "convocazioni", req.params.id, val);
   res.json({ ok: true, stato: val, dinieghi, obbligatoria });
 });
-publicRouter.post("/proposte", (req, res) => {
+publicRouter.post("/proposte", async (req, res) => {
   const { tessera_code, tipo, titolo, dettaglio } = req.body || {};
-  const socio = tessera_code ? db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
-  const info = db.prepare("INSERT INTO proposte (socio_id,tipo,titolo,dettaglio) VALUES (?,?,?,?)").run(socio?.id ?? null, tipo === "openmic" ? "openmic" : "vinile", titolo ?? "", dettaglio ?? "");
+  const socio = tessera_code ? await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
+  const info = await db.prepare("INSERT INTO proposte (socio_id,tipo,titolo,dettaglio) VALUES (?,?,?,?)").run(socio?.id ?? null, tipo === "openmic" ? "openmic" : "vinile", titolo ?? "", dettaglio ?? "");
   audit(tessera_code || "ospite", "proposta", "proposte", info.lastInsertRowid, tipo || "");
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
@@ -1040,8 +1113,8 @@ function scalaDi(contest) {
   }
   return contest?.tipo === "sfilata" ? SCALA_SFILATA : SCALA_DEFAULT;
 }
-function salvaEsito(contestId, righe, scalaOverride) {
-  const contest = db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
+async function salvaEsito(contestId, righe, scalaOverride) {
+  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
   if (!contest) throw new Error("Contest non trovato");
   if (contest.esito_assegnato) throw new Error("Esito gi\xE0 assegnato alla Coppa: non modificabile");
   const scala = Array.isArray(scalaOverride) ? scalaOverride : scalaDi(contest);
@@ -1059,41 +1132,41 @@ function salvaEsito(contestId, righe, scalaOverride) {
     const placement = pos && pos >= 1 && scala[pos - 1] != null ? scala[pos - 1] : 0;
     const bonus = bonusPer.get(Number(r.casata_id)) || 0;
     const punti = placement + bonus;
-    up.run(contestId, r.casata_id, pos, pezzi, punti);
+    await up.run(contestId, r.casata_id, pos, pezzi, punti);
     out.push({ casata_id: Number(r.casata_id), posizione: pos, pezzi_venduti: pezzi, placement, bonus, punti });
   }
   if (Array.isArray(scalaOverride)) {
-    db.prepare("UPDATE contest SET punti_scala=? WHERE id=?").run(JSON.stringify(scalaOverride), contestId);
+    await db.prepare("UPDATE contest SET punti_scala=? WHERE id=?").run(JSON.stringify(scalaOverride), contestId);
   }
-  db.prepare("UPDATE contest SET stato='in_corso' WHERE id=? AND stato='annunciato'").run(contestId);
+  await db.prepare("UPDATE contest SET stato='in_corso' WHERE id=? AND stato='annunciato'").run(contestId);
   audit("staff", "esito_contest", "contest", contestId, `${out.length} casate`);
   return out;
 }
-function assegnaCoppa(contestId) {
-  const contest = db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
+async function assegnaCoppa(contestId) {
+  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
   if (!contest) throw new Error("Contest non trovato");
   if (contest.esito_assegnato) throw new Error("Punti gi\xE0 assegnati");
-  const esiti = db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId);
+  const esiti = await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId);
   if (!esiti.length) throw new Error("Nessun esito salvato: registra prima la graduatoria");
   const addPunti = db.prepare("UPDATE casate SET punti = punti + ? WHERE id=?");
   let totale = 0;
   for (const e of esiti) {
     if (e.punti) {
-      addPunti.run(e.punti, e.casata_id);
+      await addPunti.run(e.punti, e.casata_id);
       totale += e.punti;
     }
   }
   const primo = esiti.filter((e) => e.posizione === 1)[0];
-  const vincitore = primo ? db.prepare("SELECT nome FROM casate WHERE id=?").get(primo.casata_id)?.nome : null;
-  db.prepare("UPDATE contest SET stato='concluso', esito_assegnato=1, vincitore=? WHERE id=?").run(vincitore || null, contestId);
+  const vincitore = primo ? (await db.prepare("SELECT nome FROM casate WHERE id=?").get(primo.casata_id))?.nome : null;
+  await db.prepare("UPDATE contest SET stato='concluso', esito_assegnato=1, vincitore=? WHERE id=?").run(vincitore || null, contestId);
   audit("staff", "assegna_coppa", "contest", contestId, `${totale} punti \xB7 vince ${vincitore || "\u2014"}`);
   return { totale, vincitore, casate: esiti.length };
 }
-function esitoCorrente(contestId) {
-  const contest = db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
+async function esitoCorrente(contestId) {
+  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
   if (!contest) return null;
-  const casate = db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
-  const esiti = new Map(db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId).map((e) => [e.casata_id, e]));
+  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
+  const esiti = new Map((await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId)).map((e) => [e.casata_id, e]));
   return {
     contest,
     scala: scalaDi(contest),
@@ -1113,10 +1186,10 @@ function esitoCorrente(contestId) {
 }
 
 // server/routes/admin.js
-var adminRouter = Router2();
-adminRouter.post("/login", (req, res) => {
+var adminRouter = asyncify(Router2());
+adminRouter.post("/login", async (req, res) => {
   const { username, password } = req.body || {};
-  const u = db.prepare("SELECT * FROM utenti_admin WHERE username=?").get(username || "");
+  const u = await db.prepare("SELECT * FROM utenti_admin WHERE username=?").get(username || "");
   if (!u || !verifyPassword(password || "", u.password_hash)) {
     audit(username || "?", "login_fallito", "utenti_admin", u?.id ?? "");
     return res.status(401).json({ error: "Credenziali non valide" });
@@ -1140,33 +1213,33 @@ adminRouter.use((req, res, next) => {
   next();
 });
 adminRouter.get("/me", (req, res) => res.json({ user: req.adminUser }));
-adminRouter.get("/stats", (req, res) => {
-  const one = (q) => db.prepare(q).get().n;
+adminRouter.get("/stats", async (req, res) => {
+  const one = async (q) => (await db.prepare(q).get()).n;
   res.json({
-    soci: one("SELECT count(*) n FROM soci WHERE attivo=1"),
-    soci_marketing: one("SELECT count(*) n FROM soci WHERE consenso_marketing=1"),
-    prenotazioni: one("SELECT count(*) n FROM prenotazioni"),
-    prenotazioni_oggi: one("SELECT count(*) n FROM prenotazioni WHERE date(created_at)=date('now')"),
-    proposte: one("SELECT count(*) n FROM proposte WHERE stato='ricevuta'"),
-    convocazioni_aperte: one("SELECT count(*) n FROM convocazioni WHERE stato='aperta'"),
-    per_casata: db.prepare(`SELECT c.nome,c.colore,c.punti,count(s.id) soci
+    soci: await one("SELECT count(*) n FROM soci WHERE attivo=1"),
+    soci_marketing: await one("SELECT count(*) n FROM soci WHERE consenso_marketing=1"),
+    prenotazioni: await one("SELECT count(*) n FROM prenotazioni"),
+    prenotazioni_oggi: await one("SELECT count(*) n FROM prenotazioni WHERE date(created_at)=date('now')"),
+    proposte: await one("SELECT count(*) n FROM proposte WHERE stato='ricevuta'"),
+    convocazioni_aperte: await one("SELECT count(*) n FROM convocazioni WHERE stato='aperta'"),
+    per_casata: await db.prepare(`SELECT c.nome,c.colore,c.punti,count(s.id) soci
                             FROM casate c LEFT JOIN soci s ON s.casata_id=c.id AND s.attivo=1
                             GROUP BY c.id ORDER BY c.punti DESC`).all()
   });
 });
-adminRouter.get("/soci", (req, res) => {
+adminRouter.get("/soci", async (req, res) => {
   const q = `%${(req.query.q || "").toString()}%`;
-  const rows = db.prepare(`SELECT s.*, c.nome AS casata_nome FROM soci s LEFT JOIN casate c ON c.id=s.casata_id
+  const rows = await db.prepare(`SELECT s.*, c.nome AS casata_nome FROM soci s LEFT JOIN casate c ON c.id=s.casata_id
     WHERE s.nome LIKE ? OR s.cognome LIKE ? OR s.email LIKE ? OR s.tessera_code LIKE ?
     ORDER BY s.created_at DESC`).all(q, q, q, q);
   res.json(rows);
 });
-adminRouter.post("/soci", (req, res) => {
+adminRouter.post("/soci", async (req, res) => {
   const b = req.body || {};
   if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
-  const code = b.tessera_code || nextTessera();
+  const code = b.tessera_code || await nextTessera();
   try {
-    const info = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,telefono,data_nascita,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,consenso_foto,notifiche_push,valida_fino,soggiorno_dal,soggiorno_al)
+    const info = await db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,telefono,data_nascita,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,consenso_foto,notifiche_push,valida_fino,soggiorno_dal,soggiorno_al)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       code,
       b.nome,
@@ -1193,11 +1266,11 @@ adminRouter.post("/soci", (req, res) => {
     res.status(400).json({ error: "Tessera duplicata o dati non validi" });
   }
 });
-adminRouter.put("/soci/:id", (req, res) => {
+adminRouter.put("/soci/:id", async (req, res) => {
   const b = req.body || {};
-  const exists = db.prepare("SELECT id FROM soci WHERE id=?").get(req.params.id);
+  const exists = await db.prepare("SELECT id FROM soci WHERE id=?").get(req.params.id);
   if (!exists) return res.status(404).json({ error: "Socio non trovato" });
-  db.prepare(`UPDATE soci SET nome=?,cognome=?,email=?,telefono=?,data_nascita=?,casata_id=?,ruolo=?,tipo_profilo=?,tutore_id=?,lingua=?,
+  await db.prepare(`UPDATE soci SET nome=?,cognome=?,email=?,telefono=?,data_nascita=?,casata_id=?,ruolo=?,tipo_profilo=?,tutore_id=?,lingua=?,
     consenso_privacy=?,consenso_marketing=?,consenso_foto=?,notifiche_push=?,attivo=?,valida_fino=?,soggiorno_dal=?,soggiorno_al=? WHERE id=?`).run(
     b.nome,
     b.cognome,
@@ -1222,221 +1295,238 @@ adminRouter.put("/soci/:id", (req, res) => {
   audit(req.adminUser.username, "modifica", "soci", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/soci/:id/export", (req, res) => {
-  const s = db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
+adminRouter.get("/soci/:id/export", async (req, res) => {
+  const s = await db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
   if (!s) return res.status(404).json({ error: "Socio non trovato" });
-  const prenotazioni = db.prepare("SELECT * FROM prenotazioni WHERE socio_id=?").all(req.params.id);
-  const convocazioni = db.prepare("SELECT * FROM convocazioni WHERE socio_id=?").all(req.params.id);
-  const proposte = db.prepare("SELECT * FROM proposte WHERE socio_id=?").all(req.params.id);
+  const prenotazioni = await db.prepare("SELECT * FROM prenotazioni WHERE socio_id=?").all(req.params.id);
+  const convocazioni = await db.prepare("SELECT * FROM convocazioni WHERE socio_id=?").all(req.params.id);
+  const proposte = await db.prepare("SELECT * FROM proposte WHERE socio_id=?").all(req.params.id);
   audit(req.adminUser.username, "export_gdpr", "soci", req.params.id);
   res.json({ socio: s, prenotazioni, convocazioni, proposte });
 });
-adminRouter.delete("/soci/:id", requireRole("gestore"), (req, res) => {
-  const s = db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(req.params.id);
+adminRouter.delete("/soci/:id", requireRole("gestore"), async (req, res) => {
+  const id = req.params.id;
+  const s = await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(id);
   if (!s) return res.status(404).json({ error: "Socio non trovato" });
-  db.prepare("DELETE FROM soci WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella_gdpr", "soci", req.params.id, s.tessera_code);
+  await db.prepare("DELETE FROM convocazioni WHERE socio_id=?").run(id);
+  await db.prepare("DELETE FROM prenotazioni WHERE socio_id=?").run(id);
+  await db.prepare("DELETE FROM notifiche WHERE socio_id=?").run(id);
+  await db.prepare("UPDATE proposte SET socio_id=NULL WHERE socio_id=?").run(id);
+  await db.prepare("UPDATE serate_prenotazioni SET socio_id=NULL WHERE socio_id=?").run(id);
+  await db.prepare("DELETE FROM soci WHERE tutore_id=?").run(id);
+  await db.prepare("DELETE FROM soci WHERE id=?").run(id);
+  audit(req.adminUser.username, "cancella_gdpr", "soci", id, s.tessera_code);
   res.json({ ok: true });
 });
-adminRouter.put("/casate/:id/punti", (req, res) => {
+adminRouter.put("/casate/:id/punti", async (req, res) => {
   const { punti } = req.body || {};
-  db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
+  await db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
   audit(req.adminUser.username, "punti", "casate", req.params.id, String(punti));
   res.json({ ok: true });
 });
-adminRouter.get("/eventi", (req, res) => {
-  res.json(db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
+adminRouter.get("/eventi", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
 });
-adminRouter.put("/eventi/:id", (req, res) => {
+adminRouter.put("/eventi/:id", async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.attivo ? 1 : 0, req.params.id);
+  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "eventi", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/prenotazioni", (req, res) => {
-  res.json(db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
+adminRouter.get("/prenotazioni", async (req, res) => {
+  res.json(await db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
     LEFT JOIN soci s ON s.id=p.socio_id ORDER BY p.created_at DESC LIMIT 200`).all());
 });
-adminRouter.post("/convocazioni", (req, res) => {
+adminRouter.post("/convocazioni", async (req, res) => {
   const { disciplina_chiave, dominio, casata_id, match_label, quando, luogo } = req.body || {};
-  const disc = db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio || "sport");
+  const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio || "sport");
   if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
-  const soci = db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(casata_id);
+  const soci = await db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(casata_id);
   const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
   const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
   let notificati = 0;
   for (const s of soci) {
-    ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
+    await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
     if (s.notifiche_push) {
-      insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
+      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
       notificati++;
     }
   }
   audit(req.adminUser.username, "convoca", "convocazioni", casata_id, `${soci.length} soci \xB7 ${notificati} notificati`);
   res.status(201).json({ ok: true, convocati: soci.length, notificati });
 });
-adminRouter.get("/proposte", (req, res) => {
-  res.json(db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
+adminRouter.get("/proposte", async (req, res) => {
+  res.json(await db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
     LEFT JOIN soci s ON s.id=pr.socio_id ORDER BY pr.created_at DESC`).all());
 });
-adminRouter.put("/proposte/:id", (req, res) => {
+adminRouter.put("/proposte/:id", async (req, res) => {
   const { stato } = req.body || {};
-  db.prepare("UPDATE proposte SET stato=? WHERE id=?").run(stato || "ricevuta", req.params.id);
+  await db.prepare("UPDATE proposte SET stato=? WHERE id=?").run(stato || "ricevuta", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/bussola", (req, res) => {
-  res.json(db.prepare("SELECT * FROM bussola ORDER BY sezione,ordine").all());
+adminRouter.get("/bussola", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM bussola ORDER BY sezione,ordine").all());
 });
-adminRouter.post("/bussola", (req, res) => {
+adminRouter.post("/bussola", async (req, res) => {
   const b = req.body || {};
-  const info = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
+  const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
   audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.delete("/bussola/:id", (req, res) => {
-  db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
+adminRouter.delete("/bussola/:id", async (req, res) => {
+  await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "bussola", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/luoghi", (req, res) => {
-  res.json(db.prepare("SELECT * FROM luoghi ORDER BY ordine").all());
+adminRouter.get("/luoghi", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM luoghi ORDER BY ordine").all());
 });
-adminRouter.put("/luoghi/:id", (req, res) => {
+adminRouter.put("/luoghi/:id", async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
+  await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
   audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
   res.json({ ok: true });
 });
-adminRouter.get("/discipline", (req, res) => {
-  res.json(db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
+adminRouter.get("/discipline", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
-adminRouter.post("/discipline", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/discipline", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome || !b.chiave || !b.dominio) return res.status(400).json({ error: "Dominio, chiave e nome obbligatori" });
   try {
-    const ord = db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM discipline WHERE dominio=?").get(b.dominio).n || 0;
-    const info = db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,punti_vitt,punti_par,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.dominio === "giochi" ? "giochi" : "sport", b.chiave, b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, ord);
+    const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM discipline WHERE dominio=?").get(b.dominio)).n || 0;
+    const info = await db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,punti_vitt,punti_par,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.dominio === "giochi" ? "giochi" : "sport", b.chiave, b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, ord);
     audit(req.adminUser.username, "crea", "discipline", info.lastInsertRowid, b.nome);
     res.status(201).json({ ok: true, id: info.lastInsertRowid });
   } catch (e) {
     res.status(400).json({ error: "Chiave gi\xE0 esistente per questo dominio" });
   }
 });
-adminRouter.put("/discipline/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/discipline/:id", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE discipline SET nome=?,attivo=?,min_giocatori=?,max_giocatori=?,punti_vitt=?,punti_par=? WHERE id=?").run(b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, req.params.id);
+  await db.prepare("UPDATE discipline SET nome=?,attivo=?,min_giocatori=?,max_giocatori=?,punti_vitt=?,punti_par=? WHERE id=?").run(b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, req.params.id);
   audit(req.adminUser.username, "modifica", "discipline", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/discipline/:id", requireRole("gestore", "staff"), (req, res) => {
-  db.prepare("DELETE FROM discipline WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "discipline", req.params.id);
+adminRouter.delete("/discipline/:id", requireRole("gestore", "staff"), async (req, res) => {
+  const id = req.params.id;
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id);
+  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id);
+  for (const g of gironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(id);
+  await db.prepare("DELETE FROM convocazioni WHERE disciplina_id=?").run(id);
+  await db.prepare("DELETE FROM discipline WHERE id=?").run(id);
+  audit(req.adminUser.username, "cancella", "discipline", id);
   res.json({ ok: true });
 });
-adminRouter.get("/tabellone/:disciplinaId", requireRole("gestore", "staff"), (req, res) => {
-  res.json(getTabellone(Number(req.params.disciplinaId)));
+adminRouter.get("/tabellone/:disciplinaId", requireRole("gestore", "staff"), async (req, res) => {
+  res.json(await getTabellone(Number(req.params.disciplinaId)));
 });
-adminRouter.post("/tabellone/:disciplinaId/genera", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/tabellone/:disciplinaId/genera", requireRole("gestore", "staff"), async (req, res) => {
   try {
-    const t = generaCalendario(Number(req.params.disciplinaId));
+    const t = await generaCalendario(Number(req.params.disciplinaId));
     audit(req.adminUser.username, "genera_calendario", "discipline", req.params.disciplinaId);
     res.json({ ok: true, tabellone: t });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
-adminRouter.put("/partite/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/partite/:id", requireRole("gestore", "staff"), async (req, res) => {
   const a = Number(req.body?.gol_a), b = Number(req.body?.gol_b);
   if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return res.status(400).json({ error: "Punteggi non validi" });
   try {
-    registraRisultato(Number(req.params.id), a, b);
+    await registraRisultato(Number(req.params.id), a, b);
     audit(req.adminUser.username, "risultato", "partite", req.params.id, `${a}-${b}`);
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
-adminRouter.get("/contest", (req, res) => {
-  res.json(db.prepare("SELECT * FROM contest ORDER BY id DESC").all());
+adminRouter.get("/contest", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM contest ORDER BY id DESC").all());
 });
-adminRouter.post("/contest", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/contest", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
-  const info = db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,attivo) VALUES (?,?,?,?,?,?)").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.attivo === false ? 0 : 1);
+  const info = await db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,attivo) VALUES (?,?,?,?,?,?)").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.attivo === false ? 0 : 1);
   audit(req.adminUser.username, "crea", "contest", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/contest/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/contest/:id", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE contest SET titolo=?,tipo=?,settimana=?,brief=?,stato=?,vincitore=?,attivo=? WHERE id=?").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.vincitore ?? null, b.attivo ? 1 : 0, req.params.id);
+  await db.prepare("UPDATE contest SET titolo=?,tipo=?,settimana=?,brief=?,stato=?,vincitore=?,attivo=? WHERE id=?").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.vincitore ?? null, b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "contest", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/contest/:id", requireRole("gestore", "staff"), (req, res) => {
-  db.prepare("DELETE FROM contest WHERE id=?").run(req.params.id);
+adminRouter.delete("/contest/:id", requireRole("gestore", "staff"), async (req, res) => {
+  await db.prepare("DELETE FROM contest_esiti WHERE contest_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM contest WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "contest", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/contest/:id/esito", requireRole("gestore", "staff"), (req, res) => {
-  const e = esitoCorrente(Number(req.params.id));
+adminRouter.get("/contest/:id/esito", requireRole("gestore", "staff"), async (req, res) => {
+  const e = await esitoCorrente(Number(req.params.id));
   if (!e) return res.status(404).json({ error: "Contest non trovato" });
   res.json(e);
 });
-adminRouter.post("/contest/:id/esito", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/contest/:id/esito", requireRole("gestore", "staff"), async (req, res) => {
   try {
     const righe = Array.isArray(req.body?.righe) ? req.body.righe : [];
     const scala = Array.isArray(req.body?.punti_scala) ? req.body.punti_scala.map((n) => Number(n) || 0) : void 0;
-    const out = salvaEsito(Number(req.params.id), righe, scala);
+    const out = await salvaEsito(Number(req.params.id), righe, scala);
     res.json({ ok: true, righe: out });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
-adminRouter.post("/contest/:id/assegna", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/contest/:id/assegna", requireRole("gestore", "staff"), async (req, res) => {
   try {
-    res.json({ ok: true, ...assegnaCoppa(Number(req.params.id)) });
+    res.json({ ok: true, ...await assegnaCoppa(Number(req.params.id)) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
-adminRouter.get("/serate", (req, res) => {
-  const rows = db.prepare("SELECT * FROM serate ORDER BY ordine,data").all();
-  res.json(rows.map((s) => {
-    const p = db.prepare("SELECT COALESCE(SUM(CASE WHEN stato!='annullata' THEN persone ELSE 0 END),0) coperti, COALESCE(SUM(CASE WHEN stato='da_saldare' THEN importo ELSE 0 END),0) da_incassare FROM serate_prenotazioni WHERE serata_id=?").get(s.id);
-    return { ...s, coperti_prenotati: p.coperti, da_incassare: p.da_incassare };
-  }));
+adminRouter.get("/serate", async (req, res) => {
+  const rows = await db.prepare("SELECT * FROM serate ORDER BY ordine,data").all();
+  const out = [];
+  for (const s of rows) {
+    const p = await db.prepare("SELECT COALESCE(SUM(CASE WHEN stato!='annullata' THEN persone ELSE 0 END),0) coperti, COALESCE(SUM(CASE WHEN stato='da_saldare' THEN importo ELSE 0 END),0) da_incassare FROM serate_prenotazioni WHERE serata_id=?").get(s.id);
+    out.push({ ...s, coperti_prenotati: p.coperti, da_incassare: p.da_incassare });
+  }
+  res.json(out);
 });
-adminRouter.post("/serate", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/serate", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
-  const ord = db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM serate").get().n;
-  const info = db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.chiave || null, b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo === false ? 0 : 1, ord);
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM serate").get()).n;
+  const info = await db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.chiave || null, b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo === false ? 0 : 1, ord);
   audit(req.adminUser.username, "crea", "serate", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/serate/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/serate/:id", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo ? 1 : 0, req.params.id);
+  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "serate", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/serate/:id", requireRole("gestore", "staff"), (req, res) => {
-  db.prepare("DELETE FROM serate WHERE id=?").run(req.params.id);
+adminRouter.delete("/serate/:id", requireRole("gestore", "staff"), async (req, res) => {
+  await db.prepare("DELETE FROM serate_prenotazioni WHERE serata_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM serate WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "serate", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/serate/:id/prenotazioni", (req, res) => {
-  res.json(db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? ORDER BY created_at DESC").all(req.params.id));
+adminRouter.get("/serate/:id/prenotazioni", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? ORDER BY created_at DESC").all(req.params.id));
 });
-adminRouter.put("/serate-prenotazioni/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/serate-prenotazioni/:id", requireRole("gestore", "staff"), async (req, res) => {
   const stato = ["da_saldare", "saldata", "annullata"].includes(req.body?.stato) ? req.body.stato : "da_saldare";
-  db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
+  await db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
   audit(req.adminUser.username, "stato_prenotazione_serata", "serate_prenotazioni", req.params.id, stato);
   res.json({ ok: true });
 });
 var oggi = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-adminRouter.get("/cdc/coworking", (req, res) => {
-  const rows = db.prepare(`SELECT p.giorno, p.turno FROM prenotazioni p LEFT JOIN risorse r ON r.id=p.risorsa_id
+adminRouter.get("/cdc/coworking", async (req, res) => {
+  const rows = await db.prepare(`SELECT p.giorno, p.turno FROM prenotazioni p LEFT JOIN risorse r ON r.id=p.risorsa_id
     WHERE p.stato='confermata' AND (r.tipo='coworking' OR p.risorsa_nome LIKE '%oworking%')`).all();
   const periodi = (t) => {
     t = String(t || "").toLowerCase();
@@ -1452,116 +1542,117 @@ adminRouter.get("/cdc/coworking", (req, res) => {
   }
   res.json({ max: 8, giorni: Object.keys(per).map((g) => ({ giorno: g, ...per[g] })) });
 });
-adminRouter.get("/cdc/caffe", (req, res) => {
-  const cfg = db.prepare("SELECT * FROM cdc_caffe WHERE id=1").get() || { giacenza: 0, punto_riordino: 40, confezione: 100 };
-  const conte = db.prepare("SELECT * FROM cdc_caffe_conte ORDER BY id DESC LIMIT 30").all();
+adminRouter.get("/cdc/caffe", async (req, res) => {
+  const cfg = await db.prepare("SELECT * FROM cdc_caffe WHERE id=1").get() || { giacenza: 0, punto_riordino: 40, confezione: 100 };
+  const conte = await db.prepare("SELECT * FROM cdc_caffe_conte ORDER BY id DESC LIMIT 30").all();
   const daRiordinare = cfg.giacenza <= cfg.punto_riordino;
   const suggerito = daRiordinare ? Math.max(cfg.confezione, Math.ceil((cfg.punto_riordino * 2 - cfg.giacenza) / Math.max(1, cfg.confezione)) * cfg.confezione) : 0;
   res.json({ config: cfg, conte, da_riordinare: daRiordinare, ordine_suggerito: suggerito });
 });
-adminRouter.put("/cdc/caffe", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/cdc/caffe", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE cdc_caffe SET punto_riordino=?,confezione=? WHERE id=1").run(Number(b.punto_riordino) || 0, Number(b.confezione) || 1);
+  await db.prepare("UPDATE cdc_caffe SET punto_riordino=?,confezione=? WHERE id=1").run(Number(b.punto_riordino) || 0, Number(b.confezione) || 1);
   audit(req.adminUser.username, "modifica", "cdc_caffe", 1, `riordino ${b.punto_riordino}`);
   res.json({ ok: true });
 });
-adminRouter.post("/cdc/caffe/conta", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/cdc/caffe/conta", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
   const g = Math.max(0, Number(b.giacenza) || 0);
-  const prev = db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
+  const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
   const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
-  db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), b.ora || "16:00", g, consumo, req.adminUser.username, b.note || "");
-  db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
+  await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), b.ora || "16:00", g, consumo, req.adminUser.username, b.note || "");
+  await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
   audit(req.adminUser.username, "conta_caffe", "cdc_caffe", 1, `giacenza ${g}`);
   res.json({ ok: true, giacenza: g, consumo });
 });
-adminRouter.get("/cdc/giochi", (req, res) => res.json(db.prepare("SELECT * FROM cdc_giochi ORDER BY ordine,id").all()));
-adminRouter.post("/cdc/giochi", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.get("/cdc/giochi", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_giochi ORDER BY ordine,id").all()));
+adminRouter.post("/cdc/giochi", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
-  const ord = db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM cdc_giochi").get().n;
-  const info = db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,note,ordine) VALUES (?,?,?,?,?,?)").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", ord);
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM cdc_giochi").get()).n;
+  const info = await db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,note,ordine) VALUES (?,?,?,?,?,?)").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", ord);
   audit(req.adminUser.username, "crea", "cdc_giochi", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/cdc/giochi/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/cdc/giochi/:id", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE cdc_giochi SET nome=?,categoria=?,quantita=?,stato=?,note=? WHERE id=?").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", req.params.id);
+  await db.prepare("UPDATE cdc_giochi SET nome=?,categoria=?,quantita=?,stato=?,note=? WHERE id=?").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", req.params.id);
   audit(req.adminUser.username, "modifica", "cdc_giochi", req.params.id, b.stato || "");
   res.json({ ok: true });
 });
-adminRouter.delete("/cdc/giochi/:id", requireRole("gestore", "staff"), (req, res) => {
-  db.prepare("DELETE FROM cdc_giochi WHERE id=?").run(req.params.id);
+adminRouter.delete("/cdc/giochi/:id", requireRole("gestore", "staff"), async (req, res) => {
+  await db.prepare("DELETE FROM cdc_giochi WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "cdc_giochi", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/cdc/prestiti", (req, res) => res.json(db.prepare("SELECT * FROM cdc_prestiti ORDER BY id DESC LIMIT 100").all()));
-adminRouter.post("/cdc/prestiti", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.get("/cdc/prestiti", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_prestiti ORDER BY id DESC LIMIT 100").all()));
+adminRouter.post("/cdc/prestiti", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  const info = db.prepare("INSERT INTO cdc_prestiti (gioco_id,gioco_nome,giocatore,data,ora_inizio,ora_fine,note) VALUES (?,?,?,?,?,?,?)").run(b.gioco_id || null, b.gioco_nome || "", b.giocatore || "", b.data || oggi(), b.ora_inizio || "", b.ora_fine || "", b.note || "");
+  const info = await db.prepare("INSERT INTO cdc_prestiti (gioco_id,gioco_nome,giocatore,data,ora_inizio,ora_fine,note) VALUES (?,?,?,?,?,?,?)").run(b.gioco_id || null, b.gioco_nome || "", b.giocatore || "", b.data || oggi(), b.ora_inizio || "", b.ora_fine || "", b.note || "");
   audit(req.adminUser.username, "prestito", "cdc_prestiti", info.lastInsertRowid, b.gioco_nome || "");
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/cdc/prestiti/:id", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.put("/cdc/prestiti/:id", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  db.prepare("UPDATE cdc_prestiti SET ora_fine=?,note=? WHERE id=?").run(b.ora_fine || "", b.note || "", req.params.id);
+  await db.prepare("UPDATE cdc_prestiti SET ora_fine=?,note=? WHERE id=?").run(b.ora_fine || "", b.note || "", req.params.id);
   audit(req.adminUser.username, "riconsegna", "cdc_prestiti", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/cdc/check", (req, res) => res.json(db.prepare("SELECT id,data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,(foto IS NOT NULL AND foto<>'') AS has_foto,created_at FROM cdc_check ORDER BY id DESC LIMIT 60").all()));
-adminRouter.get("/cdc/check/:id/foto", (req, res) => {
-  const r = db.prepare("SELECT foto FROM cdc_check WHERE id=?").get(req.params.id);
+adminRouter.get("/cdc/check", async (req, res) => res.json(await db.prepare("SELECT id,data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,(foto IS NOT NULL AND foto<>'') AS has_foto,created_at FROM cdc_check ORDER BY id DESC LIMIT 60").all()));
+adminRouter.get("/cdc/check/:id/foto", async (req, res) => {
+  const r = await db.prepare("SELECT foto FROM cdc_check WHERE id=?").get(req.params.id);
   if (!r || !r.foto) return res.status(404).json({ error: "Nessuna foto" });
   res.json({ foto: r.foto });
 });
-adminRouter.post("/cdc/check", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/cdc/check", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
-  const info = db.prepare("INSERT INTO cdc_check (data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,foto) VALUES (?,?,?,?,?,?,?)").run(b.data || oggi(), req.adminUser.username, b.caffe_giacenza != null && b.caffe_giacenza !== "" ? Number(b.caffe_giacenza) : null, b.strumenti_note || "", b.arredi_note || "", b.esito || "ok", b.foto || null);
+  const info = await db.prepare("INSERT INTO cdc_check (data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,foto) VALUES (?,?,?,?,?,?,?)").run(b.data || oggi(), req.adminUser.username, b.caffe_giacenza != null && b.caffe_giacenza !== "" ? Number(b.caffe_giacenza) : null, b.strumenti_note || "", b.arredi_note || "", b.esito || "ok", b.foto || null);
   if (b.caffe_giacenza != null && b.caffe_giacenza !== "") {
     const g = Math.max(0, Number(b.caffe_giacenza) || 0);
-    const prev = db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
+    const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
     const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
-    db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), "16:00", g, consumo, req.adminUser.username, "da check");
-    db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
+    await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), "16:00", g, consumo, req.adminUser.username, "da check");
+    await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
   }
   audit(req.adminUser.username, "check", "cdc_check", info.lastInsertRowid, b.esito || "ok");
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.get("/allegati", (req, res) => {
-  res.json(db.prepare("SELECT id,entita,entita_id,nota,autore,created_at FROM allegati WHERE entita=? AND entita_id=? ORDER BY id DESC").all(req.query.entita || "", String(req.query.entita_id || "")));
+adminRouter.get("/allegati", async (req, res) => {
+  res.json(await db.prepare("SELECT id,entita,entita_id,nota,autore,created_at FROM allegati WHERE entita=? AND entita_id=? ORDER BY id DESC").all(req.query.entita || "", String(req.query.entita_id || "")));
 });
-adminRouter.get("/allegati/:id/foto", (req, res) => {
-  const r = db.prepare("SELECT immagine FROM allegati WHERE id=?").get(req.params.id);
+adminRouter.get("/allegati/:id/foto", async (req, res) => {
+  const r = await db.prepare("SELECT immagine FROM allegati WHERE id=?").get(req.params.id);
   if (!r) return res.status(404).json({ error: "Non trovato" });
   res.json({ foto: r.immagine });
 });
-adminRouter.post("/allegati", requireRole("gestore", "staff"), (req, res) => {
+adminRouter.post("/allegati", requireRole("gestore", "staff"), async (req, res) => {
   const b = req.body || {};
   if (!b.immagine) return res.status(400).json({ error: "Immagine mancante" });
-  const info = db.prepare("INSERT INTO allegati (entita,entita_id,immagine,nota,autore) VALUES (?,?,?,?,?)").run(b.entita || "generico", String(b.entita_id || ""), b.immagine, b.nota || "", req.adminUser.username);
+  const info = await db.prepare("INSERT INTO allegati (entita,entita_id,immagine,nota,autore) VALUES (?,?,?,?,?)").run(b.entita || "generico", String(b.entita_id || ""), b.immagine, b.nota || "", req.adminUser.username);
   audit(req.adminUser.username, "foto", b.entita || "allegati", b.entita_id || info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.get("/db/info", (req, res) => {
+adminRouter.get("/db/info", async (req, res) => {
   let size = 0;
   try {
     size = statSync(DB_PATH).size;
   } catch (_) {
   }
-  const persistente = /^\/var\/data\b|^\/data\b/.test(DB_PATH) || process.env.KOINE_PERSISTENT === "1";
+  const persistente = IS_REMOTE || /^\/var\/data\b|^\/data\b/.test(DB_PATH) || process.env.KOINE_PERSISTENT === "1";
   res.json({
     path: DB_PATH,
+    tipo: IS_REMOTE ? "gestito (Turso/libSQL)" : DB_PATH === ":memory:" ? "memoria" : "file locale",
     size_kb: Math.round(size / 1024),
     persistente,
-    wal: DB_PATH !== ":memory:",
-    soci: db.prepare("SELECT count(*) n FROM soci").get().n
+    soci: (await db.prepare("SELECT count(*) n FROM soci").get()).n
   });
 });
-adminRouter.get("/db/backup", requireRole("gestore"), (req, res) => {
+adminRouter.get("/db/backup", requireRole("gestore"), async (req, res) => {
   if (DB_PATH === ":memory:") return res.status(400).json({ error: "Database in memoria: nessun backup su file" });
+  if (IS_REMOTE) return res.status(400).json({ error: "Database gestito (Turso): i backup/point-in-time sono gestiti dal provider. Per un estratto usa l\u2019export dei soci." });
   const tmp = `/tmp/koine-backup-${Date.now()}.db`;
   try {
-    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    await db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
     const buf = readFileSync(tmp);
     try {
       unlinkSync(tmp);
@@ -1576,18 +1667,18 @@ adminRouter.get("/db/backup", requireRole("gestore"), (req, res) => {
     res.status(500).json({ error: "Backup non riuscito: " + e.message });
   }
 });
-adminRouter.get("/audit", (req, res) => {
-  res.json(db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
+adminRouter.get("/audit", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
 });
-function nextTessera() {
+async function nextTessera() {
   const year = 2026;
-  const n = db.prepare("SELECT count(*) c FROM soci").get().c + 1;
+  const n = (await db.prepare("SELECT count(*) c FROM soci").get()).c + 1;
   return `BR-${year}-${String(n).padStart(4, "0")}`;
 }
 
 // server/routes/authuser.js
 import { Router as Router3 } from "express";
-var authUserRouter = Router3();
+var authUserRouter = asyncify(Router3());
 var DEV = (process.env.KOINE_ENV || "dev") !== "prod";
 function requireUser(req, res, next) {
   const token = (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
@@ -1596,81 +1687,82 @@ function requireUser(req, res, next) {
   req.user = u;
   next();
 }
-authUserRouter.post("/request-otp", (req, res) => {
+authUserRouter.post("/request-otp", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   if (!email || !email.includes("@")) return res.status(400).json({ error: "E-mail non valida" });
-  const socio = db.prepare("SELECT id FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+  const socio = await db.prepare("SELECT id FROM soci WHERE lower(email)=? AND attivo=1").get(email);
   const code = genOtp();
   const exp = Date.now() + 10 * 60 * 1e3;
-  db.prepare("INSERT INTO otp (email,code,exp) VALUES (?,?,?)").run(email, code, exp);
+  await db.prepare("INSERT INTO otp (email,code,exp) VALUES (?,?,?)").run(email, code, exp);
   audit(email, "otp_richiesto", "otp", "", socio ? "utente noto" : "email sconosciuta");
   res.json({ ok: true, ...DEV ? { dev_code: code, dev_note: "In produzione arriva via e-mail/SMS; qui \xE8 mostrato solo per test." } : {} });
 });
-authUserRouter.post("/login-tessera", (req, res) => {
+authUserRouter.post("/login-tessera", async (req, res) => {
   const code = String(req.body?.tessera_code || "").trim().toUpperCase();
   if (!code) return res.status(400).json({ error: "Codice tessera mancante" });
-  const socio = db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(code);
+  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(code);
   if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
   const token = createUserSession(socio);
   audit(socio.tessera_code, "login_tessera", "soci", socio.id);
-  const casata = db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
+  const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
   res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
 });
-authUserRouter.post("/verify-otp", (req, res) => {
+authUserRouter.post("/verify-otp", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const code = String(req.body?.code || "").trim();
-  const row = db.prepare("SELECT * FROM otp WHERE email=? AND code=? AND used=0 ORDER BY id DESC").get(email, code);
+  const row = await db.prepare("SELECT * FROM otp WHERE email=? AND code=? AND used=0 ORDER BY id DESC").get(email, code);
   if (!row || Date.now() > row.exp) return res.status(401).json({ error: "Codice non valido o scaduto" });
-  db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
-  const socio = db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+  await db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
+  const socio = await db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
   if (!socio) return res.status(404).json({ error: "Nessun profilo associato a questa e-mail" });
   const token = createUserSession(socio);
   audit(socio.tessera_code, "login_utente", "soci", socio.id);
-  const casata = db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
+  const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
   res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
 });
-authUserRouter.post("/notifiche/consenso", requireUser, (req, res) => {
+authUserRouter.post("/notifiche/consenso", requireUser, async (req, res) => {
   const on = req.body?.attivo ? 1 : 0;
-  db.prepare("UPDATE soci SET notifiche_push=? WHERE tessera_code=?").run(on, req.user.tessera_code);
+  await db.prepare("UPDATE soci SET notifiche_push=? WHERE tessera_code=?").run(on, req.user.tessera_code);
   audit(req.user.tessera_code, "consenso_notifiche", "soci", "", on ? "attivo" : "disattivo");
   res.json({ ok: true, attivo: !!on });
 });
-authUserRouter.post("/convoca", requireUser, (req, res) => {
-  const me = db.prepare("SELECT id, casata_id, ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+authUserRouter.post("/convoca", requireUser, async (req, res) => {
+  const me = await db.prepare("SELECT id, casata_id, ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
   if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
   if (!me.casata_id) return res.status(400).json({ error: "Nessuna casata associata" });
   const { dominio, disciplina_chiave, match_label, quando, luogo } = req.body || {};
-  const disc = db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio === "giochi" ? "giochi" : "sport");
+  const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio === "giochi" ? "giochi" : "sport");
   if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
-  const soci = db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(me.casata_id);
+  const soci = await db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(me.casata_id);
   const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
   const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
   let notificati = 0;
   for (const s of soci) {
-    ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
+    await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
     if (s.notifiche_push) {
-      insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
+      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
       notificati++;
     }
   }
   audit(req.user.tessera_code, "convoca_capitano", "convocazioni", me.casata_id, `${soci.length} soci`);
   res.status(201).json({ ok: true, convocati: soci.length, notificati });
 });
-authUserRouter.get("/capitano/partite", requireUser, (req, res) => {
-  const me = db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+authUserRouter.get("/capitano/partite", requireUser, async (req, res) => {
+  const me = await db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
   if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
   const cas = me.casata_id;
-  const partite = db.prepare(`SELECT p.id, p.giornata, p.casata_a_id, p.casata_b_id, p.casa_a, p.casa_b,
+  const partite = await db.prepare(`SELECT p.id, p.giornata, p.casata_a_id, p.casata_b_id, p.casa_a, p.casa_b,
       d.id disc_id, d.nome disciplina, d.dominio, d.min_giocatori minimo, d.max_giocatori massimo
     FROM partite p JOIN discipline d ON d.id=p.disciplina_id
     WHERE p.stato='da_giocare' AND d.attivo=1 AND (p.casata_a_id=? OR p.casata_b_id=?)
     ORDER BY d.dominio, d.ordine, p.giornata, p.id`).all(cas, cas);
-  const membri = db.prepare("SELECT id,nome,cognome FROM soci WHERE casata_id=? AND attivo=1 ORDER BY nome").all(cas);
-  const out = partite.map((p) => {
-    const conv = db.prepare("SELECT socio_id,stato FROM convocazioni WHERE partita_id=? AND socio_id IN (SELECT id FROM soci WHERE casata_id=?)").all(p.id, cas);
+  const membri = await db.prepare("SELECT id,nome,cognome FROM soci WHERE casata_id=? AND attivo=1 ORDER BY nome").all(cas);
+  const out = [];
+  for (const p of partite) {
+    const conv = await db.prepare("SELECT socio_id,stato FROM convocazioni WHERE partita_id=? AND socio_id IN (SELECT id FROM soci WHERE casata_id=?)").all(p.id, cas);
     const byS = {};
     conv.forEach((c) => byS[c.socio_id] = c.stato);
-    return {
+    out.push({
       partita_id: p.id,
       disciplina: p.disciplina,
       dominio: p.dominio,
@@ -1681,15 +1773,15 @@ authUserRouter.get("/capitano/partite", requireUser, (req, res) => {
       disponibili: conv.filter((c) => c.stato === "disponibile").length,
       convocati: conv.length,
       membri: membri.map((m) => ({ id: m.id, nome: `${m.nome} ${m.cognome}`.trim(), stato: byS[m.id] || "non_convocato" }))
-    };
-  });
+    });
+  }
   res.json(out);
 });
-authUserRouter.post("/capitano/convoca-mirata", requireUser, (req, res) => {
-  const me = db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+authUserRouter.post("/capitano/convoca-mirata", requireUser, async (req, res) => {
+  const me = await db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
   if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
   const { partita_id, socio_ids } = req.body || {};
-  const p = db.prepare("SELECT p.*, d.nome disc, d.id disc_id FROM partite p JOIN discipline d ON d.id=p.disciplina_id WHERE p.id=?").get(partita_id);
+  const p = await db.prepare("SELECT p.*, d.nome disc, d.id disc_id FROM partite p JOIN discipline d ON d.id=p.disciplina_id WHERE p.id=?").get(partita_id);
   if (!p) return res.status(400).json({ error: "Partita inesistente" });
   if (p.casata_a_id !== me.casata_id && p.casata_b_id !== me.casata_id) return res.status(403).json({ error: "Partita non della tua casata" });
   const label = `${p.casa_a} vs ${p.casa_b} \xB7 G${p.giornata}`;
@@ -1698,24 +1790,24 @@ authUserRouter.post("/capitano/convoca-mirata", requireUser, (req, res) => {
   const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
   let n = 0;
   for (const sid of ids) {
-    const s = db.prepare("SELECT id,notifiche_push FROM soci WHERE id=? AND casata_id=? AND attivo=1").get(sid, me.casata_id);
+    const s = await db.prepare("SELECT id,notifiche_push FROM soci WHERE id=? AND casata_id=? AND attivo=1").get(sid, me.casata_id);
     if (!s) continue;
-    if (db.prepare("SELECT id FROM convocazioni WHERE partita_id=? AND socio_id=?").get(partita_id, sid)) continue;
-    insC.run(sid, p.disc_id, partita_id, label, "", "");
-    if (s.notifiche_push) insN.run(sid, "push", "casata", "Convocazione \xB7 " + p.disc, label);
+    if (await db.prepare("SELECT id FROM convocazioni WHERE partita_id=? AND socio_id=?").get(partita_id, sid)) continue;
+    await insC.run(sid, p.disc_id, partita_id, label, "", "");
+    if (s.notifiche_push) await insN.run(sid, "push", "casata", "Convocazione \xB7 " + p.disc, label);
     n++;
   }
   audit(req.user.tessera_code, "convoca_mirata", "partite", partita_id, `${n} convocati`);
   res.status(201).json({ ok: true, convocati: n });
 });
-authUserRouter.get("/notifiche", requireUser, (req, res) => {
-  const socio = db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
-  const rows = socio ? db.prepare("SELECT id,tipo,titolo,corpo,letta,created_at FROM notifiche WHERE socio_id=? ORDER BY created_at DESC LIMIT 50").all(socio.id) : [];
+authUserRouter.get("/notifiche", requireUser, async (req, res) => {
+  const socio = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+  const rows = socio ? await db.prepare("SELECT id,tipo,titolo,corpo,letta,created_at FROM notifiche WHERE socio_id=? ORDER BY created_at DESC LIMIT 50").all(socio.id) : [];
   res.json(rows);
 });
 
 // server/version.js
-var VERSION = "3.04";
+var VERSION = "4.0";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -3589,15 +3681,15 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-14 11:29" : "online";
+var BUILD = true ? "2026-08-14 13:01" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
   process.exit(1);
 }
 var PORT = process.env.PORT || 4e3;
-initSchema();
-seed();
+await initSchema();
+await seed();
 var app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "8mb" }));
@@ -3625,6 +3717,11 @@ app.use("/api/admin", adminRouter);
 app.get(["/", "/index.html"], (req, res) => res.type("html").send(frontend_default));
 app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => res.type("html").send(admin_default));
 app.use((req, res) => res.status(404).json({ error: "Non trovato" }));
+app.use((err, req, res, next) => {
+  console.error("Errore API:", err?.message || err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "Errore interno" });
+});
 app.listen(PORT, () => {
   console.log("\n  Bussola Residence \xB7 by KOIN\xC8 \u2014 online");
   console.log(`  App ospiti:   porta ${PORT}, percorso /`);
