@@ -1670,7 +1670,7 @@ authUserRouter.get("/notifiche", requireUser, (req, res) => {
 });
 
 // server/version.js
-var VERSION = "3.01";
+var VERSION = "3.02";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2629,6 +2629,31 @@ var admin_default = `<!DOCTYPE html>
   .muted{color:var(--mute);font-size:13px;}
   .barwrap{background:#eee;border-radius:6px;height:10px;overflow:hidden;width:120px;display:inline-block;vertical-align:middle;}
   .barwrap span{display:block;height:100%;}
+  /* Hamburger + drawer (solo mobile) */
+  .navToggle{display:none;background:var(--navy);color:#fff;border:none;border-radius:9px;padding:7px 12px;font-size:18px;line-height:1;}
+  .scrim{display:none;position:fixed;inset:0;background:rgba(9,20,33,.45);z-index:40;}
+  /* ===== Responsive: back office usabile da cellulare ===== */
+  @media (max-width:820px){
+    #app{grid-template-columns:1fr;}
+    aside{position:fixed;top:0;left:0;bottom:0;width:240px;z-index:45;transform:translateX(-100%);transition:transform .22s ease;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+    #app.nav-open aside{transform:translateX(0);box-shadow:0 0 40px rgba(0,0,0,.4);}
+    #app.nav-open .scrim{display:block;}
+    main{padding:14px 12px;}
+    .top{flex-wrap:wrap;gap:10px;align-items:center;}
+    .top h2{font-size:20px;order:2;}
+    .navToggle{display:inline-block;order:1;}
+    .who{order:3;width:100%;}
+    .grid2{grid-template-columns:1fr;}
+    .panel{overflow-x:auto;padding:14px;}
+    .panel table{min-width:520px;}
+    .modal{padding:10px;}
+    .modal .box{width:100%;padding:18px;max-height:94vh;}
+    .cards{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));}
+    .row{gap:8px;}
+    /* iOS: font >=16px sui campi evita lo zoom automatico che scombina il layout */
+    input,select,textarea{font-size:16px;}
+    .btn.sm{padding:9px 12px;}
+  }
 </style>
 </head>
 <body>
@@ -2666,9 +2691,10 @@ var admin_default = `<!DOCTYPE html>
       </nav>
     </aside>
     <main>
-      <div class="top"><h2 id="viewTitle">Cruscotto</h2><div class="who">Accesso: <b id="whoName"></b> \xB7 <a href="#" id="logout">esci</a></div></div>
+      <div class="top"><button class="navToggle" id="navToggle" aria-label="Menu">\u2630</button><h2 id="viewTitle">Cruscotto</h2><div class="who">Accesso: <b id="whoName"></b> \xB7 <a href="#" id="logout">esci</a></div></div>
       <div id="view"></div>
     </main>
+    <div class="scrim" id="navScrim"></div>
   </div>
 
   <div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
@@ -3400,8 +3426,11 @@ function closeModal() { $('#modal').classList.remove('show'); }
 $('#loginBtn').onclick = login;
 $('#p').onkeydown = (e) => { if (e.key === 'Enter') login(); };
 $('#logout').onclick = (e) => { e.preventDefault(); api('/logout', { method:'POST' }).catch(()=>{}); logout(); };
-document.querySelectorAll('#menu button').forEach(b => b.onclick = () => show(b.dataset.v));
+document.querySelectorAll('#menu button').forEach(b => b.onclick = () => { show(b.dataset.v); document.getElementById('app').classList.remove('nav-open'); });
 $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
+// Menu a scomparsa su cellulare (hamburger + sfondo cliccabile)
+if ($('#navToggle')) $('#navToggle').onclick = () => document.getElementById('app').classList.toggle('nav-open');
+if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app').classList.remove('nav-open');
 
 // Mostra la versione REALMENTE online (dal server), cos\xEC sappiamo cosa \xE8 pubblicato
 (async () => {
@@ -3417,7 +3446,7 @@ $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-14 07:20" : "online";
+var BUILD = true ? "2026-08-14 08:10" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
