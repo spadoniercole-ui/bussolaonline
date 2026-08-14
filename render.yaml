@@ -1,0 +1,21 @@
+# Blueprint Render — Bussola Residence (beta con dati persistenti)
+services:
+  - type: web
+    name: bussola-residence
+    runtime: node
+    region: frankfurt            # data center in UE (GDPR)
+    plan: starter                # i dischi richiedono un piano a pagamento (~7 $/mese)
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    disk:
+      name: bussola-data
+      mountPath: /var/data       # il disco persistente vive qui
+      sizeGB: 1
+    envVars:
+      - key: KOINE_DB            # il database vive sul disco persistente
+        value: /var/data/koine.db
+      - key: ADMIN_PASSWORD      # password del gestore (impostala nel pannello, non nel file)
+        sync: false
+      - key: STAFF_PASSWORD      # password dell'account staff
+        sync: false

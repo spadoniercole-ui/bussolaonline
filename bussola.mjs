@@ -1024,6 +1024,7 @@ publicRouter.post("/proposte", (req, res) => {
 
 // server/routes/admin.js
 import { Router as Router2 } from "express";
+import { readFileSync, unlinkSync, statSync } from "node:fs";
 
 // server/contest.js
 var SCALA_DEFAULT = [10, 6, 4, 3, 2, 1, 1, 1];
@@ -1541,6 +1542,40 @@ adminRouter.post("/allegati", requireRole("gestore", "staff"), (req, res) => {
   audit(req.adminUser.username, "foto", b.entita || "allegati", b.entita_id || info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
+adminRouter.get("/db/info", (req, res) => {
+  let size = 0;
+  try {
+    size = statSync(DB_PATH).size;
+  } catch (_) {
+  }
+  const persistente = /^\/var\/data\b|^\/data\b/.test(DB_PATH) || process.env.KOINE_PERSISTENT === "1";
+  res.json({
+    path: DB_PATH,
+    size_kb: Math.round(size / 1024),
+    persistente,
+    wal: DB_PATH !== ":memory:",
+    soci: db.prepare("SELECT count(*) n FROM soci").get().n
+  });
+});
+adminRouter.get("/db/backup", requireRole("gestore"), (req, res) => {
+  if (DB_PATH === ":memory:") return res.status(400).json({ error: "Database in memoria: nessun backup su file" });
+  const tmp = `/tmp/koine-backup-${Date.now()}.db`;
+  try {
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    const buf = readFileSync(tmp);
+    try {
+      unlinkSync(tmp);
+    } catch (_) {
+    }
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="koine-backup-${stamp}.db"`);
+    audit(req.adminUser.username, "backup_db", "database", 0, `${buf.length} byte`);
+    res.send(buf);
+  } catch (e) {
+    res.status(500).json({ error: "Backup non riuscito: " + e.message });
+  }
+});
 adminRouter.get("/audit", (req, res) => {
   res.json(db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
 });
@@ -1680,7 +1715,7 @@ authUserRouter.get("/notifiche", requireUser, (req, res) => {
 });
 
 // server/version.js
-var VERSION = "3.03";
+var VERSION = "3.04";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2748,10 +2783,10 @@ var admin_default = `<!DOCTYPE html>
       <p>Back office \xB7 gestione soci e progetto</p>
       <p class="muted" id="verline" style="margin:2px 0 6px; font-weight:700">versione online: \u2026</p>
       <label for="u">Utente</label><input id="u" value="gestore" autocomplete="username">
-      <label for="p">Password</label><input id="p" type="password" value="koine2026" autocomplete="current-password">
+      <label for="p">Password</label><input id="p" type="password" value="" placeholder="password del gestore" autocomplete="current-password">
       <div class="err" id="loginErr"></div>
       <button class="btn gold" style="width:100%;margin-top:14px" id="loginBtn">Entra</button>
-      <p class="muted" style="margin-top:12px">Demo: gestore / koine2026 \u2014 da cambiare al primo accesso reale.</p>
+      <p class="muted" style="margin-top:12px">La password del gestore si imposta su Render con la variabile <b>ADMIN_PASSWORD</b>.</p>
     </div>
   </div>
 
@@ -2837,11 +2872,30 @@ VIEWS.dashboard = async () => {
     ['Oggi', s.prenotazioni_oggi], ['Proposte da leggere', s.proposte], ['Convocazioni aperte', s.convocazioni_aperte],
   ];
   const max = Math.max(...s.per_casata.map(c => c.punti), 1);
+  const info = await api('/db/info').catch(() => null);
+  const dbPanel = info ? \`<div class="panel"><h3>Database & backup</h3>
+      <p class="muted" style="margin-bottom:8px">Dati: <b>\${esc(info.path)}</b> \xB7 \${info.size_kb} KB \xB7 \${info.soci} soci \xB7
+        \${info.persistente ? '<span class="tag ok">disco persistente \u2713</span>' : '<span class="tag no">NON persistente \u2014 i dati si azzerano al riavvio</span>'}</p>
+      \${info.persistente ? '' : '<p class="muted" style="margin-bottom:8px">Per rendere permanenti i dati: monta un disco su Render e imposta <b>KOINE_DB</b> (vedi runbook).</p>'}
+      <button class="btn gold sm" id="db_backup">\u2B07\uFE0E Scarica backup (.db)</button>
+      <span class="muted" id="db_msg" style="margin-left:8px"></span></div>\` : '';
   $('#view').innerHTML = \`
     <div class="cards">\${cards.map(c => \`<div class="stat"><div class="n">\${c[1]}</div><div class="l">\${c[0]}</div></div>\`).join('')}</div>
     <div class="panel"><h3>Coppa delle Casate & soci per casata</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
       \${s.per_casata.map(c => \`<tr><td><b>\${esc(c.nome)}</b></td><td>\${c.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(c.punti/max*100)}%;background:\${c.colore}"></span></span></td><td>\${c.soci}</td></tr>\`).join('')}
-    </tbody></table></div>\`;
+    </tbody></table></div>
+    \${dbPanel}\`;
+  if (info) $('#db_backup').onclick = async () => {
+    $('#db_msg').textContent = 'preparo\u2026';
+    try {
+      const r = await fetch(API_BASE + '/api/admin/db/backup', { headers: { Authorization: 'Bearer ' + TOKEN } });
+      if (!r.ok) throw new Error(r.status);
+      const blob = await r.blob();
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = 'koine-backup-' + new Date().toISOString().slice(0, 10) + '.db'; a.click();
+      $('#db_msg').textContent = 'scaricato \u2713';
+    } catch (e) { $('#db_msg').textContent = 'non riuscito (serve ruolo gestore)'; }
+  };
 };
 
 // ---- Soci ----
@@ -3535,7 +3589,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-14 09:54" : "online";
+var BUILD = true ? "2026-08-14 11:29" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
