@@ -1571,6 +1571,16 @@ authUserRouter.post("/request-otp", (req, res) => {
   audit(email, "otp_richiesto", "otp", "", socio ? "utente noto" : "email sconosciuta");
   res.json({ ok: true, ...DEV ? { dev_code: code, dev_note: "In produzione arriva via e-mail/SMS; qui \xE8 mostrato solo per test." } : {} });
 });
+authUserRouter.post("/login-tessera", (req, res) => {
+  const code = String(req.body?.tessera_code || "").trim().toUpperCase();
+  if (!code) return res.status(400).json({ error: "Codice tessera mancante" });
+  const socio = db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(code);
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const token = createUserSession(socio);
+  audit(socio.tessera_code, "login_tessera", "soci", socio.id);
+  const casata = db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
+  res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
+});
 authUserRouter.post("/verify-otp", (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const code = String(req.body?.code || "").trim();
@@ -1670,7 +1680,7 @@ authUserRouter.get("/notifiche", requireUser, (req, res) => {
 });
 
 // server/version.js
-var VERSION = "3.02";
+var VERSION = "3.03";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -1832,6 +1842,19 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .skip-link{position:absolute; left:-999px; top:0; background:#fff; color:var(--navy); padding:8px 12px; z-index:100;}
 .skip-link:focus{left:8px; top:8px;}
 
+/* ---- Gate di accesso (primo avvio): tessera principale + e-mail di riserva ---- */
+.gate{position:absolute; inset:0; z-index:80; background:radial-gradient(600px 420px at 50% -10%, #1c3e5c, #0a1a2b); display:none; align-items:center; justify-content:center; padding:24px;}
+.gate.show{display:flex;}
+.gatebox{background:var(--paper); border-radius:20px; padding:26px 22px; width:100%; max-width:340px; box-shadow:0 24px 60px rgba(0,0,0,.45);}
+.gate-brand{font-family:Georgia,serif; letter-spacing:2px; color:var(--navy); font-weight:700; font-size:18px; margin-bottom:16px;}
+.gate-brand small{display:block; letter-spacing:3px; font-size:8px; color:var(--gold,#b7791f); margin-top:2px;}
+.gatebox h2{font-family:Georgia,serif; color:var(--navy); font-size:1.4rem;}
+.gsub2{color:var(--mute); font-size:.8rem; margin:4px 0 12px; line-height:1.35;}
+.gatebox label{display:block; font-size:.72rem; font-weight:700; color:var(--navy); margin:8px 0 5px;}
+.gatebox input{width:100%; padding:12px; border:1.5px solid var(--line); border-radius:12px; font-size:16px; font-family:inherit;}
+.gate-err{color:var(--coral); font-size:.75rem; min-height:16px;}
+.gate-demo{background:none; border:none; color:var(--mute); font-size:.72rem; text-decoration:underline; margin-top:14px; width:100%; cursor:pointer;}
+
 </style>
 <style>
   /* Utente non socio (visitatore): nasconde le schede tornei e il distintivo casata */
@@ -1906,6 +1929,21 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       <button class="sos" id="onbSos"><b>Numeri utili & emergenze</b><p>Guardia medica, farmacia, spiaggia \u2014 sempre a portata di mano.</p></button>
     </div>
   </div>
+
+  <!-- Accesso al primo avvio: la tessera \xE8 la credenziale principale (e-mail come riserva) -->
+  <div class="gate" id="gate" role="dialog" aria-modal="true" aria-label="Accesso">
+    <div class="gatebox">
+      <div class="gate-brand">BUSSOLA<small>RESIDENCE \xB7 BY KOIN\xC8</small></div>
+      <h2 class="serif">Benvenuto</h2>
+      <p class="gsub2">Entra con la tua tessera per vedere il tuo profilo, la Coppa e gli inviti della casata.</p>
+      <div class="gate-err" id="gateErr" aria-live="polite"></div>
+      <label for="gate_tess">Codice tessera</label>
+      <input id="gate_tess" placeholder="es. BR-2026-0001" autocapitalize="characters" autocomplete="off">
+      <button class="btn gold block" id="gate_enter" style="margin-top:12px">Entra</button>
+      <button class="btn ghost block" id="gate_email" style="margin-top:8px">Non ho la tessera \xB7 accedi con e-mail</button>
+      <button class="gate-demo" id="gate_demo">Guarda in anteprima (demo)</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1920,7 +1958,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('koine_' + k, JSON.stringify(v)); } catch {} },
 };
 const state = {
-  tessera: store.get('tessera', 'BR-2026-0001'),
+  tessera: store.get('tessera', null),          // nessuna identit\xE0 finta al primo avvio
   token: store.get('token', null),
   authed: false,
   socio: null,
@@ -2185,7 +2223,7 @@ function renderDom(dom) {
 // ---- Overlay / sheet ------------------------------------------------------
 function setSheet(html) { $('#sheetbox').innerHTML = html; }
 function showOv() { $('#ov').classList.add('show'); $('.sheet').scrollTop = 0; }
-function closeOv() { $('#ov').classList.remove('show'); }
+function closeOv() { $('#ov').classList.remove('show'); if (!state.tessera && !state.token) showGate(); }
 function openEvent(k) {
   const e = state.data.eventi.find(x => x.chiave === k); if (!e) return;
   let btn;
@@ -2240,7 +2278,7 @@ async function openTessera() {
       <div class="benefit"><span class="bic">\u25CB</span><div><b>Copertura infortuni <span class="tiny" style="color:var(--coral)">in definizione</span></b><p>Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.</p></div></div>
       <div class="benefit"><span class="bic">\u2713</span><div><b>Il tuo posto nell'Albo d'Oro</b><p>I vincitori della stagione restano scritti alla Bussola.</p></div></div>
     </div>
-    <button class="btn ghost block" style="margin-top:12px" data-login>Accedi / cambia profilo (e-mail)</button>
+    <button class="btn ghost block" style="margin-top:12px" data-logout>Esci / cambia tessera</button>
     <button class="btn navy block" style="margin-top:8px" data-close>Chiudi</button>\`);
   showOv();
 }
@@ -2271,10 +2309,45 @@ async function verifyOtp(email) {
     const r = await api('/auth/verify-otp', { method:'POST', body: JSON.stringify({ email, code }) });
     state.token = r.token; state.tessera = r.socio.tessera_code; state.authed = true;
     store.set('token', r.token); store.set('tessera', r.socio.tessera_code);
-    await loadAll(); renderHeader(); renderHome(); renderCoppa(); renderDom('sport'); renderDom('giochi');
-    applyProfileGating();
+    hideGate(); closeOv();
+    await enterApp();
     okThen('Bentornato, ' + r.socio.nome);
   } catch { $('#ol_err').textContent = 'Codice non valido o scaduto'; }
+}
+
+// ---- Accesso al primo avvio (gate): tessera principale, e-mail di riserva ------
+function showGate() { const g = $('#gate'); if (g) { g.classList.add('show'); const i = $('#gate_tess'); if (i) setTimeout(() => i.focus(), 60); } }
+function hideGate() { const g = $('#gate'); if (g) g.classList.remove('show'); }
+async function enterApp() {
+  await loadAll();
+  renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
+  applyProfileGating();
+  if (state.lang && state.lang !== 'it') applyLang(state.lang);
+}
+async function loginTessera() {
+  const code = ($('#gate_tess').value || '').trim().toUpperCase();
+  const err = $('#gateErr');
+  if (err) err.textContent = '';
+  if (!code) { if (err) err.textContent = 'Inserisci il codice tessera.'; return; }
+  try {
+    const r = await api('/auth/login-tessera', { method: 'POST', body: JSON.stringify({ tessera_code: code }) });
+    state.token = r.token; state.tessera = r.socio.tessera_code; state.authed = true;
+    store.set('token', r.token); store.set('tessera', r.socio.tessera_code);
+    hideGate();
+    await enterApp();
+    if (!store.get('seen', false)) $('#onb').classList.add('show');
+  } catch (e) {
+    if (err) err.textContent = 'Tessera non trovata. Controlla il codice o usa l\u2019e-mail.';
+  }
+}
+function demoPreview() {   // solo per anteprima: usa la tessera demo e i dati SEED se offline
+  state.tessera = 'BR-2026-0001'; store.set('tessera', state.tessera);
+  hideGate(); enterApp();
+}
+function logoutUser() {
+  state.token = null; state.tessera = null; state.authed = false; state.socio = null;
+  store.set('token', null); store.set('tessera', null);
+  closeOv(); showGate();
 }
 async function togglefPush(to) {
   const on = to === 'on';
@@ -2504,7 +2577,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -2514,6 +2587,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.capsend != null) return capSendMirata();
   if (t.dataset.convrisp) { const [id, st] = t.dataset.convrisp.split('|'); return rispondiConvocazione(id, st); }
   if (t.dataset.login != null) return openLoginOtp();
+  if (t.dataset.logout != null) return logoutUser();
   if (t.dataset.otpReq != null) return requestOtp();
   if (t.dataset.otpVerify) return verifyOtp(t.dataset.otpVerify);
   if (t.dataset.push) return togglefPush(t.dataset.push);
@@ -2552,15 +2626,26 @@ function bindStatic() {
 }
 async function init() {
   bindStatic();
+  bindGate();
   applyScale(store.get('scale', 1));
   applyContrast(store.get('hc', false));
-  await loadAll();
-  renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
-  if (state.token) state.authed = true;
-  if (state.lang && state.lang !== 'it') applyLang(state.lang);
-  if (!store.get('seen', false)) $('#onb').classList.add('show');
-  const h = location.hash.replace('#',''); if (h && document.getElementById('s-'+h)) go(h);
+  if (state.tessera) {
+    // Gi\xE0 identificato (o anteprima): entra direttamente
+    if (state.token) state.authed = true;
+    await enterApp();
+    if (!store.get('seen', false)) $('#onb').classList.add('show');
+    const h = location.hash.replace('#', ''); if (h && document.getElementById('s-' + h)) go(h);
+  } else {
+    // Primo avvio senza identit\xE0: mostra l'accesso
+    showGate();
+  }
   /* SW off nel file unico */
+}
+function bindGate() {
+  const enter = $('#gate_enter'); if (enter) enter.addEventListener('click', loginTessera);
+  const tess = $('#gate_tess'); if (tess) tess.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginTessera(); });
+  const email = $('#gate_email'); if (email) email.addEventListener('click', () => { hideGate(); openLoginOtp(); });
+  const demo = $('#gate_demo'); if (demo) demo.addEventListener('click', demoPreview);
 }
 init();
 
@@ -2706,8 +2791,12 @@ let TOKEN = null, USER = null, CASATE = [];
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
+// Base API: nell'app Staff (APK) \xE8 iniettato window.KOINE_API con l'indirizzo del server online;
+// nel back office web resta vuoto (chiamate relative allo stesso server).
+const API_BASE = (typeof window !== 'undefined' && window.KOINE_API) ? String(window.KOINE_API).replace(/\\/$/, '') : '';
+
 async function api(path, opts = {}) {
-  const r = await fetch('/api/admin' + path, {
+  const r = await fetch(API_BASE + '/api/admin' + path, {
     headers: { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}) },
     ...opts,
   });
@@ -2720,7 +2809,7 @@ async function api(path, opts = {}) {
 async function login() {
   $('#loginErr').textContent = '';
   try {
-    const res = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
+    const res = await fetch(API_BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
     if (!res.ok) throw new Error('Credenziali non valide');
     const j = await res.json(); TOKEN = j.token; USER = j.user;
     $('#login').style.display = 'none'; $('#app').style.display = 'grid';
@@ -3435,7 +3524,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 // Mostra la versione REALMENTE online (dal server), cos\xEC sappiamo cosa \xE8 pubblicato
 (async () => {
   try {
-    const h = await fetch('/api/health').then(r => r.json());
+    const h = await fetch(API_BASE + '/api/health').then(r => r.json());
     $('#verline').textContent = h.version ? \`versione online: v\${h.version}\${h.build && h.build !== 'online' ? ' \xB7 ' + h.build : ''}\` : 'versione online: sconosciuta (build vecchia \u2014 da aggiornare)';
   } catch { $('#verline').textContent = 'server non raggiungibile'; }
 })();
@@ -3446,7 +3535,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-14 08:10" : "online";
+var BUILD = true ? "2026-08-14 09:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
