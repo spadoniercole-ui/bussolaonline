@@ -487,6 +487,58 @@ async function initSchema() {
   CREATE INDEX IF NOT EXISTS ix_comr_com ON comanda_righe(comanda_id);
   CREATE INDEX IF NOT EXISTS ix_comr_staz ON comanda_righe(stazione, stato);
 
+  -- ====== CAMPI: prenotazione slot (stile Playtomic) + PARTITE APERTE ======
+  CREATE TABLE IF NOT EXISTS campi (
+    id            INTEGER PRIMARY KEY,
+    nome          TEXT NOT NULL,
+    sport         TEXT NOT NULL DEFAULT 'pickleball',      -- pickleball | soft_tennis | calcetto | ...
+    apertura      TEXT NOT NULL DEFAULT '09:00',           -- HH:MM
+    chiusura      TEXT NOT NULL DEFAULT '22:00',           -- HH:MM
+    durata_slot   INTEGER NOT NULL DEFAULT 60,             -- minuti
+    ora_min       TEXT,                                    -- regola oraria: prenotabile solo da (es. calcetto '18:00')
+    posti_default INTEGER NOT NULL DEFAULT 4,              -- posti di una partita aperta di default
+    attivo        INTEGER NOT NULL DEFAULT 1,
+    ordine        INTEGER NOT NULL DEFAULT 0
+  );
+  -- Occupazione slot: sia le prenotazioni private sia le partite aperte riservano lo slot qui.
+  CREATE TABLE IF NOT EXISTS prenotazioni_campo (
+    id           INTEGER PRIMARY KEY,
+    campo_id     INTEGER NOT NULL REFERENCES campi(id) ON DELETE CASCADE,
+    data         TEXT NOT NULL,                            -- YYYY-MM-DD
+    slot         TEXT NOT NULL,                            -- HH:MM
+    tipo         TEXT NOT NULL DEFAULT 'privata',          -- privata | partita
+    socio_id     INTEGER,
+    tessera_code TEXT,
+    nome         TEXT,
+    stato        TEXT NOT NULL DEFAULT 'prenotato',        -- prenotato | annullato
+    partita_id   INTEGER,                                  -- valorizzato se tipo=partita
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS partite_aperte (
+    id               INTEGER PRIMARY KEY,
+    campo_id         INTEGER NOT NULL REFERENCES campi(id) ON DELETE CASCADE,
+    data             TEXT NOT NULL,
+    slot             TEXT NOT NULL,
+    posti_totali     INTEGER NOT NULL DEFAULT 4,
+    livello          TEXT,                                 -- principiante | intermedio | avanzato | ''
+    note             TEXT,
+    stato            TEXT NOT NULL DEFAULT 'aperta',       -- aperta | completa | annullata
+    creatore_tessera TEXT,
+    creatore_nome    TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS partita_iscritti (
+    id           INTEGER PRIMARY KEY,
+    partita_id   INTEGER NOT NULL REFERENCES partite_aperte(id) ON DELETE CASCADE,
+    socio_id     INTEGER,
+    tessera_code TEXT,
+    nome         TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_prenc_slot ON prenotazioni_campo(campo_id, data, slot);
+  CREATE INDEX IF NOT EXISTS ix_part_slot ON partite_aperte(campo_id, data, slot);
+  CREATE INDEX IF NOT EXISTS ix_part_isc ON partita_iscritti(partita_id);
+
   CREATE INDEX IF NOT EXISTS ix_soci_casata ON soci(casata_id);
   CREATE INDEX IF NOT EXISTS ix_cdc_conte ON cdc_caffe_conte(data);
   CREATE INDEX IF NOT EXISTS ix_cdc_prestiti ON cdc_prestiti(created_at);
@@ -764,7 +816,7 @@ async function seed({ verbose = false } = {}) {
     return;
   }
   if (force) {
-    for (const t of ["audit_log", "allegati", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
+    for (const t of ["audit_log", "allegati", "partita_iscritti", "partite_aperte", "prenotazioni_campo", "campi", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
       await db.exec(`DELETE FROM ${t};`);
     }
   }
@@ -1090,6 +1142,15 @@ async function seed({ verbose = false } = {}) {
     const m = MENU[i];
     await insMenu.run(m[0], m[1], m[2], m[3], m[4], i + 1);
   }
+  const insCampo = db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,ordine) VALUES (?,?,?,?,?,?,?,?)");
+  const CAMPI = [
+    // nome, sport, apertura, chiusura, durata_slot, ora_min, posti_default
+    ["Campo Pickleball", "pickleball", "09:00", "22:00", 60, null, 4, 1],
+    ["Campo Soft Tennis", "soft_tennis", "09:00", "22:00", 60, null, 4, 2],
+    ["Campo Calcetto", "calcetto", "18:00", "23:00", 60, "18:00", 10, 3]
+    // regola: solo dopo le 18
+  ];
+  for (const c of CAMPI) await insCampo.run(...c);
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
   const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
   await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
@@ -1309,6 +1370,120 @@ publicRouter.post("/proposte", async (req, res) => {
   audit(tessera_code || "ospite", "proposta", "proposte", info.lastInsertRowid, tipo || "");
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
+function slotDiCampo(campo) {
+  const toMin = (t) => {
+    const [h, m] = String(t || "0:0").split(":").map(Number);
+    return h * 60 + (m || 0);
+  };
+  const toHHMM = (x) => String(Math.floor(x / 60)).padStart(2, "0") + ":" + String(x % 60).padStart(2, "0");
+  const start = Math.max(toMin(campo.apertura), campo.ora_min ? toMin(campo.ora_min) : 0);
+  const end = toMin(campo.chiusura);
+  const step = Math.max(15, Number(campo.durata_slot) || 60);
+  const out = [];
+  for (let t = start; t + step <= end + 1e-4; t += step) out.push(toHHMM(t));
+  return out;
+}
+var socioByTessera = async (t) => t ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(t) : null;
+publicRouter.get("/campi", async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default FROM campi WHERE attivo=1 ORDER BY ordine,id").all();
+  res.json(rows);
+});
+publicRouter.get("/campi/:id/disponibilita", async (req, res) => {
+  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
+  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
+  const data = String(req.query.data || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida (YYYY-MM-DD)" });
+  const occ = await db.prepare("SELECT * FROM prenotazioni_campo WHERE campo_id=? AND data=? AND stato='prenotato'").all(campo.id, data);
+  const partite = await db.prepare("SELECT * FROM partite_aperte WHERE campo_id=? AND data=? AND stato IN ('aperta','completa')").all(campo.id, data);
+  const iscrittiCount = {};
+  for (const p of partite) iscrittiCount[p.id] = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+  const slots = slotDiCampo(campo).map((slot) => {
+    const o = occ.find((x) => x.slot === slot);
+    if (!o) return { slot, stato: "libero" };
+    if (o.tipo === "partita" && o.partita_id) {
+      const p = partite.find((x) => x.id === o.partita_id);
+      if (p) return { slot, stato: "partita", partita_id: p.id, posti_totali: p.posti_totali, iscritti: iscrittiCount[p.id] || 0, livello: p.livello || "", creatore: p.creatore_nome || "", completa: p.stato === "completa" };
+    }
+    return { slot, stato: "privata", nome: o.nome || "Prenotato" };
+  });
+  res.json({ campo: { id: campo.id, nome: campo.nome, sport: campo.sport, durata_slot: campo.durata_slot }, data, slots });
+});
+async function slotLiberoValido(campo, data, slot) {
+  if (!slotDiCampo(campo).includes(slot)) return "Orario non valido per questo campo" + (campo.ora_min ? ` (dalle ${campo.ora_min})` : "");
+  const ex = await db.prepare("SELECT id FROM prenotazioni_campo WHERE campo_id=? AND data=? AND slot=? AND stato='prenotato'").get(campo.id, data, slot);
+  if (ex) return "Slot gi\xE0 occupato";
+  return null;
+}
+publicRouter.post("/campi/:id/prenota", async (req, res) => {
+  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
+  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
+  const { tessera_code, data, slot } = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || ""))) return res.status(400).json({ error: "Data non valida" });
+  const err = await slotLiberoValido(campo, data, slot);
+  if (err) return res.status(409).json({ error: err });
+  const socio = await socioByTessera(tessera_code);
+  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : req.body?.nome || "Ospite";
+  const info = await db.prepare("INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato) VALUES (?,?,?,?,?,?,?,?)").run(campo.id, data, slot, "privata", socio?.id ?? null, tessera_code || null, nome, "prenotato");
+  audit(tessera_code || "ospite", "prenota_campo", "campi", campo.id, `${data} ${slot}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+publicRouter.post("/prenotazioni-campo/:id/annulla", async (req, res) => {
+  const p = await db.prepare("SELECT * FROM prenotazioni_campo WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Prenotazione non trovata" });
+  if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue prenotazioni" });
+  if (p.tipo === "partita" && p.partita_id) {
+    await db.prepare("UPDATE partite_aperte SET stato='annullata' WHERE id=?").run(p.partita_id);
+  }
+  await db.prepare("UPDATE prenotazioni_campo SET stato='annullato' WHERE id=?").run(p.id);
+  audit(req.body?.tessera_code || "socio", "annulla_campo", "campi", p.campo_id, `${p.data} ${p.slot}`);
+  res.json({ ok: true });
+});
+publicRouter.post("/campi/:id/partita", async (req, res) => {
+  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
+  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
+  const { tessera_code, data, slot, livello, note } = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || ""))) return res.status(400).json({ error: "Data non valida" });
+  const err = await slotLiberoValido(campo, data, slot);
+  if (err) return res.status(409).json({ error: err });
+  const posti = Math.max(2, Math.min(30, Number(req.body?.posti_totali) || campo.posti_default || 4));
+  const socio = await socioByTessera(tessera_code);
+  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : req.body?.nome || "Ospite";
+  const pi = await db.prepare("INSERT INTO partite_aperte (campo_id,data,slot,posti_totali,livello,note,stato,creatore_tessera,creatore_nome) VALUES (?,?,?,?,?,?,?,?,?)").run(campo.id, data, slot, posti, livello || null, note || null, "aperta", tessera_code || null, nome);
+  const partitaId = Number(pi.lastInsertRowid);
+  await db.prepare("INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato,partita_id) VALUES (?,?,?,?,?,?,?,?,?)").run(campo.id, data, slot, "partita", socio?.id ?? null, tessera_code || null, nome, "prenotato", partitaId);
+  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(partitaId, socio?.id ?? null, tessera_code || null, nome);
+  audit(tessera_code || "ospite", "apre_partita", "campi", campo.id, `${data} ${slot} \xB7 ${posti} posti`);
+  res.status(201).json({ ok: true, partita_id: partitaId });
+});
+publicRouter.get("/campi/partite-aperte", async (req, res) => {
+  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
+  const q = data ? await db.prepare("SELECT p.*, c.nome AS campo_nome, c.sport FROM partite_aperte p JOIN campi c ON c.id=p.campo_id WHERE p.stato='aperta' AND p.data=? ORDER BY p.data,p.slot").all(data) : await db.prepare("SELECT p.*, c.nome AS campo_nome, c.sport FROM partite_aperte p JOIN campi c ON c.id=p.campo_id WHERE p.stato='aperta' ORDER BY p.data,p.slot").all();
+  const out = [];
+  for (const p of q) {
+    const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+    out.push({ id: p.id, campo_id: p.campo_id, campo_nome: p.campo_nome, sport: p.sport, data: p.data, slot: p.slot, posti_totali: p.posti_totali, iscritti: n, mancano: Math.max(0, p.posti_totali - n), livello: p.livello || "", note: p.note || "", creatore: p.creatore_nome || "" });
+  }
+  res.json(out);
+});
+publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
+  const p = await db.prepare("SELECT * FROM partite_aperte WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "aperta") return res.status(409).json({ error: "Partita non disponibile" });
+  const { tessera_code } = req.body || {};
+  const socio = await socioByTessera(tessera_code);
+  if (tessera_code) {
+    const gia = await db.prepare("SELECT id FROM partita_iscritti WHERE partita_id=? AND tessera_code=?").get(p.id, tessera_code);
+    if (gia) return res.status(409).json({ error: "Sei gi\xE0 iscritto a questa partita" });
+  }
+  const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+  if (n >= p.posti_totali) return res.status(409).json({ error: "Partita gi\xE0 al completo" });
+  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : req.body?.nome || "Ospite";
+  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(p.id, socio?.id ?? null, tessera_code || null, nome);
+  const nuovi = n + 1;
+  const completa = nuovi >= p.posti_totali;
+  if (completa) await db.prepare("UPDATE partite_aperte SET stato='completa' WHERE id=?").run(p.id);
+  audit(tessera_code || "ospite", "unisce_partita", "campi", p.campo_id, `${p.data} ${p.slot}`);
+  res.json({ ok: true, iscritti: nuovi, posti_totali: p.posti_totali, completa });
+});
 
 // server/routes/admin.js
 import { Router as Router2 } from "express";
@@ -1424,8 +1599,10 @@ var CAPS_DELEGABILI = [
   // Cartellone
   "magazzino",
   // Magazzino unificato (aree + alert)
-  "comande"
+  "comande",
   // Chiosco: comande + KDS (cassa/cameriere/stazioni)
+  "campi"
+  // Prenotazione campi (config campi + regole + prospetto prenotazioni)
 ];
 var CAPS_GESTORE_ONLY = [
   "utenti_del",
@@ -1457,7 +1634,8 @@ var MANAGER_CAPS = /* @__PURE__ */ new Set([
   "proposte",
   "eventi",
   "magazzino",
-  "comande"
+  "comande",
+  "campi"
 ]);
 function parsePermessi(p) {
   if (Array.isArray(p)) return p;
@@ -2048,6 +2226,36 @@ adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
   }
   res.json(out);
 });
+adminRouter.get("/campi", requireCap("campi"), async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM campi ORDER BY ordine,id").all());
+});
+adminRouter.post("/campi", requireCap("campi"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM campi").get()).n;
+  const info = await db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.nome, b.sport || "pickleball", b.apertura || "09:00", b.chiusura || "22:00", Number(b.durata_slot) || 60, b.ora_min || null, Number(b.posti_default) || 4, b.attivo === false ? 0 : 1, ord);
+  audit(req.adminUser.username, "crea", "campi", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/campi/:id", requireCap("campi"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE campi SET nome=?,sport=?,apertura=?,chiusura=?,durata_slot=?,ora_min=?,posti_default=?,attivo=? WHERE id=?").run(b.nome, b.sport || "pickleball", b.apertura || "09:00", b.chiusura || "22:00", Number(b.durata_slot) || 60, b.ora_min || null, Number(b.posti_default) || 4, b.attivo === false ? 0 : 1, req.params.id);
+  audit(req.adminUser.username, "modifica", "campi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/campi/:id", requireCap("campi"), async (req, res) => {
+  await db.prepare("DELETE FROM partita_iscritti WHERE partita_id IN (SELECT id FROM partite_aperte WHERE campo_id=?)").run(req.params.id);
+  await db.prepare("DELETE FROM partite_aperte WHERE campo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM prenotazioni_campo WHERE campo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM campi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "campi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/campi/prenotazioni", requireCap("campi"), async (req, res) => {
+  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
+  const rows = data ? await db.prepare("SELECT p.*, c.nome AS campo_nome FROM prenotazioni_campo p JOIN campi c ON c.id=p.campo_id WHERE p.stato='prenotato' AND p.data=? ORDER BY p.slot,c.ordine").all(data) : await db.prepare("SELECT p.*, c.nome AS campo_nome FROM prenotazioni_campo p JOIN campi c ON c.id=p.campo_id WHERE p.stato='prenotato' ORDER BY p.data DESC,p.slot LIMIT 100").all();
+  res.json(rows);
+});
 adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
@@ -2499,7 +2707,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.11";
+var VERSION = "4.12";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2861,7 +3069,7 @@ async function api(path, opts = {}) {
 }
 async function loadAll() {
   try {
-    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, contest, serate, socio, regolamenti, albo, rifiuti] = await Promise.all([
+    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, contest, serate, socio, regolamenti, albo, rifiuti, campi] = await Promise.all([
       api('/casate'), api('/eventi'), api('/risorse'), api('/discipline/sport'),
       api('/discipline/giochi'), api('/bussola'), api('/luoghi').catch(() => SEED.luoghi),
       api('/contest/corrente').catch(() => SEED.contest),
@@ -2870,12 +3078,13 @@ async function loadAll() {
       api('/regolamenti').catch(() => ({ generali: [], discipline: [] })),
       api('/albo').catch(() => []),
       api('/rifiuti').catch(() => ({ tipi: [], calendari: [] })),
+      api('/campi').catch(() => []),
     ]);
-    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi, contest: contest || null, serate: serate || [], regolamenti: regolamenti || { generali: [], discipline: [] }, albo: albo || [], rifiuti: rifiuti || { tipi: [], calendari: [] } };
+    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi, contest: contest || null, serate: serate || [], regolamenti: regolamenti || { generali: [], discipline: [] }, albo: albo || [], rifiuti: rifiuti || { tipi: [], calendari: [] }, campi: campi || [] };
     state.socio = socio || SEED.socio;
     state.online = true;
   } catch (e) {
-    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi, contest: SEED.contest, serate: SEED.serate, regolamenti: { generali: [], discipline: [] }, albo: [], rifiuti: { tipi: [], calendari: [] } };
+    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi, contest: SEED.contest, serate: SEED.serate, regolamenti: { generali: [], discipline: [] }, albo: [], rifiuti: { tipi: [], calendari: [] }, campi: [] };
     state.socio = SEED.socio;
     state.online = false;
   }
@@ -2928,8 +3137,8 @@ function renderHome() {
     <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">Stasera alla Bussola</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
     <div class="sect-title">Prenota</div>
     <div class="pgrid">
-      <div class="ptile" role="button" tabindex="0" data-book="pickleball"><div class="ic">\u{1F3BE}</div><b>Pickleball</b><span>turni 90\u2032</span></div>
-      <div class="ptile" role="button" tabindex="0" data-book="soft"><div class="ic">\u{1F3BE}</div><b>Soft tennis</b><span>turni 90\u2032</span></div>
+      <div class="ptile" role="button" tabindex="0" data-campi=""><div class="ic">\u{1F3BE}</div><b>Campi</b><span>prenota o partita</span></div>
+      <div class="ptile" role="button" tabindex="0" data-partite=""><div class="ic">\u{1F465}</div><b>Partite aperte</b><span>unisciti</span></div>
       <div class="ptile" role="button" tabindex="0" data-book="cowo"><div class="ic">\u{1F4BB}</div><b>Coworking</b><span>postazione</span></div>
     </div>
     \${serateSectionHTML()}
@@ -3116,6 +3325,68 @@ function openBooking(kind) {
     <button class="btn gold block" style="margin-top:10px" data-do-book="\${b.chiave}">Conferma prenotazione</button>
     <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`);
   showOv();
+}
+// ---- Campi (prenotazione slot + partite aperte) ----
+function campiDays() {
+  const out = []; const g = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
+  const base = new Date(); base.setHours(12, 0, 0, 0);
+  for (let i = 0; i < 7; i++) { const d = new Date(base.getTime() + i * 86400000); const iso = d.toISOString().slice(0, 10); out.push({ iso, label: i === 0 ? 'Oggi' : i === 1 ? 'Domani' : \`\${g[d.getDay()]} \${d.getDate()}\` }); }
+  return out;
+}
+const sportIcon = (s) => ({ pickleball: '\u{1F3BE}', soft_tennis: '\u{1F3BE}', calcetto: '\u26BD', beach: '\u{1F3D0}' }[s] || '\u{1F3BE}');
+async function openCampi(campoId) {
+  const campi = state.data.campi || [];
+  if (!campi.length) { okThen('Prenotazione campi disponibile solo online', false); return; }
+  const sel = (campoId ? campi.find(c => c.id == campoId) : campi.find(c => c.id == state._campoSel)) || campi[0];
+  state._campoSel = sel.id;
+  const days = campiDays();
+  if (!state._campoData || !days.some(d => d.iso === state._campoData)) state._campoData = days[0].iso;
+  const data = state._campoData;
+  let disp = { slots: [] };
+  try { disp = await api(\`/campi/\${sel.id}/disponibilita?data=\${data}\`); } catch { }
+  const courtChips = campi.map(c => \`<button class="chip\${c.id === sel.id ? ' sel' : ''}" data-campo-pick="\${c.id}">\${sportIcon(c.sport)} \${esc(c.nome)}</button>\`).join('');
+  const dayChips = days.map(d => \`<button class="chip\${d.iso === data ? ' sel' : ''}" data-campo-date="\${d.iso}">\${esc(d.label)}</button>\`).join('');
+  const slotHTML = (disp.slots || []).map(s => {
+    if (s.stato === 'libero') return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">Libero</div></div><div style="display:flex;gap:6px"><button class="btn gold sm" data-prenota="\${sel.id}|\${s.slot}">Prenota</button><button class="btn ghost sm" data-apri="\${sel.id}|\${s.slot}">Partita</button></div></div>\`;
+    if (s.stato === 'partita') { const pieno = s.iscritti >= s.posti_totali; return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F465} Partita aperta \xB7 \${s.iscritti}/\${s.posti_totali}\${s.livello ? ' \xB7 ' + esc(s.livello) : ''}\${s.creatore ? ' \xB7 ' + esc(s.creatore) : ''}</div></div>\${pieno ? '<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">AL COMPLETO</span>' : \`<button class="btn gold sm" data-unisci="\${s.partita_id}">Unisciti</button>\`}</div>\`; }
+    return \`<div class="matchrow" style="opacity:.6"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">Occupato \xB7 \${esc(s.nome || 'prenotato')}</div></div><span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">OCCUPATO</span></div>\`;
+  }).join('');
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Prenotazione campi</div><h2>\${sportIcon(sel.sport)} \${esc(sel.nome)}</h2>
+    <div class="field"><label>Campo</label><div class="chips">\${courtChips}</div></div>
+    <div class="field"><label>Giorno</label><div class="chips">\${dayChips}</div></div>
+    <div class="sect-title" style="margin-top:6px">Fasce orarie</div>
+    <div class="card" style="padding:4px 14px">\${slotHTML || '<p class="tiny muted" style="padding:8px 0">Nessuno slot per questa data.</p>'}</div>
+    <div class="note">\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  showOv();
+}
+async function openPartiteAperte() {
+  let list = [];
+  try { list = await api('/campi/partite-aperte'); } catch { okThen('Disponibile solo online', false); return; }
+  const rows = list.map(p => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.92rem">\${sportIcon(p.sport)} \${esc(p.campo_nome)} \xB7 \${esc(p.slot)}</b><div class="ct">\${esc(dataBella(p.data))} \xB7 \${p.iscritti}/\${p.posti_totali}\${p.livello ? ' \xB7 ' + esc(p.livello) : ''}\${p.mancano ? \` \xB7 manca\${p.mancano > 1 ? 'no' : ''} \${p.mancano}\` : ''}</div></div><button class="btn gold sm" data-unisci="\${p.id}">Unisciti</button></div>\`).join('');
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--plum)">Gioca con gli altri</div><h2>\u{1F465} Partite aperte</h2>
+    <p class="sub">Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.</p>
+    <div class="card" style="padding:4px 14px">\${rows || '<p class="tiny muted" style="padding:8px 0">Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!</p>'}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  showOv();
+}
+function dataBella(iso) { try { const [y, m, d] = iso.split('-'); return \`\${d}/\${m}\`; } catch { return iso; } }
+async function campoPrenota(v) {
+  const [id, slot] = v.split('|');
+  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || 'Prenotazione non riuscita', false); return; } } catch { okThen('Errore di rete', false); return; }
+  okThen(\`Campo prenotato \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
+}
+async function campoApri(v) {
+  const [id, slot] = v.split('|');
+  const campo = (state.data.campi || []).find(c => c.id == id);
+  const posti = campo ? campo.posti_default : 4;
+  if (!confirm(\`Apri una partita alle \${slot} con \${posti} posti? Gli altri soci potranno unirsi.\`)) return;
+  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/partita', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot, posti_totali: posti }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || 'Non riuscito', false); return; } } catch { okThen('Errore di rete', false); return; }
+  okThen(\`Partita aperta \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
+}
+async function campoUnisci(pid) {
+  try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || 'Non riuscito', false); return; } okThen(j.completa ? 'Partita al completo, ci vediamo in campo! \u{1F3BE}' : \`Iscritto! \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen('Errore di rete', false); return; }
+  if (state._campoSel) openCampi(state._campoSel); else openPartiteAperte();
 }
 async function openTessera() {
   const s = state.socio;
@@ -3446,7 +3717,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -3463,6 +3734,13 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.map) { const url = 'https://www.google.com/maps?q=' + encodeURIComponent(t.dataset.map); try { window.open(url, '_blank'); } catch { location.href = url; } return; }
   if (t.dataset.act) { ev.stopPropagation(); if (t.dataset.act==='go-coppa') return go('coppa'); return openSheet(t.dataset.act); }
   if (t.dataset.open != null) return openEvent(t.dataset.open);
+  if (t.dataset.campi != null) return openCampi();
+  if (t.dataset.partite != null) return openPartiteAperte();
+  if (t.dataset.campoPick) return openCampi(Number(t.dataset.campoPick));
+  if (t.dataset.campoDate) { state._campoData = t.dataset.campoDate; return openCampi(state._campoSel); }
+  if (t.dataset.prenota) return campoPrenota(t.dataset.prenota);
+  if (t.dataset.apri) return campoApri(t.dataset.apri);
+  if (t.dataset.unisci) return campoUnisci(t.dataset.unisci);
   if (t.dataset.book != null) return openBooking(t.dataset.book);
   if (t.dataset.sheet) return t.dataset.sheet === 'regolamenti' ? openRegolamenti() : openSheet(t.dataset.sheet);
   if (t.dataset.go) return go(t.dataset.go);
@@ -3633,6 +3911,7 @@ var admin_default = `<!DOCTYPE html>
         <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate & punti</button>
         <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
         <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
+        <button data-v="campi" data-cap="campi">\u{1F3BE} Campi & prenotazioni</button>
         <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tabellone</button>
         <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
         <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate & cena</button>
@@ -3706,7 +3985,7 @@ const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', magazzino:'Magazzino', comande:'Chiosco \xB7 Comande', kds:'KDS Cucina/Bar', discipline:'Discipline', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', magazzino:'Magazzino', comande:'Chiosco \xB7 Comande', kds:'KDS Cucina/Bar', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -4280,6 +4559,49 @@ VIEWS.kds = async () => {
   };
   await render();
   window.__kdsTimer = setInterval(render, 8000); // auto-refresh coda ogni 8s
+};
+
+// ---- Campi & prenotazioni (stile Playtomic) ----
+const SPORTS = [['pickleball', 'Pickleball'], ['soft_tennis', 'Soft tennis'], ['calcetto', 'Calcetto'], ['beach', 'Beach volley'], ['tennis', 'Tennis'], ['altro', 'Altro']];
+VIEWS.campi = async () => {
+  const campi = await api('/campi');
+  const oggi = new Date().toISOString().slice(0, 10);
+  const sportOpts = (sel) => SPORTS.map(s => \`<option value="\${s[0]}" \${sel === s[0] ? 'selected' : ''}>\${esc(s[1])}</option>\`).join('');
+  const rows = campi.map(c => \`<tr>
+    <td><input id="cp_n_\${c.id}" value="\${esc(c.nome)}" style="min-width:150px"></td>
+    <td><select id="cp_sp_\${c.id}">\${sportOpts(c.sport)}</select></td>
+    <td><input id="cp_ap_\${c.id}" value="\${esc(c.apertura)}" style="width:64px"></td>
+    <td><input id="cp_ch_\${c.id}" value="\${esc(c.chiusura)}" style="width:64px"></td>
+    <td><input id="cp_du_\${c.id}" type="number" value="\${esc(String(c.durata_slot))}" style="width:64px"></td>
+    <td><input id="cp_om_\${c.id}" value="\${esc(c.ora_min || '')}" placeholder="\u2014" style="width:64px" title="Regola oraria: prenotabile solo da quest'ora (es. 18:00)"></td>
+    <td><input id="cp_pd_\${c.id}" type="number" value="\${esc(String(c.posti_default))}" style="width:56px"></td>
+    <td style="text-align:center"><input type="checkbox" id="cp_at_\${c.id}" \${c.attivo ? 'checked' : ''}></td>
+    <td class="row"><button class="btn gold sm" data-cpsave="\${c.id}">Salva</button><button class="btn danger sm" data-cpdel="\${c.id}">\u{1F5D1}</button></td>
+  </tr>\`).join('');
+  const gestione = \`<div class="panel"><h3>\u{1F3BE} Campi</h3>
+    <p class="muted" style="font-size:.78rem;margin-bottom:8px">La colonna <b>Da (ora)</b> \xE8 la regola oraria: lasciala vuota per nessun vincolo, oppure metti es. <b>18:00</b> (il calcetto si prenota solo dopo le 18). Gli slot sono lunghi <b>Durata</b> minuti, da <b>Apre</b> a <b>Chiude</b>.</p>
+    <table><thead><tr><th>Nome</th><th>Sport</th><th>Apre</th><th>Chiude</th><th>Durata</th><th>Da (ora)</th><th>Posti part.</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun campo.</td></tr>'}</tbody></table>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
+      <input id="cp_new_n" placeholder="Nome (es. Campo Pickleball)" style="min-width:180px"><select id="cp_new_sp">\${sportOpts('pickleball')}</select>
+      <input id="cp_new_ap" value="09:00" style="width:64px" title="Apertura"><input id="cp_new_ch" value="22:00" style="width:64px" title="Chiusura">
+      <input id="cp_new_du" type="number" value="60" style="width:64px" title="Durata slot (min)"><input id="cp_new_om" placeholder="Da (ora)" style="width:80px">
+      <input id="cp_new_pd" type="number" value="4" style="width:64px" title="Posti partita"><button class="btn gold sm" id="cp_add">+ Aggiungi</button>
+    </div></div>\`;
+  const prospetto = \`<div class="panel"><h3>\u{1F4C5} Prenotazioni del giorno <input type="date" id="cp_date" value="\${oggi}" style="margin-left:8px"></h3><div id="cp_pren"></div></div>\`;
+  $('#view').innerHTML = gestione + prospetto;
+
+  const loadPren = async () => {
+    const d = $('#cp_date').value || oggi;
+    const list = await api('/campi/prenotazioni?data=' + d).catch(() => []);
+    $('#cp_pren').innerHTML = list.length
+      ? \`<table><thead><tr><th>Ora</th><th>Campo</th><th>Tipo</th><th>Prenotato da</th></tr></thead><tbody>\${list.map(p => \`<tr><td><b>\${esc(p.slot)}</b></td><td>\${esc(p.campo_nome)}</td><td>\${p.tipo === 'partita' ? '\u{1F465} Partita aperta' : 'Privata'}</td><td>\${esc(p.nome || '\u2014')}</td></tr>\`).join('')}</tbody></table>\`
+      : '<p class="muted">Nessuna prenotazione per questa data.</p>';
+  };
+  await loadPren();
+  $('#cp_date').onchange = loadPren;
+  document.querySelectorAll('[data-cpsave]').forEach(b => b.onclick = async () => { const id = b.dataset.cpsave; await api('/campi/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#cp_n_' + id).value, sport: $('#cp_sp_' + id).value, apertura: $('#cp_ap_' + id).value, chiusura: $('#cp_ch_' + id).value, durata_slot: Number($('#cp_du_' + id).value), ora_min: $('#cp_om_' + id).value || null, posti_default: Number($('#cp_pd_' + id).value), attivo: $('#cp_at_' + id).checked }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 900); });
+  document.querySelectorAll('[data-cpdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il campo e le sue prenotazioni?')) return; await api('/campi/' + b.dataset.cpdel, { method: 'DELETE' }); show('campi'); });
+  $('#cp_add').onclick = async () => { if (!$('#cp_new_n').value) { alert('Nome?'); return; } await api('/campi', { method: 'POST', body: JSON.stringify({ nome: $('#cp_new_n').value, sport: $('#cp_new_sp').value, apertura: $('#cp_new_ap').value, chiusura: $('#cp_new_ch').value, durata_slot: Number($('#cp_new_du').value), ora_min: $('#cp_new_om').value || null, posti_default: Number($('#cp_new_pd').value) }) }); show('campi'); };
 };
 
 // ---- Proposte ----
@@ -5114,7 +5436,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 20:02" : "online";
+var BUILD = true ? "2026-08-15 20:24" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
