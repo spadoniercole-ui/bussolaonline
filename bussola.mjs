@@ -417,6 +417,33 @@ async function initSchema() {
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- ====== MAGAZZINO UNIFICATO: articoli per area + movimenti + alert anticipati ======
+  -- Un unico inventario per tutte le aree (chiosco, casa_di_carta, serata_clan, serate_tema, \u2026).
+  CREATE TABLE IF NOT EXISTS magazzino_articoli (
+    id               INTEGER PRIMARY KEY,
+    nome             TEXT NOT NULL,
+    area             TEXT NOT NULL DEFAULT 'chiosco',        -- chiosco | casa_di_carta | serata_clan | serate_tema | ...
+    unita            TEXT NOT NULL DEFAULT 'pz',             -- pz | kg | l | capsule | conf | ...
+    giacenza         REAL NOT NULL DEFAULT 0,                -- quantit\xE0 attualmente in magazzino
+    punto_riordino   REAL NOT NULL DEFAULT 0,                -- giacenza \u2264 questo \u2192 "da riordinare"
+    soglia_preavviso REAL NOT NULL DEFAULT 0,                -- giacenza \u2264 questo (e > punto) \u2192 "in esaurimento" (alert anticipato)
+    note             TEXT,
+    ordine           INTEGER NOT NULL DEFAULT 0,
+    aggiornato_at    TEXT
+  );
+  -- Movimenti di carico/scarico/rettifica: storico essenziale + tracciabilit\xE0.
+  CREATE TABLE IF NOT EXISTS magazzino_movimenti (
+    id          INTEGER PRIMARY KEY,
+    articolo_id INTEGER REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+    tipo        TEXT NOT NULL,                               -- carico | scarico | rettifica
+    quantita    REAL NOT NULL,                               -- sempre positiva; il segno lo d\xE0 "tipo"
+    causale     TEXT,
+    operatore   TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_mag_area ON magazzino_articoli(area);
+  CREATE INDEX IF NOT EXISTS ix_mag_mov ON magazzino_movimenti(articolo_id);
+
   CREATE INDEX IF NOT EXISTS ix_soci_casata ON soci(casata_id);
   CREATE INDEX IF NOT EXISTS ix_cdc_conte ON cdc_caffe_conte(data);
   CREATE INDEX IF NOT EXISTS ix_cdc_prestiti ON cdc_prestiti(created_at);
@@ -453,6 +480,18 @@ async function migrate() {
   }
   try {
     await db.exec("INSERT OR IGNORE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,0,40,100)");
+  } catch (_) {
+  }
+  try {
+    const has = await db.prepare("SELECT id FROM magazzino_articoli WHERE area='casa_di_carta' AND nome='Capsule caff\xE8'").get();
+    if (!has) {
+      const caffe = await db.prepare("SELECT giacenza,punto_riordino FROM cdc_caffe WHERE id=1").get();
+      if (caffe) {
+        const pr = Number(caffe.punto_riordino || 0);
+        const pre = Math.round(pr * 1.5) || pr + 10;
+        await db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?)").run("Capsule caff\xE8", "casa_di_carta", "capsule", Number(caffe.giacenza || 0), pr, pre, 1, (/* @__PURE__ */ new Date()).toISOString());
+      }
+    }
   } catch (_) {
   }
 }
@@ -680,7 +719,7 @@ async function seed({ verbose = false } = {}) {
     return;
   }
   if (force) {
-    for (const t of ["audit_log", "allegati", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
+    for (const t of ["audit_log", "allegati", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
       await db.exec(`DELETE FROM ${t};`);
     }
   }
@@ -967,6 +1006,26 @@ async function seed({ verbose = false } = {}) {
     const g = GIOCHI_INV[i];
     await insGioco.run(g[0], g[1], g[2], g[3], i);
   }
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const insArt = db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?)");
+  const MAG = [
+    // nome, area, unità, giacenza, punto_riordino, soglia_preavviso
+    // (il caffè NON è qui: lo gestisce l'upsert sotto, per non duplicare l'articolo creato dalla migrazione)
+    ["Bicchieri di carta", "chiosco", "pz", 300, 100, 150],
+    ["Acqua naturale 0,5L", "chiosco", "pz", 48, 24, 36],
+    ["Birra media", "chiosco", "pz", 60, 24, 40],
+    ["Patatine (buste)", "chiosco", "pz", 40, 20, 30],
+    ["Ghiaccio (sacchi)", "chiosco", "sacchi", 6, 4, 8],
+    ["Piatti biodegradabili", "serata_clan", "pz", 200, 80, 120],
+    ["Tovaglioli", "serate_tema", "conf", 10, 4, 6]
+  ];
+  for (let i = 0; i < MAG.length; i++) {
+    const a = MAG[i];
+    await insArt.run(a[0], a[1], a[2], a[3], a[4], a[5], i + 1, nowIso);
+  }
+  const exCaffe = await db.prepare("SELECT id FROM magazzino_articoli WHERE area='casa_di_carta' AND nome='Capsule caff\xE8'").get();
+  if (exCaffe) await db.prepare("UPDATE magazzino_articoli SET unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run("capsule", 120, 50, 80, nowIso, exCaffe.id);
+  else await insArt.run("Capsule caff\xE8", "casa_di_carta", "capsule", 120, 50, 80, 0, nowIso);
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
   const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
   await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
@@ -1643,6 +1702,64 @@ adminRouter.delete("/rifiuti/calendario/:periodo", requireCap("guida"), async (r
   audit(req.adminUser.username, "cancella", "rifiuti_calendario", req.params.periodo);
   res.json({ ok: true });
 });
+function magStato(a) {
+  const g = Number(a.giacenza), pr = Number(a.punto_riordino), pre = Number(a.soglia_preavviso);
+  if (g <= pr) return "da_riordinare";
+  if (pre > 0 && g <= pre) return "in_esaurimento";
+  return "ok";
+}
+adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
+  const area = req.query.area;
+  const rows = area ? await db.prepare("SELECT * FROM magazzino_articoli WHERE area=? ORDER BY ordine,id").all(area) : await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const articoli = rows.map((a) => ({ ...a, stato: magStato(a) }));
+  const riepilogo = {
+    da_riordinare: articoli.filter((a) => a.stato === "da_riordinare").length,
+    in_esaurimento: articoli.filter((a) => a.stato === "in_esaurimento").length,
+    totale: articoli.length
+  };
+  const aree = [...new Set(rows.map((a) => a.area))];
+  res.json({ articoli, riepilogo, aree });
+});
+adminRouter.post("/magazzino", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
+  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString());
+  audit(req.adminUser.username, "crea", "magazzino_articoli", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=? WHERE id=?").run(b.nome, b.area || "chiosco", b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  audit(req.adminUser.username, "modifica", "magazzino_articoli", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
+  await db.prepare("DELETE FROM magazzino_movimenti WHERE articolo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM magazzino_articoli WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "magazzino_articoli", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/magazzino/:id/movimento", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  const tipo = ["carico", "scarico", "rettifica"].includes(b.tipo) ? b.tipo : "carico";
+  let nuova = Number(art.giacenza);
+  if (tipo === "carico") nuova += q;
+  else if (tipo === "scarico") nuova = Math.max(0, nuova - q);
+  else nuova = q;
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore) VALUES (?,?,?,?,?)").run(req.params.id, tipo, q, b.causale || null, req.adminUser.username);
+  audit(req.adminUser.username, tipo, "magazzino_articoli", req.params.id, String(q));
+  const aggiornato = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
+  res.json({ ok: true, giacenza: nuova, stato: magStato(aggiornato) });
+});
+adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
+  res.json(rows);
+});
 adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
@@ -2094,7 +2211,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.6";
+var VERSION = "4.7";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -3227,6 +3344,7 @@ var admin_default = `<!DOCTYPE html>
         <button data-v="soci" data-cap="utenti">\u{1F464} Utenti</button>
         <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate & punti</button>
         <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
+        <button data-v="magazzino" data-cap="magazzino">\u{1F4E6} Magazzino</button>
         <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
         <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tabellone</button>
         <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
@@ -3313,11 +3431,23 @@ VIEWS.dashboard = async () => {
     ['Oggi', s.prenotazioni_oggi], ['Proposte da leggere', s.proposte], ['Convocazioni aperte', s.convocazioni_aperte],
   ];
   const max = Math.max(...s.per_casata.map(c => c.punti), 1);
+  // Avviso magazzino (solo se l'utente ha la capacit\xE0): articoli da riordinare / in esaurimento.
+  let magAvviso = '';
+  if (typeof can === 'function' ? can('magazzino') : true) {
+    const mag = await api('/magazzino').catch(() => null);
+    if (mag && mag.riepilogo && (mag.riepilogo.da_riordinare || mag.riepilogo.in_esaurimento)) {
+      const r = mag.riepilogo;
+      magAvviso = \`<div class="panel" style="border-left:4px solid #b14a35"><h3>\u{1F4E6} Magazzino \xB7 da tenere d'occhio</h3>
+        <p style="margin:0">\${r.da_riordinare ? \`<b style="color:#b14a35">\${r.da_riordinare}</b> da riordinare\` : ''}\${r.da_riordinare && r.in_esaurimento ? ' \xB7 ' : ''}\${r.in_esaurimento ? \`<b style="color:#8a5a12">\${r.in_esaurimento}</b> in esaurimento\` : ''}. <a href="#" id="mag_link" style="color:var(--navy);font-weight:700">Apri il magazzino \u2192</a></p></div>\`;
+    }
+  }
   $('#view').innerHTML = \`
     <div class="cards">\${cards.map(c => \`<div class="stat"><div class="n">\${c[1]}</div><div class="l">\${c[0]}</div></div>\`).join('')}</div>
+    \${magAvviso}
     <div class="panel"><h3>Coppa delle Casate & soci per casata</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
       \${s.per_casata.map(c => \`<tr><td><b>\${esc(c.nome)}</b></td><td>\${c.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(c.punti/max*100)}%;background:\${c.colore}"></span></span></td><td>\${c.soci}</td></tr>\`).join('')}
     </tbody></table></div>\`;
+  const ml = document.getElementById('mag_link'); if (ml) ml.onclick = (e) => { e.preventDefault(); show('magazzino'); };
 };
 
 // ---- Database (voce dedicata, solo gestore): stato persistenza + backup ----
@@ -3659,6 +3789,85 @@ function stampaModuloPrelievo(giochi) {
   w.document.write(html); w.document.close(); w.focus();
   setTimeout(() => { try { w.print(); } catch (_) {} }, 300);
 }
+
+// ---- Magazzino unificato ----
+const MAG_AREE = [['chiosco', 'Chiosco'], ['casa_di_carta', 'Casa di Carta'], ['serata_clan', 'Serata Clan'], ['serate_tema', 'Serate a tema']];
+const magAreaLabel = (a) => (MAG_AREE.find(x => x[0] === a) || [a, a])[1];
+const magBadge = (s) => s === 'da_riordinare'
+  ? '<span class="tag no">Da riordinare</span>'
+  : s === 'in_esaurimento' ? '<span class="tag mid">In esaurimento</span>' : '<span class="tag ok">OK</span>';
+VIEWS.magazzino = async () => {
+  const data = await api('/magazzino').catch(() => ({ articoli: [], riepilogo: { da_riordinare: 0, in_esaurimento: 0, totale: 0 }, aree: [] }));
+  const r = data.riepilogo || { da_riordinare: 0, in_esaurimento: 0, totale: 0 };
+  const alert = \`<div class="panel"><h3>\u{1F4E6} Magazzino \xB7 riepilogo</h3>
+    <div class="row" style="gap:10px;flex-wrap:wrap">
+      <div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.6rem;font-weight:800;color:\${r.da_riordinare ? '#b14a35' : 'var(--navy)'}">\${r.da_riordinare}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.6rem;font-weight:800;color:\${r.in_esaurimento ? '#8a5a12' : 'var(--navy)'}">\${r.in_esaurimento}</div></div>
+      <div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px"><div class="muted" style="font-size:.72rem">Articoli totali</div><div style="font-size:1.6rem;font-weight:800;color:var(--navy)">\${r.totale}</div></div>
+    </div>
+    <p class="muted" style="margin-top:10px;font-size:.78rem">L'alert <b>In esaurimento</b> scatta <i>prima</i> del riordino (soglia di preavviso). <b>Da riordinare</b> quando la giacenza scende al punto di riordino o sotto.</p></div>\`;
+
+  const areeOrdine = [...new Set([...MAG_AREE.map(a => a[0]), ...(data.aree || [])])];
+  const perArea = areeOrdine.map(area => {
+    const arts = (data.articoli || []).filter(a => a.area === area);
+    if (!arts.length) return '';
+    const rows = arts.map(a => \`<tr>
+      <td><input id="mg_n_\${a.id}" value="\${esc(a.nome)}" style="min-width:150px"></td>
+      <td><input id="mg_u_\${a.id}" value="\${esc(a.unita)}" style="width:70px"></td>
+      <td style="text-align:center"><b style="font-size:1rem">\${esc(String(a.giacenza))}</b></td>
+      <td><input id="mg_pr_\${a.id}" type="number" value="\${esc(String(a.punto_riordino))}" style="width:70px"></td>
+      <td><input id="mg_pa_\${a.id}" type="number" value="\${esc(String(a.soglia_preavviso))}" style="width:70px"></td>
+      <td style="text-align:center">\${magBadge(a.stato)}</td>
+      <td style="white-space:nowrap"><input id="mg_q_\${a.id}" type="number" placeholder="q.t\xE0" style="width:64px"> <button class="btn gold sm" data-mgmov="\${a.id}|carico">+ Carico</button> <button class="btn ghost sm" data-mgmov="\${a.id}|scarico">\u2212 Scarico</button> <button class="btn ghost sm" data-mgmov="\${a.id}|rettifica" title="Imposta la giacenza al valore contato">= Rettifica</button></td>
+      <td style="white-space:nowrap"><button class="btn gold sm" data-mgsave="\${a.id}" data-area="\${esc(a.area)}">Salva</button> <button class="btn danger sm" data-mgdel="\${a.id}">\u{1F5D1}</button></td>
+    </tr>\`).join('');
+    return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3>
+      <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giacenza</th><th>Riordino</th><th>Preavviso</th><th>Stato</th><th>Movimento</th><th></th></tr></thead>
+      <tbody>\${rows}</tbody></table></div>\`;
+  }).join('');
+
+  const areaOpts = MAG_AREE.map(a => \`<option value="\${a[0]}">\${esc(a[1])}</option>\`).join('');
+  const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3>
+    <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+      <input id="mg_new_n" placeholder="Nome (es. Bicchieri)" style="min-width:180px">
+      <select id="mg_new_a">\${areaOpts}</select>
+      <input id="mg_new_u" placeholder="Unit\xE0 (pz)" value="pz" style="width:80px">
+      <input id="mg_new_g" type="number" placeholder="Giacenza" style="width:100px">
+      <input id="mg_new_pr" type="number" placeholder="Riordino" style="width:100px">
+      <input id="mg_new_pa" type="number" placeholder="Preavviso" style="width:100px">
+      <button class="btn gold sm" id="mg_add">+ Aggiungi</button>
+    </div>
+    <p class="muted" style="margin-top:8px;font-size:.76rem">Il <b>preavviso</b> conviene impostarlo un po' sopra il <b>riordino</b>, cos\xEC ricevi l'avviso "in esaurimento" con anticipo.</p></div>\`;
+
+  $('#view').innerHTML = alert + (perArea || '<div class="panel"><p class="muted">Nessun articolo. Aggiungine uno qui sotto.</p></div>') + nuovo;
+
+  document.querySelectorAll('[data-mgmov]').forEach(b => b.onclick = async () => {
+    const [id, tipo] = b.dataset.mgmov.split('|');
+    const q = Number((document.getElementById('mg_q_' + id) || {}).value);
+    if (!q && tipo !== 'rettifica') { alert('Indica la quantit\xE0.'); return; }
+    let causale = null;
+    if (tipo === 'rettifica' && (document.getElementById('mg_q_' + id) || {}).value === '') { alert('Indica la giacenza contata.'); return; }
+    await api('/magazzino/' + id + '/movimento', { method: 'POST', body: JSON.stringify({ tipo, quantita: q, causale }) });
+    show('magazzino');
+  });
+  document.querySelectorAll('[data-mgsave]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.mgsave;
+    await api('/magazzino/' + id, { method: 'PUT', body: JSON.stringify({
+      nome: $('#mg_n_' + id).value, unita: $('#mg_u_' + id).value, area: b.dataset.area,
+      punto_riordino: Number($('#mg_pr_' + id).value), soglia_preavviso: Number($('#mg_pa_' + id).value),
+    }) });
+    show('magazzino');
+  });
+  document.querySelectorAll('[data-mgdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo e il suo storico movimenti?')) return; await api('/magazzino/' + b.dataset.mgdel, { method: 'DELETE' }); show('magazzino'); });
+  $('#mg_add').onclick = async () => {
+    if (!$('#mg_new_n').value) { alert('Indica il nome.'); return; }
+    await api('/magazzino', { method: 'POST', body: JSON.stringify({
+      nome: $('#mg_new_n').value, area: $('#mg_new_a').value, unita: $('#mg_new_u').value || 'pz',
+      giacenza: Number($('#mg_new_g').value || 0), punto_riordino: Number($('#mg_new_pr').value || 0), soglia_preavviso: Number($('#mg_new_pa').value || 0),
+    }) });
+    show('magazzino');
+  };
+};
 
 // ---- Proposte ----
 VIEWS.proposte = async () => {
@@ -4156,7 +4365,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 17:34" : "online";
+var BUILD = true ? "2026-08-15 17:48" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
