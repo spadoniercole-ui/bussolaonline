@@ -2094,7 +2094,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.5";
+var VERSION = "4.6";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -3700,6 +3700,7 @@ VIEWS.eventi = async () => {
 const RIF_DAYS = [['lun', 'Lun'], ['mar', 'Mar'], ['mer', 'Mer'], ['gio', 'Gio'], ['ven', 'Ven'], ['sab', 'Sab'], ['dom', 'Dom']];
 // normalizza il valore di un giorno in un ARRAY di tipi (retro-compat: stringa singola o vuoto)
 function rifNorm(v) { if (Array.isArray(v)) return v.filter(Boolean); if (v == null || v === '') return []; return [String(v)]; }
+function rifTxt(hex) { if (!hex) return '#fff'; const h = hex.replace('#', ''); if (h.length < 6) return '#fff'; const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16); return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? '#1a1a1a' : '#fff'; }
 function rifGrad(cols) { if (!cols.length) return '#fff'; if (cols.length === 1) return cols[0]; const n = cols.length; return 'linear-gradient(180deg,' + cols.map((c, i) => \`\${c} \${Math.round(i / n * 100)}%, \${c} \${Math.round((i + 1) / n * 100)}%\`).join(', ') + ')'; }
 VIEWS.bussola = async () => {
   const list = await api('/bussola');
@@ -3710,28 +3711,38 @@ VIEWS.bussola = async () => {
       \${rif.tipi.map(t => \`<tr><td><input id="rt_n_\${t.id}" value="\${esc(t.nome)}" style="min-width:160px"></td><td><input type="color" id="rt_c_\${t.id}" value="\${esc(t.colore)}"></td><td style="white-space:nowrap"><button class="btn gold sm" data-rtsave="\${t.id}">Salva</button> <button class="btn danger sm" data-rtdel="\${t.id}">\u{1F5D1}</button></td></tr>\`).join('')}
     </tbody></table>
     <div class="row" style="margin-top:10px"><input id="rt_new_n" placeholder="Nuovo tipo (es. Organico)" style="max-width:220px"><input type="color" id="rt_new_c" value="#7A8790"><button class="btn gold sm" id="rt_add">+ Aggiungi</button></div></div>\`;
-  const calRows = rif.calendari.map(c => \`<tr>
-      <td><b>\${esc(c.periodo)}</b></td>
-      <td><input id="rc_ini_\${esc(c.periodo)}" value="\${esc(c.inizio_conf || '')}" style="width:60px" placeholder="18:30"></td>
-      <td><input id="rc_fin_\${esc(c.periodo)}" value="\${esc(c.fine_conf || '')}" style="width:60px" placeholder="21:30"></td>
-      <td><input id="rc_rit_\${esc(c.periodo)}" value="\${esc(c.ora_ritiro || '')}" style="width:60px" placeholder="22:00"></td>
-      \${RIF_DAYS.map(([d]) => { const sel = rifNorm((c.giorni || {})[d]); return \`<td class="rc_cell" data-per="\${esc(c.periodo)}" data-day="\${d}" style="vertical-align:top;padding:3px;min-width:96px">\${rif.tipi.length ? rif.tipi.map(t => \`<label style="display:flex;align-items:center;gap:4px;font-size:.66rem;white-space:nowrap;line-height:1.5"><input type="checkbox" class="rc_day" data-per="\${esc(c.periodo)}" data-day="\${d}" value="\${esc(t.nome)}" \${sel.includes(t.nome) ? 'checked' : ''}><span>\${esc(t.nome)}</span></label>\`).join('') : '<span class="muted" style="font-size:.65rem">\u2014</span>'}</td>\`; }).join('')}
-      <td style="white-space:nowrap"><button class="btn gold sm" data-rcsave="\${esc(c.periodo)}">Salva</button> <button class="btn danger sm" data-rcdel="\${esc(c.periodo)}">\u{1F5D1}</button></td>
-    </tr>\`).join('');
+  const periodBlocks = rif.calendari.map(c => {
+    const matrix = rif.tipi.length ? \`<table class="rc_matrix" style="width:100%;border-collapse:collapse;margin-top:4px">
+      <thead><tr><th style="text-align:left;padding:4px 8px;font-size:.72rem;color:var(--muted)">Rifiuto</th>\${RIF_DAYS.map(([, l]) => \`<th style="text-align:center;padding:4px 2px;font-size:.72rem;color:var(--muted)">\${l}</th>\`).join('')}</tr></thead>
+      <tbody>\${rif.tipi.map(t => \`<tr>
+        <td style="padding:5px 8px;white-space:nowrap"><span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:\${esc(t.colore)};vertical-align:middle;margin-right:7px;border:1px solid rgba(0,0,0,.12)"></span><b style="font-size:.82rem">\${esc(t.nome)}</b></td>
+        \${RIF_DAYS.map(([d]) => { const on = rifNorm((c.giorni || {})[d]).includes(t.nome); return \`<td style="text-align:center;padding:3px"><button type="button" class="rc_tog\${on ? ' active' : ''}" data-per="\${esc(c.periodo)}" data-day="\${d}" data-tipo="\${esc(t.nome)}" data-col="\${esc(t.colore)}" aria-pressed="\${on}" title="\${esc(t.nome)} \xB7 \${d}" style="width:26px;height:26px;border-radius:7px;cursor:pointer;font-size:.8rem;font-weight:800;line-height:1;padding:0">\${on ? '\u2713' : ''}</button></td>\`; }).join('')}
+      </tr>\`).join('')}</tbody></table>\` : \`<p class="muted" style="font-size:.8rem">Prima aggiungi almeno un tipo di rifiuto nella legenda qui sopra.</p>\`;
+    return \`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px">
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <b style="font-size:1rem;color:var(--navy)">\${esc(c.periodo)}</b>
+        <span class="muted" style="font-size:.78rem;margin-left:6px">Conferimento</span>
+        <input id="rc_ini_\${esc(c.periodo)}" value="\${esc(c.inizio_conf || '')}" style="width:64px" placeholder="18:30"><span class="muted">\u2013</span><input id="rc_fin_\${esc(c.periodo)}" value="\${esc(c.fine_conf || '')}" style="width:64px" placeholder="21:30">
+        <span class="muted" style="font-size:.78rem">\xB7 Ritiro</span><input id="rc_rit_\${esc(c.periodo)}" value="\${esc(c.ora_ritiro || '')}" style="width:64px" placeholder="22:00">
+        <span style="flex:1"></span>
+        <button class="btn gold sm" data-rcsave="\${esc(c.periodo)}">Salva</button> <button class="btn danger sm" data-rcdel="\${esc(c.periodo)}">\u{1F5D1}</button>
+      </div>
+      \${matrix}
+    </div>\`;
+  }).join('');
   const calendario = \`<div class="panel"><h3>\u267B\uFE0F Rifiuti \xB7 calendario conferimento</h3>
-    <p class="muted" style="margin-bottom:8px">Per ogni periodo indica gli orari e spunta, per ciascun giorno, <b>uno o pi\xF9 rifiuti</b> da conferire (es. venerd\xEC: Carta <i>e</i> Vetro): la cella si colora secondo la legenda.</p>
-    <table><thead><tr><th>Periodo</th><th>Inizio</th><th>Fine</th><th>Ritiro</th>\${RIF_DAYS.map(([, l]) => \`<th>\${l}</th>\`).join('')}<th></th></tr></thead>
-    <tbody>\${calRows || \`<tr><td colspan="12" class="muted">Nessun periodo.</td></tr>\`}</tbody></table>
-    <div class="row" style="margin-top:10px"><input id="rc_new_per" placeholder="Nuovo periodo (es. Invernale)" style="max-width:220px"><button class="btn gold sm" id="rc_add">+ Aggiungi periodo</button></div></div>\`;
+    <p class="muted" style="margin-bottom:12px">Per ogni periodo, imposta gli orari e <b>clicca le caselle</b>: ogni riga \xE8 un rifiuto, ogni colonna un giorno. Un giorno pu\xF2 avere pi\xF9 rifiuti (es. venerd\xEC: Carta <i>e</i> Vetro). La casella accesa mostra il colore della legenda.</p>
+    \${periodBlocks || \`<p class="muted">Nessun periodo. Aggiungine uno qui sotto.</p>\`}
+    <div class="row" style="margin-top:6px"><input id="rc_new_per" placeholder="Nuovo periodo (es. Invernale)" style="max-width:220px"><button class="btn gold sm" id="rc_add">+ Aggiungi periodo</button></div></div>\`;
   $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>Contenuti guida</h3>
     <div class="row"><select id="b_sez"><option value="servizi">servizi</option><option value="vedere">vedere</option><option value="orari">orari</option></select>
       <input id="b_tit" placeholder="Titolo"><input id="b_det" placeholder="Dettaglio"><input id="b_dist" placeholder="Distanza" style="max-width:110px"><button class="btn gold sm" id="b_add">+ Aggiungi</button></div>
     <table><thead><tr><th>Sezione</th><th>Titolo</th><th>Dettaglio</th><th>Distanza</th><th></th></tr></thead><tbody>
     \${list.filter(b => b.sezione !== 'rifiuti').map(b => \`<tr><td>\${esc(b.sezione)}</td><td><b>\${esc(b.titolo)}</b></td><td>\${esc(b.dettaglio || '')}</td><td>\${esc(b.distanza || '')}</td><td><button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}
   </tbody></table></div>\`;
-  // colora ogni cella-giorno come sfondo a bande secondo i tipi spuntati
-  const paintCell = (cell) => { const cols = [...cell.querySelectorAll('.rc_day:checked')].map(x => colorBy[x.value]).filter(Boolean); cell.style.background = rifGrad(cols); cell.style.color = cols.length ? '#fff' : ''; };
-  document.querySelectorAll('.rc_cell').forEach(cell => { paintCell(cell); cell.querySelectorAll('.rc_day').forEach(chk => chk.onchange = () => paintCell(cell)); });
+  // caselle matrice: accese col colore del rifiuto, spente su fondo bianco
+  const styleTog = (btn) => { const on = btn.classList.contains('active'); const col = btn.dataset.col || '#7A8790'; if (on) { btn.style.background = col; btn.style.border = '1.5px solid ' + col; btn.style.color = rifTxt(col); btn.textContent = '\u2713'; } else { btn.style.background = '#fff'; btn.style.border = '1.5px solid #cbd2d8'; btn.style.color = ''; btn.textContent = ''; } };
+  document.querySelectorAll('.rc_tog').forEach(btn => { styleTog(btn); btn.onclick = () => { btn.classList.toggle('active'); btn.setAttribute('aria-pressed', btn.classList.contains('active')); styleTog(btn); }; });
   // legenda
   document.querySelectorAll('[data-rtsave]').forEach(b => b.onclick = async () => { const id = b.dataset.rtsave; await api('/rifiuti/tipo/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#rt_n_' + id).value, colore: $('#rt_c_' + id).value }) }); show('bussola'); });
   document.querySelectorAll('[data-rtdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il tipo di rifiuto?')) return; await api('/rifiuti/tipo/' + b.dataset.rtdel, { method: 'DELETE' }); show('bussola'); });
@@ -3739,8 +3750,9 @@ VIEWS.bussola = async () => {
   // calendario
   document.querySelectorAll('[data-rcsave]').forEach(b => b.onclick = async () => {
     const per = b.dataset.rcsave; const giorni = {};
-    RIF_DAYS.forEach(([d]) => giorni[d] = [...document.querySelectorAll(\`.rc_day[data-per="\${CSS.escape(per)}"][data-day="\${d}"]:checked\`)].map(x => x.value));
-    await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ inizio_conf: $('#rc_ini_' + per).value, fine_conf: $('#rc_fin_' + per).value, ora_ritiro: $('#rc_rit_' + per).value, giorni }) });
+    RIF_DAYS.forEach(([d]) => giorni[d] = [...document.querySelectorAll(\`.rc_tog.active[data-per="\${CSS.escape(per)}"][data-day="\${d}"]\`)].map(x => x.dataset.tipo));
+    const gv = (p) => (document.getElementById('rc_' + p + '_' + per) || {}).value || '';
+    await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ inizio_conf: gv('ini'), fine_conf: gv('fin'), ora_ritiro: gv('rit'), giorni }) });
     b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000);
   });
   document.querySelectorAll('[data-rcdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il periodo?')) return; await api('/rifiuti/calendario/' + encodeURIComponent(b.dataset.rcdel), { method: 'DELETE' }); show('bussola'); });
@@ -4144,7 +4156,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 17:26" : "online";
+var BUILD = true ? "2026-08-15 17:34" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
