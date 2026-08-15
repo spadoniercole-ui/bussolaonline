@@ -140,8 +140,34 @@ async function initSchema() {
     max_giocatori INTEGER NOT NULL DEFAULT 1,               -- partecipanti massimi
     punti_vitt    INTEGER NOT NULL DEFAULT 3,               -- punti vittoria (per la graduatoria)
     punti_par     INTEGER NOT NULL DEFAULT 1,               -- punti pareggio
+    data_inizio   TEXT,                                     -- periodo di svolgimento (per il cartellone)
+    data_fine     TEXT,
+    stato         TEXT NOT NULL DEFAULT 'preparazione',     -- preparazione | in_corso | archiviato
+    regolamento   TEXT,                                     -- regolamento visibile in app ai soci
     ordine        INTEGER NOT NULL DEFAULT 0,
     UNIQUE(dominio, chiave)
+  );
+
+  -- Edizioni archiviate di una disciplina (Albo d'Oro): snapshot congelato a fine periodo.
+  CREATE TABLE IF NOT EXISTS edizioni (
+    id              INTEGER PRIMARY KEY,
+    disciplina_id   INTEGER,
+    disciplina_nome TEXT,
+    dominio         TEXT,
+    data_inizio     TEXT,
+    data_fine       TEXT,
+    vincitore       TEXT,
+    classifica      TEXT,                                   -- JSON: graduatoria finale congelata
+    archiviata_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Regolamenti generali visibili in app (Coppa, Contest, Proposte\u2026).
+  CREATE TABLE IF NOT EXISTS regolamenti (
+    id      INTEGER PRIMARY KEY,
+    chiave  TEXT UNIQUE,
+    titolo  TEXT NOT NULL,
+    testo   TEXT,
+    ordine  INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS gironi (
@@ -400,6 +426,10 @@ async function migrate() {
   await addIfMissing("soci", "soggiorno_dal", "soggiorno_dal TEXT");
   await addIfMissing("soci", "soggiorno_al", "soggiorno_al TEXT");
   await addIfMissing("utenti_admin", "permessi", "permessi TEXT");
+  await addIfMissing("discipline", "data_inizio", "data_inizio TEXT");
+  await addIfMissing("discipline", "data_fine", "data_fine TEXT");
+  await addIfMissing("discipline", "stato", "stato TEXT NOT NULL DEFAULT 'preparazione'");
+  await addIfMissing("discipline", "regolamento", "regolamento TEXT");
   try {
     await db.exec("UPDATE soci SET tipo_profilo='residente' WHERE tipo_profilo='visitatore'");
   } catch (_) {
@@ -532,7 +562,26 @@ async function generaCalendario(disciplinaId) {
       for (const [a, b] of giornate[ri]) await insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b);
     }
   }
+  await db.prepare("UPDATE discipline SET stato='in_corso' WHERE id=?").run(disciplinaId);
   return getTabellone(disciplinaId);
+}
+async function classificaCombinata(disciplinaId) {
+  return await db.prepare(`SELECT ca.nome, ca.colore, c.pt, c.v, c.p, c.pg, c.gf, c.gs
+    FROM classifica c JOIN casate ca ON ca.id=c.casata_id JOIN gironi g ON g.id=c.girone_id
+    WHERE g.disciplina_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(disciplinaId);
+}
+async function archiviaEdizione(disciplinaId) {
+  const d = await db.prepare("SELECT id,nome,dominio,data_inizio,data_fine FROM discipline WHERE id=?").get(disciplinaId);
+  if (!d) throw new Error("Disciplina inesistente");
+  const cl = await classificaCombinata(disciplinaId);
+  const vincitore = cl[0]?.nome || null;
+  await db.prepare("INSERT INTO edizioni (disciplina_id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,classifica) VALUES (?,?,?,?,?,?,?)").run(d.id, d.nome, d.dominio, d.data_inizio || null, d.data_fine || null, vincitore, JSON.stringify(cl));
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
+  const g = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
+  for (const x of g) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(x.id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
+  await db.prepare("UPDATE discipline SET stato='preparazione' WHERE id=?").run(disciplinaId);
+  return { vincitore, casate: cl.length };
 }
 async function recomputeGirone(gironeId) {
   const disc = await db.prepare(`SELECT d.punti_vitt pv, d.punti_par pp FROM gironi g JOIN discipline d ON d.id=g.disciplina_id WHERE g.id=?`).get(gironeId);
@@ -877,6 +926,10 @@ async function seed({ verbose = false } = {}) {
     const n = compagni[i];
     await insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
   }
+  const insReg = db.prepare("INSERT INTO regolamenti (chiave,titolo,testo,ordine) VALUES (?,?,?,?)");
+  await insReg.run("coppa", "Coppa delle Casate", "Le otto casate si sfidano nelle discipline sportive e nei giochi durante il periodo di svolgimento. Ogni vittoria e pareggio assegna punti alla graduatoria; le migliori accedono a semifinali e finale. La classifica generale determina la Coppa della stagione.", 1);
+  await insReg.run("contest", "Serata dei Clan", "Il CdA lancia la sfida (cocktail, karaoke, recitazione\u2026) la settimana prima. La giuria stila una graduatoria (punti per posizione) a cui si somma il bonus vendite 4/2/1 alle prime tre casate per pezzi venduti. I punti finali si versano una sola volta in Coppa.", 2);
+  await insReg.run("proposte", "Vinile & Open Mic", "Le proposte musicali (vinile) e le esibizioni all'Open Mic raccolte durante la settimana diventano la scaletta di quella successiva. Linguaggio e contenuti moderati; ogni proposta \xE8 valutata dallo staff.", 3);
   await db.prepare("INSERT OR REPLACE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,?,?,?)").run(120, 50, 100);
   const insGioco = db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,ordine) VALUES (?,?,?,?,?)");
   const GIOCHI_INV = [
@@ -951,6 +1004,15 @@ publicRouter.get("/contest", async (req, res) => {
 });
 publicRouter.get("/luoghi", async (req, res) => {
   res.json(await db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
+});
+publicRouter.get("/regolamenti", async (req, res) => {
+  const generali = await db.prepare("SELECT chiave,titolo,testo FROM regolamenti ORDER BY ordine,id").all();
+  const discipline = await db.prepare(`SELECT chiave,nome,dominio,regolamento,data_inizio,data_fine,stato
+    FROM discipline WHERE attivo=1 AND regolamento IS NOT NULL AND regolamento<>'' ORDER BY dominio,ordine`).all();
+  res.json({ generali, discipline });
+});
+publicRouter.get("/albo", async (req, res) => {
+  res.json(await db.prepare("SELECT disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni ORDER BY id DESC LIMIT 100").all());
 });
 var COWO_MAX = 8;
 var TAVOLO_MAX_COPERTI = 40;
@@ -1568,6 +1630,37 @@ adminRouter.put("/partite/:id", requireCap("tabellone"), async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+adminRouter.put("/tabellone/:id/impostazioni", requireCap("tabellone"), async (req, res) => {
+  const b = req.body || {};
+  const stato = ["preparazione", "in_corso", "archiviato"].includes(b.stato) ? b.stato : "preparazione";
+  await db.prepare("UPDATE discipline SET data_inizio=?,data_fine=?,stato=?,regolamento=? WHERE id=?").run(b.data_inizio || null, b.data_fine || null, stato, b.regolamento ?? null, req.params.id);
+  audit(req.adminUser.username, "impostazioni_tabellone", "discipline", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/tabellone/:id/archivia", requireCap("tabellone"), async (req, res) => {
+  try {
+    const r = await archiviaEdizione(Number(req.params.id));
+    audit(req.adminUser.username, "archivia_edizione", "discipline", req.params.id, `vince ${r.vincitore || "\u2014"}`);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.get("/tabellone/:id/edizioni", requireCap("tabellone"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni WHERE disciplina_id=? ORDER BY id DESC").all(req.params.id);
+  res.json(rows);
+});
+adminRouter.get("/regolamenti", requireCap("tabellone"), async (req, res) => {
+  res.json(await db.prepare("SELECT id,chiave,titolo,testo,ordine FROM regolamenti ORDER BY ordine,id").all());
+});
+adminRouter.put("/regolamenti/:chiave", requireCap("tabellone"), async (req, res) => {
+  const b = req.body || {};
+  const ex = await db.prepare("SELECT id FROM regolamenti WHERE chiave=?").get(req.params.chiave);
+  if (ex) await db.prepare("UPDATE regolamenti SET titolo=?,testo=? WHERE chiave=?").run(b.titolo || req.params.chiave, b.testo ?? "", req.params.chiave);
+  else await db.prepare("INSERT INTO regolamenti (chiave,titolo,testo) VALUES (?,?,?)").run(req.params.chiave, b.titolo || req.params.chiave, b.testo ?? "");
+  audit(req.adminUser.username, "modifica", "regolamenti", req.params.chiave);
+  res.json({ ok: true });
+});
 adminRouter.get("/contest", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM contest ORDER BY id DESC").all());
 });
@@ -1933,7 +2026,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.1";
+var VERSION = "4.2";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2295,18 +2388,20 @@ async function api(path, opts = {}) {
 }
 async function loadAll() {
   try {
-    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, contest, serate, socio] = await Promise.all([
+    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, contest, serate, socio, regolamenti, albo] = await Promise.all([
       api('/casate'), api('/eventi'), api('/risorse'), api('/discipline/sport'),
       api('/discipline/giochi'), api('/bussola'), api('/luoghi').catch(() => SEED.luoghi),
       api('/contest/corrente').catch(() => SEED.contest),
       api('/serate').catch(() => SEED.serate),
       api('/tessera/' + state.tessera).catch(() => SEED.socio),
+      api('/regolamenti').catch(() => ({ generali: [], discipline: [] })),
+      api('/albo').catch(() => []),
     ]);
-    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi, contest: contest || null, serate: serate || [] };
+    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi, contest: contest || null, serate: serate || [], regolamenti: regolamenti || { generali: [], discipline: [] }, albo: albo || [] };
     state.socio = socio || SEED.socio;
     state.online = true;
   } catch (e) {
-    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi, contest: SEED.contest, serate: SEED.serate };
+    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi, contest: SEED.contest, serate: SEED.serate, regolamenti: { generali: [], discipline: [] }, albo: [] };
     state.socio = SEED.socio;
     state.online = false;
   }
@@ -2411,7 +2506,23 @@ function renderCoppa() {
     \${contestCard}\${capCard}
     <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">Classifica generale</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${i+1}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>Campionati sport</b><p class="tiny muted">Gironi, calendario e risultati.</p></div><button class="btn navy sm" data-go="sport">Apri</button></div>
-    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>Giochi da Tavolo</b><p class="tiny muted">Burraco, scala 40, briscola, scacchi.</p></div><button class="btn navy sm" data-go="giochi">Apri</button></div>\`;
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>Giochi da Tavolo</b><p class="tiny muted">Burraco, scala 40, briscola, scacchi.</p></div><button class="btn navy sm" data-go="giochi">Apri</button></div>
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--gold); font-size:1.4rem">\u{1F4DC}</div><div style="flex:1"><b>Regolamenti & Albo d'Oro</b><p class="tiny muted">Regole di Coppa, Contest e Proposte; le edizioni passate.</p></div><button class="btn navy sm" data-sheet="regolamenti">Apri</button></div>\`;
+}
+function openRegolamenti() {
+  const r = state.data.regolamenti || { generali: [], discipline: [] };
+  const albo = state.data.albo || [];
+  const blocco = (titolo, testo) => \`<div class="card" style="margin-top:10px"><div class="eyebrow" style="color:var(--navy)">\${esc(titolo)}</div><p class="tiny" style="white-space:pre-wrap; margin-top:4px">\${esc(testo || '\u2014')}</p></div>\`;
+  const gen = (r.generali || []).map(x => blocco(x.titolo, x.testo)).join('');
+  const disc = (r.discipline || []).map(d => blocco(\`\${d.nome}\${d.data_inizio ? ' \xB7 ' + d.data_inizio + (d.data_fine ? '\u2192' + d.data_fine : '') : ''}\`, d.regolamento)).join('');
+  const alboHtml = albo.length ? \`<div class="sect-title" style="margin-top:14px">Albo d'Oro</div><div class="card" style="padding:4px 14px">\${albo.map(e => \`<div class="matchrow"><div class="vs">\${esc(e.disciplina_nome)}<div class="ct">\${esc((e.data_inizio || '') + (e.data_fine ? '\u2192' + e.data_fine : ''))}</div></div><div class="sc">\${esc(e.vincitore || '\u2014')}</div></div>\`).join('')}</div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Regole & storia</div><h2>Regolamenti</h2>
+    <p class="sub">Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.</p>
+    \${gen || '<p class="tiny muted">Nessun regolamento generale.</p>'}
+    \${disc ? '<div class="sect-title" style="margin-top:14px">Discipline</div>' + disc : ''}
+    \${alboHtml}
+    <button class="btn navy block" style="margin-top:14px" data-close>Chiudi</button>\`);
+  showOv();
 }
 function renderBussola() {
   const b = state.data.bussola;
@@ -2848,7 +2959,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.act) { ev.stopPropagation(); if (t.dataset.act==='go-coppa') return go('coppa'); return openSheet(t.dataset.act); }
   if (t.dataset.open != null) return openEvent(t.dataset.open);
   if (t.dataset.book != null) return openBooking(t.dataset.book);
-  if (t.dataset.sheet) return openSheet(t.dataset.sheet);
+  if (t.dataset.sheet) return t.dataset.sheet === 'regolamenti' ? openRegolamenti() : openSheet(t.dataset.sheet);
   if (t.dataset.go) return go(t.dataset.go);
   if (t.dataset.close != null) return closeOv();
   if (t.dataset.confirm != null) return okThen('Prenotazione registrata \xB7 ' + t.dataset.confirm);
@@ -3599,25 +3710,48 @@ VIEWS.tabellone = async () => {
   let cur = discs[0].id;
   const render = async () => {
     const t = await api('/tabellone/' + cur);
-    const disc = discs.find(d => d.id == cur) || {};
+    const disc = (await api('/discipline')).find(d => d.id == cur) || {};   // fresco (periodo/regolamento)
+    const edz = await api('/tabellone/' + cur + '/edizioni').catch(() => []);
     const giornate = [...new Set(t.gironi.flatMap(g => g.partite.map(p => p.giornata)))].sort((a, b) => a - b);
     const finali = t.finali ? \`<div class="panel"><h3>Fase finale \xB7 qualificate</h3>\${t.finali.semifinali.map((s, i) => \`<div style="padding:6px 0"><b>Semifinale \${i + 1}:</b> \${esc(s.casa || '\u2014')} vs \${esc(s.ospite || '\u2014')}</div>\`).join('')}</div>\` : '';
+    const statoTag = { preparazione: 'mid', in_corso: 'ok', archiviato: 'no' }[disc.stato] || 'mid';
+    const settings = \`<div class="panel"><h3>Periodo, stato e regolamento <span class="tag \${statoTag}">\${esc(disc.stato || 'preparazione')}</span></h3>
+      <div class="grid2">
+        <div><label>Inizio periodo</label><input id="tb_di" type="date" value="\${esc(disc.data_inizio || '')}"></div>
+        <div><label>Fine periodo</label><input id="tb_df" type="date" value="\${esc(disc.data_fine || '')}"></div>
+        <div><label>Stato</label><select id="tb_stato">\${['preparazione', 'in_corso', 'archiviato'].map(s => \`<option \${disc.stato === s ? 'selected' : ''}>\${s}</option>\`).join('')}</select></div>
+      </div>
+      <label>Regolamento (visibile in app ai soci)</label><textarea id="tb_reg" rows="4" placeholder="Regole del torneo di questa disciplina\u2026">\${esc(disc.regolamento || '')}</textarea>
+      <div class="row" style="justify-content:space-between;margin-top:10px">
+        <button class="btn gold sm" id="tb_setSave">Salva impostazioni</button>
+        <button class="btn ghost sm" id="tb_archivia">\u{1F4DA} Archivia edizione (Albo d'Oro)</button>
+      </div></div>\`;
+    const albo = edz.length ? \`<div class="panel"><h3>Albo d'Oro \u2014 edizioni archiviate</h3><table><thead><tr><th>Periodo</th><th>Vincitrice</th><th>Archiviata</th></tr></thead><tbody>
+      \${edz.map(e => \`<tr><td>\${esc((e.data_inizio || '') + (e.data_fine ? ' \u2192 ' + e.data_fine : '')) || '\u2014'}</td><td><b>\${esc(e.vincitore || '\u2014')}</b></td><td class="muted">\${esc(e.archiviata_at || '')}</td></tr>\`).join('')}</tbody></table></div>\` : '';
+    const regs = await api('/regolamenti').catch(() => []);
+    const regsPanel = \`<div class="panel"><h3>Regolamenti generali (visibili in app)</h3>
+      \${regs.map(r => \`<div style="margin-bottom:10px"><label>\${esc(r.titolo)}</label><textarea id="rg_\${esc(r.chiave)}" rows="3">\${esc(r.testo || '')}</textarea>
+        <button class="btn gold sm" data-rgsave="\${esc(r.chiave)}" style="margin-top:6px">Salva</button></div>\`).join('') || '<p class="muted">Nessun regolamento.</p>'}</div>\`;
     $('#view').innerHTML = \`
       <div class="row">
         <select id="tb_disc">\${discs.map(d => \`<option value="\${d.id}" \${d.id == cur ? 'selected' : ''}>\${d.dominio} \xB7 \${esc(d.nome)}\${d.attivo ? '' : ' (disattivata)'}</option>\`).join('')}</select>
         \${can('tabellone_reset') ? '<button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>' : ''}
         \${t.completo ? '<span class="tag ok">gironi completi</span>' : '<span class="tag mid">gironi in corso</span>'}
       </div>
+      \${settings}
       \${giornate.length ? \`<div class="row" style="margin-top:-6px">
         <span class="muted" style="font-size:13px">Foglio da stampare per raccogliere i risultati a mano:</span>
         <select id="tb_gio"><option value="">Tutte le giornate</option>\${giornate.map(g => \`<option value="\${g}">Giornata \${g}</option>\`).join('')}</select>
         <button class="btn ghost sm" id="tb_print">\u{1F5A8}\uFE0F Stampa foglio risultati</button>
       </div>\` : ''}
       \${t.gironi.length ? t.gironi.map(gironeHtml).join('') : '<p class="muted">Nessun calendario: premi \u201CGenera\u201D.</p>'}
-      \${finali}\`;
+      \${finali}\${albo}\${regsPanel}\`;
     $('#tb_disc').onchange = (e) => { cur = e.target.value; render(); };
     if ($('#tb_gen')) $('#tb_gen').onclick = async () => { if (!confirm('Rigenerare il calendario AZZERA i risultati di questa disciplina. Procedo?')) return; await api('/tabellone/' + cur + '/genera', { method: 'POST' }); render(); };
+    $('#tb_setSave').onclick = async () => { await api('/tabellone/' + cur + '/impostazioni', { method: 'PUT', body: JSON.stringify({ data_inizio: $('#tb_di').value, data_fine: $('#tb_df').value, stato: $('#tb_stato').value, regolamento: $('#tb_reg').value }) }); render(); };
+    $('#tb_archivia').onclick = async () => { if (!confirm("Archiviare l'edizione corrente nell'Albo d'Oro e azzerare il calendario di questa disciplina?")) return; try { const r = await api('/tabellone/' + cur + '/archivia', { method: 'POST' }); alert('Edizione archiviata \xB7 vince ' + (r.vincitore || '\u2014')); render(); } catch (e) { alert(e.message); } };
     if ($('#tb_print')) $('#tb_print').onclick = () => stampaGiornata(disc.nome || 'Torneo', t, $('#tb_gio').value);
+    document.querySelectorAll('[data-rgsave]').forEach(b => b.onclick = async () => { const k = b.dataset.rgsave; const r = regs.find(x => x.chiave === k) || {}; await api('/regolamenti/' + k, { method: 'PUT', body: JSON.stringify({ titolo: r.titolo, testo: $('#rg_' + k).value }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000); });
     document.querySelectorAll('[data-psave]').forEach(b => b.onclick = async () => {
       const id = b.dataset.psave;
       try { await api('/partite/' + id, { method: 'PUT', body: JSON.stringify({ gol_a: $('#ga_' + id).value, gol_b: $('#gb_' + id).value }) }); render(); }
@@ -3870,7 +4004,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 16:00" : "online";
+var BUILD = true ? "2026-08-15 16:15" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
