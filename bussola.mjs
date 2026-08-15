@@ -236,6 +236,23 @@ async function initSchema() {
     ordine   INTEGER NOT NULL DEFAULT 0
   );
 
+  -- Rifiuti: legenda (tipo + colore) e calendario di conferimento per periodo (griglia colorata).
+  CREATE TABLE IF NOT EXISTS rifiuti_tipi (
+    id     INTEGER PRIMARY KEY,
+    nome   TEXT NOT NULL,
+    colore TEXT NOT NULL DEFAULT '#7A8790',
+    ordine INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS rifiuti_calendario (
+    id          INTEGER PRIMARY KEY,
+    periodo     TEXT NOT NULL UNIQUE,                      -- Estivo | Invernale | ...
+    inizio_conf TEXT,                                      -- inizio conferimento (es. 18:30)
+    fine_conf   TEXT,                                      -- fine conferimento (es. 21:30)
+    ora_ritiro  TEXT,                                      -- ora ritiro (es. 22:00)
+    giorni      TEXT,                                      -- JSON {lun,mar,mer,gio,ven,sab,dom} = nome tipo o ''
+    ordine      INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS contest (
     id         INTEGER PRIMARY KEY,
     titolo     TEXT NOT NULL,                               -- es. "Il mio nome \xE8 Bond, James Bond"
@@ -926,6 +943,10 @@ async function seed({ verbose = false } = {}) {
     const n = compagni[i];
     await insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
   }
+  const insRifTipo = db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)");
+  const RIF_TIPI = [["Organico", "#6b4a2b", 1], ["Plastica e lattine", "#d99a00", 2], ["Carta e cartone", "#2E6DA4", 3], ["Vetro", "#3f7a4a", 4], ["Indifferenziato", "#6b6f73", 5]];
+  for (const t of RIF_TIPI) await insRifTipo.run(...t);
+  await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run("Estivo", "18:30", "21:30", "22:00", JSON.stringify({ lun: "Organico", mar: "Plastica e lattine", mer: "Carta e cartone", gio: "Organico", ven: "Vetro", sab: "Indifferenziato", dom: "" }), 1);
   const insReg = db.prepare("INSERT INTO regolamenti (chiave,titolo,testo,ordine) VALUES (?,?,?,?)");
   await insReg.run("coppa", "Coppa delle Casate", "Le otto casate si sfidano nelle discipline sportive e nei giochi durante il periodo di svolgimento. Ogni vittoria e pareggio assegna punti alla graduatoria; le migliori accedono a semifinali e finale. La classifica generale determina la Coppa della stagione.", 1);
   await insReg.run("contest", "Serata dei Clan", "Il CdA lancia la sfida (cocktail, karaoke, recitazione\u2026) la settimana prima. La giuria stila una graduatoria (punti per posizione) a cui si somma il bonus vendite 4/2/1 alle prime tre casate per pezzi venduti. I punti finali si versano una sola volta in Coppa.", 2);
@@ -1013,6 +1034,11 @@ publicRouter.get("/regolamenti", async (req, res) => {
 });
 publicRouter.get("/albo", async (req, res) => {
   res.json(await db.prepare("SELECT disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni ORDER BY id DESC LIMIT 100").all());
+});
+publicRouter.get("/rifiuti", async (req, res) => {
+  const tipi = await db.prepare("SELECT id,nome,colore FROM rifiuti_tipi ORDER BY ordine,id").all();
+  const cal = (await db.prepare("SELECT periodo,inizio_conf,fine_conf,ora_ritiro,giorni FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
+  res.json({ tipi, calendari: cal });
 });
 var COWO_MAX = 8;
 var TAVOLO_MAX_COPERTI = 40;
@@ -1575,6 +1601,48 @@ adminRouter.put("/luoghi/:id", requireCap("luoghi"), async (req, res) => {
   audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
   res.json({ ok: true });
 });
+adminRouter.get("/rifiuti", requireCap("guida"), async (req, res) => {
+  const tipi = await db.prepare("SELECT id,nome,colore,ordine FROM rifiuti_tipi ORDER BY ordine,id").all();
+  const calendari = (await db.prepare("SELECT id,periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
+  res.json({ tipi, calendari });
+});
+adminRouter.post("/rifiuti/tipo", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_tipi").get()).n;
+  const info = await db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)").run(b.nome, b.colore || "#7A8790", ord);
+  audit(req.adminUser.username, "crea", "rifiuti_tipi", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/rifiuti/tipo/:id", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE rifiuti_tipi SET nome=?,colore=? WHERE id=?").run(b.nome, b.colore || "#7A8790", req.params.id);
+  audit(req.adminUser.username, "modifica", "rifiuti_tipi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/rifiuti/tipo/:id", requireCap("guida"), async (req, res) => {
+  await db.prepare("DELETE FROM rifiuti_tipi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "rifiuti_tipi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.put("/rifiuti/calendario/:periodo", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  const per = req.params.periodo;
+  const giorni = JSON.stringify(b.giorni || {});
+  const ex = await db.prepare("SELECT id FROM rifiuti_calendario WHERE periodo=?").get(per);
+  if (ex) await db.prepare("UPDATE rifiuti_calendario SET inizio_conf=?,fine_conf=?,ora_ritiro=?,giorni=? WHERE periodo=?").run(b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, per);
+  else {
+    const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_calendario").get()).n;
+    await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run(per, b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, ord);
+  }
+  audit(req.adminUser.username, "modifica", "rifiuti_calendario", per);
+  res.json({ ok: true });
+});
+adminRouter.delete("/rifiuti/calendario/:periodo", requireCap("guida"), async (req, res) => {
+  await db.prepare("DELETE FROM rifiuti_calendario WHERE periodo=?").run(req.params.periodo);
+  audit(req.adminUser.username, "cancella", "rifiuti_calendario", req.params.periodo);
+  res.json({ ok: true });
+});
 adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
@@ -2026,7 +2094,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.2";
+var VERSION = "4.3";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2388,7 +2456,7 @@ async function api(path, opts = {}) {
 }
 async function loadAll() {
   try {
-    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, contest, serate, socio, regolamenti, albo] = await Promise.all([
+    const [casate, eventi, risorse, sport, giochi, bussola, luoghi, contest, serate, socio, regolamenti, albo, rifiuti] = await Promise.all([
       api('/casate'), api('/eventi'), api('/risorse'), api('/discipline/sport'),
       api('/discipline/giochi'), api('/bussola'), api('/luoghi').catch(() => SEED.luoghi),
       api('/contest/corrente').catch(() => SEED.contest),
@@ -2396,12 +2464,13 @@ async function loadAll() {
       api('/tessera/' + state.tessera).catch(() => SEED.socio),
       api('/regolamenti').catch(() => ({ generali: [], discipline: [] })),
       api('/albo').catch(() => []),
+      api('/rifiuti').catch(() => ({ tipi: [], calendari: [] })),
     ]);
-    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi, contest: contest || null, serate: serate || [], regolamenti: regolamenti || { generali: [], discipline: [] }, albo: albo || [] };
+    state.data = { casate, eventi, risorse, sport, giochi, bussola, luoghi, contest: contest || null, serate: serate || [], regolamenti: regolamenti || { generali: [], discipline: [] }, albo: albo || [], rifiuti: rifiuti || { tipi: [], calendari: [] } };
     state.socio = socio || SEED.socio;
     state.online = true;
   } catch (e) {
-    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi, contest: SEED.contest, serate: SEED.serate, regolamenti: { generali: [], discipline: [] }, albo: [] };
+    state.data = { casate: SEED.casate, eventi: SEED.eventi, risorse: SEED.risorse, sport: SEED.sport, giochi: SEED.giochi, bussola: SEED.bussola, luoghi: SEED.luoghi, contest: SEED.contest, serate: SEED.serate, regolamenti: { generali: [], discipline: [] }, albo: [], rifiuti: { tipi: [], calendari: [] } };
     state.socio = SEED.socio;
     state.online = false;
   }
@@ -2524,6 +2593,32 @@ function openRegolamenti() {
     <button class="btn navy block" style="margin-top:14px" data-close>Chiudi</button>\`);
   showOv();
 }
+const RIF_DAYS = [['lun','Lun'],['mar','Mar'],['mer','Mer'],['gio','Gio'],['ven','Ven'],['sab','Sab'],['dom','Dom']];
+function rifTextColor(hex){ if(!hex) return '#fff'; const h=hex.replace('#',''); if(h.length<6) return '#fff'; const r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),bl=parseInt(h.slice(4,6),16); return (r*0.299+g*0.587+bl*0.114)>150?'#1a1a1a':'#fff'; }
+function rifiutiHTML(){
+  const data = state.data.rifiuti || { tipi: [], calendari: [] };
+  const tipi = data.tipi || [];
+  const cal = data.calendari || [];
+  if (!tipi.length && !cal.length) {
+    return \`<div class="card"><p class="tiny muted">Calendario non ancora disponibile.</p></div>\`;
+  }
+  const colorOf = (nome) => (tipi.find(t => t.nome === nome) || {}).colore || '#7A8790';
+  const legend = tipi.length ? \`<div class="chips" style="margin-bottom:10px">\${tipi.map(t=>\`<span class="chip" style="cursor:default;background:\${esc(t.colore)};color:\${rifTextColor(t.colore)};border-color:\${esc(t.colore)}">\${esc(t.nome)}</span>\`).join('')}</div>\` : '';
+  const periods = cal.map(c => {
+    const g = c.giorni || {};
+    const cells = RIF_DAYS.map(([k,lbl]) => {
+      const nome = g[k];
+      if (!nome) return \`<div style="flex:1;min-width:38px;text-align:center;padding:6px 2px;border-radius:8px;background:#f0f2f4"><div style="font-size:.6rem;font-weight:700;color:#8a949c">\${lbl}</div><div style="font-size:.55rem;color:#b5bcc2;margin-top:2px">\u2014</div></div>\`;
+      const col = colorOf(nome);
+      return \`<div style="flex:1;min-width:38px;text-align:center;padding:6px 2px;border-radius:8px;background:\${esc(col)};color:\${rifTextColor(col)}"><div style="font-size:.6rem;font-weight:700;opacity:.85">\${lbl}</div><div style="font-size:.55rem;margin-top:2px;line-height:1.1">\${esc(nome)}</div></div>\`;
+    }).join('');
+    const info = [];
+    if (c.inizio_conf || c.fine_conf) info.push(\`Conferimento \${esc(c.inizio_conf||'')}\${c.fine_conf?'\u2013'+esc(c.fine_conf):''}\`);
+    if (c.ora_ritiro) info.push(\`Ritiro dalle \${esc(c.ora_ritiro)}\`);
+    return \`<div class="card" style="margin-bottom:10px"><div style="font-weight:700;font-size:.85rem;color:var(--navy);margin-bottom:8px">\${esc(c.periodo)}</div><div style="display:flex;gap:4px">\${cells}</div>\${info.length?\`<div class="tiny muted" style="margin-top:8px">\${info.join(' \xB7 ')}</div>\`:''}</div>\`;
+  }).join('');
+  return \`<div>\${legend}\${periods || '<div class="card"><p class="tiny muted">Nessun periodo configurato.</p></div>'}</div>\`;
+}
 function renderBussola() {
   const b = state.data.bussola;
   const rows = (arr) => (arr||[]).map(x => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.8rem">\${esc(x.titolo)}</b>\${x.dettaglio?\`<div class="ct">\${esc(x.dettaglio)}</div>\`:''}</div>\${x.distanza?\`<span class="ct">\${esc(x.distanza)}</span>\`:''}</div>\`).join('');
@@ -2547,7 +2642,7 @@ function renderBussola() {
       <div class="benefit"><span style="font-size:1.1rem">\u{1F319}</span><div><b>Silenzio notturno</b><p style="color:#5c4d2a">\${esc(b.orari?.[1]?.dettaglio||'dopo le 23:30')}</p></div></div>
     </div>
     <div class="sect-title">Numeri utili & servizi</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
-    <div class="sect-title">Raccolta rifiuti</div><div class="card"><div class="chips">\${(b.rifiuti||[]).map(r=>\`<span class="chip" style="cursor:default">\${esc(r.titolo)}</span>\`).join('')}</div></div>
+    <div class="sect-title">Raccolta rifiuti</div>\${rifiutiHTML()}
     <div class="sect-title">Cosa vedere</div><div class="card" style="padding:4px 14px">\${rows(b.vedere)}</div>
     <div style="height:6px"></div>\`;
 }
@@ -3597,16 +3692,54 @@ VIEWS.eventi = async () => {
 };
 
 // ---- Bussola ----
+const RIF_DAYS = [['lun', 'Lun'], ['mar', 'Mar'], ['mer', 'Mer'], ['gio', 'Gio'], ['ven', 'Ven'], ['sab', 'Sab'], ['dom', 'Dom']];
 VIEWS.bussola = async () => {
   const list = await api('/bussola');
-  $('#view').innerHTML = \`<div class="panel"><h3>Contenuti guida</h3>
-    <div class="row"><select id="b_sez"><option value="servizi">servizi</option><option value="vedere">vedere</option><option value="orari">orari</option><option value="rifiuti">rifiuti</option></select>
+  const rif = await api('/rifiuti').catch(() => ({ tipi: [], calendari: [] }));
+  const colorBy = {}; rif.tipi.forEach(t => colorBy[t.nome] = t.colore);
+  const tipoOpts = (sel) => \`<option value="">\u2014</option>\` + rif.tipi.map(t => \`<option value="\${esc(t.nome)}" \${sel === t.nome ? 'selected' : ''}>\${esc(t.nome)}</option>\`).join('');
+  const legenda = \`<div class="panel"><h3>\u267B\uFE0F Rifiuti \xB7 legenda (tipo e colore)</h3>
+    <table><thead><tr><th>Tipo</th><th>Colore</th><th></th></tr></thead><tbody>
+      \${rif.tipi.map(t => \`<tr><td><input id="rt_n_\${t.id}" value="\${esc(t.nome)}" style="min-width:160px"></td><td><input type="color" id="rt_c_\${t.id}" value="\${esc(t.colore)}"></td><td style="white-space:nowrap"><button class="btn gold sm" data-rtsave="\${t.id}">Salva</button> <button class="btn danger sm" data-rtdel="\${t.id}">\u{1F5D1}</button></td></tr>\`).join('')}
+    </tbody></table>
+    <div class="row" style="margin-top:10px"><input id="rt_new_n" placeholder="Nuovo tipo (es. Organico)" style="max-width:220px"><input type="color" id="rt_new_c" value="#7A8790"><button class="btn gold sm" id="rt_add">+ Aggiungi</button></div></div>\`;
+  const calRows = rif.calendari.map(c => \`<tr>
+      <td><b>\${esc(c.periodo)}</b></td>
+      <td><input id="rc_ini_\${esc(c.periodo)}" value="\${esc(c.inizio_conf || '')}" style="width:60px" placeholder="18:30"></td>
+      <td><input id="rc_fin_\${esc(c.periodo)}" value="\${esc(c.fine_conf || '')}" style="width:60px" placeholder="21:30"></td>
+      <td><input id="rc_rit_\${esc(c.periodo)}" value="\${esc(c.ora_ritiro || '')}" style="width:60px" placeholder="22:00"></td>
+      \${RIF_DAYS.map(([d]) => \`<td><select class="rc_day" data-per="\${esc(c.periodo)}" id="rc_\${esc(c.periodo)}_\${d}">\${tipoOpts((c.giorni || {})[d] || '')}</select></td>\`).join('')}
+      <td style="white-space:nowrap"><button class="btn gold sm" data-rcsave="\${esc(c.periodo)}">Salva</button> <button class="btn danger sm" data-rcdel="\${esc(c.periodo)}">\u{1F5D1}</button></td>
+    </tr>\`).join('');
+  const calendario = \`<div class="panel"><h3>\u267B\uFE0F Rifiuti \xB7 calendario conferimento</h3>
+    <p class="muted" style="margin-bottom:8px">Per ogni periodo indica gli orari e, cliccando nella cella del giorno, scegli il rifiuto da conferire: la cella si colora secondo la legenda.</p>
+    <table><thead><tr><th>Periodo</th><th>Inizio</th><th>Fine</th><th>Ritiro</th>\${RIF_DAYS.map(([, l]) => \`<th>\${l}</th>\`).join('')}<th></th></tr></thead>
+    <tbody>\${calRows || \`<tr><td colspan="12" class="muted">Nessun periodo.</td></tr>\`}</tbody></table>
+    <div class="row" style="margin-top:10px"><input id="rc_new_per" placeholder="Nuovo periodo (es. Invernale)" style="max-width:220px"><button class="btn gold sm" id="rc_add">+ Aggiungi periodo</button></div></div>\`;
+  $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>Contenuti guida</h3>
+    <div class="row"><select id="b_sez"><option value="servizi">servizi</option><option value="vedere">vedere</option><option value="orari">orari</option></select>
       <input id="b_tit" placeholder="Titolo"><input id="b_det" placeholder="Dettaglio"><input id="b_dist" placeholder="Distanza" style="max-width:110px"><button class="btn gold sm" id="b_add">+ Aggiungi</button></div>
     <table><thead><tr><th>Sezione</th><th>Titolo</th><th>Dettaglio</th><th>Distanza</th><th></th></tr></thead><tbody>
-    \${list.map(b => \`<tr><td>\${esc(b.sezione)}</td><td><b>\${esc(b.titolo)}</b></td><td>\${esc(b.dettaglio||'')}</td><td>\${esc(b.distanza||'')}</td><td><button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}
+    \${list.filter(b => b.sezione !== 'rifiuti').map(b => \`<tr><td>\${esc(b.sezione)}</td><td><b>\${esc(b.titolo)}</b></td><td>\${esc(b.dettaglio || '')}</td><td>\${esc(b.distanza || '')}</td><td><button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}
   </tbody></table></div>\`;
-  $('#b_add').onclick = async () => { await api('/bussola', { method:'POST', body:JSON.stringify({ sezione:$('#b_sez').value, titolo:$('#b_tit').value, dettaglio:$('#b_det').value, distanza:$('#b_dist').value }) }); show('bussola'); };
-  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api('/bussola/'+b.dataset.del, { method:'DELETE' }); show('bussola'); });
+  // colora i menu a tendina dei giorni secondo il tipo selezionato
+  const paint = (sel) => { const col = colorBy[sel.value]; sel.style.background = col || '#fff'; sel.style.color = col ? '#fff' : ''; };
+  document.querySelectorAll('.rc_day').forEach(sel => { paint(sel); sel.onchange = () => paint(sel); });
+  // legenda
+  document.querySelectorAll('[data-rtsave]').forEach(b => b.onclick = async () => { const id = b.dataset.rtsave; await api('/rifiuti/tipo/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#rt_n_' + id).value, colore: $('#rt_c_' + id).value }) }); show('bussola'); });
+  document.querySelectorAll('[data-rtdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il tipo di rifiuto?')) return; await api('/rifiuti/tipo/' + b.dataset.rtdel, { method: 'DELETE' }); show('bussola'); });
+  $('#rt_add').onclick = async () => { if (!$('#rt_new_n').value) return; await api('/rifiuti/tipo', { method: 'POST', body: JSON.stringify({ nome: $('#rt_new_n').value, colore: $('#rt_new_c').value }) }); show('bussola'); };
+  // calendario
+  document.querySelectorAll('[data-rcsave]').forEach(b => b.onclick = async () => {
+    const per = b.dataset.rcsave; const giorni = {};
+    RIF_DAYS.forEach(([d]) => giorni[d] = $('#rc_' + per + '_' + d).value);
+    await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ inizio_conf: $('#rc_ini_' + per).value, fine_conf: $('#rc_fin_' + per).value, ora_ritiro: $('#rc_rit_' + per).value, giorni }) });
+    b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000);
+  });
+  document.querySelectorAll('[data-rcdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il periodo?')) return; await api('/rifiuti/calendario/' + encodeURIComponent(b.dataset.rcdel), { method: 'DELETE' }); show('bussola'); });
+  $('#rc_add').onclick = async () => { const per = ($('#rc_new_per').value || '').trim(); if (!per) return; await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ giorni: {} }) }); show('bussola'); };
+  $('#b_add').onclick = async () => { await api('/bussola', { method: 'POST', body: JSON.stringify({ sezione: $('#b_sez').value, titolo: $('#b_tit').value, dettaglio: $('#b_det').value, distanza: $('#b_dist').value }) }); show('bussola'); };
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api('/bussola/' + b.dataset.del, { method: 'DELETE' }); show('bussola'); });
 };
 
 // ---- Luoghi "Siamo qui" ----
@@ -4004,7 +4137,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 16:15" : "online";
+var BUILD = true ? "2026-08-15 16:36" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
