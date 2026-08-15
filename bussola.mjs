@@ -1828,6 +1828,62 @@ adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req,
   const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
   res.json(rows);
 });
+function magNormArea(v) {
+  const s = String(v || "").trim().toLowerCase();
+  if (!s) return "chiosco";
+  const map = { "casa di carta": "casa_di_carta", "serata clan": "serata_clan", "serate a tema": "serate_tema", "serate tema": "serate_tema" };
+  return map[s] || s.replace(/\s+/g, "_");
+}
+function parseMagFile(fileB64) {
+  const buf = Buffer.from(String(fileB64 || "").replace(/^data:[^,]*,/, ""), "base64");
+  const wb = XLSX.read(buf, { type: "buffer" });
+  const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  const alias = { nome: ["nome", "articolo", "prodotto", "name"], area: ["area", "reparto"], unita: ["unita", "unit\xE0", "um", "unit"], giacenza: ["giacenza", "quantita", "quantit\xE0", "qta", "stock"], punto_riordino: ["punto_riordino", "riordino", "minimo", "min", "reorder"], soglia_preavviso: ["soglia_preavviso", "preavviso", "avviso", "soglia", "warning"] };
+  return json.map((r) => {
+    const keys = Object.keys(r);
+    const pick = (al) => {
+      const k = keys.find((k2) => al.includes(norm(k2)));
+      return k != null ? r[k] : "";
+    };
+    return { nome: pick(alias.nome), area: pick(alias.area), unita: pick(alias.unita), giacenza: pick(alias.giacenza), punto_riordino: pick(alias.punto_riordino), soglia_preavviso: pick(alias.soglia_preavviso) };
+  }).filter((r) => String(r.nome).trim());
+}
+adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  let righe;
+  try {
+    righe = parseMagFile(b.fileB64);
+  } catch (e) {
+    return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
+  }
+  if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area) })) });
+  const num = (v) => Number(String(v ?? "").replace(",", ".")) || 0;
+  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  let creati = 0, aggiornati = 0;
+  if (b.mode === "replace") {
+    await db.exec("DELETE FROM magazzino_movimenti; DELETE FROM magazzino_articoli;");
+  }
+  for (const r of righe) {
+    const nome = clean(r.nome);
+    if (!nome) continue;
+    const area = magNormArea(r.area);
+    const ex = await db.prepare("SELECT * FROM magazzino_articoli WHERE nome=? AND area=?").get(nome, area);
+    const hasG = r.giacenza != null && String(r.giacenza).trim() !== "";
+    if (ex) {
+      await db.prepare("UPDATE magazzino_articoli SET unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run(clean(r.unita) ?? ex.unita, hasG ? num(r.giacenza) : ex.giacenza, r.punto_riordino !== "" ? num(r.punto_riordino) : ex.punto_riordino, r.soglia_preavviso !== "" ? num(r.soglia_preavviso) : ex.soglia_preavviso, now, ex.id);
+      aggiornati++;
+    } else {
+      const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
+      await db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?)").run(nome, area, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
+      creati++;
+    }
+  }
+  audit(req.adminUser.username, "import", "magazzino_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
+  res.json({ ok: true, creati, aggiornati });
+});
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
   res.json(rows);
@@ -2443,7 +2499,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.10";
+var VERSION = "4.11";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -4945,11 +5001,34 @@ VIEWS.magazzino = async () => {
     return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3><table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th><th>Movimento</th></tr></thead><tbody>\${rows}</tbody></table></div>\`;
   }).join('');
   const areaOpts = MAG_AREE.map(a => \`<option value="\${a[0]}">\${esc(a[1])}</option>\`).join('');
+  const imp = \`<div class="panel"><h3>\u2B06\uFE0F Primo caricamento magazzino da Excel/CSV</h3>
+    <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>area</b> (chiosco/casa di carta/serata clan/serate a tema), <b>unita</b>, <b>giacenza</b>, <b>riordino</b>, <b>preavviso</b>. Aggiorna gli articoli esistenti (per nome+area) e crea i nuovi.</p>
+    <div class="row"><input type="file" id="mimp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="mimp_tpl">\u2193 Scarica modello CSV</button></div>
+    <div id="mimp_prev" style="margin-top:10px"></div></div>\`;
   const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3><div class="row">
     <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select><input id="ma_u" value="pz" style="width:70px">
     <input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
     <button class="btn gold sm" id="ma_add">+ Aggiungi</button></div></div>\`;
-  $('#view').innerHTML = alert + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
+  $('#view').innerHTML = alert + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
+  // template + import
+  $('#mimp_tpl').onclick = () => {
+    const csv = 'nome,area,unita,giacenza,riordino,preavviso\\nBicchieri di carta,chiosco,pz,300,100,150\\nBirra media,chiosco,pz,60,24,40\\nCapsule caff\xE8,casa di carta,capsule,120,50,80\\n';
+    const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'modello_magazzino.csv'; a.click();
+  };
+  const magToB64 = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).replace(/^data:[^,]*,/, '')); r.onerror = rej; r.readAsDataURL(f); });
+  $('#mimp_file').onchange = async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    $('#mimp_prev').innerHTML = '<p class="muted">Leggo il file\u2026</p>';
+    try {
+      const b64 = await magToB64(f);
+      const dry = await api('/magazzino/import', { method: 'POST', body: JSON.stringify({ fileB64: b64, dryRun: true }) });
+      const preview = (dry.anteprima || []).map(r => \`<tr><td>\${esc(r.nome)}</td><td>\${esc(r.area)}</td><td>\${esc(r.unita)}</td><td>\${esc(String(r.giacenza))}</td><td>\${esc(String(r.punto_riordino))}</td><td>\${esc(String(r.soglia_preavviso))}</td></tr>\`).join('');
+      $('#mimp_prev').innerHTML = \`<p class="muted" style="font-size:.82rem">Trovate <b>\${dry.totale}</b> righe. Anteprima:</p>
+        <table><thead><tr><th>Nome</th><th>Area</th><th>Unit\xE0</th><th>Giac.</th><th>Riordino</th><th>Preavviso</th></tr></thead><tbody>\${preview}</tbody></table>
+        <div class="row" style="margin-top:8px"><label><input type="checkbox" id="mimp_repl"> sostituisci l'intero magazzino</label><button class="btn gold" id="mimp_go">Importa \${dry.totale} righe</button></div>\`;
+      $('#mimp_go').onclick = async () => { const res = await api('/magazzino/import', { method: 'POST', body: JSON.stringify({ fileB64: b64, mode: $('#mimp_repl').checked ? 'replace' : 'merge' }) }); alert(\`Import completato: \${res.creati} creati, \${res.aggiornati} aggiornati.\`); show('magazzino'); };
+    } catch (err) { $('#mimp_prev').innerHTML = \`<p class="muted">\${esc(err.message)}</p>\`; }
+  };
   document.querySelectorAll('[data-mv]').forEach(b => b.onclick = async () => { const [id, tipo] = b.dataset.mv.split('|'); const q = Number(($('#mq_' + id) || {}).value); if (!($('#mq_' + id).value)) { alert('Indica la quantit\xE0.'); return; } await api('/magazzino/' + id + '/movimento', { method: 'POST', body: JSON.stringify({ tipo, quantita: q }) }); show('magazzino'); });
   $('#ma_add').onclick = async () => { if (!$('#ma_n').value) { alert('Nome?'); return; } await api('/magazzino', { method: 'POST', body: JSON.stringify({ nome: $('#ma_n').value, area: $('#ma_a').value, unita: $('#ma_u').value || 'pz', giacenza: Number($('#ma_g').value || 0), punto_riordino: Number($('#ma_pr').value || 0), soglia_preavviso: Number($('#ma_pa').value || 0) }) }); show('magazzino'); };
 };
@@ -5035,7 +5114,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 19:35" : "online";
+var BUILD = true ? "2026-08-15 20:02" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
