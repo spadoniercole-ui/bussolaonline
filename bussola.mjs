@@ -2094,7 +2094,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.4";
+var VERSION = "4.5";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2603,22 +2603,26 @@ function rifiutiHTML(){
     return \`<div class="card"><p class="tiny muted">Calendario non ancora disponibile.</p></div>\`;
   }
   const colorOf = (nome) => (tipi.find(t => t.nome === nome) || {}).colore || '#7A8790';
-  const legend = tipi.length ? \`<div class="chips" style="margin-bottom:10px">\${tipi.map(t=>\`<span class="chip" style="cursor:default;background:\${esc(t.colore)};color:\${rifTextColor(t.colore)};border-color:\${esc(t.colore)}">\${esc(t.nome)}</span>\`).join('')}</div>\` : '';
+  // iniziali univoche per la pastiglia (in caso di collisione si passa a due lettere)
+  const inits = {}; const used = new Set();
+  tipi.forEach(t => { const clean = (t.nome || '').replace(/[^0-9A-Za-z\xC0-\xFF]/g, ''); let ini = (clean[0] || '?').toUpperCase(); let i = 1; while (used.has(ini) && i < clean.length) { ini = (clean[0] + clean[i]).toUpperCase(); i++; } while (used.has(ini)) ini += '\xB7'; used.add(ini); inits[t.nome] = ini; });
   const norm = (v) => Array.isArray(v) ? v.filter(Boolean) : (v ? [String(v)] : []);
+  const legendChips = tipi.length ? \`<div class="chips" style="margin-top:10px">\${tipi.map(t => \`<span class="chip" style="cursor:default;background:\${esc(t.colore)};color:\${rifTextColor(t.colore)};border-color:\${esc(t.colore)}"><b style="opacity:.9">\${esc(inits[t.nome])}</b> \xB7 \${esc(t.nome)}</span>\`).join('')}</div>\` : '';
   const periods = cal.map(c => {
     const g = c.giorni || {};
     const cells = RIF_DAYS.map(([k,lbl]) => {
       const nomi = norm(g[k]);
-      if (!nomi.length) return \`<div style="flex:1;min-width:38px;text-align:center;border-radius:8px;overflow:hidden;background:#f0f2f4"><div style="font-size:.6rem;font-weight:700;color:#8a949c;padding:5px 2px 3px">\${lbl}</div><div style="font-size:.55rem;color:#b5bcc2;padding:0 2px 5px">\u2014</div></div>\`;
-      const bands = nomi.map(nome => { const col = colorOf(nome); return \`<div style="background:\${esc(col)};color:\${rifTextColor(col)};font-size:.55rem;line-height:1.15;padding:3px 2px">\${esc(nome)}</div>\`; }).join('');
-      return \`<div style="flex:1;min-width:38px;text-align:center;border-radius:8px;overflow:hidden"><div style="font-size:.6rem;font-weight:700;color:#5c6a73;padding:4px 2px 3px;background:#eef1f3">\${lbl}</div>\${bands}</div>\`;
+      const pills = nomi.length
+        ? nomi.map(nome => { const col = colorOf(nome); return \`<div title="\${esc(nome)}" style="width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:\${esc(col)};color:\${rifTextColor(col)};font-size:.62rem;font-weight:800">\${esc(inits[nome] || '\u2022')}</div>\`; }).join('')
+        : \`<div style="width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:#eef1f3;color:#b5bcc2;font-size:.62rem">\u2013</div>\`;
+      return \`<div style="flex:1;min-width:30px;display:flex;flex-direction:column;align-items:center;gap:4px"><div style="font-size:.6rem;font-weight:700;color:#5c6a73">\${lbl}</div>\${pills}</div>\`;
     }).join('');
     const info = [];
     if (c.inizio_conf || c.fine_conf) info.push(\`Conferimento \${esc(c.inizio_conf||'')}\${c.fine_conf?'\u2013'+esc(c.fine_conf):''}\`);
     if (c.ora_ritiro) info.push(\`Ritiro dalle \${esc(c.ora_ritiro)}\`);
-    return \`<div class="card" style="margin-bottom:10px"><div style="font-weight:700;font-size:.85rem;color:var(--navy);margin-bottom:8px">\${esc(c.periodo)}</div><div style="display:flex;gap:4px">\${cells}</div>\${info.length?\`<div class="tiny muted" style="margin-top:8px">\${info.join(' \xB7 ')}</div>\`:''}</div>\`;
+    return \`<div class="card" style="margin-bottom:10px"><div style="font-weight:700;font-size:.85rem;color:var(--navy);margin-bottom:10px">\${esc(c.periodo)}</div><div style="display:flex;gap:3px">\${cells}</div>\${legendChips}\${info.length?\`<div class="tiny muted" style="margin-top:9px">\${info.join(' \xB7 ')}</div>\`:''}</div>\`;
   }).join('');
-  return \`<div>\${legend}\${periods || '<div class="card"><p class="tiny muted">Nessun periodo configurato.</p></div>'}</div>\`;
+  return \`<div>\${periods || '<div class="card"><p class="tiny muted">Nessun periodo configurato.</p></div>'}</div>\`;
 }
 function renderBussola() {
   const b = state.data.bussola;
@@ -4140,7 +4144,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 17:08" : "online";
+var BUILD = true ? "2026-08-15 17:26" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
