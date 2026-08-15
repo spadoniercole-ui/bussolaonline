@@ -275,7 +275,8 @@ async function initSchema() {
     id            INTEGER PRIMARY KEY,
     username      TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,                            -- scrypt: salt:hash
-    ruolo         TEXT NOT NULL DEFAULT 'gestore',          -- gestore | staff | sola_lettura
+    ruolo         TEXT NOT NULL DEFAULT 'gestore',          -- gestore | manager | staff | sola_lettura
+    permessi      TEXT,                                     -- JSON: capacit\xE0 (flag) per lo staff
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -398,6 +399,7 @@ async function migrate() {
   await addIfMissing("contest", "esito_assegnato", "esito_assegnato INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("soci", "soggiorno_dal", "soggiorno_dal TEXT");
   await addIfMissing("soci", "soggiorno_al", "soggiorno_al TEXT");
+  await addIfMissing("utenti_admin", "permessi", "permessi TEXT");
   try {
     await db.exec("UPDATE soci SET tipo_profilo='residente' WHERE tipo_profilo='visitatore'");
   } catch (_) {
@@ -426,7 +428,7 @@ var sessions = /* @__PURE__ */ new Map();
 var TTL = 8 * 60 * 60 * 1e3;
 function createSession(user) {
   const token = randomBytes(24).toString("hex");
-  sessions.set(token, { user: { id: user.id, username: user.username, ruolo: user.ruolo }, exp: Date.now() + TTL });
+  sessions.set(token, { user: { id: user.id, username: user.username, ruolo: user.ruolo, permessi: user.permessi ?? null }, exp: Date.now() + TTL });
   return token;
 }
 function getSession(token) {
@@ -892,10 +894,12 @@ async function seed({ verbose = false } = {}) {
     await insGioco.run(g[0], g[1], g[2], g[3], i);
   }
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
-  const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo) VALUES (?,?,?)");
-  await insAdmin.run("gestore", hashPassword(adminPwd), "gestore");
-  await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff");
-  await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura");
+  const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
+  await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
+  await insAdmin.run("manager", hashPassword(process.env.MANAGER_PASSWORD || "manager2026"), "manager", null);
+  const staffCaps = JSON.stringify(["utenti", "utenti_ins", "casate", "cdc", "discipline", "tabellone", "contest", "serate", "proposte", "eventi", "magazzino"]);
+  await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff", staffCaps);
+  await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura", null);
   audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
   if (verbose) console.log("Seed completato: 8 casate, 7 eventi, 10 discipline, guida Bussola, 3 soci demo, 1 utente back office.");
 }
@@ -1185,6 +1189,94 @@ async function esitoCorrente(contestId) {
   };
 }
 
+// server/permessi.js
+var CAPS_DELEGABILI = [
+  "utenti",
+  // consulta/modifica anagrafiche
+  "utenti_ins",
+  // registra nuovi soci/ospiti
+  "casate",
+  // punti Coppa
+  "cdc",
+  // Casa di Carta (caffè, giochi, prelievi, check)
+  "discipline",
+  // attiva/parametri discipline
+  "tabellone",
+  // inserisci risultati / archivia / periodo
+  "contest",
+  // Contest Serata dei Clan
+  "serate",
+  // Serate & cena
+  "proposte",
+  // Proposte vinile/openmic
+  "eventi",
+  // Cartellone
+  "magazzino"
+  // Magazzino/chiosco (modulo futuro)
+];
+var CAPS_GESTORE_ONLY = [
+  "utenti_del",
+  // cancellazione GDPR
+  "discipline_del",
+  // elimina disciplina
+  "tabellone_reset",
+  // rigenera/azzera calendario
+  "guida",
+  // Guida / Rifiuti
+  "luoghi",
+  // Luoghi "Siamo qui"
+  "registro",
+  // Registro attività
+  "db",
+  // Database & backup
+  "operatori"
+  // gestione account staff e permessi
+];
+var GO = new Set(CAPS_GESTORE_ONLY);
+var MANAGER_CAPS = /* @__PURE__ */ new Set([
+  "utenti",
+  "casate",
+  "cdc",
+  "discipline",
+  "tabellone",
+  "contest",
+  "serate",
+  "proposte",
+  "eventi",
+  "magazzino"
+]);
+function parsePermessi(p) {
+  if (Array.isArray(p)) return p;
+  if (typeof p === "string" && p) {
+    try {
+      const a = JSON.parse(p);
+      return Array.isArray(a) ? a : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+function hasCap(user, cap) {
+  if (!user) return false;
+  if (user.ruolo === "gestore") return true;
+  if (GO.has(cap)) return false;
+  if (user.ruolo === "manager") return MANAGER_CAPS.has(cap);
+  if (user.ruolo === "staff") return parsePermessi(user.permessi).includes(cap);
+  return false;
+}
+function requireCap(cap) {
+  return (req, res, next) => hasCap(req.adminUser, cap) ? next() : res.status(403).json({ error: "Permesso insufficiente per il tuo ruolo" });
+}
+function capsInfo(user) {
+  const tutte = [...CAPS_DELEGABILI, ...CAPS_GESTORE_ONLY];
+  return {
+    ruolo: user.ruolo,
+    gestore: user.ruolo === "gestore",
+    caps: user.ruolo === "gestore" ? tutte : tutte.filter((c) => hasCap(user, c))
+  };
+}
+
 // server/routes/admin.js
 var adminRouter = asyncify(Router2());
 adminRouter.post("/login", async (req, res) => {
@@ -1204,15 +1296,49 @@ adminRouter.post("/logout", requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.use(requireAdmin);
-function requireRole(...roles) {
-  return (req, res, next) => roles.includes(req.adminUser.ruolo) ? next() : res.status(403).json({ error: "Permesso insufficiente per il tuo ruolo" });
-}
 adminRouter.use((req, res, next) => {
   if (req.adminUser.ruolo === "sola_lettura" && !["GET", "HEAD"].includes(req.method) && req.path !== "/logout")
     return res.status(403).json({ error: "Account in sola lettura" });
   next();
 });
-adminRouter.get("/me", (req, res) => res.json({ user: req.adminUser }));
+adminRouter.get("/me", (req, res) => res.json({ user: { username: req.adminUser.username, ruolo: req.adminUser.ruolo }, ...capsInfo(req.adminUser) }));
+adminRouter.get("/operatori", requireCap("operatori"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,username,ruolo,permessi,created_at FROM utenti_admin ORDER BY id").all();
+  res.json({ operatori: rows.map((r) => ({ ...r, permessi: parsePermessi(r.permessi) })), caps_delegabili: CAPS_DELEGABILI });
+});
+adminRouter.post("/operatori", requireCap("operatori"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.username || !b.password) return res.status(400).json({ error: "Username e password obbligatori" });
+  const ruolo = ["manager", "staff", "sola_lettura"].includes(b.ruolo) ? b.ruolo : "staff";
+  const permessi = ruolo === "staff" ? JSON.stringify((Array.isArray(b.permessi) ? b.permessi : []).filter((c) => CAPS_DELEGABILI.includes(c))) : null;
+  try {
+    const info = await db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)").run(b.username, hashPassword(b.password), ruolo, permessi);
+    audit(req.adminUser.username, "crea", "operatori", info.lastInsertRowid, `${b.username} \xB7 ${ruolo}`);
+    res.status(201).json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: "Username gi\xE0 esistente" });
+  }
+});
+adminRouter.put("/operatori/:id", requireCap("operatori"), async (req, res) => {
+  const b = req.body || {};
+  const u = await db.prepare("SELECT username,ruolo FROM utenti_admin WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ error: "Operatore non trovato" });
+  if (u.ruolo === "gestore") return res.status(400).json({ error: "Il gestore non \xE8 modificabile da qui (password via ADMIN_PASSWORD)" });
+  const ruolo = ["manager", "staff", "sola_lettura"].includes(b.ruolo) ? b.ruolo : u.ruolo;
+  const permessi = ruolo === "staff" ? JSON.stringify((Array.isArray(b.permessi) ? b.permessi : []).filter((c) => CAPS_DELEGABILI.includes(c))) : null;
+  await db.prepare("UPDATE utenti_admin SET ruolo=?,permessi=? WHERE id=?").run(ruolo, permessi, req.params.id);
+  if (b.password) await db.prepare("UPDATE utenti_admin SET password_hash=? WHERE id=?").run(hashPassword(b.password), req.params.id);
+  audit(req.adminUser.username, "modifica", "operatori", req.params.id, ruolo);
+  res.json({ ok: true });
+});
+adminRouter.delete("/operatori/:id", requireCap("operatori"), async (req, res) => {
+  const u = await db.prepare("SELECT username,ruolo FROM utenti_admin WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ error: "Operatore non trovato" });
+  if (u.ruolo === "gestore") return res.status(400).json({ error: "Il gestore non \xE8 eliminabile" });
+  await db.prepare("DELETE FROM utenti_admin WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "operatori", req.params.id, u.username);
+  res.json({ ok: true });
+});
 adminRouter.get("/stats", async (req, res) => {
   const one = async (q) => (await db.prepare(q).get()).n;
   res.json({
@@ -1234,7 +1360,7 @@ adminRouter.get("/soci", async (req, res) => {
     ORDER BY s.created_at DESC`).all(q, q, q, q);
   res.json(rows);
 });
-adminRouter.post("/soci", async (req, res) => {
+adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
   const code = b.tessera_code || await nextTessera();
@@ -1266,7 +1392,7 @@ adminRouter.post("/soci", async (req, res) => {
     res.status(400).json({ error: "Tessera duplicata o dati non validi" });
   }
 });
-adminRouter.put("/soci/:id", async (req, res) => {
+adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
   const b = req.body || {};
   const exists = await db.prepare("SELECT id FROM soci WHERE id=?").get(req.params.id);
   if (!exists) return res.status(404).json({ error: "Socio non trovato" });
@@ -1295,7 +1421,7 @@ adminRouter.put("/soci/:id", async (req, res) => {
   audit(req.adminUser.username, "modifica", "soci", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/soci/:id/export", async (req, res) => {
+adminRouter.get("/soci/:id/export", requireCap("utenti"), async (req, res) => {
   const s = await db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
   if (!s) return res.status(404).json({ error: "Socio non trovato" });
   const prenotazioni = await db.prepare("SELECT * FROM prenotazioni WHERE socio_id=?").all(req.params.id);
@@ -1304,7 +1430,7 @@ adminRouter.get("/soci/:id/export", async (req, res) => {
   audit(req.adminUser.username, "export_gdpr", "soci", req.params.id);
   res.json({ socio: s, prenotazioni, convocazioni, proposte });
 });
-adminRouter.delete("/soci/:id", requireRole("gestore"), async (req, res) => {
+adminRouter.delete("/soci/:id", requireCap("utenti_del"), async (req, res) => {
   const id = req.params.id;
   const s = await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(id);
   if (!s) return res.status(404).json({ error: "Socio non trovato" });
@@ -1318,7 +1444,7 @@ adminRouter.delete("/soci/:id", requireRole("gestore"), async (req, res) => {
   audit(req.adminUser.username, "cancella_gdpr", "soci", id, s.tessera_code);
   res.json({ ok: true });
 });
-adminRouter.put("/casate/:id/punti", async (req, res) => {
+adminRouter.put("/casate/:id/punti", requireCap("casate"), async (req, res) => {
   const { punti } = req.body || {};
   await db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
   audit(req.adminUser.username, "punti", "casate", req.params.id, String(punti));
@@ -1327,7 +1453,7 @@ adminRouter.put("/casate/:id/punti", async (req, res) => {
 adminRouter.get("/eventi", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
 });
-adminRouter.put("/eventi/:id", async (req, res) => {
+adminRouter.put("/eventi/:id", requireCap("eventi"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "eventi", req.params.id);
@@ -1337,7 +1463,7 @@ adminRouter.get("/prenotazioni", async (req, res) => {
   res.json(await db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
     LEFT JOIN soci s ON s.id=p.socio_id ORDER BY p.created_at DESC LIMIT 200`).all());
 });
-adminRouter.post("/convocazioni", async (req, res) => {
+adminRouter.post("/convocazioni", requireCap("tabellone"), async (req, res) => {
   const { disciplina_chiave, dominio, casata_id, match_label, quando, luogo } = req.body || {};
   const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio || "sport");
   if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
@@ -1359,29 +1485,29 @@ adminRouter.get("/proposte", async (req, res) => {
   res.json(await db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
     LEFT JOIN soci s ON s.id=pr.socio_id ORDER BY pr.created_at DESC`).all());
 });
-adminRouter.put("/proposte/:id", async (req, res) => {
+adminRouter.put("/proposte/:id", requireCap("proposte"), async (req, res) => {
   const { stato } = req.body || {};
   await db.prepare("UPDATE proposte SET stato=? WHERE id=?").run(stato || "ricevuta", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/bussola", async (req, res) => {
+adminRouter.get("/bussola", requireCap("guida"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM bussola ORDER BY sezione,ordine").all());
 });
-adminRouter.post("/bussola", async (req, res) => {
+adminRouter.post("/bussola", requireCap("guida"), async (req, res) => {
   const b = req.body || {};
   const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
   audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.delete("/bussola/:id", async (req, res) => {
+adminRouter.delete("/bussola/:id", requireCap("guida"), async (req, res) => {
   await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "bussola", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/luoghi", async (req, res) => {
+adminRouter.get("/luoghi", requireCap("luoghi"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM luoghi ORDER BY ordine").all());
 });
-adminRouter.put("/luoghi/:id", async (req, res) => {
+adminRouter.put("/luoghi/:id", requireCap("luoghi"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
   audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
@@ -1390,7 +1516,7 @@ adminRouter.put("/luoghi/:id", async (req, res) => {
 adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
-adminRouter.post("/discipline", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/discipline", requireCap("discipline"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome || !b.chiave || !b.dominio) return res.status(400).json({ error: "Dominio, chiave e nome obbligatori" });
   try {
@@ -1402,13 +1528,13 @@ adminRouter.post("/discipline", requireRole("gestore", "staff"), async (req, res
     res.status(400).json({ error: "Chiave gi\xE0 esistente per questo dominio" });
   }
 });
-adminRouter.put("/discipline/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/discipline/:id", requireCap("discipline"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE discipline SET nome=?,attivo=?,min_giocatori=?,max_giocatori=?,punti_vitt=?,punti_par=? WHERE id=?").run(b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, req.params.id);
   audit(req.adminUser.username, "modifica", "discipline", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/discipline/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.delete("/discipline/:id", requireCap("discipline_del"), async (req, res) => {
   const id = req.params.id;
   await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id);
   const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id);
@@ -1419,10 +1545,10 @@ adminRouter.delete("/discipline/:id", requireRole("gestore", "staff"), async (re
   audit(req.adminUser.username, "cancella", "discipline", id);
   res.json({ ok: true });
 });
-adminRouter.get("/tabellone/:disciplinaId", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.get("/tabellone/:disciplinaId", requireCap("tabellone"), async (req, res) => {
   res.json(await getTabellone(Number(req.params.disciplinaId)));
 });
-adminRouter.post("/tabellone/:disciplinaId/genera", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/tabellone/:disciplinaId/genera", requireCap("tabellone_reset"), async (req, res) => {
   try {
     const t = await generaCalendario(Number(req.params.disciplinaId));
     audit(req.adminUser.username, "genera_calendario", "discipline", req.params.disciplinaId);
@@ -1431,7 +1557,7 @@ adminRouter.post("/tabellone/:disciplinaId/genera", requireRole("gestore", "staf
     res.status(400).json({ error: e.message });
   }
 });
-adminRouter.put("/partite/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/partite/:id", requireCap("tabellone"), async (req, res) => {
   const a = Number(req.body?.gol_a), b = Number(req.body?.gol_b);
   if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return res.status(400).json({ error: "Punteggi non validi" });
   try {
@@ -1445,31 +1571,31 @@ adminRouter.put("/partite/:id", requireRole("gestore", "staff"), async (req, res
 adminRouter.get("/contest", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM contest ORDER BY id DESC").all());
 });
-adminRouter.post("/contest", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/contest", requireCap("contest"), async (req, res) => {
   const b = req.body || {};
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
   const info = await db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,attivo) VALUES (?,?,?,?,?,?)").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.attivo === false ? 0 : 1);
   audit(req.adminUser.username, "crea", "contest", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/contest/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/contest/:id", requireCap("contest"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE contest SET titolo=?,tipo=?,settimana=?,brief=?,stato=?,vincitore=?,attivo=? WHERE id=?").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.vincitore ?? null, b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "contest", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/contest/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.delete("/contest/:id", requireCap("contest"), async (req, res) => {
   await db.prepare("DELETE FROM contest_esiti WHERE contest_id=?").run(req.params.id);
   await db.prepare("DELETE FROM contest WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "contest", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/contest/:id/esito", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.get("/contest/:id/esito", requireCap("contest"), async (req, res) => {
   const e = await esitoCorrente(Number(req.params.id));
   if (!e) return res.status(404).json({ error: "Contest non trovato" });
   res.json(e);
 });
-adminRouter.post("/contest/:id/esito", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/contest/:id/esito", requireCap("contest"), async (req, res) => {
   try {
     const righe = Array.isArray(req.body?.righe) ? req.body.righe : [];
     const scala = Array.isArray(req.body?.punti_scala) ? req.body.punti_scala.map((n) => Number(n) || 0) : void 0;
@@ -1479,7 +1605,7 @@ adminRouter.post("/contest/:id/esito", requireRole("gestore", "staff"), async (r
     res.status(400).json({ error: e.message });
   }
 });
-adminRouter.post("/contest/:id/assegna", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/contest/:id/assegna", requireCap("contest"), async (req, res) => {
   try {
     res.json({ ok: true, ...await assegnaCoppa(Number(req.params.id)) });
   } catch (e) {
@@ -1495,7 +1621,7 @@ adminRouter.get("/serate", async (req, res) => {
   }
   res.json(out);
 });
-adminRouter.post("/serate", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/serate", requireCap("serate"), async (req, res) => {
   const b = req.body || {};
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM serate").get()).n;
@@ -1503,13 +1629,13 @@ adminRouter.post("/serate", requireRole("gestore", "staff"), async (req, res) =>
   audit(req.adminUser.username, "crea", "serate", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/serate/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/serate/:id", requireCap("serate"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "serate", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/serate/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.delete("/serate/:id", requireCap("serate"), async (req, res) => {
   await db.prepare("DELETE FROM serate_prenotazioni WHERE serata_id=?").run(req.params.id);
   await db.prepare("DELETE FROM serate WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "serate", req.params.id);
@@ -1518,7 +1644,7 @@ adminRouter.delete("/serate/:id", requireRole("gestore", "staff"), async (req, r
 adminRouter.get("/serate/:id/prenotazioni", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? ORDER BY created_at DESC").all(req.params.id));
 });
-adminRouter.put("/serate-prenotazioni/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/serate-prenotazioni/:id", requireCap("serate"), async (req, res) => {
   const stato = ["da_saldare", "saldata", "annullata"].includes(req.body?.stato) ? req.body.stato : "da_saldare";
   await db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
   audit(req.adminUser.username, "stato_prenotazione_serata", "serate_prenotazioni", req.params.id, stato);
@@ -1549,13 +1675,13 @@ adminRouter.get("/cdc/caffe", async (req, res) => {
   const suggerito = daRiordinare ? Math.max(cfg.confezione, Math.ceil((cfg.punto_riordino * 2 - cfg.giacenza) / Math.max(1, cfg.confezione)) * cfg.confezione) : 0;
   res.json({ config: cfg, conte, da_riordinare: daRiordinare, ordine_suggerito: suggerito });
 });
-adminRouter.put("/cdc/caffe", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/cdc/caffe", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE cdc_caffe SET punto_riordino=?,confezione=? WHERE id=1").run(Number(b.punto_riordino) || 0, Number(b.confezione) || 1);
   audit(req.adminUser.username, "modifica", "cdc_caffe", 1, `riordino ${b.punto_riordino}`);
   res.json({ ok: true });
 });
-adminRouter.post("/cdc/caffe/conta", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/cdc/caffe/conta", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   const g = Math.max(0, Number(b.giacenza) || 0);
   const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
@@ -1566,7 +1692,7 @@ adminRouter.post("/cdc/caffe/conta", requireRole("gestore", "staff"), async (req
   res.json({ ok: true, giacenza: g, consumo });
 });
 adminRouter.get("/cdc/giochi", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_giochi ORDER BY ordine,id").all()));
-adminRouter.post("/cdc/giochi", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/cdc/giochi", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM cdc_giochi").get()).n;
@@ -1574,25 +1700,25 @@ adminRouter.post("/cdc/giochi", requireRole("gestore", "staff"), async (req, res
   audit(req.adminUser.username, "crea", "cdc_giochi", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/cdc/giochi/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE cdc_giochi SET nome=?,categoria=?,quantita=?,stato=?,note=? WHERE id=?").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", req.params.id);
   audit(req.adminUser.username, "modifica", "cdc_giochi", req.params.id, b.stato || "");
   res.json({ ok: true });
 });
-adminRouter.delete("/cdc/giochi/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.delete("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
   await db.prepare("DELETE FROM cdc_giochi WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "cdc_giochi", req.params.id);
   res.json({ ok: true });
 });
 adminRouter.get("/cdc/prestiti", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_prestiti ORDER BY id DESC LIMIT 100").all()));
-adminRouter.post("/cdc/prestiti", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/cdc/prestiti", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   const info = await db.prepare("INSERT INTO cdc_prestiti (gioco_id,gioco_nome,giocatore,data,ora_inizio,ora_fine,note) VALUES (?,?,?,?,?,?,?)").run(b.gioco_id || null, b.gioco_nome || "", b.giocatore || "", b.data || oggi(), b.ora_inizio || "", b.ora_fine || "", b.note || "");
   audit(req.adminUser.username, "prestito", "cdc_prestiti", info.lastInsertRowid, b.gioco_nome || "");
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.put("/cdc/prestiti/:id", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.put("/cdc/prestiti/:id", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE cdc_prestiti SET ora_fine=?,note=? WHERE id=?").run(b.ora_fine || "", b.note || "", req.params.id);
   audit(req.adminUser.username, "riconsegna", "cdc_prestiti", req.params.id);
@@ -1604,7 +1730,7 @@ adminRouter.get("/cdc/check/:id/foto", async (req, res) => {
   if (!r || !r.foto) return res.status(404).json({ error: "Nessuna foto" });
   res.json({ foto: r.foto });
 });
-adminRouter.post("/cdc/check", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/cdc/check", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   const info = await db.prepare("INSERT INTO cdc_check (data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,foto) VALUES (?,?,?,?,?,?,?)").run(b.data || oggi(), req.adminUser.username, b.caffe_giacenza != null && b.caffe_giacenza !== "" ? Number(b.caffe_giacenza) : null, b.strumenti_note || "", b.arredi_note || "", b.esito || "ok", b.foto || null);
   if (b.caffe_giacenza != null && b.caffe_giacenza !== "") {
@@ -1625,14 +1751,14 @@ adminRouter.get("/allegati/:id/foto", async (req, res) => {
   if (!r) return res.status(404).json({ error: "Non trovato" });
   res.json({ foto: r.immagine });
 });
-adminRouter.post("/allegati", requireRole("gestore", "staff"), async (req, res) => {
+adminRouter.post("/allegati", requireCap("cdc"), async (req, res) => {
   const b = req.body || {};
   if (!b.immagine) return res.status(400).json({ error: "Immagine mancante" });
   const info = await db.prepare("INSERT INTO allegati (entita,entita_id,immagine,nota,autore) VALUES (?,?,?,?,?)").run(b.entita || "generico", String(b.entita_id || ""), b.immagine, b.nota || "", req.adminUser.username);
   audit(req.adminUser.username, "foto", b.entita || "allegati", b.entita_id || info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
-adminRouter.get("/db/info", async (req, res) => {
+adminRouter.get("/db/info", requireCap("db"), async (req, res) => {
   let size = 0;
   try {
     size = statSync(DB_PATH).size;
@@ -1647,7 +1773,7 @@ adminRouter.get("/db/info", async (req, res) => {
     soci: (await db.prepare("SELECT count(*) n FROM soci").get()).n
   });
 });
-adminRouter.get("/db/backup", requireRole("gestore"), async (req, res) => {
+adminRouter.get("/db/backup", requireCap("db"), async (req, res) => {
   if (DB_PATH === ":memory:") return res.status(400).json({ error: "Database in memoria: nessun backup su file" });
   if (IS_REMOTE) return res.status(400).json({ error: "Database gestito (Turso): i backup/point-in-time sono gestiti dal provider. Per un estratto usa l\u2019export dei soci." });
   const tmp = `/tmp/koine-backup-${Date.now()}.db`;
@@ -1667,7 +1793,7 @@ adminRouter.get("/db/backup", requireRole("gestore"), async (req, res) => {
     res.status(500).json({ error: "Backup non riuscito: " + e.message });
   }
 });
-adminRouter.get("/audit", async (req, res) => {
+adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
 });
 async function nextTessera() {
@@ -1807,7 +1933,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.0";
+var VERSION = "4.1";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2887,19 +3013,20 @@ var admin_default = `<!DOCTYPE html>
       <div class="brand">BUSSOLA<small>RESIDENCE \xB7 ADMIN</small></div>
       <nav class="menu" id="menu">
         <button data-v="dashboard" class="on">\u{1F4CA} Cruscotto</button>
-        <button data-v="soci">\u{1F464} Soci</button>
-        <button data-v="casate">\u{1F6E1}\uFE0F Casate & punti</button>
-        <button data-v="prenotazioni">\u{1F4C5} Prenotazioni</button>
-        <button data-v="cdc">\u{1F0CF} Casa di Carta</button>
-        <button data-v="discipline">\u{1F3C5} Discipline</button>
-        <button data-v="tabellone">\u{1F3C6} Tabellone</button>
-        <button data-v="contest">\u{1F3AC} Contest Serata Clan</button>
-        <button data-v="serate">\u{1F37D}\uFE0F Serate & cena</button>
-        <button data-v="proposte">\u{1F3B5} Proposte</button>
-        <button data-v="eventi">\u{1F3AD} Eventi</button>
-        <button data-v="bussola">\u{1F9ED} Guida</button>
-        <button data-v="luoghi">\u{1F4CD} Luoghi (Siamo qui)</button>
-        <button data-v="audit">\u{1F5C2}\uFE0F Registro</button>
+        <button data-v="soci" data-cap="utenti">\u{1F464} Utenti</button>
+        <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate & punti</button>
+        <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
+        <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
+        <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tabellone</button>
+        <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
+        <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate & cena</button>
+        <button data-v="proposte" data-cap="proposte">\u{1F3B5} Proposte</button>
+        <button data-v="eventi" data-cap="eventi">\u{1F3AD} Eventi</button>
+        <button data-v="bussola" data-cap="guida">\u{1F9ED} Guida</button>
+        <button data-v="luoghi" data-cap="luoghi">\u{1F4CD} Luoghi (Siamo qui)</button>
+        <button data-v="operatori" data-cap="operatori">\u{1F511} Operatori & permessi</button>
+        <button data-v="database" data-cap="db">\u{1F5C4}\uFE0F Database</button>
+        <button data-v="audit" data-cap="registro">\u{1F5C2}\uFE0F Registro</button>
       </nav>
     </aside>
     <main>
@@ -2914,7 +3041,8 @@ var admin_default = `<!DOCTYPE html>
   <script>
 /* Back office KOIN\xC8 Village \u2014 SPA minimale su fetch/API. */
 'use strict';
-let TOKEN = null, USER = null, CASATE = [];
+let TOKEN = null, USER = null, CASATE = [], ME = { ruolo: '', gestore: false, caps: [] };
+const can = (cap) => ME.gestore || (ME.caps || []).includes(cap);
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
@@ -2941,17 +3069,27 @@ async function login() {
     const j = await res.json(); TOKEN = j.token; USER = j.user;
     $('#login').style.display = 'none'; $('#app').style.display = 'grid';
     $('#whoName').textContent = USER.username + ' (' + USER.ruolo + ')';
+    ME = await api('/me').catch(() => ({ ruolo: USER.ruolo, gestore: USER.ruolo === 'gestore', caps: [] }));
+    applyMenuPermessi();
     CASATE = await api('/../casate').catch(() => []);   // riusa endpoint pubblico
     show('dashboard');
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
-function logout() { TOKEN = null; USER = null; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
+function logout() { TOKEN = null; USER = null; ME = { ruolo: '', gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
+
+// Mostra nel menu solo le voci consentite dai permessi (il Cruscotto \xE8 sempre visibile).
+function applyMenuPermessi() {
+  document.querySelectorAll('#menu button').forEach(b => {
+    const cap = b.dataset.cap;
+    b.style.display = (!cap || can(cap)) ? '' : 'none';
+  });
+}
 
 // ---- Router ----
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Soci', casate:'Casate & punti', prenotazioni:'Prenotazioni', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -2964,50 +3102,101 @@ VIEWS.dashboard = async () => {
     ['Oggi', s.prenotazioni_oggi], ['Proposte da leggere', s.proposte], ['Convocazioni aperte', s.convocazioni_aperte],
   ];
   const max = Math.max(...s.per_casata.map(c => c.punti), 1);
-  const info = await api('/db/info').catch(() => null);
-  const dbPanel = info ? \`<div class="panel"><h3>Database & backup</h3>
-      <p class="muted" style="margin-bottom:8px">Dati: <b>\${esc(info.path)}</b> \xB7 \${info.size_kb} KB \xB7 \${info.soci} soci \xB7
-        \${info.persistente ? '<span class="tag ok">disco persistente \u2713</span>' : '<span class="tag no">NON persistente \u2014 i dati si azzerano al riavvio</span>'}</p>
-      \${info.persistente ? '' : '<p class="muted" style="margin-bottom:8px">Per rendere permanenti i dati: monta un disco su Render e imposta <b>KOINE_DB</b> (vedi runbook).</p>'}
-      <button class="btn gold sm" id="db_backup">\u2B07\uFE0E Scarica backup (.db)</button>
-      <span class="muted" id="db_msg" style="margin-left:8px"></span></div>\` : '';
   $('#view').innerHTML = \`
     <div class="cards">\${cards.map(c => \`<div class="stat"><div class="n">\${c[1]}</div><div class="l">\${c[0]}</div></div>\`).join('')}</div>
     <div class="panel"><h3>Coppa delle Casate & soci per casata</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
       \${s.per_casata.map(c => \`<tr><td><b>\${esc(c.nome)}</b></td><td>\${c.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(c.punti/max*100)}%;background:\${c.colore}"></span></span></td><td>\${c.soci}</td></tr>\`).join('')}
-    </tbody></table></div>
-    \${dbPanel}\`;
-  if (info) $('#db_backup').onclick = async () => {
+    </tbody></table></div>\`;
+};
+
+// ---- Database (voce dedicata, solo gestore): stato persistenza + backup ----
+VIEWS.database = async () => {
+  const info = await api('/db/info');
+  const tag = info.persistente ? '<span class="tag ok">persistente \u2713</span>' : '<span class="tag no">NON persistente \u2014 i dati si azzerano al riavvio</span>';
+  const dim = info.size_kb ? \` \xB7 \${info.size_kb} KB\` : '';
+  $('#view').innerHTML = \`<div class="panel"><h3>Database & backup</h3>
+      <p class="muted" style="margin-bottom:8px">Tipo: <b>\${esc(info.tipo || '')}</b> \${tag}<br>Sorgente: <b>\${esc(info.path)}</b>\${dim} \xB7 \${info.soci} soci</p>
+      \${info.persistente ? '' : '<p class="muted" style="margin-bottom:8px">Per rendere permanenti i dati: collega un database gestito (Turso) o monta un disco su Render (vedi runbook).</p>'}
+      <button class="btn gold sm" id="db_backup">\u2B07\uFE0E Scarica backup (.db)</button>
+      <span class="muted" id="db_msg" style="margin-left:8px"></span>
+      <p class="muted" style="margin-top:12px;font-size:13px">Su database gestito (Turso) i backup/point-in-time sono del provider; il download .db \xE8 per la modalit\xE0 file locale.</p></div>\`;
+  $('#db_backup').onclick = async () => {
     $('#db_msg').textContent = 'preparo\u2026';
     try {
       const r = await fetch(API_BASE + '/api/admin/db/backup', { headers: { Authorization: 'Bearer ' + TOKEN } });
-      if (!r.ok) throw new Error(r.status);
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
       const blob = await r.blob();
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
       a.download = 'koine-backup-' + new Date().toISOString().slice(0, 10) + '.db'; a.click();
       $('#db_msg').textContent = 'scaricato \u2713';
-    } catch (e) { $('#db_msg').textContent = 'non riuscito (serve ruolo gestore)'; }
+    } catch (e) { $('#db_msg').textContent = String(e.message || e); }
   };
 };
+
+// ---- Operatori & permessi (solo gestore) ----
+const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone (risultati/archivio)', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Magazzino/Chiosco' };
+VIEWS.operatori = async () => {
+  const d = await api('/operatori');
+  const caps = d.caps_delegabili;
+  const ruoloTag = (r) => r === 'gestore' ? '<span class="tag ok">gestore</span>' : r === 'manager' ? '<span class="tag mid">manager</span>' : r === 'sola_lettura' ? '<span class="tag no">sola lettura</span>' : '<span class="tag mid">staff</span>';
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>Operatori</h3>
+      <p class="muted" style="margin-bottom:10px">Il <b>gestore</b> pu\xF2 tutto (password via <b>ADMIN_PASSWORD</b>). Il <b>manager</b> sovraintende l'operativit\xE0 (niente inserimenti/cancellazioni n\xE9 funzioni strutturali). Lo <b>staff</b> ha i permessi spuntati qui sotto.</p>
+      <table><thead><tr><th>Utente</th><th>Ruolo</th><th>Permessi</th><th></th></tr></thead><tbody>
+      \${d.operatori.map(o => \`<tr><td><b>\${esc(o.username)}</b></td><td>\${ruoloTag(o.ruolo)}</td>
+        <td class="muted">\${o.ruolo === 'gestore' ? 'tutto' : o.ruolo === 'manager' ? 'template manager' : o.ruolo === 'sola_lettura' ? 'solo lettura' : (o.permessi.map(c => CAP_LABEL[c] || c).join(', ') || '\u2014')}</td>
+        <td style="white-space:nowrap">\${o.ruolo === 'gestore' ? '' : \`<button class="btn ghost sm" data-oedit="\${o.id}">\u270E</button> <button class="btn danger sm" data-odel="\${o.id}">\u{1F5D1}</button>\`}</td></tr>\`).join('')}
+      </tbody></table>
+      <button class="btn gold sm" id="o_new" style="margin-top:12px">+ Nuovo operatore</button>
+    </div>\`;
+  $('#o_new').onclick = () => openOperatore(null, caps);
+  document.querySelectorAll('[data-oedit]').forEach(b => b.onclick = () => openOperatore(d.operatori.find(x => x.id == b.dataset.oedit), caps));
+  document.querySelectorAll('[data-odel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare questo operatore?')) return; await api('/operatori/' + b.dataset.odel, { method: 'DELETE' }); show('operatori'); });
+};
+function openOperatore(o, caps) {
+  const isNew = !o;
+  const sel = new Set(o?.permessi || []);
+  modal(\`<h3>\${isNew ? 'Nuovo operatore' : 'Modifica operatore'}</h3>
+    <div class="grid2">
+      <div><label>Username</label><input id="o_user" value="\${esc(o?.username || '')}" \${isNew ? '' : 'disabled'}></div>
+      <div><label>Ruolo</label><select id="o_ruolo"><option value="staff" \${o?.ruolo === 'staff' ? 'selected' : ''}>staff (permessi a flag)</option><option value="manager" \${o?.ruolo === 'manager' ? 'selected' : ''}>manager (template)</option><option value="sola_lettura" \${o?.ruolo === 'sola_lettura' ? 'selected' : ''}>sola lettura</option></select></div>
+      <div><label>Password \${isNew ? '' : '(lascia vuoto per non cambiarla)'}</label><input id="o_pwd" type="password" placeholder="\${isNew ? 'password' : '\u2022\u2022\u2022\u2022\u2022\u2022'}"></div>
+    </div>
+    <div id="o_capsWrap"><label>Permessi (solo per ruolo staff)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">\${caps.map(c => \`<label class="check" style="margin:0"><input type="checkbox" class="o_cap" value="\${c}" \${sel.has(c) ? 'checked' : ''}> \${esc(CAP_LABEL[c] || c)}</label>\`).join('')}</div>
+    </div>
+    <div class="err" id="o_err"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
+  const syncRuolo = () => { $('#o_capsWrap').style.display = $('#o_ruolo').value === 'staff' ? 'block' : 'none'; };
+  $('#o_ruolo').onchange = syncRuolo; syncRuolo();
+  $('#mCancel').onclick = closeModal;
+  $('#mSave').onclick = async () => {
+    const body = { ruolo: $('#o_ruolo').value, permessi: [...document.querySelectorAll('.o_cap:checked')].map(x => x.value) };
+    if ($('#o_pwd').value) body.password = $('#o_pwd').value;
+    if (isNew) { body.username = $('#o_user').value; if (!body.username || !body.password) { $('#o_err').textContent = 'Username e password obbligatori'; return; } }
+    try { await api(isNew ? '/operatori' : '/operatori/' + o.id, { method: isNew ? 'POST' : 'PUT', body: JSON.stringify(body) }); closeModal(); show('operatori'); }
+    catch (e) { $('#o_err').textContent = e.message; }
+  };
+}
 
 // ---- Soci ----
 VIEWS.soci = async () => {
   const render = async (q = '') => {
     const list = await api('/soci?q=' + encodeURIComponent(q));
     $('#view').innerHTML = \`
-      <div class="row"><input id="q" placeholder="Cerca nome, email, tessera\u2026" style="max-width:280px" value="\${esc(q)}"><button class="btn ghost sm" id="search">Cerca</button><button class="btn gold sm" id="new">+ Nuovo socio</button></div>
+      <div class="row"><input id="q" placeholder="Cerca nome, email, tessera\u2026" style="max-width:280px" value="\${esc(q)}"><button class="btn ghost sm" id="search">Cerca</button>\${can('utenti_ins') ? '<button class="btn gold sm" id="new">+ Nuovo utente</button>' : ''}</div>
       <div class="panel"><table><thead><tr><th>Tessera</th><th>Nome</th><th>Casata</th><th>Ruolo</th><th>Consensi</th><th>Stato</th><th></th></tr></thead><tbody>
         \${list.map(s => \`<tr>
           <td>\${esc(s.tessera_code)}</td><td><b>\${esc(s.nome)} \${esc(s.cognome)}</b><br><span class="muted">\${esc(s.email||'')}</span></td>
           <td>\${esc(s.casata_nome||'\u2014')}</td><td>\${esc(s.ruolo)}\${s.tipo_profilo&&s.tipo_profilo!=='socio'?\`<br><span class="tag mid">\${esc(s.tipo_profilo.replace('_',' '))}</span>\`:''}</td>
           <td>\${s.consenso_privacy?'<span class="tag ok">privacy</span> ':''}\${s.consenso_marketing?'<span class="tag mid">mktg</span> ':''}\${s.consenso_foto?'<span class="tag mid">foto</span>':''}</td>
           <td>\${s.attivo?'<span class="tag ok">attivo</span>':'<span class="tag no">inattivo</span>'}</td>
-          <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="\${s.id}">\u270E</button> <button class="btn ghost sm" data-exp="\${s.id}">\u2B07\uFE0E</button> <button class="btn danger sm" data-del="\${s.id}">\u{1F5D1}</button></td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="\${s.id}">\u270E</button> <button class="btn ghost sm" data-exp="\${s.id}">\u2B07\uFE0E</button> \${can('utenti_del') ? \`<button class="btn danger sm" data-del="\${s.id}">\u{1F5D1}</button>\` : ''}</td>
         </tr>\`).join('') || '<tr><td colspan="7" class="muted">Nessun socio.</td></tr>'}
       </tbody></table></div>\`;
     $('#search').onclick = () => render($('#q').value);
     $('#q').onkeydown = (e) => { if (e.key === 'Enter') render($('#q').value); };
-    $('#new').onclick = () => editSocio(null, list);
+    if ($('#new')) $('#new').onclick = () => editSocio(null, list);
     document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editSocio(list.find(x => x.id == b.dataset.edit), list));
     document.querySelectorAll('[data-exp]').forEach(b => b.onclick = () => exportSocio(b.dataset.exp));
     document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delSocio(b.dataset.del, render));
@@ -3358,7 +3547,7 @@ VIEWS.discipline = async () => {
     <td><input type="number" id="dmax_\${d.id}" value="\${d.max_giocatori}" style="width:60px"></td>
     <td><input type="number" id="dpv_\${d.id}" value="\${d.punti_vitt}" style="width:55px"></td>
     <td><input type="number" id="dpp_\${d.id}" value="\${d.punti_par}" style="width:55px"></td>
-    <td style="white-space:nowrap"><button class="btn gold sm" data-dsave="\${d.id}">Salva</button> <button class="btn danger sm" data-ddel="\${d.id}">\u{1F5D1}</button></td>
+    <td style="white-space:nowrap"><button class="btn gold sm" data-dsave="\${d.id}">Salva</button> \${can('discipline_del') ? \`<button class="btn danger sm" data-ddel="\${d.id}">\u{1F5D1}</button>\` : ''}</td>
   </tr>\`;
   $('#view').innerHTML = \`
     <div class="panel"><h3>Discipline \u2014 attiva/disattiva e partecipanti</h3>
@@ -3416,7 +3605,7 @@ VIEWS.tabellone = async () => {
     $('#view').innerHTML = \`
       <div class="row">
         <select id="tb_disc">\${discs.map(d => \`<option value="\${d.id}" \${d.id == cur ? 'selected' : ''}>\${d.dominio} \xB7 \${esc(d.nome)}\${d.attivo ? '' : ' (disattivata)'}</option>\`).join('')}</select>
-        <button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>
+        \${can('tabellone_reset') ? '<button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>' : ''}
         \${t.completo ? '<span class="tag ok">gironi completi</span>' : '<span class="tag mid">gironi in corso</span>'}
       </div>
       \${giornate.length ? \`<div class="row" style="margin-top:-6px">
@@ -3427,7 +3616,7 @@ VIEWS.tabellone = async () => {
       \${t.gironi.length ? t.gironi.map(gironeHtml).join('') : '<p class="muted">Nessun calendario: premi \u201CGenera\u201D.</p>'}
       \${finali}\`;
     $('#tb_disc').onchange = (e) => { cur = e.target.value; render(); };
-    $('#tb_gen').onclick = async () => { if (!confirm('Rigenerare il calendario AZZERA i risultati di questa disciplina. Procedo?')) return; await api('/tabellone/' + cur + '/genera', { method: 'POST' }); render(); };
+    if ($('#tb_gen')) $('#tb_gen').onclick = async () => { if (!confirm('Rigenerare il calendario AZZERA i risultati di questa disciplina. Procedo?')) return; await api('/tabellone/' + cur + '/genera', { method: 'POST' }); render(); };
     if ($('#tb_print')) $('#tb_print').onclick = () => stampaGiornata(disc.nome || 'Torneo', t, $('#tb_gio').value);
     document.querySelectorAll('[data-psave]').forEach(b => b.onclick = async () => {
       const id = b.dataset.psave;
@@ -3681,7 +3870,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-14 13:01" : "online";
+var BUILD = true ? "2026-08-15 16:00" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
