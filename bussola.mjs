@@ -444,6 +444,47 @@ async function initSchema() {
   CREATE INDEX IF NOT EXISTS ix_mag_area ON magazzino_articoli(area);
   CREATE INDEX IF NOT EXISTS ix_mag_mov ON magazzino_movimenti(articolo_id);
 
+  -- ====== CHIOSCO: menu + comande (cassa/cameriere) + KDS per stazione ======
+  CREATE TABLE IF NOT EXISTS menu_articoli (
+    id            INTEGER PRIMARY KEY,
+    nome          TEXT NOT NULL,
+    prezzo        REAL NOT NULL DEFAULT 0,
+    stazione      TEXT NOT NULL DEFAULT 'bar',              -- cucina | bar
+    categoria     TEXT,                                     -- panini | bibite | birre | snack | ...
+    magazzino_id  INTEGER REFERENCES magazzino_articoli(id) ON DELETE SET NULL, -- scarico automatico opzionale
+    attivo        INTEGER NOT NULL DEFAULT 1,
+    ordine        INTEGER NOT NULL DEFAULT 0
+  );
+  -- Testata comanda.
+  CREATE TABLE IF NOT EXISTS comande (
+    id          INTEGER PRIMARY KEY,
+    numero      INTEGER,                                    -- progressivo giornaliero (comodo per chiamare)
+    origine     TEXT NOT NULL DEFAULT 'chiosco',            -- tavolo | bancone | chiosco
+    riferimento TEXT,                                       -- n\xB0 tavolo / nome cliente
+    stato       TEXT NOT NULL DEFAULT 'aperta',             -- aperta | in_preparazione | pronta | consegnata | chiusa | annullata
+    totale      REAL NOT NULL DEFAULT 0,
+    operatore   TEXT,
+    note        TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT
+  );
+  -- Righe comanda (snapshot di nome/prezzo, cos\xEC lo storico non cambia se il menu cambia).
+  CREATE TABLE IF NOT EXISTS comanda_righe (
+    id          INTEGER PRIMARY KEY,
+    comanda_id  INTEGER NOT NULL REFERENCES comande(id) ON DELETE CASCADE,
+    menu_id     INTEGER REFERENCES menu_articoli(id) ON DELETE SET NULL,
+    nome        TEXT NOT NULL,
+    prezzo      REAL NOT NULL DEFAULT 0,
+    qta         INTEGER NOT NULL DEFAULT 1,
+    stazione    TEXT NOT NULL DEFAULT 'bar',
+    note        TEXT,
+    stato       TEXT NOT NULL DEFAULT 'in_coda',            -- in_coda | pronta | consegnata
+    magazzino_id INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS ix_com_stato ON comande(stato);
+  CREATE INDEX IF NOT EXISTS ix_comr_com ON comanda_righe(comanda_id);
+  CREATE INDEX IF NOT EXISTS ix_comr_staz ON comanda_righe(stazione, stato);
+
   CREATE INDEX IF NOT EXISTS ix_soci_casata ON soci(casata_id);
   CREATE INDEX IF NOT EXISTS ix_cdc_conte ON cdc_caffe_conte(data);
   CREATE INDEX IF NOT EXISTS ix_cdc_prestiti ON cdc_prestiti(created_at);
@@ -719,7 +760,7 @@ async function seed({ verbose = false } = {}) {
     return;
   }
   if (force) {
-    for (const t of ["audit_log", "allegati", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
+    for (const t of ["audit_log", "allegati", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
       await db.exec(`DELETE FROM ${t};`);
     }
   }
@@ -1026,11 +1067,30 @@ async function seed({ verbose = false } = {}) {
   const exCaffe = await db.prepare("SELECT id FROM magazzino_articoli WHERE area='casa_di_carta' AND nome='Capsule caff\xE8'").get();
   if (exCaffe) await db.prepare("UPDATE magazzino_articoli SET unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run("capsule", 120, 50, 80, nowIso, exCaffe.id);
   else await insArt.run("Capsule caff\xE8", "casa_di_carta", "capsule", 120, 50, 80, 0, nowIso);
+  const birra = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Birra media'").get();
+  const acqua = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Acqua naturale 0,5L'").get();
+  const patatine = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Patatine (buste)'").get();
+  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,1,?)");
+  const MENU = [
+    ["Panino salsiccia", 4.5, "cucina", "panini", null],
+    ["Panino vegetariano", 4, "cucina", "panini", null],
+    ["Hamburger", 5.5, "cucina", "panini", null],
+    ["Patatine fritte", 3, "cucina", "snack", null],
+    ["Patatine in busta", 1.5, "bar", "snack", patatine ? patatine.id : null],
+    ["Birra media", 4, "bar", "birre", birra ? birra.id : null],
+    ["Acqua 0,5L", 1, "bar", "bibite", acqua ? acqua.id : null],
+    ["Bibita in lattina", 2, "bar", "bibite", null],
+    ["Caff\xE8", 1, "bar", "caldi", null]
+  ];
+  for (let i = 0; i < MENU.length; i++) {
+    const m = MENU[i];
+    await insMenu.run(m[0], m[1], m[2], m[3], m[4], i + 1);
+  }
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
   const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
   await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
   await insAdmin.run("manager", hashPassword(process.env.MANAGER_PASSWORD || "manager2026"), "manager", null);
-  const staffCaps = JSON.stringify(["utenti", "utenti_ins", "casate", "cdc", "discipline", "tabellone", "contest", "serate", "proposte", "eventi", "magazzino"]);
+  const staffCaps = JSON.stringify(["utenti", "utenti_ins", "casate", "cdc", "discipline", "tabellone", "contest", "serate", "proposte", "eventi", "magazzino", "comande"]);
   await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff", staffCaps);
   await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura", null);
   audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
@@ -1358,8 +1418,10 @@ var CAPS_DELEGABILI = [
   // Proposte vinile/openmic
   "eventi",
   // Cartellone
-  "magazzino"
-  // Magazzino/chiosco (modulo futuro)
+  "magazzino",
+  // Magazzino unificato (aree + alert)
+  "comande"
+  // Chiosco: comande + KDS (cassa/cameriere/stazioni)
 ];
 var CAPS_GESTORE_ONLY = [
   "utenti_del",
@@ -1390,7 +1452,8 @@ var MANAGER_CAPS = /* @__PURE__ */ new Set([
   "serate",
   "proposte",
   "eventi",
-  "magazzino"
+  "magazzino",
+  "comande"
 ]);
 function parsePermessi(p) {
   if (Array.isArray(p)) return p;
@@ -1759,6 +1822,119 @@ adminRouter.post("/magazzino/:id/movimento", requireCap("magazzino"), async (req
 adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
   const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
   res.json(rows);
+});
+adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
+  res.json(rows);
+});
+adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
+  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", b.categoria || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
+  audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,categoria=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", b.categoria || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
+  audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
+  await db.prepare("DELETE FROM menu_articoli WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
+  res.json({ ok: true });
+});
+async function comandaConRighe(id) {
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id);
+  if (!c) return null;
+  c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(id);
+  return c;
+}
+adminRouter.get("/comande", requireCap("comande"), async (req, res) => {
+  const stato = req.query.stato;
+  let rows;
+  if (stato === "tutte") rows = await db.prepare("SELECT * FROM comande ORDER BY id DESC LIMIT 100").all();
+  else if (stato) rows = await db.prepare("SELECT * FROM comande WHERE stato=? ORDER BY id DESC LIMIT 100").all(stato);
+  else rows = await db.prepare("SELECT * FROM comande WHERE stato NOT IN ('chiusa','annullata') ORDER BY id").all();
+  for (const c of rows) c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(c.id);
+  res.json(rows);
+});
+adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  const righe = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
+  if (!righe.length) return res.status(400).json({ error: "Aggiungi almeno un articolo" });
+  const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco"].includes(b.origine) ? b.origine : "chiosco", b.riferimento || null, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
+  const cid = Number(info.lastInsertRowid);
+  let totale = 0;
+  for (const r of righe) {
+    const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.menu_id);
+    if (!m) continue;
+    const qta = Math.max(1, Math.round(Number(r.qta)));
+    totale += Number(m.prezzo) * qta;
+    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
+  }
+  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
+  audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
+  res.status(201).json(await comandaConRighe(cid));
+});
+adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) => {
+  const stato = req.body && req.body.stato;
+  if (!["aperta", "in_preparazione", "pronta", "consegnata", "chiusa", "annullata"].includes(stato)) return res.status(400).json({ error: "Stato non valido" });
+  await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(stato, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  audit(req.adminUser.username, "stato:" + stato, "comande", req.params.id);
+  res.json(await comandaConRighe(req.params.id));
+});
+adminRouter.put("/comande/:id/riga/:rid/stato", requireCap("comande"), async (req, res) => {
+  const stato = req.body && req.body.stato;
+  if (!["in_coda", "pronta", "consegnata"].includes(stato)) return res.status(400).json({ error: "Stato riga non valido" });
+  await db.prepare("UPDATE comanda_righe SET stato=? WHERE id=? AND comanda_id=?").run(stato, req.params.rid, req.params.id);
+  const righe = await db.prepare("SELECT stato FROM comanda_righe WHERE comanda_id=?").all(req.params.id);
+  const cur = await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id);
+  if (cur && !["chiusa", "annullata"].includes(cur.stato) && righe.length) {
+    let nuovo = cur.stato;
+    if (righe.every((r) => r.stato === "consegnata")) nuovo = "consegnata";
+    else if (righe.every((r) => r.stato === "pronta" || r.stato === "consegnata")) nuovo = "pronta";
+    else if (righe.some((r) => r.stato !== "in_coda")) nuovo = "in_preparazione";
+    else nuovo = "aperta";
+    if (nuovo !== cur.stato) await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  }
+  res.json(await comandaConRighe(req.params.id));
+});
+adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
+  if (!c) return res.status(404).json({ error: "Comanda non trovata" });
+  if (c.stato === "chiusa") return res.json(await comandaConRighe(req.params.id));
+  const righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=?").all(c.id);
+  for (const r of righe) {
+    if (!r.magazzino_id) continue;
+    const art = await db.prepare("SELECT giacenza FROM magazzino_articoli WHERE id=?").get(r.magazzino_id);
+    if (!art) continue;
+    const nuova = Math.max(0, Number(art.giacenza) - Number(r.qta));
+    await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), r.magazzino_id);
+    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore) VALUES (?,?,?,?,?)").run(r.magazzino_id, "scarico", Number(r.qta), "Comanda #" + (c.numero || c.id), req.adminUser.username);
+  }
+  await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run("chiusa", (/* @__PURE__ */ new Date()).toISOString(), c.id);
+  audit(req.adminUser.username, "chiudi", "comande", c.id, "tot " + c.totale);
+  res.json(await comandaConRighe(c.id));
+});
+adminRouter.delete("/comande/:id", requireCap("comande"), async (req, res) => {
+  await db.prepare("DELETE FROM comanda_righe WHERE comanda_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM comande WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "comande", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
+  const staz = req.query.stazione;
+  const comande = await db.prepare("SELECT * FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') ORDER BY id").all();
+  const out = [];
+  for (const c of comande) {
+    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato!='consegnata' ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
+    if (righe.length) out.push({ ...c, righe });
+  }
+  res.json(out);
 });
 adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
@@ -2211,7 +2387,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.7";
+var VERSION = "4.8";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -3345,6 +3521,8 @@ var admin_default = `<!DOCTYPE html>
         <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate & punti</button>
         <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
         <button data-v="magazzino" data-cap="magazzino">\u{1F4E6} Magazzino</button>
+        <button data-v="comande" data-cap="comande">\u{1F354} Chiosco \xB7 Comande</button>
+        <button data-v="kds" data-cap="comande">\u{1F5A5}\uFE0F KDS Cucina/Bar</button>
         <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
         <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tabellone</button>
         <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
@@ -3418,7 +3596,8 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', magazzino:'Magazzino', comande:'Chiosco \xB7 Comande', kds:'KDS Cucina/Bar', discipline:'Discipline', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -3867,6 +4046,143 @@ VIEWS.magazzino = async () => {
     }) });
     show('magazzino');
   };
+};
+
+// ---- Chiosco \xB7 Comande (cassa + board) ----
+const COM_STATI = { aperta: ['Aperta', 'mid'], in_preparazione: ['In preparazione', 'mid'], pronta: ['Pronta', 'ok'], consegnata: ['Consegnata', 'ok'], chiusa: ['Chiusa', ''], annullata: ['Annullata', 'no'] };
+const eur = (n) => '\u20AC ' + Number(n || 0).toFixed(2);
+let COM_CART = {};
+VIEWS.comande = async () => {
+  const menu = (await api('/menu')).filter(m => m.attivo);
+  const comande = await api('/comande');
+  const mag = await api('/magazzino').catch(() => ({ articoli: [] }));
+
+  // --- Cassa ---
+  const perStaz = (st) => menu.filter(m => m.stazione === st);
+  const menuBtns = (st) => perStaz(st).map(m => \`<button class="btn ghost sm" data-add="\${m.id}" style="margin:3px">\${esc(m.nome)} \xB7 \${eur(m.prezzo)}</button>\`).join('') || '<span class="muted">\u2014</span>';
+  const cassa = \`<div class="panel"><h3>\u{1F9FE} Nuova comanda (cassa)</h3>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <label>Origine <select id="co_orig"><option value="chiosco">Chiosco</option><option value="bancone">Bancone</option><option value="tavolo">Tavolo</option></select></label>
+      <input id="co_rif" placeholder="Rif. (n\xB0 tavolo / nome)" style="max-width:200px">
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap">
+      <div style="flex:1;min-width:260px">
+        <div class="muted" style="font-weight:700;font-size:.75rem;margin:4px 0">\u{1F373} Cucina</div><div>\${menuBtns('cucina')}</div>
+        <div class="muted" style="font-weight:700;font-size:.75rem;margin:10px 0 4px">\u{1F379} Bar</div><div>\${menuBtns('bar')}</div>
+      </div>
+      <div style="flex:1;min-width:240px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px">
+        <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
+        <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
+        <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">Invia comanda</button>
+      </div>
+    </div></div>\`;
+
+  // --- Board comande attive ---
+  const card = (c) => {
+    const righe = (c.righe || []).map(r => \`<div style="display:flex;align-items:center;gap:6px;font-size:.82rem;padding:2px 0">
+      <span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)} <span class="muted">(\${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'})</span>\${r.note ? \`<span class="muted"> \xB7 \${esc(r.note)}</span>\` : ''}</span>
+      <span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+    const [lbl, cls] = COM_STATI[c.stato] || [c.stato, ''];
+    return \`<div style="border:1px solid var(--line);border-radius:12px;padding:12px;min-width:250px;flex:1">
+      <div class="row" style="justify-content:space-between;align-items:center"><b style="color:var(--navy)">#\${c.numero || c.id} \xB7 \${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</b><span class="tag \${cls}">\${esc(lbl)}</span></div>
+      <div style="margin:8px 0">\${righe}</div>
+      <div style="text-align:right;font-weight:800;margin-bottom:8px">\${eur(c.totale)}</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        \${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cstato="\${c.id}|in_preparazione">\u25B6 Avvia</button>\` : ''}
+        \${c.stato === 'in_preparazione' ? \`<button class="btn ghost sm" data-cstato="\${c.id}|pronta">\u2714 Pronta</button>\` : ''}
+        \${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cstato="\${c.id}|consegnata">\u{1F6CE} Consegnata</button>\` : ''}
+        <button class="btn gold sm" data-cchiudi="\${c.id}">\u{1F4B6} Chiudi (cassa)</button>
+        <button class="btn danger sm" data-cann="\${c.id}">\u2715</button>
+      </div></div>\`;
+  };
+  const board = \`<div class="panel"><h3>\u{1F4CB} Comande in corso <button class="btn ghost sm" id="co_ref" style="margin-left:8px">\u21BB Aggiorna</button></h3>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">\${comande.map(card).join('') || '<p class="muted">Nessuna comanda attiva.</p>'}</div></div>\`;
+
+  // --- Gestione menu ---
+  const magOpts = (sel) => \`<option value="">\u2014 nessuno \u2014</option>\` + (mag.articoli || []).map(a => \`<option value="\${a.id}" \${String(sel) === String(a.id) ? 'selected' : ''}>\${esc(a.nome)} (\${esc(a.area)})</option>\`).join('');
+  const allMenu = await api('/menu');
+  const menuRows = allMenu.map(m => \`<tr>
+    <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:150px"></td>
+    <td><input id="mn_p_\${m.id}" type="number" step="0.5" value="\${esc(String(m.prezzo))}" style="width:80px"></td>
+    <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
+    <td><select id="mn_m_\${m.id}">\${magOpts(m.magazzino_id)}</select></td>
+    <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
+    <td style="white-space:nowrap"><button class="btn gold sm" data-mnsave="\${m.id}">Salva</button> <button class="btn danger sm" data-mndel="\${m.id}">\u{1F5D1}</button></td>
+  </tr>\`).join('');
+  const menuPanel = \`<div class="panel"><h3>\u{1F354} Menu del chiosco</h3>
+    <p class="muted" style="font-size:.78rem;margin-bottom:8px">Collega un articolo al <b>magazzino</b> per lo scarico automatico alla chiusura della comanda.</p>
+    <table><thead><tr><th>Articolo</th><th>Prezzo</th><th>Stazione</th><th>Scarico magazzino</th><th>Attivo</th><th></th></tr></thead><tbody>\${menuRows || '<tr><td colspan="6" class="muted">Nessun articolo.</td></tr>'}</tbody></table>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
+      <input id="mn_new_n" placeholder="Nome (es. Panino)" style="min-width:160px"><input id="mn_new_p" type="number" step="0.5" placeholder="Prezzo" style="width:90px">
+      <select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select>
+      <select id="mn_new_m">\${magOpts('')}</select>
+      <button class="btn gold sm" id="mn_add">+ Aggiungi</button>
+    </div></div>\`;
+
+  $('#view').innerHTML = cassa + board + menuPanel;
+
+  // Cassa: carrello in memoria
+  const renderCart = () => {
+    const items = Object.values(COM_CART);
+    $('#co_cart').innerHTML = items.length ? items.map(it => \`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:.82rem">
+      <span style="flex:1">\${esc(it.menu.nome)}</span>
+      <button class="btn ghost sm" data-dec="\${it.menu.id}">\u2212</button><b>\${it.qta}</b><button class="btn ghost sm" data-inc="\${it.menu.id}">+</button>
+      <span style="width:60px;text-align:right">\${eur(it.menu.prezzo * it.qta)}</span></div>\`).join('') : '<span class="muted" style="font-size:.8rem">Nessun articolo.</span>';
+    const tot = items.reduce((s, it) => s + it.menu.prezzo * it.qta, 0);
+    $('#co_tot').textContent = 'Totale ' + eur(tot);
+    document.querySelectorAll('[data-inc]').forEach(b => b.onclick = () => { COM_CART[b.dataset.inc].qta++; renderCart(); });
+    document.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => { const it = COM_CART[b.dataset.dec]; it.qta--; if (it.qta <= 0) delete COM_CART[b.dataset.dec]; renderCart(); });
+  };
+  COM_CART = {};
+  renderCart();
+  document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => { const m = menu.find(x => String(x.id) === b.dataset.add); if (!m) return; if (COM_CART[m.id]) COM_CART[m.id].qta++; else COM_CART[m.id] = { menu: m, qta: 1 }; renderCart(); });
+  $('#co_send').onclick = async () => {
+    const righe = Object.values(COM_CART).map(it => ({ menu_id: it.menu.id, qta: it.qta }));
+    if (!righe.length) { alert('Aggiungi almeno un articolo.'); return; }
+    await api('/comande', { method: 'POST', body: JSON.stringify({ origine: $('#co_orig').value, riferimento: $('#co_rif').value, righe }) });
+    COM_CART = {}; show('comande');
+  };
+  $('#co_ref').onclick = () => show('comande');
+
+  // Board azioni
+  document.querySelectorAll('[data-cstato]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cstato.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
+  document.querySelectorAll('[data-cchiudi]').forEach(b => b.onclick = async () => { if (!confirm('Chiudere la comanda come pagata in cassa? Verr\xE0 scaricato il magazzino collegato.')) return; await api('/comande/' + b.dataset.cchiudi + '/chiudi', { method: 'POST' }); show('comande'); });
+  document.querySelectorAll('[data-cann]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare/annullare la comanda?')) return; await api('/comande/' + b.dataset.cann, { method: 'DELETE' }); show('comande'); });
+
+  // Menu azioni
+  document.querySelectorAll('[data-mnsave]').forEach(b => b.onclick = async () => { const id = b.dataset.mnsave; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, magazzino_id: $('#mn_m_' + id).value || null, attivo: $('#mn_a_' + id).checked }) }); show('comande'); });
+  document.querySelectorAll('[data-mndel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo di menu?')) return; await api('/menu/' + b.dataset.mndel, { method: 'DELETE' }); show('comande'); });
+  $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Indica il nome.'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, magazzino_id: $('#mn_new_m').value || null }) }); show('comande'); };
+};
+
+// ---- KDS: schermo cucina/bar con coda in tempo reale ----
+let KDS_STAZ = '';
+VIEWS.kds = async () => {
+  const render = async () => {
+    const q = await api('/kds' + (KDS_STAZ ? '?stazione=' + KDS_STAZ : '')).catch(() => []);
+    const filtro = \`<div class="panel"><h3>\u{1F5A5}\uFE0F KDS \xB7 coda di preparazione
+      <span style="margin-left:10px;font-size:.8rem;font-weight:400">Stazione:
+        <select id="kds_st"><option value="">Tutte</option><option value="cucina" \${KDS_STAZ === 'cucina' ? 'selected' : ''}>Cucina</option><option value="bar" \${KDS_STAZ === 'bar' ? 'selected' : ''}>Bar</option></select></span>
+      <span class="muted" style="margin-left:10px;font-size:.72rem">aggiornamento automatico</span></h3></div>\`;
+    const cards = q.map(c => {
+      const righe = c.righe.map(r => \`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #f0f0f0">
+        <span style="flex:1;font-size:.95rem"><b>\${r.qta}\xD7</b> \${esc(r.nome)} <span class="muted">(\${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'})</span>\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
+        \${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${c.id}|\${r.id}|pronta">Pronta \u2714</button>\` : ''}
+        \${r.stato === 'pronta' ? \`<button class="btn ghost sm" data-kr="\${c.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button><span class="tag ok">pronta</span>\` : ''}
+      </div>\`).join('');
+      const parseTs = (s) => { if (!s) return null; const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z'); return isNaN(d.getTime()) ? null : d; };
+      const dt = parseTs(c.created_at);
+      const mins = dt ? Math.max(0, Math.round((Date.now() - dt.getTime()) / 60000)) : null;
+      return \`<div style="border:2px solid var(--navy);border-radius:12px;padding:12px;min-width:270px;flex:1;background:#fff">
+        <div class="row" style="justify-content:space-between"><b style="font-size:1.05rem;color:var(--navy)">#\${c.numero || c.id} \xB7 \${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</b>\${mins != null ? \`<span class="tag \${mins >= 10 ? 'no' : 'mid'}">\${mins}\u2032</span>\` : ''}</div>
+        <div style="margin-top:6px">\${righe}</div></div>\`;
+    }).join('');
+    $('#view').innerHTML = filtro + \`<div style="display:flex;gap:12px;flex-wrap:wrap">\${cards || '<p class="muted">Nessun ordine in coda. \u{1F389}</p>'}</div>\`;
+    $('#kds_st').onchange = (e) => { KDS_STAZ = e.target.value; render(); };
+    document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
+  };
+  await render();
+  window.__kdsTimer = setInterval(render, 8000); // auto-refresh coda ogni 8s
 };
 
 // ---- Proposte ----
@@ -4365,7 +4681,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 17:48" : "online";
+var BUILD = true ? "2026-08-15 18:32" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
