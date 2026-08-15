@@ -946,7 +946,7 @@ async function seed({ verbose = false } = {}) {
   const insRifTipo = db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)");
   const RIF_TIPI = [["Organico", "#6b4a2b", 1], ["Plastica e lattine", "#d99a00", 2], ["Carta e cartone", "#2E6DA4", 3], ["Vetro", "#3f7a4a", 4], ["Indifferenziato", "#6b6f73", 5]];
   for (const t of RIF_TIPI) await insRifTipo.run(...t);
-  await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run("Estivo", "18:30", "21:30", "22:00", JSON.stringify({ lun: "Organico", mar: "Plastica e lattine", mer: "Carta e cartone", gio: "Organico", ven: "Vetro", sab: "Indifferenziato", dom: "" }), 1);
+  await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run("Estivo", "18:30", "21:30", "22:00", JSON.stringify({ lun: ["Organico"], mar: ["Plastica e lattine"], mer: ["Carta e cartone"], gio: ["Organico"], ven: ["Carta e cartone", "Vetro"], sab: ["Indifferenziato"], dom: [] }), 1);
   const insReg = db.prepare("INSERT INTO regolamenti (chiave,titolo,testo,ordine) VALUES (?,?,?,?)");
   await insReg.run("coppa", "Coppa delle Casate", "Le otto casate si sfidano nelle discipline sportive e nei giochi durante il periodo di svolgimento. Ogni vittoria e pareggio assegna punti alla graduatoria; le migliori accedono a semifinali e finale. La classifica generale determina la Coppa della stagione.", 1);
   await insReg.run("contest", "Serata dei Clan", "Il CdA lancia la sfida (cocktail, karaoke, recitazione\u2026) la settimana prima. La giuria stila una graduatoria (punti per posizione) a cui si somma il bonus vendite 4/2/1 alle prime tre casate per pezzi venduti. I punti finali si versano una sola volta in Coppa.", 2);
@@ -2094,7 +2094,7 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.3";
+var VERSION = "4.4";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2604,13 +2604,14 @@ function rifiutiHTML(){
   }
   const colorOf = (nome) => (tipi.find(t => t.nome === nome) || {}).colore || '#7A8790';
   const legend = tipi.length ? \`<div class="chips" style="margin-bottom:10px">\${tipi.map(t=>\`<span class="chip" style="cursor:default;background:\${esc(t.colore)};color:\${rifTextColor(t.colore)};border-color:\${esc(t.colore)}">\${esc(t.nome)}</span>\`).join('')}</div>\` : '';
+  const norm = (v) => Array.isArray(v) ? v.filter(Boolean) : (v ? [String(v)] : []);
   const periods = cal.map(c => {
     const g = c.giorni || {};
     const cells = RIF_DAYS.map(([k,lbl]) => {
-      const nome = g[k];
-      if (!nome) return \`<div style="flex:1;min-width:38px;text-align:center;padding:6px 2px;border-radius:8px;background:#f0f2f4"><div style="font-size:.6rem;font-weight:700;color:#8a949c">\${lbl}</div><div style="font-size:.55rem;color:#b5bcc2;margin-top:2px">\u2014</div></div>\`;
-      const col = colorOf(nome);
-      return \`<div style="flex:1;min-width:38px;text-align:center;padding:6px 2px;border-radius:8px;background:\${esc(col)};color:\${rifTextColor(col)}"><div style="font-size:.6rem;font-weight:700;opacity:.85">\${lbl}</div><div style="font-size:.55rem;margin-top:2px;line-height:1.1">\${esc(nome)}</div></div>\`;
+      const nomi = norm(g[k]);
+      if (!nomi.length) return \`<div style="flex:1;min-width:38px;text-align:center;border-radius:8px;overflow:hidden;background:#f0f2f4"><div style="font-size:.6rem;font-weight:700;color:#8a949c;padding:5px 2px 3px">\${lbl}</div><div style="font-size:.55rem;color:#b5bcc2;padding:0 2px 5px">\u2014</div></div>\`;
+      const bands = nomi.map(nome => { const col = colorOf(nome); return \`<div style="background:\${esc(col)};color:\${rifTextColor(col)};font-size:.55rem;line-height:1.15;padding:3px 2px">\${esc(nome)}</div>\`; }).join('');
+      return \`<div style="flex:1;min-width:38px;text-align:center;border-radius:8px;overflow:hidden"><div style="font-size:.6rem;font-weight:700;color:#5c6a73;padding:4px 2px 3px;background:#eef1f3">\${lbl}</div>\${bands}</div>\`;
     }).join('');
     const info = [];
     if (c.inizio_conf || c.fine_conf) info.push(\`Conferimento \${esc(c.inizio_conf||'')}\${c.fine_conf?'\u2013'+esc(c.fine_conf):''}\`);
@@ -3693,11 +3694,13 @@ VIEWS.eventi = async () => {
 
 // ---- Bussola ----
 const RIF_DAYS = [['lun', 'Lun'], ['mar', 'Mar'], ['mer', 'Mer'], ['gio', 'Gio'], ['ven', 'Ven'], ['sab', 'Sab'], ['dom', 'Dom']];
+// normalizza il valore di un giorno in un ARRAY di tipi (retro-compat: stringa singola o vuoto)
+function rifNorm(v) { if (Array.isArray(v)) return v.filter(Boolean); if (v == null || v === '') return []; return [String(v)]; }
+function rifGrad(cols) { if (!cols.length) return '#fff'; if (cols.length === 1) return cols[0]; const n = cols.length; return 'linear-gradient(180deg,' + cols.map((c, i) => \`\${c} \${Math.round(i / n * 100)}%, \${c} \${Math.round((i + 1) / n * 100)}%\`).join(', ') + ')'; }
 VIEWS.bussola = async () => {
   const list = await api('/bussola');
   const rif = await api('/rifiuti').catch(() => ({ tipi: [], calendari: [] }));
   const colorBy = {}; rif.tipi.forEach(t => colorBy[t.nome] = t.colore);
-  const tipoOpts = (sel) => \`<option value="">\u2014</option>\` + rif.tipi.map(t => \`<option value="\${esc(t.nome)}" \${sel === t.nome ? 'selected' : ''}>\${esc(t.nome)}</option>\`).join('');
   const legenda = \`<div class="panel"><h3>\u267B\uFE0F Rifiuti \xB7 legenda (tipo e colore)</h3>
     <table><thead><tr><th>Tipo</th><th>Colore</th><th></th></tr></thead><tbody>
       \${rif.tipi.map(t => \`<tr><td><input id="rt_n_\${t.id}" value="\${esc(t.nome)}" style="min-width:160px"></td><td><input type="color" id="rt_c_\${t.id}" value="\${esc(t.colore)}"></td><td style="white-space:nowrap"><button class="btn gold sm" data-rtsave="\${t.id}">Salva</button> <button class="btn danger sm" data-rtdel="\${t.id}">\u{1F5D1}</button></td></tr>\`).join('')}
@@ -3708,11 +3711,11 @@ VIEWS.bussola = async () => {
       <td><input id="rc_ini_\${esc(c.periodo)}" value="\${esc(c.inizio_conf || '')}" style="width:60px" placeholder="18:30"></td>
       <td><input id="rc_fin_\${esc(c.periodo)}" value="\${esc(c.fine_conf || '')}" style="width:60px" placeholder="21:30"></td>
       <td><input id="rc_rit_\${esc(c.periodo)}" value="\${esc(c.ora_ritiro || '')}" style="width:60px" placeholder="22:00"></td>
-      \${RIF_DAYS.map(([d]) => \`<td><select class="rc_day" data-per="\${esc(c.periodo)}" id="rc_\${esc(c.periodo)}_\${d}">\${tipoOpts((c.giorni || {})[d] || '')}</select></td>\`).join('')}
+      \${RIF_DAYS.map(([d]) => { const sel = rifNorm((c.giorni || {})[d]); return \`<td class="rc_cell" data-per="\${esc(c.periodo)}" data-day="\${d}" style="vertical-align:top;padding:3px;min-width:96px">\${rif.tipi.length ? rif.tipi.map(t => \`<label style="display:flex;align-items:center;gap:4px;font-size:.66rem;white-space:nowrap;line-height:1.5"><input type="checkbox" class="rc_day" data-per="\${esc(c.periodo)}" data-day="\${d}" value="\${esc(t.nome)}" \${sel.includes(t.nome) ? 'checked' : ''}><span>\${esc(t.nome)}</span></label>\`).join('') : '<span class="muted" style="font-size:.65rem">\u2014</span>'}</td>\`; }).join('')}
       <td style="white-space:nowrap"><button class="btn gold sm" data-rcsave="\${esc(c.periodo)}">Salva</button> <button class="btn danger sm" data-rcdel="\${esc(c.periodo)}">\u{1F5D1}</button></td>
     </tr>\`).join('');
   const calendario = \`<div class="panel"><h3>\u267B\uFE0F Rifiuti \xB7 calendario conferimento</h3>
-    <p class="muted" style="margin-bottom:8px">Per ogni periodo indica gli orari e, cliccando nella cella del giorno, scegli il rifiuto da conferire: la cella si colora secondo la legenda.</p>
+    <p class="muted" style="margin-bottom:8px">Per ogni periodo indica gli orari e spunta, per ciascun giorno, <b>uno o pi\xF9 rifiuti</b> da conferire (es. venerd\xEC: Carta <i>e</i> Vetro): la cella si colora secondo la legenda.</p>
     <table><thead><tr><th>Periodo</th><th>Inizio</th><th>Fine</th><th>Ritiro</th>\${RIF_DAYS.map(([, l]) => \`<th>\${l}</th>\`).join('')}<th></th></tr></thead>
     <tbody>\${calRows || \`<tr><td colspan="12" class="muted">Nessun periodo.</td></tr>\`}</tbody></table>
     <div class="row" style="margin-top:10px"><input id="rc_new_per" placeholder="Nuovo periodo (es. Invernale)" style="max-width:220px"><button class="btn gold sm" id="rc_add">+ Aggiungi periodo</button></div></div>\`;
@@ -3722,9 +3725,9 @@ VIEWS.bussola = async () => {
     <table><thead><tr><th>Sezione</th><th>Titolo</th><th>Dettaglio</th><th>Distanza</th><th></th></tr></thead><tbody>
     \${list.filter(b => b.sezione !== 'rifiuti').map(b => \`<tr><td>\${esc(b.sezione)}</td><td><b>\${esc(b.titolo)}</b></td><td>\${esc(b.dettaglio || '')}</td><td>\${esc(b.distanza || '')}</td><td><button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}
   </tbody></table></div>\`;
-  // colora i menu a tendina dei giorni secondo il tipo selezionato
-  const paint = (sel) => { const col = colorBy[sel.value]; sel.style.background = col || '#fff'; sel.style.color = col ? '#fff' : ''; };
-  document.querySelectorAll('.rc_day').forEach(sel => { paint(sel); sel.onchange = () => paint(sel); });
+  // colora ogni cella-giorno come sfondo a bande secondo i tipi spuntati
+  const paintCell = (cell) => { const cols = [...cell.querySelectorAll('.rc_day:checked')].map(x => colorBy[x.value]).filter(Boolean); cell.style.background = rifGrad(cols); cell.style.color = cols.length ? '#fff' : ''; };
+  document.querySelectorAll('.rc_cell').forEach(cell => { paintCell(cell); cell.querySelectorAll('.rc_day').forEach(chk => chk.onchange = () => paintCell(cell)); });
   // legenda
   document.querySelectorAll('[data-rtsave]').forEach(b => b.onclick = async () => { const id = b.dataset.rtsave; await api('/rifiuti/tipo/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#rt_n_' + id).value, colore: $('#rt_c_' + id).value }) }); show('bussola'); });
   document.querySelectorAll('[data-rtdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il tipo di rifiuto?')) return; await api('/rifiuti/tipo/' + b.dataset.rtdel, { method: 'DELETE' }); show('bussola'); });
@@ -3732,7 +3735,7 @@ VIEWS.bussola = async () => {
   // calendario
   document.querySelectorAll('[data-rcsave]').forEach(b => b.onclick = async () => {
     const per = b.dataset.rcsave; const giorni = {};
-    RIF_DAYS.forEach(([d]) => giorni[d] = $('#rc_' + per + '_' + d).value);
+    RIF_DAYS.forEach(([d]) => giorni[d] = [...document.querySelectorAll(\`.rc_day[data-per="\${CSS.escape(per)}"][data-day="\${d}"]:checked\`)].map(x => x.value));
     await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ inizio_conf: $('#rc_ini_' + per).value, fine_conf: $('#rc_fin_' + per).value, ora_ritiro: $('#rc_rit_' + per).value, giorni }) });
     b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000);
   });
@@ -4137,7 +4140,7 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
 `;
 
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 16:36" : "online";
+var BUILD = true ? "2026-08-15 17:08" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
