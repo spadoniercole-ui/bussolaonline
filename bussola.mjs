@@ -5301,7 +5301,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.40";
+var VERSION = "4.41";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5481,6 +5481,16 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .gate-err{color:var(--coral); font-size:.75rem; min-height:16px;}
 .gate-demo{background:none; border:none; color:var(--mute); font-size:.72rem; text-decoration:underline; margin-top:14px; width:100%; cursor:pointer;}
 
+/* --- Responsivit\xE0 (v4.41) --- */
+/* Su telefono: niente cornice-mockup, l'app riempie lo schermo (esperienza nativa, nessun bordo sprecato).
+   Il grazioso "telefono" resta solo su schermi grandi (anteprima desktop). */
+@media (max-width: 640px){
+  body{ padding:0; align-items:stretch; background:var(--paper); }
+  .phone{ width:100%; max-width:none; height:100vh; height:100dvh; max-height:none; border-radius:0; box-shadow:none; }
+  .notch{ display:none; }
+}
+@media (min-width: 900px){ .phone{ width:440px; max-height:900px; } }
+
 </style>
 <style>
   /* Utente non socio (visitatore): nasconde le schede tornei e il distintivo casata */
@@ -5621,7 +5631,10 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:12px 0 6px}
+      .cmd-list{columns:280px;column-gap:16px}
+      .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
+      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
+      .cmd-group:first-child .cmd-cat{padding-top:0}
       .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
@@ -5678,8 +5691,10 @@ window.Comanda = (function () {
         (g[k] = g[k] || []).push(m);
       });
       const keys = sortCats(Object.keys(g));
+      // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
+      // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
+        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -8651,7 +8666,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 #tabs{display:flex;gap:4px;margin-top:10px;overflow-x:auto}
 #tabs button{background:transparent;border:none;color:#cfe0ee;font-weight:700;padding:10px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
 #tabs button.on{background:var(--paper);color:var(--navy)}
-#view{padding:16px;max-width:1200px;margin:0 auto}
+#view{padding:16px;max-width:1360px;margin:0 auto}
+@media (max-width:560px){#view{padding:10px}#top{padding-left:10px;padding-right:10px}.panel{padding:12px}}
 /* login */
 #login{position:fixed;inset:0;background:radial-gradient(1200px 800px at 50% -10%,#1c3e5c,#0d2137);display:flex;align-items:center;justify-content:center;padding:20px;z-index:20}
 #login .card{background:#fff;border-radius:18px;padding:26px;max-width:360px;width:100%}
@@ -8740,7 +8756,10 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:12px 0 6px}
+      .cmd-list{columns:280px;column-gap:16px}
+      .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
+      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
+      .cmd-group:first-child .cmd-cat{padding-top:0}
       .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
@@ -8797,8 +8816,10 @@ window.Comanda = (function () {
         (g[k] = g[k] || []).push(m);
       });
       const keys = sortCats(Object.keys(g));
+      // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
+      // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
+        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -9268,7 +9289,10 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:12px 0 6px}
+      .cmd-list{columns:280px;column-gap:16px}
+      .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
+      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
+      .cmd-group:first-child .cmd-cat{padding-top:0}
       .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
@@ -9325,8 +9349,10 @@ window.Comanda = (function () {
         (g[k] = g[k] || []).push(m);
       });
       const keys = sortCats(Object.keys(g));
+      // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
+      // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
+        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -9532,7 +9558,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 16:29" : "online";
+var BUILD = true ? "2026-08-16 16:44" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
