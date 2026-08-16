@@ -2980,7 +2980,7 @@ authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.18";
+var VERSION = "4.19";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5679,6 +5679,11 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 .menucat{font-weight:800;color:var(--navy);font-size:.8rem;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.5px}
 .mitem{border:1.5px solid #cbd2d8;background:#fff;border-radius:12px;padding:10px 12px;text-align:left;cursor:pointer;min-width:150px;flex:1}
 .mitem b{display:block;color:var(--navy)}.mitem .pz{color:var(--gold);font-weight:800;font-size:.9rem}
+.mitem:hover{border-color:var(--gold)}
+.mitem.added{border-color:var(--gold);background:#fff7e6;transform:scale(.97);transition:transform .12s}
+.chip{border:1.5px solid #cbd2d8;background:#fff;color:var(--navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap}
+.chip.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+#co_cats{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
 .hide{display:none!important}
 </style>
 </head>
@@ -5775,10 +5780,12 @@ let COM_CART = {};
 VIEWS.comande = async () => {
   const menu = (await api('/menu')).filter(m => m.attivo);
   const comande = await api('/comande');
-  // raggruppa il men\xF9 per categoria (fallback: stazione)
-  const gruppi = {};
-  menu.forEach(m => { const k = m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); (gruppi[k] = gruppi[k] || []).push(m); });
-  const menuHTML = Object.keys(gruppi).map(cat => \`<div class="menucat">\${esc(cat)}</div><div class="row">\${gruppi[cat].map(m => \`<button class="mitem" data-add="\${m.id}"><b>\${esc(m.nome)}</b><span class="pz">\${eur(m.prezzo)}</span>\${m.allergeni ? \`<span class="muted" style="font-size:.7rem">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</button>\`).join('')}</div>\`).join('');
+  // categoria di un articolo (fallback: stazione)
+  const catOf = (m) => m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar');
+  const cats = [...new Set(menu.map(catOf))];
+  const norm = (s) => (s == null ? '' : String(s)).toLowerCase();
+  let comCat = ''; // '' = tutte le categorie
+  const mitem = (m) => \`<button class="mitem" data-add="\${m.id}"><b>\${esc(m.nome)}</b><span class="pz">\${eur(m.prezzo)}</span>\${m.allergeni ? \`<span class="muted" style="font-size:.7rem">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</button>\`;
 
   const card = (c) => {
     const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0"><span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)}\${r.note ? \` \xB7 \${esc(r.note)}\` : ''}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
@@ -5803,7 +5810,14 @@ VIEWS.comande = async () => {
         <input id="co_rif" placeholder="Rif. (n\xB0 tavolo / nome)" style="max-width:200px">
       </div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
-        <div style="flex:2;min-width:280px">\${menuHTML || '<p class="muted">Men\xF9 vuoto. Vai su \u201CMen\xF9\u201D per caricarlo.</p>'}</div>
+        <div style="flex:2;min-width:280px">
+          \${menu.length ? \`<div class="row" style="gap:6px;margin-bottom:8px">
+            <input id="co_q" placeholder="\u{1F50D} Cerca prodotto\u2026" autocomplete="off" style="flex:1;min-width:160px">
+            <button class="btn ghost sm" id="co_qx" title="Pulisci ricerca">\u2715</button>
+          </div>
+          <div id="co_cats" class="row" style="gap:6px;margin-bottom:10px"></div>
+          <div id="co_menu"></div>\` : '<p class="muted">Men\xF9 vuoto. Vai su \u201CMen\xF9\u201D per caricarlo.</p>'}
+        </div>
         <div style="flex:1;min-width:230px" class="panel">
           <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
           <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
@@ -5820,8 +5834,46 @@ VIEWS.comande = async () => {
     document.querySelectorAll('[data-inc]').forEach(b => b.onclick = () => { COM_CART[b.dataset.inc].qta++; renderCart(); });
     document.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => { const it = COM_CART[b.dataset.dec]; it.qta--; if (it.qta <= 0) delete COM_CART[b.dataset.dec]; renderCart(); });
   };
+
+  // Aggiunge un articolo al carrello e d\xE0 un breve feedback visivo sul bottone toccato.
+  const addToCart = (id, btn) => {
+    const m = menu.find(x => String(x.id) === String(id)); if (!m) return;
+    COM_CART[m.id] ? COM_CART[m.id].qta++ : (COM_CART[m.id] = { menu: m, qta: 1 });
+    renderCart();
+    if (btn) { btn.classList.add('added'); setTimeout(() => btn.classList.remove('added'), 220); }
+  };
+
+  // Griglia men\xF9 filtrata per ricerca (nome/categoria/allergeni) + chip di categoria.
+  const renderMenu = () => {
+    const q = norm($('#co_q') && $('#co_q').value).trim();
+    const gruppi = {};
+    menu.forEach(m => {
+      const k = catOf(m);
+      if (comCat && k !== comCat) return;
+      if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
+      (gruppi[k] = gruppi[k] || []).push(m);
+    });
+    const keys = Object.keys(gruppi);
+    const tot = keys.reduce((s, k) => s + gruppi[k].length, 0);
+    $('#co_menu').innerHTML = tot
+      ? keys.map(cat => \`<div class="menucat">\${esc(cat)}</div><div class="row">\${gruppi[cat].map(mitem).join('')}</div>\`).join('')
+      : \`<p class="muted" style="padding:10px 4px">Nessun prodotto trovato\${q ? \` per \u201C\${esc(q)}\u201D\` : ''}.</p>\`;
+    document.querySelectorAll('#co_menu [data-add]').forEach(b => b.onclick = () => addToCart(b.dataset.add, b));
+  };
+
+  const renderCats = () => {
+    const chips = ['', ...cats].map(c => \`<button class="chip\${c === comCat ? ' on' : ''}" data-cat="\${esc(c)}">\${c === '' ? 'Tutti' : esc(c)}</button>\`).join('');
+    if ($('#co_cats')) $('#co_cats').innerHTML = chips;
+    document.querySelectorAll('#co_cats [data-cat]').forEach(b => b.onclick = () => { comCat = b.dataset.cat; renderCats(); renderMenu(); });
+  };
+
   COM_CART = {}; renderCart();
-  document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => { const m = menu.find(x => String(x.id) === b.dataset.add); if (!m) return; COM_CART[m.id] ? COM_CART[m.id].qta++ : (COM_CART[m.id] = { menu: m, qta: 1 }); renderCart(); });
+  if (menu.length) {
+    renderCats(); renderMenu();
+    const q = $('#co_q');
+    if (q) { q.oninput = renderMenu; q.focus(); }
+    if ($('#co_qx')) $('#co_qx').onclick = () => { if ($('#co_q')) { $('#co_q').value = ''; $('#co_q').focus(); } renderMenu(); };
+  }
   $('#co_send').onclick = async () => {
     const righe = Object.values(COM_CART).map(it => ({ menu_id: it.menu.id, qta: it.qta }));
     if (!righe.length) { alert('Aggiungi almeno un prodotto.'); return; }
@@ -6077,7 +6129,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 08:59" : "online";
+var BUILD = true ? "2026-08-16 09:18" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
