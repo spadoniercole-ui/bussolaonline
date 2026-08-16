@@ -50,6 +50,36 @@ function audit(utente, azione, entita, entita_id, dettaglio = "") {
   }).catch(() => {
   });
 }
+async function nextTessera() {
+  const rows = await db.prepare("SELECT tessera_code FROM soci WHERE tessera_code LIKE 'BR-2026-%'").all();
+  let max = 0;
+  for (const r of rows) {
+    const m = /BR-2026-(\d+)/.exec(r.tessera_code || "");
+    if (m) {
+      const v = parseInt(m[1], 10);
+      if (v > max) max = v;
+    }
+  }
+  return "BR-2026-" + String(max + 1).padStart(4, "0");
+}
+async function insertSocioUnique(cols, vals) {
+  const iCode = cols.indexOf("tessera_code");
+  const placeholders = cols.map(() => "?").join(",");
+  const sql = `INSERT INTO soci (${cols.join(",")}) VALUES (${placeholders})`;
+  let base = await nextTessera();
+  let baseNum = parseInt(/BR-2026-(\d+)/.exec(base)[1], 10);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = attempt < 6 ? "BR-2026-" + String(baseNum + attempt).padStart(4, "0") : "BR-2026-" + String(baseNum).padStart(4, "0") + "-" + Math.random().toString(36).slice(2, 5).toUpperCase();
+    const args = vals.slice();
+    args[iCode] = code;
+    try {
+      const info = await db.prepare(sql).run(...args);
+      return { id: Number(info.lastInsertRowid), tessera_code: code };
+    } catch (e) {
+      if (attempt === 7) throw e;
+    }
+  }
+}
 async function initSchema() {
   try {
     await client.execute("PRAGMA foreign_keys = ON");
@@ -3535,31 +3565,39 @@ adminRouter.get("/soci", async (req, res) => {
 adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
-  const code = b.tessera_code || await nextTessera();
   const tipo = b.tipo_profilo ?? "socio";
   const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
+  const cols = ["tessera_code", "nome", "cognome", "email", "telefono", "data_nascita", "casata_id", "ruolo", "tipo_profilo", "tutore_id", "lingua", "consenso_privacy", "consenso_marketing", "consenso_foto", "notifiche_push", "valida_fino", "soggiorno_dal", "soggiorno_al"];
+  const vals = [
+    b.tessera_code || "",
+    b.nome,
+    b.cognome,
+    b.email ?? null,
+    b.telefono ?? null,
+    b.data_nascita ?? null,
+    b.casata_id ?? null,
+    ruolo,
+    tipo,
+    b.tutore_id ?? null,
+    b.lingua ?? "it",
+    b.consenso_privacy ? 1 : 0,
+    b.consenso_marketing ? 1 : 0,
+    b.consenso_foto ? 1 : 0,
+    b.notifiche_push ? 1 : 0,
+    b.valida_fino ?? null,
+    b.soggiorno_dal ?? null,
+    b.soggiorno_al ?? null
+  ];
   try {
-    const info = await db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,telefono,data_nascita,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,consenso_foto,notifiche_push,valida_fino,soggiorno_dal,soggiorno_al)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      code,
-      b.nome,
-      b.cognome,
-      b.email ?? null,
-      b.telefono ?? null,
-      b.data_nascita ?? null,
-      b.casata_id ?? null,
-      ruolo,
-      tipo,
-      b.tutore_id ?? null,
-      b.lingua ?? "it",
-      b.consenso_privacy ? 1 : 0,
-      b.consenso_marketing ? 1 : 0,
-      b.consenso_foto ? 1 : 0,
-      b.notifiche_push ? 1 : 0,
-      b.valida_fino ?? null,
-      b.soggiorno_dal ?? null,
-      b.soggiorno_al ?? null
-    );
+    let code, info;
+    if (b.tessera_code) {
+      info = await db.prepare(`INSERT INTO soci (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...vals);
+      code = b.tessera_code;
+    } else {
+      const r = await insertSocioUnique(cols, vals);
+      code = r.tessera_code;
+      info = { lastInsertRowid: r.id };
+    }
     audit(req.adminUser.username, "crea", "soci", info.lastInsertRowid, code);
     res.status(201).json({ ok: true, id: info.lastInsertRowid, tessera_code: code });
   } catch (e) {
@@ -4484,11 +4522,6 @@ adminRouter.get("/db/backup", requireCap("db"), async (req, res) => {
 adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
 });
-async function nextTessera() {
-  const year = 2026;
-  const n = (await db.prepare("SELECT count(*) c FROM soci").get()).c + 1;
-  return `BR-${year}-${String(n).padStart(4, "0")}`;
-}
 
 // server/routes/authuser.js
 import { Router as Router3 } from "express";
@@ -4548,12 +4581,10 @@ authUserRouter.post("/registrazione", async (req, res) => {
   }
   const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : "socio";
   const lingua = ["it", "en", "fr", "de", "es"].includes(b.lingua) ? b.lingua : "it";
-  const n = (await db.prepare("SELECT count(*) c FROM soci").get()).c + 1;
-  const code = `BR-2026-${String(n).padStart(4, "0")}`;
   try {
-    const info = await db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,ruolo,tipo_profilo,lingua,consenso_privacy,consenso_marketing,soggiorno_dal,soggiorno_al,attivo)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,1)`).run(
-      code,
+    const cols = ["tessera_code", "nome", "cognome", "email", "ruolo", "tipo_profilo", "lingua", "consenso_privacy", "consenso_marketing", "soggiorno_dal", "soggiorno_al", "attivo"];
+    const vals = [
+      "",
       nome,
       cognome,
       email,
@@ -4563,13 +4594,16 @@ authUserRouter.post("/registrazione", async (req, res) => {
       1,
       b.consenso_marketing ? 1 : 0,
       tipo === "ospite_temporaneo" ? b.soggiorno_dal || null : null,
-      tipo === "ospite_temporaneo" ? b.soggiorno_al || null : null
-    );
-    const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(Number(info.lastInsertRowid));
+      tipo === "ospite_temporaneo" ? b.soggiorno_al || null : null,
+      1
+    ];
+    const { id, tessera_code } = await insertSocioUnique(cols, vals);
+    const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id);
     const token = createUserSession(socio);
-    audit(code, "auto_registrazione", "soci", socio.id, tipo);
-    res.status(201).json({ token, socio: { tessera_code: socio.tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
+    audit(tessera_code, "auto_registrazione", "soci", id, tipo);
+    res.status(201).json({ token, socio: { tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
   } catch (e) {
+    console.error("registrazione:", e?.message || e);
     res.status(400).json({ error: "Registrazione non riuscita" });
   }
 });
@@ -4847,7 +4881,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.27";
+var VERSION = "4.28";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8730,7 +8764,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 11:33" : "online";
+var BUILD = true ? "2026-08-16 12:51" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
