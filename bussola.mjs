@@ -59,51 +59,24 @@ var init_menucat = __esm({
   }
 });
 
-// build/entry.mjs
-import express from "express";
-
 // server/db.js
 import { createClient } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-var TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.KOINE_DB_URL || "";
-var AUTH = process.env.TURSO_AUTH_TOKEN || void 0;
-var url;
-var LOCAL_FILE = null;
-if (TURSO_URL) {
-  url = TURSO_URL;
-} else {
-  const raw = process.env.KOINE_DB || "data/koine.db";
-  if (raw === ":memory:") {
-    url = ":memory:";
-  } else {
-    LOCAL_FILE = resolve(process.cwd(), raw);
-    mkdirSync(dirname(LOCAL_FILE), { recursive: true });
-    url = "file:" + LOCAL_FILE;
+async function getSetting(chiave, def = null) {
+  try {
+    const r = await db.prepare("SELECT valore FROM impostazioni WHERE chiave=?").get(chiave);
+    return r ? r.valore : def;
+  } catch (_) {
+    return def;
   }
 }
-var IS_REMOTE = !!TURSO_URL;
-var DB_PATH = TURSO_URL ? TURSO_URL : LOCAL_FILE || ":memory:";
-var client = createClient(AUTH ? { url, authToken: AUTH } : { url });
-var flat = (a) => a.map((v) => v === void 0 ? null : v);
-var db = {
-  prepare(sql) {
-    return {
-      get: async (...args) => (await client.execute({ sql, args: flat(args) })).rows[0],
-      all: async (...args) => (await client.execute({ sql, args: flat(args) })).rows,
-      run: async (...args) => {
-        const r = await client.execute({ sql, args: flat(args) });
-        return { lastInsertRowid: r.lastInsertRowid == null ? void 0 : Number(r.lastInsertRowid), changes: Number(r.rowsAffected || 0) };
-      }
-    };
-  },
-  async exec(sql) {
-    await client.executeMultiple(sql);
-  },
-  get raw() {
-    return client;
+async function setSetting(chiave, valore) {
+  try {
+    await db.prepare("INSERT OR REPLACE INTO impostazioni (chiave,valore) VALUES (?,?)").run(chiave, String(valore));
+  } catch (_) {
   }
-};
+}
 function audit(utente, azione, entita, entita_id, dettaglio = "") {
   client.execute({
     sql: "INSERT INTO audit_log (utente, azione, entita, entita_id, dettaglio) VALUES (?,?,?,?,?)",
@@ -422,6 +395,22 @@ async function initSchema() {
     used       INTEGER NOT NULL DEFAULT 0
   );
 
+  -- Impostazioni chiave/valore (es. self-order aperto/chiuso).
+  CREATE TABLE IF NOT EXISTS impostazioni (
+    chiave TEXT PRIMARY KEY,
+    valore TEXT
+  );
+
+  -- Web Push: subscription dei browser (una riga per dispositivo/endpoint) legata al socio.
+  CREATE TABLE IF NOT EXISTS push_sub (
+    endpoint   TEXT PRIMARY KEY,
+    socio_id   INTEGER REFERENCES soci(id) ON DELETE CASCADE,
+    p256dh     TEXT,
+    auth       TEXT,
+    created_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_push_socio ON push_sub(socio_id);
+
   -- Sessioni PERSISTENTI (token). Prima erano in memoria e sparivano a ogni riavvio/redeploy
   -- (su Render: logout forzato di tutti). Ora vivono nel DB: sopravvivono ai riavvii.
   CREATE TABLE IF NOT EXISTS sessioni (
@@ -714,6 +703,8 @@ async function migrate() {
   await addIfMissing("comande", "pagata_at", "pagata_at TEXT");
   await addIfMissing("comande", "canale", "canale TEXT NOT NULL DEFAULT 'staff'");
   await addIfMissing("comande", "punto", "punto TEXT");
+  await addIfMissing("comande", "socio_id", "socio_id INTEGER");
+  await addIfMissing("comande", "pronta_at", "pronta_at TEXT");
   await addIfMissing("eventi", "ora_inizio", "ora_inizio TEXT");
   await addIfMissing("eventi", "tipologia", "tipologia TEXT");
   await addIfMissing("eventi", "artista", "artista TEXT");
@@ -740,8 +731,143 @@ async function migrate() {
   } catch (_) {
   }
 }
+var TURSO_URL, AUTH, url, LOCAL_FILE, IS_REMOTE, DB_PATH, client, flat, db;
+var init_db = __esm({
+  "server/db.js"() {
+    TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.KOINE_DB_URL || "";
+    AUTH = process.env.TURSO_AUTH_TOKEN || void 0;
+    LOCAL_FILE = null;
+    if (TURSO_URL) {
+      url = TURSO_URL;
+    } else {
+      const raw = process.env.KOINE_DB || "data/koine.db";
+      if (raw === ":memory:") {
+        url = ":memory:";
+      } else {
+        LOCAL_FILE = resolve(process.cwd(), raw);
+        mkdirSync(dirname(LOCAL_FILE), { recursive: true });
+        url = "file:" + LOCAL_FILE;
+      }
+    }
+    IS_REMOTE = !!TURSO_URL;
+    DB_PATH = TURSO_URL ? TURSO_URL : LOCAL_FILE || ":memory:";
+    client = createClient(AUTH ? { url, authToken: AUTH } : { url });
+    flat = (a) => a.map((v) => v === void 0 ? null : v);
+    db = {
+      prepare(sql) {
+        return {
+          get: async (...args) => (await client.execute({ sql, args: flat(args) })).rows[0],
+          all: async (...args) => (await client.execute({ sql, args: flat(args) })).rows,
+          run: async (...args) => {
+            const r = await client.execute({ sql, args: flat(args) });
+            return { lastInsertRowid: r.lastInsertRowid == null ? void 0 : Number(r.lastInsertRowid), changes: Number(r.rowsAffected || 0) };
+          }
+        };
+      },
+      async exec(sql) {
+        await client.executeMultiple(sql);
+      },
+      get raw() {
+        return client;
+      }
+    };
+  }
+});
+
+// server/push.js
+var push_exports = {};
+__export(push_exports, {
+  publicKey: () => publicKey,
+  pushEnabled: () => pushEnabled,
+  removeSubscription: () => removeSubscription,
+  saveSubscription: () => saveSubscription,
+  sendToSoci: () => sendToSoci,
+  sendToSocio: () => sendToSocio
+});
+import webpush from "web-push";
+function pushEnabled() {
+  return ENABLED;
+}
+function publicKey() {
+  return ENABLED ? PUB : null;
+}
+async function saveSubscription(socioId, sub) {
+  if (!sub || !sub.endpoint) return false;
+  const k = sub.keys || {};
+  try {
+    await db.prepare("INSERT OR REPLACE INTO push_sub (endpoint,socio_id,p256dh,auth,created_at) VALUES (?,?,?,?,datetime('now'))").run(sub.endpoint, socioId, k.p256dh || "", k.auth || "");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+async function removeSubscription(endpoint) {
+  if (endpoint) {
+    try {
+      await db.prepare("DELETE FROM push_sub WHERE endpoint=?").run(endpoint);
+    } catch (_) {
+    }
+  }
+}
+async function sendToSubs(subs, payload) {
+  if (!ENABLED || !subs.length) return 0;
+  const data = JSON.stringify(payload);
+  let sent = 0;
+  for (const s of subs) {
+    const sub = { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } };
+    try {
+      await webpush.sendNotification(sub, data);
+      sent++;
+    } catch (e) {
+      const code = e && e.statusCode;
+      if (code === 404 || code === 410) await removeSubscription(s.endpoint);
+    }
+  }
+  return sent;
+}
+async function sendToSocio(socioId, payload) {
+  if (!ENABLED) return 0;
+  const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(socioId);
+  return sendToSubs(subs, payload);
+}
+async function sendToSoci(socioIds, payload) {
+  if (!ENABLED || !socioIds || !socioIds.length) return 0;
+  const uniq = [...new Set(socioIds.filter(Boolean).map(Number))];
+  const rows = [];
+  for (const id of uniq) {
+    const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(id);
+    rows.push(...subs);
+  }
+  return sendToSubs(rows, payload);
+}
+var PUB, PRIV, SUBJ, ENABLED;
+var init_push = __esm({
+  "server/push.js"() {
+    init_db();
+    PUB = process.env.VAPID_PUBLIC || process.env.VAPID_PUBLIC_KEY || "";
+    PRIV = process.env.VAPID_PRIVATE || process.env.VAPID_PRIVATE_KEY || "";
+    SUBJ = process.env.VAPID_SUBJECT || "mailto:info@koine.local";
+    ENABLED = false;
+    if (PUB && PRIV) {
+      try {
+        webpush.setVapidDetails(SUBJ, PUB, PRIV);
+        ENABLED = true;
+      } catch (e) {
+        console.error("VAPID non valido:", e?.message || e);
+      }
+    }
+  }
+});
+
+// build/entry.mjs
+init_db();
+import express from "express";
+
+// server/seed.js
+init_db();
 
 // server/auth.js
+init_db();
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
@@ -838,6 +964,7 @@ function genOtp() {
 }
 
 // server/tournament.js
+init_db();
 var ORDINE_CASATE = ["Aretusa", "Ortigia", "Neapolis", "Dionisio", "Ciane", "Plemmirio", "Epipoli", "Anapo"];
 function giornateGirone(sq) {
   return [
@@ -1402,6 +1529,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 // server/routes/public.js
+init_db();
 import { Router } from "express";
 
 // server/asyncroute.js
@@ -1413,8 +1541,42 @@ function asyncify(router) {
   return router;
 }
 
+// server/selforder.js
+init_db();
+var STAFF_BOOST_MS = 3 * 60 * 1e3;
+var STARVE_MS = 10 * 60 * 1e3;
+function tsEffettivo(c, nowMs) {
+  const base = Date.parse(c.created_at || "") || 0;
+  let eff = base - (c.canale === "staff" ? STAFF_BOOST_MS : 0);
+  if (c.canale !== "staff") {
+    const wait = nowMs - base;
+    if (wait > STARVE_MS) eff -= wait - STARVE_MS;
+  }
+  return eff;
+}
+function ordinaCoda(rows) {
+  const now = Date.now();
+  return rows.slice().sort((a, b) => tsEffettivo(a, now) - tsEffettivo(b, now) || a.id - b.id);
+}
+var ETA_BASE_MIN = 3;
+var ETA_PER_ITEM_MIN = 2;
+var ETA_MAX_MIN = 45;
+async function etaMin() {
+  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.stato IN ('aperta','in_preparazione') AND cr.stato='in_coda'").get();
+  return Math.min(ETA_MAX_MIN, ETA_BASE_MIN + Number(r.n || 0) * ETA_PER_ITEM_MIN);
+}
+async function selfOrderAperto() {
+  return await getSetting("self_order_aperto", "1") !== "0";
+}
+async function setSelfOrderAperto(v) {
+  await setSetting("self_order_aperto", v ? "1" : "0");
+}
+
 // server/routes/public.js
 var publicRouter = asyncify(Router());
+publicRouter.get("/self-order/stato", async (req, res) => {
+  res.json({ aperto: await selfOrderAperto(), eta_min: await etaMin() });
+});
 publicRouter.get("/casate", async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
   res.json(rows);
@@ -1425,14 +1587,16 @@ publicRouter.get("/menu", async (req, res) => {
 });
 publicRouter.post("/self-order", async (req, res) => {
   const b = req.body || {};
+  if (!await selfOrderAperto()) return res.status(423).json({ error: "Gli ordini self sono momentaneamente sospesi. Rivolgiti allo staff." });
   const righeIn = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
   if (!righeIn.length) return res.status(400).json({ error: "Aggiungi almeno un prodotto" });
   const punto = String(b.punto || "").trim() || "Chiosco";
   const tavolo = b.tavolo ? String(b.tavolo).trim() : null;
   const chi = b.tessera_code ? String(b.tessera_code).trim().toUpperCase() : null;
+  const socio = chi ? await db.prepare("SELECT id FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(chi) : null;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "aperta", 0, chi || "self", b.note || null, now, now);
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
   for (const r of righeIn) {
@@ -1444,7 +1608,11 @@ publicRouter.post("/self-order", async (req, res) => {
   }
   await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
   audit(chi || "self", "self_order", "comande", cid, `${punto}${tavolo ? " \xB7 tav " + tavolo : ""} \xB7 \u20AC${totale}`);
-  res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo });
+  res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo, eta_min: await etaMin(), push: !!socio });
+});
+publicRouter.get("/push/pubkey", async (req, res) => {
+  const { pushEnabled: pushEnabled2, publicKey: publicKey2 } = await Promise.resolve().then(() => (init_push(), push_exports));
+  res.json({ enabled: pushEnabled2(), key: publicKey2() });
 });
 publicRouter.get("/eventi", async (req, res) => {
   const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ora_inizio,tipologia,artista,prezzo,serata_id FROM eventi WHERE attivo=1 ORDER BY ordine").all();
@@ -1781,10 +1949,12 @@ publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
 });
 
 // server/routes/admin.js
+init_db();
 import { Router as Router2 } from "express";
 import { readFileSync, unlinkSync, statSync } from "node:fs";
 
 // server/contest.js
+init_db();
 var SCALA_DEFAULT = [10, 6, 4, 3, 2, 1, 1, 1];
 var SCALA_SFILATA = [10, 0, 0, 0, 0, 0, 0, 0];
 var BONUS_VENDITE = [4, 2, 1];
@@ -3611,6 +3781,23 @@ function qrSvg(text, { cellSize = 5, margin = 2, ecc = "M" } = {}) {
 
 // server/routes/admin.js
 init_menucat();
+init_push();
+async function avvisaProntoSeSelf(comandaId, prev) {
+  if (prev === "pronta") return;
+  const c = await db.prepare("SELECT id,numero,canale,socio_id,punto FROM comande WHERE id=? AND stato=?").get(comandaId, "pronta");
+  if (!c || c.canale !== "self" || !c.socio_id) return;
+  await db.prepare("UPDATE comande SET pronta_at=datetime('now') WHERE id=?").run(comandaId);
+  const titolo = "Il tuo ordine \xE8 pronto \u{1F6CE}";
+  const corpo = `Ordine #${c.numero}${c.punto ? " \xB7 " + c.punto : ""}: ritira e paga in cassa.`;
+  try {
+    await db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(c.socio_id, "push", "sistema", titolo, corpo);
+  } catch (_) {
+  }
+  try {
+    await sendToSocio(c.socio_id, { title: titolo, body: corpo, url: "/", tag: "ordine-pronto" });
+  } catch (_) {
+  }
+}
 var adminRouter = asyncify(Router2());
 adminRouter.post("/login", async (req, res) => {
   const { username, password } = req.body || {};
@@ -3817,6 +4004,32 @@ adminRouter.delete("/eventi/:id", requireCap("eventi"), async (req, res) => {
   await db.prepare("DELETE FROM eventi WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "elimina", "eventi", req.params.id);
   res.json({ ok: true });
+});
+adminRouter.get("/push/stato", async (req, res) => {
+  const n = (await db.prepare("SELECT COUNT(DISTINCT socio_id) n FROM push_sub").get()).n;
+  const consenzienti = (await db.prepare("SELECT COUNT(*) n FROM soci WHERE notifiche_push=1 AND attivo=1").get()).n;
+  res.json({ enabled: pushEnabled(), dispositivi: n, consenzienti });
+});
+adminRouter.post("/push/broadcast", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  const titolo = String(b.titolo || "").trim();
+  const corpo = String(b.corpo || "").trim();
+  if (!titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const dove = b.casata_id ? "AND casata_id=?" : "";
+  const args = b.casata_id ? [Number(b.casata_id)] : [];
+  const soci = await db.prepare(`SELECT id FROM soci WHERE notifiche_push=1 AND attivo=1 ${dove}`).all(...args);
+  const ids = soci.map((s) => s.id);
+  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+  for (const id of ids) {
+    await insN.run(id, "push", "sistema", titolo, corpo || null);
+  }
+  let inviati = 0;
+  try {
+    inviati = await sendToSoci(ids, { title: titolo, body: corpo, url: "/", tag: "avviso" });
+  } catch (_) {
+  }
+  audit(req.adminUser.username, "push_broadcast", "soci", b.casata_id || "tutti", `${ids.length} destinatari, ${inviati} push`);
+  res.json({ ok: true, destinatari: ids.length, inviati, enabled: pushEnabled() });
 });
 adminRouter.get("/prenotazioni", async (req, res) => {
   res.json(await db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
@@ -4144,14 +4357,6 @@ adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
   audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
-var STAFF_BOOST_MS = 3 * 60 * 1e3;
-function tsEffettivo(c) {
-  const base = Date.parse(c.created_at || "") || 0;
-  return base - (c.canale === "staff" ? STAFF_BOOST_MS : 0);
-}
-function ordinaCoda(rows) {
-  return rows.slice().sort((a, b) => tsEffettivo(a) - tsEffettivo(b) || a.id - b.id);
-}
 async function comandaConRighe(id) {
   const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id);
   if (!c) return null;
@@ -4189,7 +4394,9 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
 adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) => {
   const stato = req.body && req.body.stato;
   if (!["aperta", "in_preparazione", "pronta", "consegnata", "chiusa", "annullata"].includes(stato)) return res.status(400).json({ error: "Stato non valido" });
+  const prev = (await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id) || {}).stato;
   await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(stato, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  if (stato === "pronta") await avvisaProntoSeSelf(req.params.id, prev);
   audit(req.adminUser.username, "stato:" + stato, "comande", req.params.id);
   res.json(await comandaConRighe(req.params.id));
 });
@@ -4205,9 +4412,21 @@ adminRouter.put("/comande/:id/riga/:rid/stato", requireCap("comande"), async (re
     else if (righe.every((r) => r.stato === "pronta" || r.stato === "consegnata")) nuovo = "pronta";
     else if (righe.some((r) => r.stato !== "in_coda")) nuovo = "in_preparazione";
     else nuovo = "aperta";
-    if (nuovo !== cur.stato) await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+    if (nuovo !== cur.stato) {
+      await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+      if (nuovo === "pronta") await avvisaProntoSeSelf(req.params.id, cur.stato);
+    }
   }
   res.json(await comandaConRighe(req.params.id));
+});
+adminRouter.get("/self-order/stato", requireCap("comande"), async (req, res) => {
+  res.json({ aperto: await selfOrderAperto(), eta_min: await etaMin() });
+});
+adminRouter.post("/self-order/pausa", requireCap("comande"), async (req, res) => {
+  const aperto = !!(req.body && req.body.aperto);
+  await setSelfOrderAperto(aperto);
+  audit(req.adminUser.username, aperto ? "self_order_apri" : "self_order_chiudi", "impostazioni", "self_order_aperto");
+  res.json({ ok: true, aperto });
 });
 adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) => {
   const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
@@ -4684,7 +4903,9 @@ adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
 });
 
 // server/routes/authuser.js
+init_db();
 import { Router as Router3 } from "express";
+init_push();
 var authUserRouter = asyncify(Router3());
 var DEV = (process.env.KOINE_ENV || "dev") !== "prod";
 async function requireUser(req, res, next) {
@@ -4802,6 +5023,17 @@ authUserRouter.post("/notifiche/consenso", requireUser, async (req, res) => {
   audit(req.user.tessera_code, "consenso_notifiche", "soci", "", on ? "attivo" : "disattivo");
   res.json({ ok: true, attivo: !!on });
 });
+authUserRouter.post("/push/subscribe", requireUser, async (req, res) => {
+  const me = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+  const ok = await saveSubscription(me.id, req.body?.subscription || req.body);
+  if (ok) await db.prepare("UPDATE soci SET notifiche_push=1 WHERE id=?").run(me.id);
+  res.json({ ok, enabled: pushEnabled() });
+});
+authUserRouter.post("/push/unsubscribe", requireUser, async (req, res) => {
+  await removeSubscription(req.body?.endpoint);
+  res.json({ ok: true });
+});
 authUserRouter.post("/convoca", requireUser, async (req, res) => {
   const me = await db.prepare("SELECT id, casata_id, ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
   if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
@@ -4813,12 +5045,19 @@ authUserRouter.post("/convoca", requireUser, async (req, res) => {
   const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
   const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
   let notificati = 0;
+  const pushIds = [];
+  const corpo = `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim();
   for (const s of soci) {
     await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
     if (s.notifiche_push) {
-      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
+      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", corpo);
       notificati++;
+      pushIds.push(s.id);
     }
+  }
+  try {
+    await sendToSoci(pushIds, { title: "La tua casata ti convoca", body: corpo, url: "/", tag: "convocazione" });
+  } catch (_) {
   }
   audit(req.user.tessera_code, "convoca_capitano", "convocazioni", me.casata_id, `${soci.length} soci`);
   res.status(201).json({ ok: true, convocati: soci.length, notificati });
@@ -4865,13 +5104,21 @@ authUserRouter.post("/capitano/convoca-mirata", requireUser, async (req, res) =>
   const insC = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,partita_id,match_label,quando,luogo,stato) VALUES (?,?,?,?,?,?, 'aperta')");
   const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
   let n = 0;
+  const pushIds = [];
   for (const sid of ids) {
     const s = await db.prepare("SELECT id,notifiche_push FROM soci WHERE id=? AND casata_id=? AND attivo=1").get(sid, me.casata_id);
     if (!s) continue;
     if (await db.prepare("SELECT id FROM convocazioni WHERE partita_id=? AND socio_id=?").get(partita_id, sid)) continue;
     await insC.run(sid, p.disc_id, partita_id, label, "", "");
-    if (s.notifiche_push) await insN.run(sid, "push", "casata", "Convocazione \xB7 " + p.disc, label);
+    if (s.notifiche_push) {
+      await insN.run(sid, "push", "casata", "Convocazione \xB7 " + p.disc, label);
+      pushIds.push(sid);
+    }
     n++;
+  }
+  try {
+    await sendToSoci(pushIds, { title: "Convocazione \xB7 " + p.disc, body: label, url: "/", tag: "convocazione" });
+  } catch (_) {
   }
   audit(req.user.tessera_code, "convoca_mirata", "partite", partita_id, `${n} convocati`);
   res.status(201).json({ ok: true, convocati: n });
@@ -5054,7 +5301,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.38";
+var VERSION = "4.40";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5596,6 +5843,8 @@ async function loadAll() {
   }
   document.getElementById('banner').classList.toggle('show', !state.online);
   applyProfileGating();
+  // Se il socio ha gi\xE0 dato il consenso, riallinea la subscription push (nuovo dispositivo / dopo un deploy).
+  if (state.token && state.socio && state.socio.notifiche_push) { subscribePush().catch(() => {}); }
 }
 
 // ---- Utility --------------------------------------------------------------
@@ -6358,7 +6607,35 @@ async function togglefPush(to) {
   const on = to === 'on';
   if (state.token) { try { await api('/auth/notifiche/consenso', { method:'POST', body: JSON.stringify({ attivo: on }) }); } catch {} }
   state.socio.notifiche_push = on;
+  if (on) { try { await subscribePush(); } catch {} } else { try { await unsubscribePush(); } catch {} }
   okThen(on ? T('Notifiche attivate: ti avviseremo per casata ed eventi') : T('Notifiche disattivate'));
+}
+// --- Web Push (PWA) ---
+function urlB64ToUint8(base64) {
+  const pad = '='.repeat((4 - base64.length % 4) % 4);
+  const b64 = (base64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64); const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+async function subscribePush() {
+  if (!state.token) return;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return; // browser senza push \u2192 resta il solo in-app
+  let cfg; try { cfg = await api('/push/pubkey'); } catch { return; }
+  if (!cfg || !cfg.enabled || !cfg.key) return;                                // push non configurato sul server
+  if (typeof Notification !== 'undefined') { const p = await Notification.requestPermission(); if (p !== 'granted') return; }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(cfg.key) });
+  await api('/auth/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON() }) });
+}
+async function unsubscribePush() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); if (state.token) await api('/auth/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: ep }) }); }
+  } catch {}
 }
 const SHEETS = {
   'sheet-vinile': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Marted\xEC')} \xB7 Vinile & Vino</div><h2>\${T('Proponi un vinile')}</h2><p class="sub">\${T('Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.')}</p>
@@ -7197,6 +7474,7 @@ var admin_default = `<!DOCTYPE html>
         <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate & cena</button>
         <button data-v="proposte" data-cap="proposte">\u{1F3B5} Proposte</button>
         <button data-v="eventi" data-cap="eventi">\u{1F3AD} Eventi</button>
+        <button data-v="avvisi" data-cap="eventi">\u{1F514} Avvisi push</button>
         <button data-v="bussola" data-cap="guida">\u{1F9ED} Guida</button>
         <button data-v="luoghi" data-cap="luoghi">\u{1F4CD} Luoghi (Siamo qui)</button>
         <button data-v="installa" data-cap="guida">\u{1F4F2} Installa app (QR)</button>
@@ -7265,7 +7543,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -7815,6 +8093,30 @@ VIEWS.eventi = async () => {
   document.querySelectorAll('[data-evdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'evento?')) return; await api('/eventi/' + b.dataset.evdel, { method: 'DELETE' }); show('eventi'); });
   $('#ev_new').onclick = () => editor(null);
   $('#ev_a3').onclick = () => locandinaA3(ordinati.filter(e => e.attivo), serate);
+};
+
+// ---- Avvisi push (broadcast del gestore) ----
+VIEWS.avvisi = async () => {
+  const [stato, casate] = await Promise.all([api('/push/stato').catch(() => ({})), api('/casate').catch(() => [])]);
+  const statoBadge = stato.enabled
+    ? \`<span class="tag ok">attivo</span> \xB7 \${stato.dispositivi || 0} dispositivi iscritti \xB7 \${stato.consenzienti || 0} soci col consenso\`
+    : \`<span class="tag no">non configurato</span> \u2014 imposta le chiavi <b>VAPID_PUBLIC</b>/<b>VAPID_PRIVATE</b> su Render per inviare push reali (intanto l'avviso resta comunque nelle notifiche in-app).\`;
+  $('#view').innerHTML = \`<div class="panel"><h3>\u{1F514} Invia un avviso ai soci</h3>
+    <p class="muted" style="font-size:.82rem;margin:6px 0">Stato push: \${statoBadge}</p>
+    <label>Titolo</label><input id="pb_t" placeholder="Es. Stasera Jazz & Cocktail alle 21:30">
+    <label>Messaggio</label><textarea id="pb_c" rows="3" placeholder="Testo dell'avviso\u2026"></textarea>
+    <label>Destinatari</label>
+    <select id="pb_cas"><option value="">Tutti i soci col consenso</option>\${(casate || []).map(c => \`<option value="\${c.id}">Solo casata \${esc(c.nome)}</option>\`).join('')}</select>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn gold" id="pb_send">Invia avviso</button></div>
+    <p class="muted" style="font-size:.78rem;margin-top:8px">L'avviso arriva come notifica push a chi ha attivato le notifiche e installato l'app, e resta sempre visibile nelle notifiche in-app.</p></div>\`;
+  $('#pb_send').onclick = async () => {
+    const titolo = $('#pb_t').value.trim(); if (!titolo) { alert('Titolo obbligatorio'); return; }
+    const body = { titolo, corpo: $('#pb_c').value.trim(), casata_id: $('#pb_cas').value || null };
+    try { const r = await api('/push/broadcast', { method: 'POST', body: JSON.stringify(body) });
+      alert(\`Avviso inviato a \${r.destinatari} soci\` + (r.enabled ? \` \xB7 \${r.inviati} push consegnate.\` : ' (push non configurato: solo in-app).'));
+      $('#pb_t').value = ''; $('#pb_c').value = '';
+    } catch (err) { alert('Invio non riuscito: ' + (err.message || '')); }
+  };
 };
 
 // Locandina A3 orizzontale, elegante, stampabile (o "Salva come PDF"): un evento per riga con
@@ -8599,6 +8901,7 @@ function pickMetodo(onPick) {
 VIEWS.comande = async () => {
   const menu = (await api('/menu')).filter(m => m.attivo);
   const comande = await api('/comande');
+  const so = await api('/self-order/stato').catch(() => ({ aperto: true, eta_min: 0 }));
 
   const card = (c) => {
     const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0"><span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)}\${r.note ? \` \xB7 \${esc(r.note)}\` : ''}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
@@ -8617,7 +8920,14 @@ VIEWS.comande = async () => {
       </div></div>\`;
   };
 
+  const etaTxt = so.eta_min > 0 ? \`attesa stimata ~\${so.eta_min} min\` : 'coda libera';
   $('#view').innerHTML = \`
+    <div class="panel" style="border-left:5px solid \${so.aperto ? 'var(--ok,#2E7D77)' : 'var(--coral,#C0553F)'}">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div><b style="color:var(--navy)">\u{1F4F1} Ordini dal telefono (self-order): \${so.aperto ? '\u{1F7E2} aperti' : '\u{1F534} sospesi'}</b>
+          <div class="muted" style="font-size:.82rem">\${so.aperto ? 'I clienti col QR possono ordinare \xB7 ' + etaTxt + '. Chiudi quando la cucina \xE8 sotto pressione.' : 'I clienti col QR non possono ordinare: prendi le comande al bancone.'}</div></div>
+        <button class="btn \${so.aperto ? 'danger' : 'gold'} sm" id="so_toggle">\${so.aperto ? '\u23F8\uFE0F Sospendi ordini self' : '\u25B6\uFE0F Riapri ordini self'}</button>
+      </div></div>
     <div class="panel"><h3>\u{1F9FE} Nuova comanda</h3>
       <div class="row" style="margin-bottom:8px">
         <label>Origine <select id="co_orig"><option value="chiosco">Chiosco</option><option value="bancone">Bancone</option><option value="tavolo">Tavolo</option></select></label>
@@ -8659,6 +8969,7 @@ VIEWS.comande = async () => {
     show('comande');
   };
   $('#co_ref').onclick = () => show('comande');
+  $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
   document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
   document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => { await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) }); show('comande'); }));
   document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can, { method: 'DELETE' }); show('comande'); });
@@ -9059,7 +9370,29 @@ document.getElementById('punto').textContent = '\u{1F354} ' + PUNTO + (TAVOLO ? 
 const eur = n => '\u20AC ' + (Number(n) || 0).toFixed(2);
 let COM = null;
 
+function etaLabel(m) { m = Number(m || 0); return m <= 0 ? '' : (m < 60 ? \`~\${m} min\` : \`~\${Math.round(m / 60 * 10) / 10} h\`); }
+function setBanner(html, cls) {
+  let el = document.getElementById('so_banner');
+  if (!el) { el = document.createElement('div'); el.id = 'so_banner'; const m = document.getElementById('menu'); m.parentNode.insertBefore(el, m); }
+  const base = 'border-radius:12px;padding:12px 14px;margin:0 0 12px;font-size:.95rem;line-height:1.35;';
+  el.style.cssText = cls === 'closed'
+    ? base + 'background:#fdecea;border:1px solid #f5c6c2;color:#8a2a20;'
+    : base + 'background:#eef6f5;border:1px solid #cfe6e3;color:#12324F;';
+  el.innerHTML = html;
+}
 async function load() {
+  // Prima controllo se il self-order \xE8 aperto e con che attesa stimata.
+  let stato = { aperto: true, eta_min: 0 };
+  try { stato = await (await fetch('/api/self-order/stato')).json(); } catch (e) {}
+  if (!stato.aperto) {
+    document.getElementById('menu').innerHTML = '';
+    setBanner('\u23F8\uFE0F <b>Ordini sospesi</b><br>In questo momento gli ordini dal telefono non sono attivi. Rivolgiti allo staff al bancone.', 'closed');
+    const s = document.getElementById('send'); if (s) s.style.display = 'none';
+    const t = document.getElementById('tot'); if (t) t.textContent = '';
+    return;
+  }
+  const eta = etaLabel(stato.eta_min);
+  if (eta) setBanner('\u23F1\uFE0F Attesa stimata al momento: <b>' + eta + '</b>', 'eta');
   let menu;
   try { menu = await (await fetch('/api/menu')).json(); }
   catch (e) { document.getElementById('menu').innerHTML = '<p class="muted">Men\xF9 non disponibile.</p>'; return; }
@@ -9079,9 +9412,10 @@ document.getElementById('send').onclick = async () => {
   let r;
   try { r = await (await fetch('/api/self-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ punto: PUNTO, tavolo: TAVOLO, righe }) })).json(); }
   catch (e) { alert('Invio non riuscito, riprova.'); document.getElementById('send').disabled = false; return; }
-  if (!r.ok) { alert(r.error || 'Errore'); document.getElementById('send').disabled = false; return; }
+  if (!r.ok) { alert(r.error || 'Ordini momentaneamente non disponibili.'); document.getElementById('send').disabled = false; return; }
   document.getElementById('okn').textContent = '#' + r.numero;
-  document.getElementById('okinfo').textContent = (r.punto || PUNTO) + (r.tavolo ? ' \xB7 Tavolo ' + r.tavolo : '') + ' \xB7 ' + eur(r.totale) + ' \u2014 si paga in cassa.';
+  const eta = etaLabel(r.eta_min);
+  document.getElementById('okinfo').textContent = (r.punto || PUNTO) + (r.tavolo ? ' \xB7 Tavolo ' + r.tavolo : '') + ' \xB7 ' + eur(r.totale) + ' \u2014 si paga in cassa.' + (eta ? ' Pronto tra ' + eta + '.' : '');
   document.getElementById('ok').classList.add('show');
 };
 document.getElementById('reload').onclick = () => location.reload();
@@ -9144,6 +9478,21 @@ self.addEventListener('fetch',e=>{
   }
   // Altro (immagini, icone): cache-first per velocit\xE0/offline.
   e.respondWith(caches.match(req).then(r=>r||fetch(req).then(res=>{if(res&&res.ok){const c=res.clone();caches.open(CACHE).then(x=>x.put(req,c));}return res;}).catch(()=>r)));
+});
+// Web Push: mostra la notifica ricevuta e, al tocco, apre/porta in primo piano l'app.
+self.addEventListener('push',e=>{
+  let d={}; try{ d=e.data?e.data.json():{}; }catch(_){ d={ title:'Bussola Residence', body:(e.data&&e.data.text&&e.data.text())||'' }; }
+  const title=d.title||'Bussola Residence';
+  const opts={ body:d.body||'', icon:START+'icons/icon-192.png', badge:START+'icons/icon-192.png', data:{ url:d.url||START }, tag:d.tag||'bussola', renotify:true };
+  e.waitUntil(self.registration.showNotification(title,opts));
+});
+self.addEventListener('notificationclick',e=>{
+  e.notification.close();
+  const url=(e.notification.data&&e.notification.data.url)||START;
+  e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{
+    for(const c of cs){ if('focus'in c){ try{c.navigate&&c.navigate(url);}catch(_){}; return c.focus(); } }
+    if(clients.openWindow) return clients.openWindow(url);
+  }));
 });`;
 }
 function pwaHead(appKey) {
@@ -9183,7 +9532,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 15:51" : "online";
+var BUILD = true ? "2026-08-16 16:29" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
