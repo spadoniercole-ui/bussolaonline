@@ -1,3 +1,64 @@
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// server/menucat.js
+var menucat_exports = {};
+__export(menucat_exports, {
+  CATEGORIE_ORDINE: () => CATEGORIE_ORDINE,
+  categoriaArticolo: () => categoriaArticolo,
+  inferCategoria: () => inferCategoria,
+  ordinaCategorie: () => ordinaCategorie
+});
+function inferCategoria(nome) {
+  const s = String(nome == null ? "" : nome);
+  for (const [name, rx] of CAT_RULES) {
+    if (rx.test(s)) return name;
+  }
+  return null;
+}
+function categoriaArticolo({ categoria, nome, stazione } = {}) {
+  const esplicita = categoria && String(categoria).trim();
+  return esplicita || inferCategoria(nome) || (stazione === "cucina" ? "Cucina" : "Bar");
+}
+function ordinaCategorie(arr) {
+  const rank = (c) => {
+    if (c === "Bar") return 900;
+    if (c === "Cucina") return 901;
+    const i = CATEGORIE_ORDINE.indexOf(c);
+    return i < 0 ? 500 : i;
+  };
+  return arr.slice().sort((a, b) => rank(a) - rank(b) || String(a).localeCompare(String(b)));
+}
+var CAT_RULES, CATEGORIE_ORDINE;
+var init_menucat = __esm({
+  "server/menucat.js"() {
+    CAT_RULES = [
+      ["Caffetteria", /caff[eè]|cappucc|macchiat|marocchin|\blatte\b|orzo|ginseng|cioccolat|espress|ristrett|decaffe|shakerat|tisana|camomill|t[eè]\s*cald/i],
+      ["Bibite", /acqua|coca|\bcola\b|fanta|sprite|aranciat|chinotto|gassosa|gazzosa|\btonic|spremut|succ|t[eè]\s*fredd|th[eè]|estath|energy|red\s*bull|redbull|gatorade|powerade|bibit|cedrat|lemonsoda|oransoda|schweppes/i],
+      ["Birre", /birr|\bbeer\b|\bipa\b|lager|weiss|weizen|\bpils|stout|moretti|heineken|peroni|ichnusa|\bcorona\b|ceres|nastro\s*azzurro/i],
+      ["Aperitivi & Cocktail", /spritz|aperol|campari|negroni|american|mojito|cocktail|\bgin\b|vodka|\brum\b|tequila|whisk|bacardi|\bmartini\b|aperitiv|bitter|crodino|analcolic|\blimoncell/i],
+      ["Vini", /\bvin[oi]\b|calice|prosecc|spumant|franciacort|moscato|chardonnay|merlot|bollicin|champagn/i],
+      ["Gelati", /gelat|ghiacciol|magnum|sorbett|granit|\bstecco\b|coppett/i],
+      ["Snack", /patatin|\bchips\b|tarall|nachos|pop\s*corn|popcorn|arachid|\bolive\b|salatin|cracker|pretzel|\bsnack\b/i],
+      ["Panini & Piatti", /panin|toast|piadin|hamburger|hot\s*dog|hotdog|pizz|focacc|tramezzin|\bwrap\b|insalat|\bpasta\b|sandwich|bruschett|tagliere|\bfritt|arancin/i],
+      ["Dolci", /cornetto|brioch|croissant|\bdolc|\btorta\b|crostat|muffin|biscott|tiramis|budino|crep|cr[eê]pe|waffle|nutella|pancake/i]
+    ];
+    CATEGORIE_ORDINE = CAT_RULES.map((r) => r[0]).concat(["Bar", "Cucina"]);
+  }
+});
+
 // build/entry.mjs
 import express from "express";
 
@@ -637,6 +698,15 @@ async function migrate() {
   await addIfMissing("discipline", "regolamento", "regolamento TEXT");
   await addIfMissing("menu_articoli", "descrizione", "descrizione TEXT");
   await addIfMissing("menu_articoli", "allergeni", "allergeni TEXT");
+  try {
+    const { inferCategoria: inferCategoria2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
+    const vuoti = await db.prepare("SELECT id,nome,stazione FROM menu_articoli WHERE categoria IS NULL OR trim(categoria)=''").all();
+    for (const m of vuoti) {
+      const cat = inferCategoria2(m.nome) || (m.stazione === "cucina" ? "Cucina" : "Bar");
+      await db.prepare("UPDATE menu_articoli SET categoria=? WHERE id=?").run(cat, m.id);
+    }
+  } catch (_) {
+  }
   await addIfMissing("soci", "host", "host INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("soci", "struttura_id", "struttura_id INTEGER");
   await addIfMissing("soci", "host_ko", "host_ko INTEGER NOT NULL DEFAULT 0");
@@ -644,6 +714,11 @@ async function migrate() {
   await addIfMissing("comande", "pagata_at", "pagata_at TEXT");
   await addIfMissing("comande", "canale", "canale TEXT NOT NULL DEFAULT 'staff'");
   await addIfMissing("comande", "punto", "punto TEXT");
+  await addIfMissing("eventi", "ora_inizio", "ora_inizio TEXT");
+  await addIfMissing("eventi", "tipologia", "tipologia TEXT");
+  await addIfMissing("eventi", "artista", "artista TEXT");
+  await addIfMissing("eventi", "prezzo", "prezzo REAL NOT NULL DEFAULT 0");
+  await addIfMissing("eventi", "serata_id", "serata_id INTEGER");
   try {
     await db.exec("UPDATE soci SET tipo_profilo='residente' WHERE tipo_profilo='visitatore'");
   } catch (_) {
@@ -3526,6 +3601,7 @@ function qrSvg(text, { cellSize = 5, margin = 2, ecc = "M" } = {}) {
 }
 
 // server/routes/admin.js
+init_menucat();
 var adminRouter = asyncify(Router2());
 adminRouter.post("/login", async (req, res) => {
   const { username, password } = req.body || {};
@@ -3716,8 +3792,21 @@ adminRouter.get("/eventi", async (req, res) => {
 });
 adminRouter.put("/eventi/:id", requireCap("eventi"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.attivo ? 1 : 0, req.params.id);
+  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,serata_id=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "eventi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/eventi", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM eventi").get()).n;
+  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,serata_id,tipo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.tipo ?? "serata", ord);
+  audit(req.adminUser.username, "crea", "eventi", info.lastInsertRowid, b.titolo);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.delete("/eventi/:id", requireCap("eventi"), async (req, res) => {
+  await db.prepare("DELETE FROM eventi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "elimina", "eventi", req.params.id);
   res.json({ ok: true });
 });
 adminRouter.get("/prenotazioni", async (req, res) => {
@@ -3999,22 +4088,27 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
   }
   if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
-  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, prezzo: toNum(r.prezzo) })) });
+  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
+  const catImport = (r, staz, ex) => clean(r.categoria) || ex && ex.categoria || inferCategoria(r.nome) || (staz === "cucina" ? "Cucina" : "Bar");
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => {
+    const staz = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
+    return { ...r, prezzo: toNum(r.prezzo), categoria: catImport(r, staz, null) };
+  }) });
   let creati = 0, aggiornati = 0;
   if (b.mode === "replace") {
     await db.exec("DELETE FROM menu_articoli;");
   }
-  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
   for (const r of righe) {
     const nome = clean(r.nome);
     if (!nome) continue;
     const hasPrezzo = r.prezzo != null && String(r.prezzo).trim() !== "";
     const prezzo = toNum(r.prezzo);
     const stazione = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
-    const categoria = clean(r.categoria), descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
+    const descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
     const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
+    const categoria = catImport(r, r.stazione ? stazione : ex ? ex.stazione : stazione, ex);
     if (ex) {
-      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, categoria ?? ex.categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
+      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
       aggiornati++;
     } else {
       const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
@@ -4024,6 +4118,17 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
   }
   audit(req.adminUser.username, "import", "menu_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
   res.json({ ok: true, creati, aggiornati });
+});
+adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,stazione FROM menu_articoli WHERE categoria IS NULL OR trim(categoria)=''").all();
+  let n = 0;
+  for (const m of rows) {
+    const cat = inferCategoria(m.nome) || (m.stazione === "cucina" ? "Cucina" : "Bar");
+    await db.prepare("UPDATE menu_articoli SET categoria=? WHERE id=?").run(cat, m.id);
+    n++;
+  }
+  audit(req.adminUser.username, "ricategorizza", "menu_articoli", null, `categorizzati ${n}`);
+  res.json({ ok: true, categorizzati: n });
 });
 adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
   await db.prepare("DELETE FROM menu_articoli WHERE id=?").run(req.params.id);
@@ -4940,7 +5045,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.34";
+var VERSION = "4.36";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5344,7 +5449,8 @@ window.Comanda = (function () {
     };
   }
 
-  return { create, group, esc, eur };
+  // Esposti perch\xE9 PDF stampabile e comanda usino LO STESSO raggruppamento/ordine (nessuno "scalino").
+  return { create, group, esc, eur, catOf, inferCat, sortCats };
 })();
 
 </script>
@@ -7600,26 +7706,105 @@ VIEWS.proposte = async () => {
 };
 
 // ---- Eventi ----
+const GIORNI_SETT = ['Luned\xEC', 'Marted\xEC', 'Mercoled\xEC', 'Gioved\xEC', 'Venerd\xEC', 'Sabato', 'Domenica'];
+function giornoIdx(g) { const i = GIORNI_SETT.findIndex(d => d.toLowerCase() === String(g || '').trim().toLowerCase()); return i < 0 ? 99 : i; }
+// Costo mostrato: quota della serata collegata (se c'\xE8) \u2192 altrimenti prezzo dell'evento \u2192 altrimenti libero.
+function costoEvento(e, serate) {
+  if (e.serata_id) { const s = (serate || []).find(x => x.id == e.serata_id); if (s && Number(s.quota) > 0) return Number(s.quota); }
+  return Number(e.prezzo || 0);
+}
+function costoLabel(v) { return v > 0 ? '\u20AC ' + Number(v).toFixed(2) : 'Ingresso libero'; }
+
 VIEWS.eventi = async () => {
-  const list = await api('/eventi');
-  $('#view').innerHTML = \`<div class="panel"><h3>Cartellone</h3><table><thead><tr><th>Giorno</th><th>Titolo</th><th>Ambiente</th><th>Attivo</th><th></th></tr></thead><tbody>
-    \${list.map(e => \`<tr><td>\${esc(e.giorno)}</td><td><b>\${esc(e.titolo)}</b><br><span class="muted">\${esc(e.sottotitolo||'')}</span></td>
-      <td>\${esc(e.ambiente||'')}</td><td>\${e.attivo?'<span class="tag ok">s\xEC</span>':'<span class="tag no">no</span>'}</td>
-      <td><button class="btn ghost sm" data-ev="\${e.id}">\u270E</button></td></tr>\`).join('')}
+  const [list, serate] = await Promise.all([api('/eventi'), api('/serate').catch(() => [])]);
+  const ordinati = list.slice().sort((a, b) => giornoIdx(a.giorno) - giornoIdx(b.giorno) || (a.ordine - b.ordine));
+  const serOpt = (sel) => \`<option value="">\u2014 nessuna (prezzo diretto) \u2014</option>\` + (serate || []).map(s => \`<option value="\${s.id}" \${sel == s.id ? 'selected' : ''}>\${esc(s.titolo)} \xB7 \u20AC \${Number(s.quota || 0).toFixed(2)}</option>\`).join('');
+  $('#view').innerHTML = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
+      <h3 style="margin:0">Cartellone settimanale</h3>
+      <div class="row"><button class="btn ghost sm" id="ev_new">+ Nuovo evento</button><button class="btn gold sm" id="ev_a3">\u{1F5A8}\uFE0F Locandina A3</button></div></div>
+    <p class="muted" style="font-size:.82rem;margin:8px 0">Modello ibrido: qui il ritmo della settimana (giorno, ora, tipologia, artista, prezzo). Se l'evento \xE8 a pagamento con prenotazione/incasso, collegalo a una <b>Serata</b>: la locandina mostrer\xE0 la quota della serata.</p>
+    <table><thead><tr><th>Giorno</th><th>Ora</th><th>Evento</th><th>Tipologia / Artista</th><th>Costo</th><th>Attivo</th><th></th></tr></thead><tbody>
+    \${ordinati.map(e => \`<tr><td><b>\${esc(e.giorno || '\u2014')}</b></td><td>\${esc(e.ora_inizio || '\u2014')}</td>
+      <td><b>\${esc(e.titolo)}</b>\${e.sottotitolo ? \`<br><span class="muted">\${esc(e.sottotitolo)}</span>\` : ''}</td>
+      <td>\${esc(e.tipologia || '\u2014')}\${e.artista ? \`<br><span class="muted">\u{1F3A4} \${esc(e.artista)}</span>\` : ''}</td>
+      <td>\${e.serata_id ? '\u{1F39F}\uFE0F ' : ''}\${esc(costoLabel(costoEvento(e, serate)))}</td>
+      <td>\${e.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag no">no</span>'}</td>
+      <td class="row"><button class="btn ghost sm" data-ev="\${e.id}">\u270E</button><button class="btn danger sm" data-evdel="\${e.id}">\u{1F5D1}</button></td></tr>\`).join('')}
   </tbody></table></div>\`;
-  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => {
-    const e = list.find(x => x.id == b.dataset.ev);
-    modal(\`<h3>Modifica evento</h3>
-      <label>Titolo</label><input id="e_t" value="\${esc(e.titolo)}">
-      <label>Sottotitolo</label><input id="e_s" value="\${esc(e.sottotitolo||'')}">
-      <label>Ambiente</label><input id="e_a" value="\${esc(e.ambiente||'')}">
-      <label>Descrizione</label><textarea id="e_d" rows="4">\${esc(e.descrizione||'')}</textarea>
-      <label class="check"><input type="checkbox" id="e_on" \${e.attivo?'checked':''}> Visibile nell'app</label>
+
+  const editor = (e) => {
+    const isNew = !e;
+    e = e || { titolo: '', sottotitolo: '', ambiente: '', descrizione: '', giorno: '', ora_inizio: '', tipologia: '', artista: '', prezzo: 0, serata_id: '', attivo: true };
+    modal(\`<h3>\${isNew ? 'Nuovo evento' : 'Modifica evento'}</h3>
+      <div class="row"><label style="flex:1">Giorno<select id="e_g"><option value="">\u2014</option>\${GIORNI_SETT.map(d => \`<option \${d === e.giorno ? 'selected' : ''}>\${d}</option>\`).join('')}</select></label>
+        <label style="width:110px">Ora inizio<input id="e_h" placeholder="21:00" value="\${esc(e.ora_inizio || '')}"></label></div>
+      <label>Titolo evento</label><input id="e_t" value="\${esc(e.titolo || '')}">
+      <label>Sottotitolo</label><input id="e_s" value="\${esc(e.sottotitolo || '')}">
+      <div class="row"><label style="flex:1">Tipologia serata<input id="e_ty" placeholder="es. Jazz & Cocktail" value="\${esc(e.tipologia || '')}"></label>
+        <label style="flex:1">Artista<input id="e_ar" placeholder="es. Trio X" value="\${esc(e.artista || '')}"></label></div>
+      <label>Ambiente / luogo</label><input id="e_a" value="\${esc(e.ambiente || '')}">
+      <label>Descrizione</label><textarea id="e_d" rows="3">\${esc(e.descrizione || '')}</textarea>
+      <div class="row"><label style="width:150px">Prezzo biglietto \u20AC<input id="e_pz" type="number" step="0.01" inputmode="decimal" value="\${Number(e.prezzo || 0)}"></label>
+        <label style="flex:1">Collega a Serata a pagamento<select id="e_ser">\${serOpt(e.serata_id)}</select></label></div>
+      <p class="muted" style="font-size:.78rem">0 = ingresso libero. Se colleghi una Serata, prenotazione e incasso si gestiscono nella sezione <b>Serate</b> e in locandina compare la quota della serata.</p>
+      <label class="check"><input type="checkbox" id="e_on" \${e.attivo ? 'checked' : ''}> Visibile nell'app</label>
       <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
     $('#mCancel').onclick = closeModal;
-    $('#mSave').onclick = async () => { await api('/eventi/'+e.id, { method:'PUT', body:JSON.stringify({ titolo:$('#e_t').value, sottotitolo:$('#e_s').value, ambiente:$('#e_a').value, descrizione:$('#e_d').value, attivo:$('#e_on').checked }) }); closeModal(); show('eventi'); };
-  });
+    $('#mSave').onclick = async () => {
+      const body = { giorno: $('#e_g').value, ora_inizio: $('#e_h').value, titolo: $('#e_t').value, sottotitolo: $('#e_s').value, tipologia: $('#e_ty').value, artista: $('#e_ar').value, ambiente: $('#e_a').value, descrizione: $('#e_d').value, prezzo: Number($('#e_pz').value || 0), serata_id: $('#e_ser').value || null, attivo: $('#e_on').checked };
+      if (!body.titolo) { alert('Titolo obbligatorio'); return; }
+      if (isNew) await api('/eventi', { method: 'POST', body: JSON.stringify(body) });
+      else await api('/eventi/' + e.id, { method: 'PUT', body: JSON.stringify(body) });
+      closeModal(); show('eventi');
+    };
+  };
+  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => editor(list.find(x => x.id == b.dataset.ev)));
+  document.querySelectorAll('[data-evdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'evento?')) return; await api('/eventi/' + b.dataset.evdel, { method: 'DELETE' }); show('eventi'); });
+  $('#ev_new').onclick = () => editor(null);
+  $('#ev_a3').onclick = () => locandinaA3(ordinati.filter(e => e.attivo), serate);
 };
+
+// Locandina A3 orizzontale, elegante, stampabile (o "Salva come PDF"): un evento per riga con
+// giorno \xB7 ora \xB7 evento \xB7 tipologia \xB7 artista \xB7 costo. Stesso stile del men\xF9 PDF (logo, oro Bussola).
+function locandinaA3(eventi, serate) {
+  const logo = \`<svg width="54" height="54" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#12324F" opacity="0.85"/></svg>\`;
+  const righe = (eventi || []).map(e => {
+    const costo = costoLabel(costoEvento(e, serate));
+    return \`<div class="ev">
+      <div class="gg"><div class="d">\${esc(e.giorno || '')}</div><div class="h">\${esc(e.ora_inizio || '')}</div></div>
+      <div class="mid"><div class="ti">\${esc(e.titolo || '')}</div>
+        \${e.tipologia ? \`<div class="ty">\${esc(e.tipologia)}</div>\` : ''}
+        \${e.artista ? \`<div class="ar">\u{1F3A4} \${esc(e.artista)}</div>\` : ''}</div>
+      <div class="co">\${esc(costo)}</div></div>\`;
+  }).join('');
+  const w = window.open('', '_blank');
+  if (!w) { alert('Consenti i popup per stampare la locandina.'); return; }
+  w.document.write(\`<html><head><title>Eventi della settimana</title><style>
+    @page{size:A3 landscape;margin:14mm}
+    body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
+    header{display:flex;align-items:center;gap:18px;border-bottom:3px solid #E0B44A;padding-bottom:16px;margin-bottom:22px}
+    header .t{flex:1}
+    header h1{margin:0;font-size:2.4rem;letter-spacing:2px}
+    header .sub{font-size:1rem;letter-spacing:4px;color:#8a6d1f;font-family:Arial,sans-serif}
+    header .wk{font-size:1.1rem;font-weight:bold;color:#12324F;font-family:Arial,sans-serif;text-align:right}
+    .ev{display:flex;align-items:center;gap:22px;padding:14px 8px;border-bottom:1px solid #e6ddc7;break-inside:avoid}
+    .gg{width:230px;flex-shrink:0}
+    .gg .d{font-size:1.5rem;font-weight:bold;text-transform:uppercase;letter-spacing:1px}
+    .gg .h{font-size:1.15rem;color:#8a6d1f;font-family:Arial,sans-serif}
+    .mid{flex:1;min-width:0}
+    .mid .ti{font-size:1.7rem;font-weight:bold;line-height:1.1}
+    .mid .ty{display:inline-block;margin-top:4px;background:#12324F;color:#fff;font-family:Arial,sans-serif;font-size:.9rem;padding:2px 12px;border-radius:999px}
+    .mid .ar{font-size:1.05rem;color:#333;font-family:Arial,sans-serif;margin-top:4px}
+    .co{width:210px;flex-shrink:0;text-align:right;font-size:1.5rem;font-weight:bold;color:#8a6d1f;font-family:Arial,sans-serif}
+    footer{margin-top:22px;border-top:1px solid #e6ddc7;padding-top:10px;font-size:.85rem;color:#777;font-family:Arial,sans-serif;text-align:center}
+  </style></head><body>
+    <header>\${logo}<div class="t"><h1>EVENTI DELLA SETTIMANA</h1><div class="sub">BUSSOLA RESIDENCE \xB7 by KOIN\xC8</div></div><div class="wk">Il programma delle serate</div></header>
+    \${righe || '<p>Nessun evento attivo in programma.</p>'}
+    <footer>Ti aspettiamo alla Bussola \xB7 Prenotazioni e info al chiosco</footer>
+    <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
+  </body></html>\`);
+  w.document.close();
+}
 
 // ---- Bussola ----
 const RIF_DAYS = [['lun', 'Lun'], ['mar', 'Mar'], ['mer', 'Mer'], ['gio', 'Gio'], ['ven', 'Ven'], ['sab', 'Sab'], ['dom', 'Dom']];
@@ -8289,7 +8474,8 @@ window.Comanda = (function () {
     };
   }
 
-  return { create, group, esc, eur };
+  // Esposti perch\xE9 PDF stampabile e comanda usino LO STESSO raggruppamento/ordine (nessuno "scalino").
+  return { create, group, esc, eur, catOf, inferCat, sortCats };
 })();
 
 </script>
@@ -8503,10 +8689,13 @@ let IMPORT_B64 = null;
 // Men\xF9 stampabile (PDF via "Salva come PDF" del browser) con logo, punto vendita, categorie, composizione, allergeni.
 function stampaMenuPDF(menu, punto) {
   const attivi = (menu || []).filter(m => m.attivo);
+  // Stesso raggruppamento e ordine della comanda: un solo vettore, niente "scalini" tra PDF e ordini.
+  const catOf = (window.Comanda && Comanda.catOf) ? Comanda.catOf : (m => m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'));
+  const sortCats = (window.Comanda && Comanda.sortCats) ? Comanda.sortCats : (a => a.slice());
   const gruppi = {};
-  attivi.forEach(m => { const k = m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); (gruppi[k] = gruppi[k] || []).push(m); });
+  attivi.forEach(m => { const k = catOf(m); (gruppi[k] = gruppi[k] || []).push(m); });
   const logo = \`<svg width="46" height="46" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#12324F" opacity="0.85"/></svg>\`;
-  const sezioni = Object.keys(gruppi).map(cat => \`<section><h2>\${esc(cat)}</h2>\${gruppi[cat].map(m => \`
+  const sezioni = sortCats(Object.keys(gruppi)).map(cat => \`<section><h2>\${esc(cat)}</h2>\${gruppi[cat].map(m => \`
     <div class="item"><div class="line"><span class="nm">\${esc(m.nome)}</span><span class="dots"></span><span class="pz">\${eur(m.prezzo)}</span></div>
     \${m.descrizione ? \`<div class="desc">\${esc(m.descrizione)}</div>\` : ''}
     \${m.allergeni ? \`<div class="alg">Allergeni: \${esc(m.allergeni)}</div>\` : ''}</div>\`).join('')}</section>\`).join('');
@@ -8555,8 +8744,10 @@ VIEWS.menu = async () => {
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
     <div class="panel"><h3>\u{1F5A8}\uFE0F Stampa men\xF9 (PDF)</h3>
-      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, il punto vendita, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi.</p>
-      <div class="row"><label>Punto <select id="menu_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label><input id="menu_punto_x" placeholder="oppure scrivi il punto\u2026" style="min-width:180px"><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div></div>
+      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, il punto vendita, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento.</p>
+      <div class="row"><label>Punto <select id="menu_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label><input id="menu_punto_x" placeholder="oppure scrivi il punto\u2026" style="min-width:180px"><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
+      <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
+      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button></div></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="7" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
@@ -8566,6 +8757,7 @@ VIEWS.menu = async () => {
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
   $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
   $('#menu_pdf').onclick = () => { const punto = ($('#menu_punto_x').value || '').trim() || $('#menu_punto').value; stampaMenuPDF(menu, punto); };
+  $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
 
   // template CSV
   $('#imp_tpl').onclick = () => {
@@ -8801,7 +8993,8 @@ window.Comanda = (function () {
     };
   }
 
-  return { create, group, esc, eur };
+  // Esposti perch\xE9 PDF stampabile e comanda usino LO STESSO raggruppamento/ordine (nessuno "scalino").
+  return { create, group, esc, eur, catOf, inferCat, sortCats };
 })();
 
 </script>
@@ -8937,7 +9130,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 14:16" : "online";
+var BUILD = true ? "2026-08-16 14:51" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
