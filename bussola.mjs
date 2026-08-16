@@ -3978,15 +3978,6 @@ adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) 
   const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
   if (!c) return res.status(404).json({ error: "Comanda non trovata" });
   if (c.stato === "chiusa") return res.json(await comandaConRighe(req.params.id));
-  const righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=?").all(c.id);
-  for (const r of righe) {
-    if (!r.magazzino_id) continue;
-    const art = await db.prepare("SELECT giacenza FROM magazzino_articoli WHERE id=?").get(r.magazzino_id);
-    if (!art) continue;
-    const nuova = Math.max(0, Number(art.giacenza) - Number(r.qta));
-    await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), r.magazzino_id);
-    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore) VALUES (?,?,?,?,?)").run(r.magazzino_id, "scarico", Number(r.qta), "Comanda #" + (c.numero || c.id), req.adminUser.username);
-  }
   const metodi = ["contanti", "carta", "satispay", "buoni", "altro"];
   const metodo = metodi.includes(req.body?.metodo) ? req.body.metodo : "contanti";
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -4782,7 +4773,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.21";
+var VERSION = "4.22";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -7926,15 +7917,12 @@ VIEWS.magazzino = async () => {
 let IMPORT_B64 = null;
 VIEWS.menu = async () => {
   const menu = await api('/menu');
-  const mag = await api('/magazzino').catch(() => ({ articoli: [] }));
-  const magOpts = (sel) => \`<option value="">\u2014 nessuno \u2014</option>\` + (mag.articoli || []).map(a => \`<option value="\${a.id}" \${String(sel) === String(a.id) ? 'selected' : ''}>\${esc(a.nome)} (\${esc(a.area)})</option>\`).join('');
   const rows = menu.map(m => \`<tr>
     <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:140px"></td>
     <td><input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px"></td>
     <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
     <td><input id="mn_al_\${m.id}" value="\${esc(m.allergeni || '')}" style="width:150px" placeholder="glutine, latte\u2026"></td>
-    <td><select id="mn_m_\${m.id}">\${magOpts(m.magazzino_id)}</select></td>
     <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
     <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
@@ -7944,11 +7932,11 @@ VIEWS.menu = async () => {
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
-      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th><th>Scarico magazzino <span class="muted" style="text-transform:none">(tecnico)</span></th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
+      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="7" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
-  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, magazzino_id: $('#mn_m_' + id).value || null, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
+  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
   $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
 
@@ -8092,7 +8080,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 09:58" : "online";
+var BUILD = true ? "2026-08-16 10:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
