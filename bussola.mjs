@@ -1545,6 +1545,8 @@ function asyncify(router) {
 init_db();
 var STAFF_BOOST_MS = 3 * 60 * 1e3;
 var STARVE_MS = 10 * 60 * 1e3;
+var ETA_MAX_MIN = 45;
+var RATE_WINDOW_MIN = 20;
 function tsEffettivo(c, nowMs) {
   const base = Date.parse(c.created_at || "") || 0;
   let eff = base - (c.canale === "staff" ? STAFF_BOOST_MS : 0);
@@ -1558,15 +1560,88 @@ function ordinaCoda(rows) {
   const now = Date.now();
   return rows.slice().sort((a, b) => tsEffettivo(a, now) - tsEffettivo(b, now) || a.id - b.id);
 }
-var ETA_BASE_MIN = 3;
-var ETA_PER_ITEM_MIN = 2;
-var ETA_MAX_MIN = 45;
-async function etaMin() {
-  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.stato IN ('aperta','in_preparazione') AND cr.stato='in_coda'").get();
-  return Math.min(ETA_MAX_MIN, ETA_BASE_MIN + Number(r.n || 0) * ETA_PER_ITEM_MIN);
+async function getConfig() {
+  const g = async (k, d) => await getSetting(k, d);
+  return {
+    aperto: await g("self_order_aperto", "1") !== "0",
+    // interruttore manuale (master)
+    eta_modo: await g("so_eta_modo", "statico"),
+    // statico | tempo
+    eta_base: Number(await g("so_eta_base", "3")) || 3,
+    // minuti base (modalità statica)
+    eta_per_item: Number(await g("so_eta_per_item", "2")) || 2,
+    // minuti per articolo (modalità statica)
+    press_modo: await g("so_press_modo", "statico"),
+    // statico | tempo
+    press_max_comande: Number(await g("so_press_max_comande", "6")) || 6,
+    // soglia (modalità statica): comande da smaltire
+    press_max_minuti: Number(await g("so_press_max_minuti", "10")) || 10,
+    // soglia (modalità tempo): attesa massima ammessa
+    press_auto: await g("so_press_auto", "0") === "1"
+    // se on: sotto pressione sospende in automatico; se off: solo avviso
+  };
 }
-async function selfOrderAperto() {
-  return await getSetting("self_order_aperto", "1") !== "0";
+async function setConfig(patch) {
+  const map = {
+    eta_modo: "so_eta_modo",
+    eta_base: "so_eta_base",
+    eta_per_item: "so_eta_per_item",
+    press_modo: "so_press_modo",
+    press_max_comande: "so_press_max_comande",
+    press_max_minuti: "so_press_max_minuti",
+    press_auto: "so_press_auto"
+  };
+  for (const [k, key] of Object.entries(map)) {
+    if (patch[k] === void 0) continue;
+    let v = patch[k];
+    if (k === "press_auto") v = v ? "1" : "0";
+    await setSetting(key, String(v));
+  }
+}
+async function pendingItems() {
+  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.stato IN ('aperta','in_preparazione') AND cr.stato='in_coda'").get();
+  return Number(r.n || 0);
+}
+async function activeOrders() {
+  const r = await db.prepare("SELECT COUNT(*) n FROM comande WHERE stato IN ('aperta','in_preparazione')").get();
+  return Number(r.n || 0);
+}
+async function serviceRatePerMin() {
+  const since = new Date(Date.now() - RATE_WINDOW_MIN * 60 * 1e3).toISOString();
+  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.pronta_at IS NOT NULL AND c.pronta_at >= ?").get(since);
+  const done = Number(r.n || 0);
+  return done > 0 ? done / RATE_WINDOW_MIN : 0;
+}
+async function etaMin(cfg) {
+  cfg = cfg || await getConfig();
+  const pending = await pendingItems();
+  if (cfg.eta_modo === "tempo") {
+    const rate = await serviceRatePerMin();
+    if (rate > 0) return Math.max(1, Math.min(ETA_MAX_MIN, Math.ceil(pending / rate)));
+  }
+  return Math.min(ETA_MAX_MIN, cfg.eta_base + pending * cfg.eta_per_item);
+}
+async function pressione(cfg) {
+  cfg = cfg || await getConfig();
+  if (cfg.press_modo === "tempo") return await etaMin(cfg) > cfg.press_max_minuti;
+  return await activeOrders() >= cfg.press_max_comande;
+}
+async function statoCompleto() {
+  const cfg = await getConfig();
+  const eta = await etaMin(cfg);
+  const press = await pressione(cfg);
+  const attive = await activeOrders();
+  const sospeso_pressione = cfg.aperto && cfg.press_auto && press;
+  const ordinabile = cfg.aperto && !sospeso_pressione;
+  return {
+    aperto: cfg.aperto,
+    ordinabile,
+    sospeso_pressione,
+    pressione: press,
+    eta_min: eta,
+    attive,
+    config: cfg
+  };
 }
 async function setSelfOrderAperto(v) {
   await setSetting("self_order_aperto", v ? "1" : "0");
@@ -1575,7 +1650,8 @@ async function setSelfOrderAperto(v) {
 // server/routes/public.js
 var publicRouter = asyncify(Router());
 publicRouter.get("/self-order/stato", async (req, res) => {
-  res.json({ aperto: await selfOrderAperto(), eta_min: await etaMin() });
+  const s = await statoCompleto();
+  res.json({ aperto: s.aperto, ordinabile: s.ordinabile, sospeso_pressione: s.sospeso_pressione, pressione: s.pressione, eta_min: s.eta_min });
 });
 publicRouter.get("/casate", async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
@@ -1587,7 +1663,11 @@ publicRouter.get("/menu", async (req, res) => {
 });
 publicRouter.post("/self-order", async (req, res) => {
   const b = req.body || {};
-  if (!await selfOrderAperto()) return res.status(423).json({ error: "Gli ordini self sono momentaneamente sospesi. Rivolgiti allo staff." });
+  const st = await statoCompleto();
+  if (!st.ordinabile) return res.status(423).json({
+    error: st.sospeso_pressione ? "La cucina \xE8 molto impegnata: ordini dal telefono sospesi per pochi minuti. Rivolgiti allo staff o riprova a breve." : "Gli ordini self sono momentaneamente sospesi. Rivolgiti allo staff.",
+    sospeso_pressione: st.sospeso_pressione
+  });
   const righeIn = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
   if (!righeIn.length) return res.status(400).json({ error: "Aggiungi almeno un prodotto" });
   const punto = String(b.punto || "").trim() || "Chiosco";
@@ -3782,11 +3862,13 @@ function qrSvg(text, { cellSize = 5, margin = 2, ecc = "M" } = {}) {
 // server/routes/admin.js
 init_menucat();
 init_push();
+async function segnaPronta(comandaId) {
+  await db.prepare("UPDATE comande SET pronta_at=? WHERE id=? AND pronta_at IS NULL").run((/* @__PURE__ */ new Date()).toISOString(), comandaId);
+}
 async function avvisaProntoSeSelf(comandaId, prev) {
   if (prev === "pronta") return;
   const c = await db.prepare("SELECT id,numero,canale,socio_id,punto FROM comande WHERE id=? AND stato=?").get(comandaId, "pronta");
   if (!c || c.canale !== "self" || !c.socio_id) return;
-  await db.prepare("UPDATE comande SET pronta_at=datetime('now') WHERE id=?").run(comandaId);
   const titolo = "Il tuo ordine \xE8 pronto \u{1F6CE}";
   const corpo = `Ordine #${c.numero}${c.punto ? " \xB7 " + c.punto : ""}: ritira e paga in cassa.`;
   try {
@@ -4396,7 +4478,10 @@ adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) =>
   if (!["aperta", "in_preparazione", "pronta", "consegnata", "chiusa", "annullata"].includes(stato)) return res.status(400).json({ error: "Stato non valido" });
   const prev = (await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id) || {}).stato;
   await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(stato, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-  if (stato === "pronta") await avvisaProntoSeSelf(req.params.id, prev);
+  if (stato === "pronta") {
+    await segnaPronta(req.params.id);
+    await avvisaProntoSeSelf(req.params.id, prev);
+  }
   audit(req.adminUser.username, "stato:" + stato, "comande", req.params.id);
   res.json(await comandaConRighe(req.params.id));
 });
@@ -4414,19 +4499,30 @@ adminRouter.put("/comande/:id/riga/:rid/stato", requireCap("comande"), async (re
     else nuovo = "aperta";
     if (nuovo !== cur.stato) {
       await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-      if (nuovo === "pronta") await avvisaProntoSeSelf(req.params.id, cur.stato);
+      if (nuovo === "pronta") {
+        await segnaPronta(req.params.id);
+        await avvisaProntoSeSelf(req.params.id, cur.stato);
+      }
     }
   }
   res.json(await comandaConRighe(req.params.id));
 });
 adminRouter.get("/self-order/stato", requireCap("comande"), async (req, res) => {
-  res.json({ aperto: await selfOrderAperto(), eta_min: await etaMin() });
+  res.json(await statoCompleto());
 });
 adminRouter.post("/self-order/pausa", requireCap("comande"), async (req, res) => {
   const aperto = !!(req.body && req.body.aperto);
   await setSelfOrderAperto(aperto);
   audit(req.adminUser.username, aperto ? "self_order_apri" : "self_order_chiudi", "impostazioni", "self_order_aperto");
   res.json({ ok: true, aperto });
+});
+adminRouter.get("/self-order/config", requireCap("comande"), async (req, res) => {
+  res.json(await getConfig());
+});
+adminRouter.post("/self-order/config", requireCap("comande"), async (req, res) => {
+  await setConfig(req.body || {});
+  audit(req.adminUser.username, "self_order_config", "impostazioni", "", JSON.stringify(req.body || {}));
+  res.json({ ok: true, config: await getConfig() });
 });
 adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) => {
   const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
@@ -5301,7 +5397,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.41";
+var VERSION = "4.42";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8941,14 +9037,45 @@ VIEWS.comande = async () => {
       </div></div>\`;
   };
 
+  const cfg = so.config || {};
   const etaTxt = so.eta_min > 0 ? \`attesa stimata ~\${so.eta_min} min\` : 'coda libera';
+  const bordo = !so.aperto ? 'var(--coral,#C0553F)' : (so.pressione ? 'var(--gold,#8a5a12)' : 'var(--ok,#2e6b45)');
+  const statoRiga = !so.aperto
+    ? '\u{1F534} <b>sospesi</b> (manuale) \u2014 i clienti col QR non possono ordinare'
+    : (so.sospeso_pressione ? '\u{1F7E0} <b>sospesi in automatico</b> \u2014 cucina sotto pressione' : (so.pressione ? '\u{1F7E0} <b>aperti</b> \xB7 \u26A0\uFE0F cucina sotto pressione' : '\u{1F7E2} <b>aperti</b> \xB7 cucina regolare'));
+  const pressSpieg = cfg.press_modo === 'tempo'
+    ? \`oltre \${cfg.press_max_minuti} min di attesa stimata\`
+    : \`oltre \${cfg.press_max_comande} comande da smaltire\`;
   $('#view').innerHTML = \`
-    <div class="panel" style="border-left:5px solid \${so.aperto ? 'var(--ok,#2E7D77)' : 'var(--coral,#C0553F)'}">
+    <div class="panel" style="border-left:5px solid \${bordo}">
       <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div><b style="color:var(--navy)">\u{1F4F1} Ordini dal telefono (self-order): \${so.aperto ? '\u{1F7E2} aperti' : '\u{1F534} sospesi'}</b>
-          <div class="muted" style="font-size:.82rem">\${so.aperto ? 'I clienti col QR possono ordinare \xB7 ' + etaTxt + '. Chiudi quando la cucina \xE8 sotto pressione.' : 'I clienti col QR non possono ordinare: prendi le comande al bancone.'}</div></div>
-        <button class="btn \${so.aperto ? 'danger' : 'gold'} sm" id="so_toggle">\${so.aperto ? '\u23F8\uFE0F Sospendi ordini self' : '\u25B6\uFE0F Riapri ordini self'}</button>
-      </div></div>
+        <div><b style="color:var(--navy)">\u{1F4F1} Ordini dal telefono (self-order): \${statoRiga}</b>
+          <div class="muted" style="font-size:.82rem">\${etaTxt} \xB7 \${so.attive || 0} comande in coda \xB7 pressione: \${pressSpieg}\${cfg.press_auto ? ' \u2192 sospensione automatica' : ' \u2192 solo avviso'}.</div></div>
+        <div class="row">
+          <button class="btn ghost sm" id="so_cfg">\u2699\uFE0F Regole</button>
+          <button class="btn \${so.aperto ? 'danger' : 'gold'} sm" id="so_toggle">\${so.aperto ? '\u23F8\uFE0F Sospendi' : '\u25B6\uFE0F Riapri'}</button>
+        </div>
+      </div>
+      <div id="so_cfgbox" class="hide" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <div class="row" style="gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div style="min-width:230px">
+            <b style="color:var(--navy);font-size:.9rem">\u{1F525} Pressione cucina</b>
+            <label style="display:block;font-size:.8rem;margin-top:6px">Come si misura
+              <select id="cf_pmodo"><option value="statico" \${cfg.press_modo !== 'tempo' ? 'selected' : ''}>a numero di comande</option><option value="tempo" \${cfg.press_modo === 'tempo' ? 'selected' : ''}>a tempo reale (attesa)</option></select></label>
+            <label style="display:block;font-size:.8rem;margin-top:6px">Soglia comande in coda <input id="cf_pcom" type="number" min="1" value="\${cfg.press_max_comande || 6}" style="width:70px"></label>
+            <label style="display:block;font-size:.8rem;margin-top:6px">Attesa massima (min) <input id="cf_pmin" type="number" min="1" value="\${cfg.press_max_minuti || 10}" style="width:70px"></label>
+            <label style="display:block;font-size:.8rem;margin-top:6px"><input type="checkbox" id="cf_pauto" \${cfg.press_auto ? 'checked' : ''}> Sospendi automaticamente sotto pressione (altrimenti solo avviso)</label>
+          </div>
+          <div style="min-width:230px">
+            <b style="color:var(--navy);font-size:.9rem">\u23F1\uFE0F Tempo stimato d'attesa</b>
+            <label style="display:block;font-size:.8rem;margin-top:6px">Come si calcola
+              <select id="cf_emodo"><option value="statico" \${cfg.eta_modo !== 'tempo' ? 'selected' : ''}>stima fissa (\${cfg.eta_base || 3} min + \${cfg.eta_per_item || 2}/articolo)</option><option value="tempo" \${cfg.eta_modo === 'tempo' ? 'selected' : ''}>misura tempo reale (ritmo di smaltimento)</option></select></label>
+            <p class="muted" style="font-size:.76rem;margin-top:6px">In "tempo reale" la stima usa il ritmo effettivo con cui segni le comande pronte; se i dati non bastano ricade sulla stima fissa.</p>
+          </div>
+        </div>
+        <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn gold sm" id="cf_save">Salva regole</button></div>
+      </div>
+    </div>
     <div class="panel"><h3>\u{1F9FE} Nuova comanda</h3>
       <div class="row" style="margin-bottom:8px">
         <label>Origine <select id="co_orig"><option value="chiosco">Chiosco</option><option value="bancone">Bancone</option><option value="tavolo">Tavolo</option></select></label>
@@ -8991,6 +9118,14 @@ VIEWS.comande = async () => {
   };
   $('#co_ref').onclick = () => show('comande');
   $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
+  $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
+  $('#cf_save').onclick = async () => {
+    await api('/self-order/config', { method: 'POST', body: JSON.stringify({
+      press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
+      press_auto: $('#cf_pauto').checked, eta_modo: $('#cf_emodo').value,
+    }) });
+    show('comande');
+  };
   document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
   document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => { await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) }); show('comande'); }));
   document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can, { method: 'DELETE' }); show('comande'); });
@@ -9407,12 +9542,15 @@ function setBanner(html, cls) {
   el.innerHTML = html;
 }
 async function load() {
-  // Prima controllo se il self-order \xE8 aperto e con che attesa stimata.
-  let stato = { aperto: true, eta_min: 0 };
+  // Prima controllo se si pu\xF2 ordinare adesso (chiuso manuale o cucina sotto pressione) e con che attesa.
+  let stato = { aperto: true, ordinabile: true, sospeso_pressione: false, eta_min: 0 };
   try { stato = await (await fetch('/api/self-order/stato')).json(); } catch (e) {}
-  if (!stato.aperto) {
+  if (!stato.ordinabile) {
     document.getElementById('menu').innerHTML = '';
-    setBanner('\u23F8\uFE0F <b>Ordini sospesi</b><br>In questo momento gli ordini dal telefono non sono attivi. Rivolgiti allo staff al bancone.', 'closed');
+    const msg = stato.sospeso_pressione
+      ? '\u{1F525} <b>Cucina molto impegnata</b><br>Gli ordini dal telefono sono sospesi per pochi minuti. Rivolgiti allo staff al bancone o riprova a breve.'
+      : '\u23F8\uFE0F <b>Ordini sospesi</b><br>In questo momento gli ordini dal telefono non sono attivi. Rivolgiti allo staff al bancone.';
+    setBanner(msg, 'closed');
     const s = document.getElementById('send'); if (s) s.style.display = 'none';
     const t = document.getElementById('tot'); if (t) t.textContent = '';
     return;
@@ -9558,7 +9696,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 16:44" : "online";
+var BUILD = true ? "2026-08-16 17:03" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
