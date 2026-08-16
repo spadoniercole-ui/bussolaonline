@@ -4847,7 +4847,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.25";
+var VERSION = "4.26";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5114,6 +5114,128 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   </div>
 </div>
 
+<script>
+/* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
+ * Step 0: chi lo usa carica il men\xF9 (da qualunque fonte) e lo passa qui.
+ * Step 1: il men\xF9 viene raggruppato in modo logico e omogeneo (per categoria) e reso IDENTICO
+ *         per lo staff (chiosco), per il cliente al tavolo (/ordina) e nell'app soci.
+ * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
+ *
+ * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
+ *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ */
+window.Comanda = (function () {
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
+  function catOf(m) { return m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+  function group(menu) { const g = {}; (menu || []).forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return g; }
+
+  // CSS iniettato una sola volta: stesso aspetto in ogni contesto (usa le variabili --navy/--gold se presenti).
+  function injectCss() {
+    if (document.getElementById('cmd-css')) return;
+    const st = document.createElement('style'); st.id = 'cmd-css';
+    st.textContent = \`
+      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
+      .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
+      .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
+      .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
+      .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
+      .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
+      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:12px 0 6px}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+      .cmd-info{flex:1;min-width:0}
+      .cmd-info b{display:block;color:var(--c-navy)}
+      .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-alg{font-size:.7rem;color:#8a6d1f;font-style:italic;display:block}
+      .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
+      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
+      .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
+      .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
+      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}\`;
+    document.head.appendChild(st);
+  }
+
+  function create(opts) {
+    injectCss();
+    const mount = opts.mount;
+    let menu = opts.menu || [];
+    const useSearch = opts.search !== false;
+    const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
+    const cart = {};
+    let selCat = '';
+
+    mount.classList.add('cmd');
+    mount.innerHTML = (useSearch
+      ? \`<div class="cmd-tools"><input class="cmd-q" placeholder="\u{1F50D} Cerca prodotto\u2026" autocomplete="off"><button class="cmd-qx" title="Pulisci">\u2715</button></div><div class="cmd-chips"></div>\`
+      : '') + \`<div class="cmd-list"></div>\`;
+
+    const $ = (sel) => mount.querySelector(sel);
+    const listEl = $('.cmd-list');
+    const qEl = useSearch ? $('.cmd-q') : null;
+    const chipsEl = useSearch ? $('.cmd-chips') : null;
+
+    function cats() { return [...new Set((menu || []).map(catOf))]; }
+    function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
+    function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
+    function fire() { onChange(cart, total(), count()); }
+
+    function itemHTML(m) {
+      const q = cart[m.id] || 0;
+      return \`<div class="cmd-item"><div class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}\${m.allergeni ? \`<span class="cmd-alg">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</div><span class="cmd-pz">\${eur(m.prezzo)}</span><div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+    }
+    function renderChips() {
+      if (!chipsEl) return;
+      chipsEl.innerHTML = ['', ...cats()].map(c => \`<button class="cmd-chip\${c === selCat ? ' on' : ''}" data-ccat="\${esc(c)}">\${c === '' ? 'Tutti' : esc(c)}</button>\`).join('');
+    }
+    function renderList() {
+      const q = norm(qEl && qEl.value).trim();
+      const g = {};
+      (menu || []).forEach(m => {
+        const k = catOf(m);
+        if (selCat && k !== selCat) return;
+        if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
+        (g[k] = g[k] || []).push(m);
+      });
+      const keys = Object.keys(g);
+      listEl.innerHTML = keys.length
+        ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
+        : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
+    }
+    function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
+    function chg(id, d) {
+      const m = menu.find(x => String(x.id) === String(id)); if (!m) return;
+      cart[id] = (cart[id] || 0) + d; if (cart[id] <= 0) delete cart[id];
+      setN(id); fire();
+    }
+
+    // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('click', (ev) => {
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat]'); if (!a) return;
+      if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
+      if (a.dataset.cdec != null) return chg(a.dataset.cdec, -1);
+      if (a.dataset.ccat != null) { selCat = a.dataset.ccat; renderChips(); renderList(); }
+    });
+    if (qEl) qEl.addEventListener('input', renderList);
+    if (useSearch) { const x = $('.cmd-qx'); if (x) x.addEventListener('click', () => { if (qEl) { qEl.value = ''; qEl.focus(); } renderList(); }); }
+
+    renderChips(); renderList(); fire();
+
+    return {
+      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id] })); },
+      total, count,
+      clear() { Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      focusSearch() { if (qEl) qEl.focus(); },
+    };
+  }
+
+  return { create, group, esc, eur };
+})();
+
+</script>
 <script>
 /* KOIN\xC8 Village \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
@@ -5697,33 +5819,25 @@ async function scegliCasata(id) {
   await enterApp();
 }
 
-// ---- Self-order dall'app (loggato): stesso canale del QR al tavolo ----
-let ORD_CART = {};
+// ---- Self-order dall'app (loggato): stesso componente e stessa vista del QR al tavolo ----
+let ORD_COM = null;
 async function openOrdina() {
   let menu; try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; }
-  ORD_CART = {};
-  const g = {};
-  menu.forEach(m => { const k = m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); (g[k] = g[k] || []).push(m); });
-  const body = Object.keys(g).map(cat => \`<div class="sect-title" style="margin-top:10px">\${esc(cat)}</div>\` + g[cat].map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\${esc(m.nome)}</b><div class="ct">\${eur(m.prezzo)}\${m.allergeni ? ' \xB7 ' + T('allergeni') + ': ' + esc(m.allergeni) : ''}</div></div><div style="display:flex;gap:6px;align-items:center"><button class="btn ghost sm" data-ordm="\${m.id}|-1">\u2212</button><b id="oq_\${m.id}">0</b><button class="btn gold sm" data-ordm="\${m.id}|1">+</button></div></div>\`).join('')).join('');
-  window.__ordmenu = menu;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F354} \${T('Ordina')}</div><h2>\${T('Ordina e ritira al punto')}</h2>
     <div class="field"><label>\${T('Punto')}</label><select id="ord_punto" style="width:100%;padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px"><option>Bussola Bar</option><option>Bussola Garden</option></select></div>
-    <div style="max-height:46vh;overflow:auto">\${body}</div>
+    <div id="ord_menu" style="max-height:44vh;overflow:auto"></div>
     <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
     <button class="btn gold block" style="margin-top:8px" id="ord_send" disabled>\${T('Invia ordine')}</button>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
-  ordRender();
+  ORD_COM = Comanda.create({
+    mount: $('#ord_menu'), menu, search: true,
+    onChange: (cart, tot, n) => { const t = $('#ord_tot'); if (t) t.textContent = n ? \`\${n} \${T('prodotti')} \xB7 \${eur(tot)}\` : ''; const s = $('#ord_send'); if (s) s.disabled = !n; }
+  });
   $('#ord_send').onclick = ordInvia;
 }
-function ordChg(id, d) { const m = (window.__ordmenu || []).find(x => String(x.id) === String(id)); if (!m) return; ORD_CART[id] = (ORD_CART[id] || 0) + d; if (ORD_CART[id] <= 0) delete ORD_CART[id]; const el = $('#oq_' + id); if (el) el.textContent = ORD_CART[id] || 0; ordRender(); }
-function ordRender() {
-  let tot = 0, n = 0; Object.keys(ORD_CART).forEach(id => { const m = (window.__ordmenu || []).find(x => String(x.id) === String(id)); tot += m.prezzo * ORD_CART[id]; n += ORD_CART[id]; });
-  const t = $('#ord_tot'); if (t) t.textContent = n ? \`\${n} \${T('prodotti')} \xB7 \${eur(tot)}\` : '';
-  const s = $('#ord_send'); if (s) s.disabled = !n;
-}
 async function ordInvia() {
-  const righe = Object.keys(ORD_CART).map(id => ({ menu_id: Number(id), qta: ORD_CART[id] }));
+  const righe = ORD_COM ? ORD_COM.getRighe() : [];
   if (!righe.length) return;
   $('#ord_send').disabled = true;
   let r; try { r = await api('/self-order', { method: 'POST', body: JSON.stringify({ punto: $('#ord_punto').value, tessera_code: state.tessera, righe }) }); }
@@ -6551,7 +6665,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-ordm],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -6587,7 +6701,6 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.opencasata != null) return openCasata(false);
   if (t.dataset.casata) return scegliCasata(t.dataset.casata);
   if (t.dataset.ordina != null) return openOrdina();
-  if (t.dataset.ordm) { const [id, d] = t.dataset.ordm.split('|'); return ordChg(id, Number(d)); }
   if (t.dataset.struttSave != null) return strutturaSalva(t.dataset.struttSave);
   if (t.dataset.campi != null) return openCampi();
   if (t.dataset.partite != null) return openPartiteAperte();
@@ -7879,6 +7992,128 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 </div>
 
 <script>
+/* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
+ * Step 0: chi lo usa carica il men\xF9 (da qualunque fonte) e lo passa qui.
+ * Step 1: il men\xF9 viene raggruppato in modo logico e omogeneo (per categoria) e reso IDENTICO
+ *         per lo staff (chiosco), per il cliente al tavolo (/ordina) e nell'app soci.
+ * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
+ *
+ * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
+ *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ */
+window.Comanda = (function () {
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
+  function catOf(m) { return m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+  function group(menu) { const g = {}; (menu || []).forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return g; }
+
+  // CSS iniettato una sola volta: stesso aspetto in ogni contesto (usa le variabili --navy/--gold se presenti).
+  function injectCss() {
+    if (document.getElementById('cmd-css')) return;
+    const st = document.createElement('style'); st.id = 'cmd-css';
+    st.textContent = \`
+      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
+      .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
+      .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
+      .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
+      .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
+      .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
+      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:12px 0 6px}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+      .cmd-info{flex:1;min-width:0}
+      .cmd-info b{display:block;color:var(--c-navy)}
+      .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-alg{font-size:.7rem;color:#8a6d1f;font-style:italic;display:block}
+      .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
+      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
+      .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
+      .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
+      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}\`;
+    document.head.appendChild(st);
+  }
+
+  function create(opts) {
+    injectCss();
+    const mount = opts.mount;
+    let menu = opts.menu || [];
+    const useSearch = opts.search !== false;
+    const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
+    const cart = {};
+    let selCat = '';
+
+    mount.classList.add('cmd');
+    mount.innerHTML = (useSearch
+      ? \`<div class="cmd-tools"><input class="cmd-q" placeholder="\u{1F50D} Cerca prodotto\u2026" autocomplete="off"><button class="cmd-qx" title="Pulisci">\u2715</button></div><div class="cmd-chips"></div>\`
+      : '') + \`<div class="cmd-list"></div>\`;
+
+    const $ = (sel) => mount.querySelector(sel);
+    const listEl = $('.cmd-list');
+    const qEl = useSearch ? $('.cmd-q') : null;
+    const chipsEl = useSearch ? $('.cmd-chips') : null;
+
+    function cats() { return [...new Set((menu || []).map(catOf))]; }
+    function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
+    function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
+    function fire() { onChange(cart, total(), count()); }
+
+    function itemHTML(m) {
+      const q = cart[m.id] || 0;
+      return \`<div class="cmd-item"><div class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}\${m.allergeni ? \`<span class="cmd-alg">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</div><span class="cmd-pz">\${eur(m.prezzo)}</span><div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+    }
+    function renderChips() {
+      if (!chipsEl) return;
+      chipsEl.innerHTML = ['', ...cats()].map(c => \`<button class="cmd-chip\${c === selCat ? ' on' : ''}" data-ccat="\${esc(c)}">\${c === '' ? 'Tutti' : esc(c)}</button>\`).join('');
+    }
+    function renderList() {
+      const q = norm(qEl && qEl.value).trim();
+      const g = {};
+      (menu || []).forEach(m => {
+        const k = catOf(m);
+        if (selCat && k !== selCat) return;
+        if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
+        (g[k] = g[k] || []).push(m);
+      });
+      const keys = Object.keys(g);
+      listEl.innerHTML = keys.length
+        ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
+        : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
+    }
+    function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
+    function chg(id, d) {
+      const m = menu.find(x => String(x.id) === String(id)); if (!m) return;
+      cart[id] = (cart[id] || 0) + d; if (cart[id] <= 0) delete cart[id];
+      setN(id); fire();
+    }
+
+    // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('click', (ev) => {
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat]'); if (!a) return;
+      if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
+      if (a.dataset.cdec != null) return chg(a.dataset.cdec, -1);
+      if (a.dataset.ccat != null) { selCat = a.dataset.ccat; renderChips(); renderList(); }
+    });
+    if (qEl) qEl.addEventListener('input', renderList);
+    if (useSearch) { const x = $('.cmd-qx'); if (x) x.addEventListener('click', () => { if (qEl) { qEl.value = ''; qEl.focus(); } renderList(); }); }
+
+    renderChips(); renderList(); fire();
+
+    return {
+      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id] })); },
+      total, count,
+      clear() { Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      focusSearch() { if (qEl) qEl.focus(); },
+    };
+  }
+
+  return { create, group, esc, eur };
+})();
+
+</script>
+<script>
 /* Bussola Chiosco \u2014 app operativa separata: comande + KDS + magazzino + men\xF9.
    Stesso server/API del back office, ma ambiente e login dedicati agli operatori. */
 'use strict';
@@ -7941,17 +8176,10 @@ function pickMetodo(onPick) {
   ov.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { const m = b.dataset.m; document.body.removeChild(ov); if (m) onPick(m); });
 }
 
-/* ---------- COMANDE (cassa): l'operatore vede SOLO il men\xF9 ---------- */
-let COM_CART = {};
+/* ---------- COMANDE (cassa): l'operatore vede il men\xF9 ESATTAMENTE come il cliente ---------- */
 VIEWS.comande = async () => {
   const menu = (await api('/menu')).filter(m => m.attivo);
   const comande = await api('/comande');
-  // categoria di un articolo (fallback: stazione)
-  const catOf = (m) => m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar');
-  const cats = [...new Set(menu.map(catOf))];
-  const norm = (s) => (s == null ? '' : String(s)).toLowerCase();
-  let comCat = ''; // '' = tutte le categorie
-  const mitem = (m) => \`<button class="mitem" data-add="\${m.id}"><b>\${esc(m.nome)}</b><span class="pz">\${eur(m.prezzo)}</span>\${m.allergeni ? \`<span class="muted" style="font-size:.7rem">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</button>\`;
 
   const card = (c) => {
     const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0"><span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)}\${r.note ? \` \xB7 \${esc(r.note)}\` : ''}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
@@ -7978,12 +8206,7 @@ VIEWS.comande = async () => {
       </div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
         <div style="flex:2;min-width:280px">
-          \${menu.length ? \`<div class="row" style="gap:6px;margin-bottom:8px">
-            <input id="co_q" placeholder="\u{1F50D} Cerca prodotto\u2026" autocomplete="off" style="flex:1;min-width:160px">
-            <button class="btn ghost sm" id="co_qx" title="Pulisci ricerca">\u2715</button>
-          </div>
-          <div id="co_cats" class="row" style="gap:6px;margin-bottom:10px"></div>
-          <div id="co_menu"></div>\` : '<p class="muted">Men\xF9 vuoto. Vai su \u201CMen\xF9\u201D per caricarlo.</p>'}
+          \${menu.length ? '<div id="co_menu"></div>' : '<p class="muted">Men\xF9 vuoto. Vai su \u201CMen\xF9\u201D per caricarlo.</p>'}
         </div>
         <div style="flex:1;min-width:230px" class="panel">
           <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
@@ -7994,58 +8217,27 @@ VIEWS.comande = async () => {
     <div class="panel"><h3>\u{1F4CB} Comande in corso <button class="btn ghost sm" id="co_ref" style="margin-left:6px">\u21BB</button></h3>
       <div style="display:flex;gap:12px;flex-wrap:wrap">\${comande.map(card).join('') || '<p class="muted">Nessuna comanda attiva.</p>'}</div></div>\`;
 
-  const renderCart = () => {
-    const items = Object.values(COM_CART);
-    $('#co_cart').innerHTML = items.length ? items.map(it => \`<div style="display:flex;gap:6px;align-items:center;padding:3px 0;font-size:.85rem"><span style="flex:1">\${esc(it.menu.nome)}</span><button class="btn ghost sm" data-dec="\${it.menu.id}">\u2212</button><b>\${it.qta}</b><button class="btn ghost sm" data-inc="\${it.menu.id}">+</button><span style="width:58px;text-align:right">\${eur(it.menu.prezzo * it.qta)}</span></div>\`).join('') : '<span class="muted" style="font-size:.85rem">Tocca un prodotto del men\xF9.</span>';
-    $('#co_tot').textContent = 'Totale ' + eur(items.reduce((s, it) => s + it.menu.prezzo * it.qta, 0));
-    document.querySelectorAll('[data-inc]').forEach(b => b.onclick = () => { COM_CART[b.dataset.inc].qta++; renderCart(); });
-    document.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => { const it = COM_CART[b.dataset.dec]; it.qta--; if (it.qta <= 0) delete COM_CART[b.dataset.dec]; renderCart(); });
+  // Riepilogo comanda (solo lettura): le quantit\xE0 si toccano nel men\xF9 (componente condiviso).
+  const renderCart = (cart) => {
+    const ids = Object.keys(cart || {});
+    $('#co_cart').innerHTML = ids.length
+      ? ids.map(id => { const m = menu.find(x => String(x.id) === id); return \`<div style="display:flex;gap:6px;padding:3px 0;font-size:.85rem"><span style="flex:1">\${cart[id]}\xD7 \${esc(m.nome)}</span><span style="width:60px;text-align:right">\${eur(m.prezzo * cart[id])}</span></div>\`; }).join('')
+      : '<span class="muted" style="font-size:.85rem">Tocca un prodotto del men\xF9.</span>';
   };
-
-  // Aggiunge un articolo al carrello e d\xE0 un breve feedback visivo sul bottone toccato.
-  const addToCart = (id, btn) => {
-    const m = menu.find(x => String(x.id) === String(id)); if (!m) return;
-    COM_CART[m.id] ? COM_CART[m.id].qta++ : (COM_CART[m.id] = { menu: m, qta: 1 });
-    renderCart();
-    if (btn) { btn.classList.add('added'); setTimeout(() => btn.classList.remove('added'), 220); }
-  };
-
-  // Griglia men\xF9 filtrata per ricerca (nome/categoria/allergeni) + chip di categoria.
-  const renderMenu = () => {
-    const q = norm($('#co_q') && $('#co_q').value).trim();
-    const gruppi = {};
-    menu.forEach(m => {
-      const k = catOf(m);
-      if (comCat && k !== comCat) return;
-      if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
-      (gruppi[k] = gruppi[k] || []).push(m);
-    });
-    const keys = Object.keys(gruppi);
-    const tot = keys.reduce((s, k) => s + gruppi[k].length, 0);
-    $('#co_menu').innerHTML = tot
-      ? keys.map(cat => \`<div class="menucat">\${esc(cat)}</div><div class="row">\${gruppi[cat].map(mitem).join('')}</div>\`).join('')
-      : \`<p class="muted" style="padding:10px 4px">Nessun prodotto trovato\${q ? \` per \u201C\${esc(q)}\u201D\` : ''}.</p>\`;
-    document.querySelectorAll('#co_menu [data-add]').forEach(b => b.onclick = () => addToCart(b.dataset.add, b));
-  };
-
-  const renderCats = () => {
-    const chips = ['', ...cats].map(c => \`<button class="chip\${c === comCat ? ' on' : ''}" data-cat="\${esc(c)}">\${c === '' ? 'Tutti' : esc(c)}</button>\`).join('');
-    if ($('#co_cats')) $('#co_cats').innerHTML = chips;
-    document.querySelectorAll('#co_cats [data-cat]').forEach(b => b.onclick = () => { comCat = b.dataset.cat; renderCats(); renderMenu(); });
-  };
-
-  COM_CART = {}; renderCart();
+  // Step 0/1: carico il men\xF9 e lo rendo col componente condiviso \u2192 lo staff lo legge come il cliente.
+  let CO = null;
   if (menu.length) {
-    renderCats(); renderMenu();
-    const q = $('#co_q');
-    if (q) { q.oninput = renderMenu; q.focus(); }
-    if ($('#co_qx')) $('#co_qx').onclick = () => { if ($('#co_q')) { $('#co_q').value = ''; $('#co_q').focus(); } renderMenu(); };
-  }
+    CO = Comanda.create({
+      mount: $('#co_menu'), menu, search: true,
+      onChange: (cart, tot) => { $('#co_tot').textContent = 'Totale ' + eur(tot); renderCart(cart); }
+    });
+    CO.focusSearch();
+  } else { renderCart({}); }
   $('#co_send').onclick = async () => {
-    const righe = Object.values(COM_CART).map(it => ({ menu_id: it.menu.id, qta: it.qta }));
+    const righe = CO ? CO.getRighe() : [];
     if (!righe.length) { alert('Aggiungi almeno un prodotto.'); return; }
     await api('/comande', { method: 'POST', body: JSON.stringify({ origine: $('#co_orig').value, riferimento: $('#co_rif').value, righe }) });
-    COM_CART = {}; show('comande');
+    show('comande');
   };
   $('#co_ref').onclick = () => show('comande');
   document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
@@ -8293,45 +8485,162 @@ var ordina_default = `<!doctype html>
   <div class="cartbar"><div class="tot" id="tot">Tocca i prodotti per ordinare</div><button class="btn gold" id="send" disabled>Invia ordine</button></div>
   <div class="ok" id="ok"><div class="okbox"><div style="font-size:2.4rem">\u2705</div><h2>Ordine inviato!</h2><div class="muted">Numero comanda</div><div class="big" id="okn">\u2014</div><p class="muted" id="okinfo"></p><button class="btn gold" id="reload">Nuovo ordine</button></div></div>
 <script>
+/* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
+ * Step 0: chi lo usa carica il men\xF9 (da qualunque fonte) e lo passa qui.
+ * Step 1: il men\xF9 viene raggruppato in modo logico e omogeneo (per categoria) e reso IDENTICO
+ *         per lo staff (chiosco), per il cliente al tavolo (/ordina) e nell'app soci.
+ * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
+ *
+ * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
+ *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ */
+window.Comanda = (function () {
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
+  function catOf(m) { return m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+  function group(menu) { const g = {}; (menu || []).forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return g; }
+
+  // CSS iniettato una sola volta: stesso aspetto in ogni contesto (usa le variabili --navy/--gold se presenti).
+  function injectCss() {
+    if (document.getElementById('cmd-css')) return;
+    const st = document.createElement('style'); st.id = 'cmd-css';
+    st.textContent = \`
+      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
+      .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
+      .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
+      .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
+      .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
+      .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
+      .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:12px 0 6px}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+      .cmd-info{flex:1;min-width:0}
+      .cmd-info b{display:block;color:var(--c-navy)}
+      .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-alg{font-size:.7rem;color:#8a6d1f;font-style:italic;display:block}
+      .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
+      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
+      .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
+      .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
+      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}\`;
+    document.head.appendChild(st);
+  }
+
+  function create(opts) {
+    injectCss();
+    const mount = opts.mount;
+    let menu = opts.menu || [];
+    const useSearch = opts.search !== false;
+    const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
+    const cart = {};
+    let selCat = '';
+
+    mount.classList.add('cmd');
+    mount.innerHTML = (useSearch
+      ? \`<div class="cmd-tools"><input class="cmd-q" placeholder="\u{1F50D} Cerca prodotto\u2026" autocomplete="off"><button class="cmd-qx" title="Pulisci">\u2715</button></div><div class="cmd-chips"></div>\`
+      : '') + \`<div class="cmd-list"></div>\`;
+
+    const $ = (sel) => mount.querySelector(sel);
+    const listEl = $('.cmd-list');
+    const qEl = useSearch ? $('.cmd-q') : null;
+    const chipsEl = useSearch ? $('.cmd-chips') : null;
+
+    function cats() { return [...new Set((menu || []).map(catOf))]; }
+    function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
+    function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
+    function fire() { onChange(cart, total(), count()); }
+
+    function itemHTML(m) {
+      const q = cart[m.id] || 0;
+      return \`<div class="cmd-item"><div class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}\${m.allergeni ? \`<span class="cmd-alg">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</div><span class="cmd-pz">\${eur(m.prezzo)}</span><div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+    }
+    function renderChips() {
+      if (!chipsEl) return;
+      chipsEl.innerHTML = ['', ...cats()].map(c => \`<button class="cmd-chip\${c === selCat ? ' on' : ''}" data-ccat="\${esc(c)}">\${c === '' ? 'Tutti' : esc(c)}</button>\`).join('');
+    }
+    function renderList() {
+      const q = norm(qEl && qEl.value).trim();
+      const g = {};
+      (menu || []).forEach(m => {
+        const k = catOf(m);
+        if (selCat && k !== selCat) return;
+        if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
+        (g[k] = g[k] || []).push(m);
+      });
+      const keys = Object.keys(g);
+      listEl.innerHTML = keys.length
+        ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
+        : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
+    }
+    function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
+    function chg(id, d) {
+      const m = menu.find(x => String(x.id) === String(id)); if (!m) return;
+      cart[id] = (cart[id] || 0) + d; if (cart[id] <= 0) delete cart[id];
+      setN(id); fire();
+    }
+
+    // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('click', (ev) => {
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat]'); if (!a) return;
+      if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
+      if (a.dataset.cdec != null) return chg(a.dataset.cdec, -1);
+      if (a.dataset.ccat != null) { selCat = a.dataset.ccat; renderChips(); renderList(); }
+    });
+    if (qEl) qEl.addEventListener('input', renderList);
+    if (useSearch) { const x = $('.cmd-qx'); if (x) x.addEventListener('click', () => { if (qEl) { qEl.value = ''; qEl.focus(); } renderList(); }); }
+
+    renderChips(); renderList(); fire();
+
+    return {
+      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id] })); },
+      total, count,
+      clear() { Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      focusSearch() { if (qEl) qEl.focus(); },
+    };
+  }
+
+  return { create, group, esc, eur };
+})();
+
+</script>
+<script>
 const qs = new URLSearchParams(location.search);
 const PUNTO = qs.get('p') || 'Chiosco';
 const TAVOLO = qs.get('t') || '';
 document.getElementById('punto').textContent = '\u{1F354} ' + PUNTO + (TAVOLO ? ' \xB7 Tavolo ' + TAVOLO : '');
-const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const eur = n => '\u20AC ' + (Number(n)||0).toFixed(2);
-const cart = {};
-let MENU = [];
-async function load(){
-  try{ MENU = await (await fetch('/api/menu')).json(); }catch(e){ document.getElementById('menu').innerHTML='<p class="muted">Men\xF9 non disponibile.</p>'; return; }
-  const g = {};
-  MENU.forEach(m=>{ const k=m.categoria||(m.stazione==='cucina'?'Cucina':'Bar'); (g[k]=g[k]||[]).push(m); });
-  document.getElementById('menu').innerHTML = Object.keys(g).map(cat=>\`<div class="cat">\${esc(cat)}</div>\`+g[cat].map(m=>\`
-    <div class="item"><div class="info"><b>\${esc(m.nome)}</b>\${m.descrizione?\`<span class="desc">\${esc(m.descrizione)}</span>\`:''}\${m.allergeni?\`<span class="alg">Allergeni: \${esc(m.allergeni)}</span>\`:''}<span class="pz">\${eur(m.prezzo)}</span></div>
-    <button class="qbtn" data-d="\${m.id}">\u2212</button><span class="qty" id="q\${m.id}">0</span><button class="qbtn" data-a="\${m.id}">+</button></div>\`).join('')).join('');
-  document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>chg(b.dataset.a,1));
-  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>chg(b.dataset.d,-1));
-}
-function chg(id,d){ const m=MENU.find(x=>String(x.id)===String(id)); if(!m)return; cart[id]=(cart[id]||0)+d; if(cart[id]<=0)delete cart[id]; document.getElementById('q'+id).textContent=cart[id]||0; render(); }
-function render(){
-  const items=Object.keys(cart); let tot=0,n=0;
-  items.forEach(id=>{ const m=MENU.find(x=>String(x.id)===String(id)); tot+=m.prezzo*cart[id]; n+=cart[id]; });
-  document.getElementById('tot').textContent = n?\`\${n} prodotti \xB7 \${eur(tot)}\`:'Tocca i prodotti per ordinare';
-  document.getElementById('send').disabled = !n;
+const eur = n => '\u20AC ' + (Number(n) || 0).toFixed(2);
+let COM = null;
+
+async function load() {
+  let menu;
+  try { menu = await (await fetch('/api/menu')).json(); }
+  catch (e) { document.getElementById('menu').innerHTML = '<p class="muted">Men\xF9 non disponibile.</p>'; return; }
+  // Step 0/1: carico il men\xF9 e lo rendo con il componente condiviso (stessa vista dello staff).
+  COM = Comanda.create({
+    mount: document.getElementById('menu'), menu, search: true,
+    onChange: (cart, tot, n) => {
+      document.getElementById('tot').textContent = n ? \`\${n} prodotti \xB7 \${eur(tot)}\` : 'Tocca i prodotti per ordinare';
+      document.getElementById('send').disabled = !n;
+    }
+  });
 }
 document.getElementById('send').onclick = async () => {
-  const righe = Object.keys(cart).map(id=>({menu_id:Number(id),qta:cart[id]}));
-  if(!righe.length) return;
+  const righe = COM ? COM.getRighe() : [];
+  if (!righe.length) return;
   document.getElementById('send').disabled = true;
-  let r; try{ r = await (await fetch('/api/self-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({punto:PUNTO,tavolo:TAVOLO,righe})})).json(); }
-  catch(e){ alert('Invio non riuscito, riprova.'); document.getElementById('send').disabled=false; return; }
-  if(!r.ok){ alert(r.error||'Errore'); document.getElementById('send').disabled=false; return; }
-  document.getElementById('okn').textContent = '#'+r.numero;
-  document.getElementById('okinfo').textContent = (r.punto||PUNTO)+(r.tavolo?' \xB7 Tavolo '+r.tavolo:'')+' \xB7 '+eur(r.totale)+' \u2014 si paga in cassa.';
+  let r;
+  try { r = await (await fetch('/api/self-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ punto: PUNTO, tavolo: TAVOLO, righe }) })).json(); }
+  catch (e) { alert('Invio non riuscito, riprova.'); document.getElementById('send').disabled = false; return; }
+  if (!r.ok) { alert(r.error || 'Errore'); document.getElementById('send').disabled = false; return; }
+  document.getElementById('okn').textContent = '#' + r.numero;
+  document.getElementById('okinfo').textContent = (r.punto || PUNTO) + (r.tavolo ? ' \xB7 Tavolo ' + r.tavolo : '') + ' \xB7 ' + eur(r.totale) + ' \u2014 si paga in cassa.';
   document.getElementById('ok').classList.add('show');
 };
+document.getElementById('reload').onclick = () => location.reload();
 load();
-
-document.getElementById("reload").onclick = () => location.reload();
 
 </script>
 </body>
@@ -8422,7 +8731,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 10:43" : "online";
+var BUILD = true ? "2026-08-16 10:53" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
