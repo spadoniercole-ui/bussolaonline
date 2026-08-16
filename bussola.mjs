@@ -3565,7 +3565,7 @@ adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
     b.soggiorno_al ?? null,
     req.params.id
   );
-  if (tipo !== "residente") await db.prepare("UPDATE soci SET host=0, host_ko=0 WHERE id=?").run(req.params.id);
+  if (!["residente", "socio_residente"].includes(tipo)) await db.prepare("UPDATE soci SET host=0, host_ko=0 WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "modifica", "soci", req.params.id);
   res.json({ ok: true });
 });
@@ -4046,7 +4046,7 @@ adminRouter.put("/soci/:id/host", requireCap("utenti"), async (req, res) => {
   const s = await db.prepare("SELECT id,tipo_profilo FROM soci WHERE id=?").get(req.params.id);
   if (!s) return res.status(404).json({ error: "Utente non trovato" });
   const on = req.body?.host ? 1 : 0;
-  if (on && s.tipo_profilo !== "residente") return res.status(409).json({ error: "Il profilo host \xE8 riservato ai Residenti" });
+  if (on && !["residente", "socio_residente"].includes(s.tipo_profilo)) return res.status(409).json({ error: "Il profilo host \xE8 riservato ai Residenti (e Soci-residenti)" });
   await db.prepare("UPDATE soci SET host=? WHERE id=?").run(on, req.params.id);
   audit(req.adminUser.username, on ? "abilita_host" : "disabilita_host", "soci", req.params.id);
   res.json({ ok: true });
@@ -4491,7 +4491,7 @@ authUserRouter.post("/verify-otp", async (req, res) => {
 });
 authUserRouter.post("/registrazione", async (req, res) => {
   const b = req.body || {};
-  const tipiOk = ["socio", "residente", "ospite_temporaneo"];
+  const tipiOk = ["socio", "residente", "socio_residente", "ospite_temporaneo"];
   const tipo = tipiOk.includes(b.tipo_profilo) ? b.tipo_profilo : "socio";
   const nome = String(b.nome || "").trim(), cognome = String(b.cognome || "").trim();
   if (!nome || !cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
@@ -4527,6 +4527,35 @@ authUserRouter.post("/registrazione", async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: "Registrazione non riuscita" });
   }
+});
+var CAP_SOCI_CASATA = 12;
+async function contaSoci(casataId) {
+  return (await db.prepare("SELECT COUNT(*) n FROM soci WHERE casata_id=? AND tipo_profilo!='ospite_temporaneo' AND attivo=1").get(casataId)).n;
+}
+authUserRouter.get("/casate", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY nome").all();
+  const casate = [];
+  for (const c of rows) {
+    const n = await contaSoci(c.id);
+    casate.push({ id: c.id, nome: c.nome, colore: c.colore, motto: c.motto, punti: c.punti, soci: n, capienza: CAP_SOCI_CASATA, pieno: n >= CAP_SOCI_CASATA, mia: !!(me && me.casata_id === c.id) });
+  }
+  res.json({ casate, mia: me ? me.casata_id : null, capienza: CAP_SOCI_CASATA });
+});
+authUserRouter.post("/scegli-casata", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+  if (!["socio", "socio_residente"].includes(me.tipo_profilo)) return res.status(403).json({ error: "Solo i soci scelgono una casata" });
+  const cid = Number(req.body?.casata_id);
+  const c = await db.prepare("SELECT id,nome FROM casate WHERE id=?").get(cid);
+  if (!c) return res.status(404).json({ error: "Casata non trovata" });
+  if (me.casata_id !== cid) {
+    const n = await contaSoci(cid);
+    if (n >= CAP_SOCI_CASATA) return res.status(409).json({ error: `Casata ${c.nome} al completo (${CAP_SOCI_CASATA} soci): scegline un'altra.` });
+  }
+  await db.prepare("UPDATE soci SET casata_id=? WHERE id=?").run(cid, me.id);
+  audit(me.tessera_code, "scegli_casata", "soci", me.id, c.nome);
+  res.json({ ok: true, casata: c.nome });
 });
 authUserRouter.post("/notifiche/consenso", requireUser, async (req, res) => {
   const on = req.body?.attivo ? 1 : 0;
@@ -4698,7 +4727,7 @@ function notifica(socioId, titolo, corpo) {
 authUserRouter.get("/hosts-cerca", requireUser, async (req, res) => {
   const q = "%" + String(req.query.q || "").trim().toLowerCase() + "%";
   if (String(req.query.q || "").trim().length < 2) return res.json({ hosts: [] });
-  const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE host=1 AND tipo_profilo='residente' AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
+  const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE host=1 AND tipo_profilo IN ('residente','socio_residente') AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
   res.json({ hosts: rows });
 });
 authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
@@ -4706,7 +4735,7 @@ authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
   if (!me) return res.status(404).json({ error: "Profilo non trovato" });
   if (me.tipo_profilo !== "ospite_temporaneo") return res.status(403).json({ error: "Solo un visitatore pu\xF2 chiedere l'aggancio a una casa" });
   const hostId = Number(req.body?.host_id);
-  const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND host=1 AND tipo_profilo='residente' AND attivo=1").get(hostId);
+  const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND host=1 AND tipo_profilo IN ('residente','socio_residente') AND attivo=1").get(hostId);
   if (!host) return res.status(404).json({ error: "Host non trovato" });
   const ex = await db.prepare("SELECT id FROM richieste_aggancio WHERE ospite_id=? AND stato='in_attesa'").get(me.id);
   if (ex) return res.status(409).json({ error: "Hai gi\xE0 una richiesta in attesa" });
@@ -4773,7 +4802,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.22";
+var VERSION = "4.24";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5165,7 +5194,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'
 
 // ---- Navigazione ----------------------------------------------------------
 // Residente (ex "utente non socio"): niente tornei n\xE9 Coppa, solo eventi/guida/prenotazioni.
-function isVisitatore() { const t = String(state.socio?.tipo_profilo || ''); return t === 'residente' || t === 'visitatore'; }
+// "Non competitore": chi NON \xE8 socio (n\xE9 socio-residente) non vede tornei/Coppa/casata.
+function isVisitatore() { const t = String(state.socio?.tipo_profilo || ''); return !['socio', 'socio_residente'].includes(t); }
+function isSocio() { const t = String(state.socio?.tipo_profilo || ''); return t === 'socio' || t === 'socio_residente'; }
 function applyProfileGating() {
   const v = isVisitatore();
   document.body.classList.toggle('no-tornei', v);
@@ -5558,6 +5589,68 @@ async function campoUnisci(pid) {
   try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } okThen(j.completa ? T('Partita al completo, ci vediamo in campo! \u{1F3BE}') : \`\${T('Iscritto!')} \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen(T('Errore di rete'), false); return; }
   if (state._campoSel) openCampi(state._campoSel); else openPartiteAperte();
 }
+// ---- Tessera salvabile come immagine (logo + residence + nome + numero) ----
+function tesseraCardSvg(s) {
+  const nome = esc((s.nome || '') + ' ' + (s.cognome || '')).trim();
+  const ruolo = esc(s.ruolo || 'Socio');
+  const casata = s.casata ? esc(s.casata) : '';
+  const code = esc(s.tessera_code || '');
+  const qr = qrSvg(s.tessera_code || '').replace('<svg ', '<svg x="486" y="250" width="150" height="150" ');
+  return \`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="680" height="420">
+    <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#12324F"/><stop offset="1" stop-color="#1d4a6e"/></linearGradient></defs>
+    <rect width="680" height="420" rx="28" fill="url(#bg)"/>
+    <g transform="translate(44,44)"><circle cx="24" cy="24" r="23" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#fff" opacity="0.85"/></g>
+    <text x="104" y="60" fill="#fff" font-family="Georgia,serif" font-size="26" font-weight="700">BUSSOLA</text>
+    <text x="104" y="82" fill="#E0B44A" font-family="Arial,sans-serif" font-size="13" letter-spacing="2">RESIDENCE \xB7 by KOIN\xC8</text>
+    <text x="44" y="210" fill="#fff" font-family="Georgia,serif" font-size="40" font-weight="700">\${nome}</text>
+    <text x="44" y="246" fill="#cfe0ee" font-family="Arial,sans-serif" font-size="17">\${ruolo}\${casata ? ' \xB7 Casata ' + casata : ''}</text>
+    <text x="44" y="330" fill="#E0B44A" font-family="Arial,sans-serif" font-size="13" letter-spacing="1">TESSERA</text>
+    <text x="44" y="360" fill="#fff" font-family="monospace" font-size="30" font-weight="700">\${code}</text>
+    <rect x="470" y="234" width="182" height="182" rx="16" fill="#fff"/>
+    \${qr}
+  </svg>\`;
+}
+function downloadTessera() {
+  const svg = tesseraCardSvg(state.socio || {});
+  const durl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  const img = new Image();
+  img.onload = () => {
+    const sc = 2, cv = document.createElement('canvas'); cv.width = 680 * sc; cv.height = 420 * sc;
+    const ctx = cv.getContext('2d'); ctx.scale(sc, sc); ctx.drawImage(img, 0, 0, 680, 420);
+    cv.toBlob((png) => { if (!png) { okThen('Errore immagine', false); return; } const a = document.createElement('a'); a.href = URL.createObjectURL(png); a.download = 'tessera_' + (state.socio?.tessera_code || 'bussola') + '.png'; a.click(); okThen(T('Tessera salvata nelle immagini')); }, 'image/png');
+  };
+  img.onerror = () => okThen('Errore immagine', false);
+  img.src = durl;
+}
+function isIOS() { return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function installHintHTML() {
+  const passo = isIOS()
+    ? T('Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.')
+    : T('Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.');
+  return \`<div class="card"><b style="font-size:.9rem">\u{1F4F2} \${T('Tieni l\u2019app a portata di mano')}</b><p class="tiny muted" style="margin-top:4px">\${passo}</p><p class="tiny muted">\${T('Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.')}</p></div>\`;
+}
+function openInstallHint() {
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F4F2} \${T('Installa l\u2019app')}</div><h2>\${T('Aggiungi alla schermata Home')}</h2>\${installHintHTML()}<button class="btn gold block" style="margin-top:10px" data-close>\${T('Ho capito')}</button>\`);
+  showOv();
+}
+// ---- Scelta / cambio casata (socio) con tetto di 12 ----
+async function openCasata(fromReg) {
+  let d; try { d = await api('/auth/casate'); } catch { okThen('Errore', false); return; }
+  const cards = (d.casate || []).map(c => \`<div class="matchrow"><div class="shield" style="width:34px;height:34px;min-width:34px;border-radius:9px;background:\${c.colore};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800">\${esc((c.nome || 'A')[0])}</div><div style="flex:1;margin-left:10px"><b style="font-size:.9rem">\${esc(c.nome)}</b><div class="ct">\${esc(c.motto || '')} \xB7 \${c.soci}/\${c.capienza} \${T('soci')}</div></div>\${c.mia ? \`<span class="tag" style="background:var(--teal);color:#fff;padding:3px 9px;border-radius:10px;font-size:.62rem">\${T('la tua')}</span>\` : c.pieno ? \`<span class="tiny" style="color:var(--coral)">\${T('al completo')}</span>\` : \`<button class="btn gold sm" data-casata="\${c.id}">\${T('Scegli')}</button>\`}</div>\`).join('');
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F6E1}\uFE0F \${T('La tua casata')}</div><h2>\${T('Scegli la casata')}</h2>
+    <p class="sub">\${T('Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.')}</p>
+    <div class="card" style="padding:4px 14px">\${cards || '<p class="tiny muted" style="padding:8px 0">\u2014</p>'}</div>
+    <button class="btn ghost block" style="margin-top:10px" data-close>\${fromReg ? T('Pi\xF9 tardi') : T('Chiudi')}</button>\`);
+  showOv();
+}
+async function scegliCasata(id) {
+  let r; try { r = await api('/auth/scegli-casata', { method: 'POST', body: JSON.stringify({ casata_id: Number(id) }) }); }
+  catch (e) { okThen(e.message || 'Errore', false); return; }
+  if (state.socio) state.socio.casata = r.casata;
+  okThen(\`\${T('Benvenuto nella casata')} \${r.casata}!\`);
+  await enterApp();
+}
+
 async function openTessera() {
   const s = state.socio;
   const pushOn = !!s.notifiche_push;
@@ -5576,6 +5669,11 @@ async function openTessera() {
     <div class="tessera"><div class="lab">BUSSOLA \xB7 by KOIN\xC8</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||T('Socio'))} \xB7 \${T('Casata')} \${esc(s.casata||'')}</div>
       <div class="qr">\${qrSvg(s.tessera_code)}</div>
       <div class="foot"><span class="tiny" style="opacity:.85">\${T('Tessera')} \${esc(s.tessera_code)}</span><span class="tiny" style="opacity:.85">\${T('Valida fino al')} \${esc((s.valida_fino||'').split('-').reverse().join('/'))}</span></div></div>
+    <div class="row" style="gap:8px; margin-top:10px">
+      <button class="btn gold sm" style="flex:1" data-savecard>\u{1F4BE} \${T('Salva tessera')}</button>
+      <button class="btn ghost sm" style="flex:1" data-install>\u{1F4F2} \${T('Aggiungi alla Home')}</button>
+    </div>
+    \${['socio', 'socio_residente'].includes(s.tipo_profilo) ? \`<button class="btn navy block" style="margin-top:8px" data-opencasata>\u{1F6E1}\uFE0F \${s.casata ? T('Cambia casata') : T('Scegli la tua casata')}</button>\` : ''}
     <div class="card" style="margin-top:12px; display:flex; align-items:center; gap:12px">
       <div style="flex:1"><b style="font-size:.86rem">\${T('Notifiche casata & eventi')}</b><p class="tiny muted">\${T('Convocazioni, cambi orario e serate. Con il tuo consenso.')}</p></div>
       <button class="btn \${pushOn?'gold':'ghost'} sm" data-push="\${pushOn?'off':'on'}">\${pushOn?T('Attive \u2713'):T('Attiva')}</button>
@@ -5633,6 +5731,11 @@ async function enterApp() {
   renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
   applyProfileGating();
   if (state.lang && state.lang !== 'it') applyLang(state.lang);
+  // Socio/Residente auto-registrato senza casata: invito (gentile) a sceglierla.
+  const s = state.socio || {};
+  if (state.token && ['socio', 'socio_residente'].includes(s.tipo_profilo) && !s.casata && !state._casataAsked) {
+    state._casataAsked = true; setTimeout(() => openCasata(true), 500);
+  }
 }
 async function loginTessera() {
   const code = ($('#gate_tess').value || '').trim().toUpperCase();
@@ -5664,6 +5767,7 @@ function regProfilo() {
     <p class="sub">\${T('Rispondi e l\\'app trova il profilo giusto per te.')}</p>
     \${opt('socio', '\u{1F3AB}', T('Sono socio KOIN\xC8'), T('Tesserato: casata, Coppa, inviti.'))}
     \${opt('residente', '\u{1F3E0}', T('Sono residente'), T('Vivo nel residence; posso gestire case vacanza.'))}
+    \${opt('socio_residente', '\u{1F3AB}\u{1F3E0}', T('Sono socio e residente'), T('Tutto del socio (casata, Coppa) + gestisco case vacanza.'))}
     \${opt('ospite_temporaneo', '\u{1F9F3}', T('Sono in vacanza (visitatore)'), T('Ospite temporaneo: ti colleghi alla casa del tuo host.'))}
     <button class="btn ghost block" style="margin-top:8px" data-reg-cancel>\${T('Ho gi\xE0 un account')}</button>\`);
 }
@@ -5699,10 +5803,14 @@ async function regSalva() {
   if (REG.tipo === 'ospite_temporaneo') regHost(); else regFine();
 }
 function regFine() {
+  const socioLike = ['socio', 'socio_residente'].includes(REG.tipo);
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u2705 \${T('Tutto pronto')}</div><h2>\${T('Benvenuto!')}</h2>
     <p class="sub">\${T('Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:')}</p>
     <div class="card" style="text-align:center;padding:14px"><div class="tiny muted">\${T('Codice di accesso')}</div><div style="font-size:1.5rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(REG.code || '')}</div></div>
-    <button class="btn gold block" style="margin-top:10px" data-close>\${T('Inizia')}</button>\`);
+    <button class="btn gold block" style="margin-top:10px" data-savecard>\u{1F4BE} \${T('Salva la tua tessera (immagine)')}</button>
+    \${installHintHTML()}
+    \${socioLike ? \`<button class="btn navy block" style="margin-top:8px" data-opencasata>\u{1F6E1}\uFE0F \${T('Scegli la tua casata')}</button>\` : ''}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Inizia')}</button>\`);
 }
 function regHost() {
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F3E1} \${T('Il tuo host')}</div><h2>\${T('Conosci il tuo host?')}</h2>
@@ -5734,7 +5842,9 @@ async function regInviaRichiesta(hostId) {
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4E8} \${T('Richiesta inviata')}</div><h2>\${T('In attesa di conferma')}</h2>
     <p class="sub">\${T('Abbiamo avvisato')} <b>\${esc(nome)}</b>. \${T('Quando confermer\xE0, comparir\xE0 "Casa mia" con tutte le indicazioni della struttura.')}</p>
     <div class="card" style="text-align:center;padding:14px"><div class="tiny muted">\${T('Il tuo codice di accesso')}</div><div style="font-size:1.4rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(REG.code || '')}</div></div>
-    <button class="btn gold block" style="margin-top:10px" data-close>\${T('Inizia')}</button>\`);
+    <button class="btn gold block" style="margin-top:10px" data-savecard>\u{1F4BE} \${T('Salva la tua tessera (immagine)')}</button>
+    \${installHintHTML()}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Inizia')}</button>\`);
 }
 function logoutUser() {
   state.token = null; state.tessera = null; state.authed = false; state.socio = null;
@@ -6358,7 +6468,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -6389,6 +6499,10 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.regSkiphost != null) return regFine();
   if (t.dataset.reqOk) return hostApprova(t.dataset.reqOk);
   if (t.dataset.reqNo) return hostRifiuta(t.dataset.reqNo);
+  if (t.dataset.savecard != null) return downloadTessera();
+  if (t.dataset.install != null) return openInstallHint();
+  if (t.dataset.opencasata != null) return openCasata(false);
+  if (t.dataset.casata) return scegliCasata(t.dataset.casata);
   if (t.dataset.struttSave != null) return strutturaSalva(t.dataset.struttSave);
   if (t.dataset.campi != null) return openCampi();
   if (t.dataset.partite != null) return openPartiteAperte();
@@ -6793,7 +6907,7 @@ async function editSocio(s, all) {
   let hostInfo = null;
   if (!isNew) hostInfo = await api('/soci/' + s.id + '/host').catch(() => null);
   const genitori = (all || []).filter(x => x.tipo_profilo === 'genitore');
-  const profili = [['socio','Socio'],['residente','Residente'],['ospite_temporaneo','Visitatore (non socio)'],['genitore','Genitore'],['under14','Under 14 (figlio)']];
+  const profili = [['socio','Socio'],['residente','Residente'],['socio_residente','Socio residente'],['ospite_temporaneo','Visitatore (non socio)'],['genitore','Genitore'],['under14','Under 14 (figlio)']];
   const tutOpts = \`<option value="">\u2014 nessuno \u2014</option>\` + genitori.map(g => \`<option value="\${g.id}" \${s?.tutore_id==g.id?'selected':''}>\${esc(g.nome)} \${esc(g.cognome)}</option>\`).join('');
   modal(\`<h3>\${isNew?'Nuovo profilo':'Modifica profilo'}</h3>
     <div class="grid2">
@@ -6817,13 +6931,13 @@ async function editSocio(s, all) {
     <label class="check"><input type="checkbox" id="f_foto" \${s?.consenso_foto?'checked':''}> Consenso uso immagini eventi</label>
     <label class="check"><input type="checkbox" id="f_push" \${s?.notifiche_push?'checked':''}> Consenso notifiche (casata & eventi)</label>
     \${isNew?'':'<label class="check"><input type="checkbox" id="f_attivo" '+(s.attivo?'checked':'')+'> Profilo attivo</label>'}
-    \${isNew?'':'<div id="hostWrap"><label class="check"><input type="checkbox" id="f_host" '+((hostInfo&&hostInfo.host)?'checked':'')+'> \u{1F511} Profilo <b>host</b> (case vacanza): gestisce fino a 3 strutture dall\\'app'+((hostInfo&&hostInfo.host_ko)?' <span class="tag no">KO integrit\xE0</span>':'')+'</label>'+((hostInfo && hostInfo.strutture && hostInfo.strutture.length)?'<p class="muted">Strutture host: '+hostInfo.strutture.map(x=>x.ko?'\u26A0\uFE0F (dati non leggibili)':esc(x.nome)).join(', ')+' \u2014 modifica dal profilo host in app.</p>':'')+'<p class="muted">Il profilo host \xE8 riservato ai <b>Residenti</b>: attiva prima il tipo profilo Residente.</p></div>'}
+    \${isNew?'':'<div id="hostWrap"><label class="check"><input type="checkbox" id="f_host" '+((hostInfo&&hostInfo.host)?'checked':'')+'> \u{1F511} Profilo <b>host</b> (case vacanza): gestisce fino a 3 strutture dall\\'app'+((hostInfo&&hostInfo.host_ko)?' <span class="tag no">KO integrit\xE0</span>':'')+'</label>'+((hostInfo && hostInfo.strutture && hostInfo.strutture.length)?'<p class="muted">Strutture host: '+hostInfo.strutture.map(x=>x.ko?'\u26A0\uFE0F (dati non leggibili)':esc(x.nome)).join(', ')+' \u2014 modifica dal profilo host in app.</p>':'')+'<p class="muted">Il profilo host \xE8 riservato a <b>Residente</b> e <b>Socio residente</b>: imposta prima il tipo profilo.</p></div>'}
     <p class="muted" id="under14note" style="display:none">Per gli under-14 la responsabilit\xE0 del trattamento \xE8 del genitore indicato: seleziona il genitore e la casata del figlio.</p>
     <div class="err" id="mErr"></div>
     <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
   const syncTipo = () => {
     const t = $('#f_tipo').value;
-    const u = t === 'under14', osp = t === 'ospite_temporaneo', resid = t === 'residente';
+    const u = t === 'under14', osp = t === 'ospite_temporaneo', resid = (t === 'residente' || t === 'socio_residente');
     $('#tutoreWrap').style.opacity = u ? '1' : '.5'; $('#under14note').style.display = u ? 'block' : 'none';
     // Visitatore (ospite temporaneo): periodo dal/al, niente tessera annuale.
     $('#dalWrap').style.display = osp ? 'block' : 'none';
@@ -6856,7 +6970,7 @@ async function editSocio(s, all) {
     };
     try {
       await api(isNew?'/soci':'/soci/'+s.id, { method:isNew?'POST':'PUT', body:JSON.stringify(body) });
-      if (!isNew && $('#f_tipo').value === 'residente') {
+      if (!isNew && ['residente','socio_residente'].includes($('#f_tipo').value)) {
         // Il flag host vale solo per i Residenti; l'aggancio ospite\u2192struttura NON si fa dal back office.
         await api('/soci/'+s.id+'/host', { method:'PUT', body: JSON.stringify({ host: $('#f_host')?.checked }) }).catch(()=>{});
       }
@@ -7915,6 +8029,44 @@ VIEWS.magazzino = async () => {
 
 /* ---------- MEN\xD9 (config + import Excel/CSV) ---------- */
 let IMPORT_B64 = null;
+// Men\xF9 stampabile (PDF via "Salva come PDF" del browser) con logo, punto vendita, categorie, composizione, allergeni.
+function stampaMenuPDF(menu, punto) {
+  const attivi = (menu || []).filter(m => m.attivo);
+  const gruppi = {};
+  attivi.forEach(m => { const k = m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); (gruppi[k] = gruppi[k] || []).push(m); });
+  const logo = \`<svg width="46" height="46" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#12324F" opacity="0.85"/></svg>\`;
+  const sezioni = Object.keys(gruppi).map(cat => \`<section><h2>\${esc(cat)}</h2>\${gruppi[cat].map(m => \`
+    <div class="item"><div class="line"><span class="nm">\${esc(m.nome)}</span><span class="dots"></span><span class="pz">\${eur(m.prezzo)}</span></div>
+    \${m.descrizione ? \`<div class="desc">\${esc(m.descrizione)}</div>\` : ''}
+    \${m.allergeni ? \`<div class="alg">Allergeni: \${esc(m.allergeni)}</div>\` : ''}</div>\`).join('')}</section>\`).join('');
+  const w = window.open('', '_blank');
+  if (!w) { alert('Consenti i popup per stampare.'); return; }
+  w.document.write(\`<html><head><title>Men\xF9 \xB7 \${esc(punto)}</title><style>
+    @page{margin:16mm}
+    body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
+    header{display:flex;align-items:center;gap:14px;border-bottom:2px solid #E0B44A;padding-bottom:12px;margin-bottom:18px}
+    header .t{flex:1}
+    header h1{margin:0;font-size:1.5rem;letter-spacing:1px}
+    header .sub{font-size:.8rem;letter-spacing:2px;color:#8a6d1f;font-family:Arial,sans-serif}
+    header .punto{font-size:1.05rem;font-weight:bold;color:#12324F;font-family:Arial,sans-serif}
+    section{margin-bottom:18px;break-inside:avoid}
+    section h2{font-size:1.05rem;color:#8a6d1f;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #e6ddc7;padding-bottom:4px}
+    .item{margin:8px 0}
+    .line{display:flex;align-items:baseline}
+    .nm{font-weight:bold} .pz{font-weight:bold;white-space:nowrap}
+    .dots{flex:1;border-bottom:1px dotted #b9c2ca;margin:0 6px;transform:translateY(-3px)}
+    .desc{font-size:.85rem;color:#333;font-family:Arial,sans-serif;margin-top:2px}
+    .alg{font-size:.75rem;color:#8a6d1f;font-style:italic;font-family:Arial,sans-serif}
+    footer{margin-top:20px;border-top:1px solid #e6ddc7;padding-top:8px;font-size:.72rem;color:#777;font-family:Arial,sans-serif}
+  </style></head><body>
+    <header>\${logo}<div class="t"><h1>BUSSOLA RESIDENCE</h1><div class="sub">by KOIN\xC8</div></div><div class="punto">\${esc(punto)}</div></header>
+    \${sezioni || '<p>Nessun articolo attivo.</p>'}
+    <footer>Allergeni indicati secondo Reg. UE 1169/2011. Men\xF9 generato dall'app Bussola Chiosco.</footer>
+    <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
+  </body></html>\`);
+  w.document.close();
+}
+
 VIEWS.menu = async () => {
   const menu = await api('/menu');
   const rows = menu.map(m => \`<tr>
@@ -7931,6 +8083,9 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>prezzo</b>, <b>stazione</b> (cucina/bar), <b>categoria</b>, <b>descrizione</b>, <b>allergeni</b>. Puoi caricare un file solo-prezzi o solo-allergeni: i campi mancanti non vengono sovrascritti.</p>
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
+    <div class="panel"><h3>\u{1F5A8}\uFE0F Stampa men\xF9 (PDF)</h3>
+      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, il punto vendita, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi.</p>
+      <div class="row"><label>Punto <select id="menu_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label><input id="menu_punto_x" placeholder="oppure scrivi il punto\u2026" style="min-width:180px"><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="7" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
@@ -7939,6 +8094,7 @@ VIEWS.menu = async () => {
   document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
   $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
+  $('#menu_pdf').onclick = () => { const punto = ($('#menu_punto_x').value || '').trim() || $('#menu_punto').value; stampaMenuPDF(menu, punto); };
 
   // template CSV
   $('#imp_tpl').onclick = () => {
@@ -8080,7 +8236,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 10:06" : "online";
+var BUILD = true ? "2026-08-16 10:31" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
