@@ -4940,7 +4940,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.33";
+var VERSION = "4.34";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5221,7 +5221,26 @@ window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
-  function catOf(m) { return m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+
+  // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
+  // cos\xEC la comanda si raggruppa in modo logico (Caffetteria, Bibite, Birre\u2026) come nel men\xF9 stampato,
+  // senza dover categorizzare a mano tutto il listino. Una \`categoria\` esplicita vince sempre.
+  const CAT_RULES = [
+    ['Caffetteria', /caff[e\xE8]|cappucc|macchiat|marocchin|\\blatte\\b|orzo|ginseng|cioccolat|espress|ristrett|decaffe|shakerat|tisana|camomill|t[e\xE8]\\s*cald/i],
+    ['Bibite', /acqua|coca|\\bcola\\b|fanta|sprite|aranciat|chinotto|gassosa|gazzosa|\\btonic|spremut|succ|t[e\xE8]\\s*fredd|th[e\xE8]|estath|energy|red\\s*bull|redbull|gatorade|powerade|bibit|cedrat|lemonsoda|oransoda|schweppes/i],
+    ['Birre', /birr|\\bbeer\\b|\\bipa\\b|lager|weiss|weizen|\\bpils|stout|moretti|heineken|peroni|ichnusa|\\bcorona\\b|ceres|nastro\\s*azzurro/i],
+    ['Aperitivi & Cocktail', /spritz|aperol|campari|negroni|american|mojito|cocktail|\\bgin\\b|vodka|\\brum\\b|tequila|whisk|bacardi|\\bmartini\\b|aperitiv|bitter|crodino|analcolic|\\blimoncell/i],
+    ['Vini', /\\bvin[oi]\\b|calice|prosecc|spumant|franciacort|moscato|chardonnay|merlot|bollicin|champagne|champagn/i],
+    ['Gelati', /gelat|ghiacciol|magnum|sorbett|granit|\\bstecco\\b|coppett/i],
+    ['Snack', /patatin|\\bchips\\b|tarall|nachos|pop\\s*corn|popcorn|arachid|\\bolive\\b|salatin|cracker|pretzel|\\bsnack\\b/i],
+    ['Panini & Piatti', /panin|toast|piadin|hamburger|hot\\s*dog|hotdog|pizz|focacc|tramezzin|\\bwrap\\b|insalat|\\bpasta\\b|sandwich|bruschett|tagliere|\\bfritt|arancin/i],
+    ['Dolci', /cornetto|brioch|croissant|\\bdolc|\\btorta\\b|crostat|muffin|biscott|tiramis|budino|crep|cr[e\xEA]pe|waffle|nutella|pancake/i],
+  ];
+  const CAT_ORDER = CAT_RULES.map(r => r[0]).concat(['Bar', 'Cucina']);
+  function inferCat(nome) { const s = String(nome == null ? '' : nome); for (const [name, rx] of CAT_RULES) { if (rx.test(s)) return name; } return null; }
+  function catOf(m) { return (m.categoria && String(m.categoria).trim()) || inferCat(m.nome) || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+  function catRank(c) { if (c === 'Bar') return 900; if (c === 'Cucina') return 901; const i = CAT_ORDER.indexOf(c); return i < 0 ? 500 : i; }
+  function sortCats(arr) { return arr.slice().sort((a, b) => (catRank(a) - catRank(b)) || String(a).localeCompare(String(b))); }
   function group(menu) { const g = {}; (menu || []).forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return g; }
 
   // CSS iniettato una sola volta: stesso aspetto in ogni contesto (usa le variabili --navy/--gold se presenti).
@@ -5270,7 +5289,7 @@ window.Comanda = (function () {
     const qEl = useSearch ? $('.cmd-q') : null;
     const chipsEl = useSearch ? $('.cmd-chips') : null;
 
-    function cats() { return [...new Set((menu || []).map(catOf))]; }
+    function cats() { return sortCats([...new Set((menu || []).map(catOf))]); }
     function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
@@ -5292,7 +5311,7 @@ window.Comanda = (function () {
         if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
         (g[k] = g[k] || []).push(m);
       });
-      const keys = Object.keys(g);
+      const keys = sortCats(Object.keys(g));
       listEl.innerHTML = keys.length
         ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
@@ -8147,7 +8166,26 @@ window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
-  function catOf(m) { return m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+
+  // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
+  // cos\xEC la comanda si raggruppa in modo logico (Caffetteria, Bibite, Birre\u2026) come nel men\xF9 stampato,
+  // senza dover categorizzare a mano tutto il listino. Una \`categoria\` esplicita vince sempre.
+  const CAT_RULES = [
+    ['Caffetteria', /caff[e\xE8]|cappucc|macchiat|marocchin|\\blatte\\b|orzo|ginseng|cioccolat|espress|ristrett|decaffe|shakerat|tisana|camomill|t[e\xE8]\\s*cald/i],
+    ['Bibite', /acqua|coca|\\bcola\\b|fanta|sprite|aranciat|chinotto|gassosa|gazzosa|\\btonic|spremut|succ|t[e\xE8]\\s*fredd|th[e\xE8]|estath|energy|red\\s*bull|redbull|gatorade|powerade|bibit|cedrat|lemonsoda|oransoda|schweppes/i],
+    ['Birre', /birr|\\bbeer\\b|\\bipa\\b|lager|weiss|weizen|\\bpils|stout|moretti|heineken|peroni|ichnusa|\\bcorona\\b|ceres|nastro\\s*azzurro/i],
+    ['Aperitivi & Cocktail', /spritz|aperol|campari|negroni|american|mojito|cocktail|\\bgin\\b|vodka|\\brum\\b|tequila|whisk|bacardi|\\bmartini\\b|aperitiv|bitter|crodino|analcolic|\\blimoncell/i],
+    ['Vini', /\\bvin[oi]\\b|calice|prosecc|spumant|franciacort|moscato|chardonnay|merlot|bollicin|champagne|champagn/i],
+    ['Gelati', /gelat|ghiacciol|magnum|sorbett|granit|\\bstecco\\b|coppett/i],
+    ['Snack', /patatin|\\bchips\\b|tarall|nachos|pop\\s*corn|popcorn|arachid|\\bolive\\b|salatin|cracker|pretzel|\\bsnack\\b/i],
+    ['Panini & Piatti', /panin|toast|piadin|hamburger|hot\\s*dog|hotdog|pizz|focacc|tramezzin|\\bwrap\\b|insalat|\\bpasta\\b|sandwich|bruschett|tagliere|\\bfritt|arancin/i],
+    ['Dolci', /cornetto|brioch|croissant|\\bdolc|\\btorta\\b|crostat|muffin|biscott|tiramis|budino|crep|cr[e\xEA]pe|waffle|nutella|pancake/i],
+  ];
+  const CAT_ORDER = CAT_RULES.map(r => r[0]).concat(['Bar', 'Cucina']);
+  function inferCat(nome) { const s = String(nome == null ? '' : nome); for (const [name, rx] of CAT_RULES) { if (rx.test(s)) return name; } return null; }
+  function catOf(m) { return (m.categoria && String(m.categoria).trim()) || inferCat(m.nome) || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+  function catRank(c) { if (c === 'Bar') return 900; if (c === 'Cucina') return 901; const i = CAT_ORDER.indexOf(c); return i < 0 ? 500 : i; }
+  function sortCats(arr) { return arr.slice().sort((a, b) => (catRank(a) - catRank(b)) || String(a).localeCompare(String(b))); }
   function group(menu) { const g = {}; (menu || []).forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return g; }
 
   // CSS iniettato una sola volta: stesso aspetto in ogni contesto (usa le variabili --navy/--gold se presenti).
@@ -8196,7 +8234,7 @@ window.Comanda = (function () {
     const qEl = useSearch ? $('.cmd-q') : null;
     const chipsEl = useSearch ? $('.cmd-chips') : null;
 
-    function cats() { return [...new Set((menu || []).map(catOf))]; }
+    function cats() { return sortCats([...new Set((menu || []).map(catOf))]); }
     function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
@@ -8218,7 +8256,7 @@ window.Comanda = (function () {
         if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
         (g[k] = g[k] || []).push(m);
       });
-      const keys = Object.keys(g);
+      const keys = sortCats(Object.keys(g));
       listEl.innerHTML = keys.length
         ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
@@ -8640,7 +8678,26 @@ window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
-  function catOf(m) { return m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+
+  // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
+  // cos\xEC la comanda si raggruppa in modo logico (Caffetteria, Bibite, Birre\u2026) come nel men\xF9 stampato,
+  // senza dover categorizzare a mano tutto il listino. Una \`categoria\` esplicita vince sempre.
+  const CAT_RULES = [
+    ['Caffetteria', /caff[e\xE8]|cappucc|macchiat|marocchin|\\blatte\\b|orzo|ginseng|cioccolat|espress|ristrett|decaffe|shakerat|tisana|camomill|t[e\xE8]\\s*cald/i],
+    ['Bibite', /acqua|coca|\\bcola\\b|fanta|sprite|aranciat|chinotto|gassosa|gazzosa|\\btonic|spremut|succ|t[e\xE8]\\s*fredd|th[e\xE8]|estath|energy|red\\s*bull|redbull|gatorade|powerade|bibit|cedrat|lemonsoda|oransoda|schweppes/i],
+    ['Birre', /birr|\\bbeer\\b|\\bipa\\b|lager|weiss|weizen|\\bpils|stout|moretti|heineken|peroni|ichnusa|\\bcorona\\b|ceres|nastro\\s*azzurro/i],
+    ['Aperitivi & Cocktail', /spritz|aperol|campari|negroni|american|mojito|cocktail|\\bgin\\b|vodka|\\brum\\b|tequila|whisk|bacardi|\\bmartini\\b|aperitiv|bitter|crodino|analcolic|\\blimoncell/i],
+    ['Vini', /\\bvin[oi]\\b|calice|prosecc|spumant|franciacort|moscato|chardonnay|merlot|bollicin|champagne|champagn/i],
+    ['Gelati', /gelat|ghiacciol|magnum|sorbett|granit|\\bstecco\\b|coppett/i],
+    ['Snack', /patatin|\\bchips\\b|tarall|nachos|pop\\s*corn|popcorn|arachid|\\bolive\\b|salatin|cracker|pretzel|\\bsnack\\b/i],
+    ['Panini & Piatti', /panin|toast|piadin|hamburger|hot\\s*dog|hotdog|pizz|focacc|tramezzin|\\bwrap\\b|insalat|\\bpasta\\b|sandwich|bruschett|tagliere|\\bfritt|arancin/i],
+    ['Dolci', /cornetto|brioch|croissant|\\bdolc|\\btorta\\b|crostat|muffin|biscott|tiramis|budino|crep|cr[e\xEA]pe|waffle|nutella|pancake/i],
+  ];
+  const CAT_ORDER = CAT_RULES.map(r => r[0]).concat(['Bar', 'Cucina']);
+  function inferCat(nome) { const s = String(nome == null ? '' : nome); for (const [name, rx] of CAT_RULES) { if (rx.test(s)) return name; } return null; }
+  function catOf(m) { return (m.categoria && String(m.categoria).trim()) || inferCat(m.nome) || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'); }
+  function catRank(c) { if (c === 'Bar') return 900; if (c === 'Cucina') return 901; const i = CAT_ORDER.indexOf(c); return i < 0 ? 500 : i; }
+  function sortCats(arr) { return arr.slice().sort((a, b) => (catRank(a) - catRank(b)) || String(a).localeCompare(String(b))); }
   function group(menu) { const g = {}; (menu || []).forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return g; }
 
   // CSS iniettato una sola volta: stesso aspetto in ogni contesto (usa le variabili --navy/--gold se presenti).
@@ -8689,7 +8746,7 @@ window.Comanda = (function () {
     const qEl = useSearch ? $('.cmd-q') : null;
     const chipsEl = useSearch ? $('.cmd-chips') : null;
 
-    function cats() { return [...new Set((menu || []).map(catOf))]; }
+    function cats() { return sortCats([...new Set((menu || []).map(catOf))]); }
     function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
@@ -8711,7 +8768,7 @@ window.Comanda = (function () {
         if (q && !(norm(m.nome).includes(q) || norm(m.categoria).includes(q) || norm(m.allergeni).includes(q))) return;
         (g[k] = g[k] || []).push(m);
       });
-      const keys = Object.keys(g);
+      const keys = sortCats(Object.keys(g));
       listEl.innerHTML = keys.length
         ? keys.map(cat => \`<div class="cmd-cat">\${esc(cat)}</div>\` + g[cat].map(itemHTML).join('')).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
@@ -8880,7 +8937,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 13:47" : "online";
+var BUILD = true ? "2026-08-16 14:16" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
