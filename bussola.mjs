@@ -4810,7 +4810,7 @@ function notifica(socioId, titolo, corpo) {
 authUserRouter.get("/hosts-cerca", requireUser, async (req, res) => {
   const q = "%" + String(req.query.q || "").trim().toLowerCase() + "%";
   if (String(req.query.q || "").trim().length < 2) return res.json({ hosts: [] });
-  const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE host=1 AND tipo_profilo IN ('residente','socio_residente') AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
+  const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE tipo_profilo IN ('residente','socio_residente') AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
   res.json({ hosts: rows });
 });
 authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
@@ -4818,7 +4818,7 @@ authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
   if (!me) return res.status(404).json({ error: "Profilo non trovato" });
   if (me.tipo_profilo !== "ospite_temporaneo") return res.status(403).json({ error: "Solo un visitatore pu\xF2 chiedere l'aggancio a una casa" });
   const hostId = Number(req.body?.host_id);
-  const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND host=1 AND tipo_profilo IN ('residente','socio_residente') AND attivo=1").get(hostId);
+  const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND tipo_profilo IN ('residente','socio_residente') AND attivo=1").get(hostId);
   if (!host) return res.status(404).json({ error: "Host non trovato" });
   const ex = await db.prepare("SELECT id FROM richieste_aggancio WHERE ospite_id=? AND stato='in_attesa'").get(me.id);
   if (ex) return res.status(409).json({ error: "Hai gi\xE0 una richiesta in attesa" });
@@ -4835,17 +4835,17 @@ authUserRouter.get("/aggancio/stato", requireUser, async (req, res) => {
 });
 authUserRouter.get("/host/richieste", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const rows = await db.prepare("SELECT ra.id,ra.ospite_id,ra.created_at,s.nome,s.cognome,s.soggiorno_dal,s.soggiorno_al FROM richieste_aggancio ra JOIN soci s ON s.id=ra.ospite_id WHERE ra.host_id=? AND ra.stato='in_attesa' ORDER BY ra.id DESC").all(me.id);
   res.json({ richieste: rows });
 });
 authUserRouter.post("/host/richieste/:id/approva", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
   if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
   const ids = await myStruttureIds(me.id);
-  if (!ids.length) return res.status(409).json({ error: "Aggiungi prima una struttura" });
+  if (!ids.length) return res.status(409).json({ error: `Aggiungi prima la tua casa in "Le mie case", poi conferma l'ospite.` });
   const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : ids[0];
   if (!ids.includes(sid)) return res.status(403).json({ error: "Struttura non tua" });
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -4857,7 +4857,7 @@ authUserRouter.post("/host/richieste/:id/approva", requireUser, async (req, res)
 });
 authUserRouter.post("/host/richieste/:id/rifiuta", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
   if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
   await db.prepare("UPDATE richieste_aggancio SET stato='rifiutata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
@@ -4866,7 +4866,7 @@ authUserRouter.post("/host/richieste/:id/rifiuta", requireUser, async (req, res)
 });
 authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const ids = await myStruttureIds(me.id);
   if (!ids.length) return res.json({ ospiti: [] });
   const ph = ids.map(() => "?").join(",");
@@ -4875,7 +4875,7 @@ authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
 });
 authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const ids = await myStruttureIds(me.id);
   const g = await db.prepare("SELECT id,struttura_id FROM soci WHERE id=? AND tipo_profilo='ospite_temporaneo'").get(req.params.id);
   if (!g || !ids.includes(g.struttura_id)) return res.status(404).json({ error: "Visitatore non trovato" });
@@ -4885,7 +4885,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.29";
+var VERSION = "4.30";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8793,7 +8793,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 13:00" : "online";
+var BUILD = true ? "2026-08-16 13:17" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
