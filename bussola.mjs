@@ -2104,10 +2104,39 @@ function magNormArea(v) {
   const map = { "casa di carta": "casa_di_carta", "serata clan": "serata_clan", "serate a tema": "serate_tema", "serate tema": "serate_tema" };
   return map[s] || s.replace(/\s+/g, "_");
 }
-function parseMagFile(fileB64) {
+function toNum(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  let s = String(v ?? "").trim();
+  if (!s) return 0;
+  s = s.replace(/[^\d,.\-]/g, "");
+  const lc = s.lastIndexOf(","), ld = s.lastIndexOf(".");
+  if (lc > -1 && ld > -1) s = lc > ld ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  else if (lc > -1) s = s.replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+function pickDelim(text) {
+  const line = text.split(/\r?\n/)[0] || "";
+  const c = (line.match(/,/g) || []).length, s = (line.match(/;/g) || []).length, t = (line.match(/\t/g) || []).length;
+  if (s >= c && s >= t) return ";";
+  if (t > c && t >= s) return "	";
+  return ",";
+}
+function sheetRows(fileB64) {
   const buf = Buffer.from(String(fileB64 || "").replace(/^data:[^,]*,/, ""), "base64");
-  const wb = XLSX.read(buf, { type: "buffer" });
-  const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+  const isZip = buf[0] === 80 && buf[1] === 75;
+  const isOle = buf[0] === 208 && buf[1] === 207;
+  let wb;
+  if (isZip || isOle) {
+    wb = XLSX.read(buf, { type: "buffer" });
+  } else {
+    const text = buf.toString("utf8").replace(/^﻿/, "");
+    wb = XLSX.read(text, { type: "string", FS: pickDelim(text), raw: true });
+  }
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: true });
+}
+function parseMagFile(fileB64) {
+  const json = sheetRows(fileB64);
   const norm = (s) => String(s || "").trim().toLowerCase();
   const alias = { nome: ["nome", "articolo", "prodotto", "name"], area: ["area", "reparto"], unita: ["unita", "unit\xE0", "um", "unit"], giacenza: ["giacenza", "quantita", "quantit\xE0", "qta", "stock"], punto_riordino: ["punto_riordino", "riordino", "minimo", "min", "reorder"], soglia_preavviso: ["soglia_preavviso", "preavviso", "avviso", "soglia", "warning"] };
   return json.map((r) => {
@@ -2128,8 +2157,8 @@ adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) 
     return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
   }
   if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
-  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area) })) });
-  const num = (v) => Number(String(v ?? "").replace(",", ".")) || 0;
+  const num = toNum;
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area), giacenza: num(r.giacenza), punto_riordino: num(r.punto_riordino), soglia_preavviso: num(r.soglia_preavviso) })) });
   const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   let creati = 0, aggiornati = 0;
@@ -2173,10 +2202,7 @@ adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
   res.json({ ok: true });
 });
 function parseMenuFile(fileB64) {
-  const buf = Buffer.from(String(fileB64 || "").replace(/^data:[^,]*,/, ""), "base64");
-  const wb = XLSX.read(buf, { type: "buffer" });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  const json = sheetRows(fileB64);
   const norm = (s) => String(s || "").trim().toLowerCase();
   const alias = { nome: ["nome", "prodotto", "articolo", "name"], prezzo: ["prezzo", "price", "costo"], stazione: ["stazione", "station", "reparto"], categoria: ["categoria", "category"], descrizione: ["descrizione", "description", "desc"], allergeni: ["allergeni", "allergen", "allergens"] };
   return json.map((r) => {
@@ -2197,7 +2223,7 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
   }
   if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
-  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12) });
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, prezzo: toNum(r.prezzo) })) });
   let creati = 0, aggiornati = 0;
   if (b.mode === "replace") {
     await db.exec("DELETE FROM menu_articoli;");
@@ -2207,7 +2233,7 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     const nome = clean(r.nome);
     if (!nome) continue;
     const hasPrezzo = r.prezzo != null && String(r.prezzo).trim() !== "";
-    const prezzo = Number(String(r.prezzo ?? "").replace(",", ".")) || 0;
+    const prezzo = toNum(r.prezzo);
     const stazione = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
     const categoria = clean(r.categoria), descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
     const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
@@ -2954,7 +2980,7 @@ authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
 });
 
 // server/version.js
-var VERSION = "4.17";
+var VERSION = "4.18";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5889,7 +5915,7 @@ VIEWS.menu = async () => {
   const magOpts = (sel) => \`<option value="">\u2014 nessuno \u2014</option>\` + (mag.articoli || []).map(a => \`<option value="\${a.id}" \${String(sel) === String(a.id) ? 'selected' : ''}>\${esc(a.nome)} (\${esc(a.area)})</option>\`).join('');
   const rows = menu.map(m => \`<tr>
     <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:140px"></td>
-    <td><input id="mn_p_\${m.id}" type="number" step="0.5" value="\${esc(String(m.prezzo))}" style="width:74px"></td>
+    <td><input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px"></td>
     <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
     <td><input id="mn_al_\${m.id}" value="\${esc(m.allergeni || '')}" style="width:150px" placeholder="glutine, latte\u2026"></td>
@@ -5904,7 +5930,7 @@ VIEWS.menu = async () => {
       <div id="imp_prev" style="margin-top:10px"></div></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th><th>Scarico magazzino <span class="muted" style="text-transform:none">(tecnico)</span></th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
-      <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.5" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
+      <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
   document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, magazzino_id: $('#mn_m_' + id).value || null, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
@@ -6051,7 +6077,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 08:51" : "online";
+var BUILD = true ? "2026-08-16 08:59" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
