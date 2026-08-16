@@ -4847,7 +4847,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.26";
+var VERSION = "4.27";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -7951,14 +7951,6 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 #login label{display:block;font-weight:700;font-size:.8rem;margin:10px 0 4px;color:var(--navy)}
 #login input{width:100%}
 #loginErr{color:var(--coral);font-size:.85rem;margin-top:8px;min-height:1em}
-.menucat{font-weight:800;color:var(--navy);font-size:.8rem;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.5px}
-.mitem{border:1.5px solid #cbd2d8;background:#fff;border-radius:12px;padding:10px 12px;text-align:left;cursor:pointer;min-width:150px;flex:1}
-.mitem b{display:block;color:var(--navy)}.mitem .pz{color:var(--gold);font-weight:800;font-size:.9rem}
-.mitem:hover{border-color:var(--gold)}
-.mitem.added{border-color:var(--gold);background:#fff7e6;transform:scale(.97);transition:transform .12s}
-.chip{border:1.5px solid #cbd2d8;background:#fff;color:var(--navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap}
-.chip.on{background:var(--navy);color:#fff;border-color:var(--navy)}
-#co_cats{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
 .hide{display:none!important}
 </style>
 </head>
@@ -8682,18 +8674,22 @@ function manifest(app2) {
   });
 }
 function sw(app2) {
-  return `const CACHE='bussola${app2.scope.replace(/\//g, "_")}v1';
+  const pfx = "bussola" + app2.scope.replace(/\//g, "_");
+  return `const V=${JSON.stringify(String(VERSION))};
+const CACHE='${pfx}v'+V;
 const START=${JSON.stringify(app2.scope)};
 self.addEventListener('install',e=>{self.skipWaiting();});
-self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE&&k.startsWith('bussola${app2.scope.replace(/\//g, "_")}')).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
+self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE&&k.startsWith('${pfx}')).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
 self.addEventListener('fetch',e=>{
   const req=e.request; if(req.method!=='GET'){return;}
   const url=new URL(req.url);
   if(url.pathname.startsWith('/api/')){ e.respondWith(fetch(req).catch(()=>caches.match(req))); return; }
-  if(req.mode==='navigate'){
+  // App shell + script/stili: NETWORK-FIRST, cos\xEC dopo un deploy si vede subito la versione nuova.
+  if(req.mode==='navigate' || ['script','style','document'].includes(req.destination)){
     e.respondWith(fetch(req).then(r=>{const c=r.clone();caches.open(CACHE).then(x=>x.put(req,c));return r;}).catch(()=>caches.match(req).then(m=>m||caches.match(START))));
     return;
   }
+  // Altro (immagini, icone): cache-first per velocit\xE0/offline.
   e.respondWith(caches.match(req).then(r=>r||fetch(req).then(res=>{if(res&&res.ok){const c=res.clone();caches.open(CACHE).then(x=>x.put(req,c));}return res;}).catch(()=>r)));
 });`;
 }
@@ -8713,7 +8709,10 @@ function pwaHead(appKey) {
 function mountPwa(app2) {
   const send = (res, type, body, sw2) => {
     res.setHeader("Content-Type", type);
-    if (sw2) res.setHeader("Service-Worker-Allowed", "/");
+    if (sw2) {
+      res.setHeader("Service-Worker-Allowed", "/");
+      res.setHeader("Cache-Control", "no-cache");
+    }
     res.send(body);
   };
   app2.get("/pwa/icon-192.png", (req, res) => send(res, "image/png", png192));
@@ -8731,7 +8730,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 10:53" : "online";
+var BUILD = true ? "2026-08-16 11:33" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
@@ -8765,10 +8764,14 @@ app.get("/api/health", (req, res) => res.json({ ok: true, version: VERSION, buil
 app.use("/api/auth", authUserRouter);
 app.use("/api", publicRouter);
 app.use("/api/admin", adminRouter);
-app.get(["/", "/index.html"], (req, res) => res.type("html").send(FRONTEND));
-app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => res.type("html").send(ADMIN));
-app.get(["/chiosco", "/chiosco/", "/chiosco/index.html"], (req, res) => res.type("html").send(CHIOSCO));
-app.get(["/ordina", "/ordina/", "/ordina/index.html"], (req, res) => res.type("html").send(ordina_default));
+var html = (res, body) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.type("html").send(body);
+};
+app.get(["/", "/index.html"], (req, res) => html(res, FRONTEND));
+app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => html(res, ADMIN));
+app.get(["/chiosco", "/chiosco/", "/chiosco/index.html"], (req, res) => html(res, CHIOSCO));
+app.get(["/ordina", "/ordina/", "/ordina/index.html"], (req, res) => html(res, ordina_default));
 app.use((req, res) => res.status(404).json({ error: "Non trovato" }));
 app.use((err, req, res, next) => {
   console.error("Errore API:", err?.message || err);
