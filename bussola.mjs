@@ -4786,9 +4786,17 @@ authUserRouter.delete("/host/strutture/:id", requireUser, async (req, res) => {
   audit(me.tessera_code, "host_elimina_struttura", "strutture", req.params.id);
   res.json({ ok: true });
 });
+function oggiISO() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+async function sganciaScaduti() {
+  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE tipo_profilo='ospite_temporaneo' AND struttura_id IS NOT NULL AND soggiorno_al IS NOT NULL AND soggiorno_al < ?").run(oggiISO());
+}
 authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
+  await sganciaScaduti();
   const me = await meSocio(req);
   if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+  if (me.soggiorno_al && me.soggiorno_al < oggiISO()) return res.json({ collegato: false, terminato: true });
   if (!me.struttura_id) return res.json({ collegato: false });
   const st = await db.prepare("SELECT id,dati_cifrati FROM strutture WHERE id=? AND attivo=1").get(me.struttura_id);
   if (!st) return res.json({ collegato: false });
@@ -4865,6 +4873,7 @@ authUserRouter.post("/host/richieste/:id/rifiuta", requireUser, async (req, res)
   res.json({ ok: true });
 });
 authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
+  await sganciaScaduti();
   const me = await meSocio(req);
   if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const ids = await myStruttureIds(me.id);
@@ -4885,7 +4894,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.30";
+var VERSION = "4.32";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5365,7 +5374,12 @@ const API_BASE = (typeof window !== 'undefined' && window.KOINE_API) ? String(wi
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}), ...(opts.headers || {}) };
   const r = await fetch(API_BASE + '/api' + path, { ...opts, headers });
-  if (!r.ok) throw new Error(r.status);
+  if (!r.ok) {
+    // Mostra il MESSAGGIO del server (non il codice grezzo). Conserva lo stato in err.status.
+    let msg = String(r.status);
+    try { const j = await r.json(); if (j && j.error) msg = j.error; } catch {}
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
   return r.json();
 }
 async function loadAll() {
@@ -5646,6 +5660,8 @@ function hostCardsHTML() {
 // Visitatore: cerca il proprio host e invia la richiesta (stesso flusso della registrazione, ma sempre disponibile).
 async function openCollegaHost() {
   let st = null; try { st = await api('/auth/aggancio/stato'); } catch {}
+  // Gi\xE0 collegato (host ha confermato): scarica e mostra "Casa mia".
+  if (st && st.collegato) { await refreshSocio(true); return openCasaMia(); }
   if (st && st.richiesta && st.richiesta.stato === 'in_attesa') {
     const hn = (st.richiesta.host_nome || '') + ' ' + (st.richiesta.host_cognome || '');
     setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4E8} \${T('Richiesta inviata')}</div><h2>\${T('In attesa di conferma')}</h2>
@@ -5663,7 +5679,7 @@ async function openCollegaHost() {
 }
 async function openCasaMia() {
   let d;
-  try { d = await api('/auth/casa-mia'); } catch (e) { okThen(String(e.message).includes('423') ? T('Dati della struttura non disponibili') : 'Errore', false); return; }
+  try { d = await api('/auth/casa-mia'); } catch (e) { okThen(e.status === 423 ? T('Dati della struttura non disponibili') : (e.message || 'Errore'), false); return; }
   if (!d || !d.collegato) { okThen(T('Casa mia'), false); return; }
   const st = d.struttura;
   const arrivo = (st.lat && st.lng)
@@ -5708,7 +5724,9 @@ async function openLeMieCase() {
 }
 async function hostApprova(id) {
   const strutture = window.__strutture || [];
-  let sid = strutture[0] && strutture[0].id;
+  // Serve almeno una casa a cui collegare l'ospite: se manca, guido l'host ad aggiungerla.
+  if (!strutture.length) { okThen(T('Aggiungi prima la tua casa, poi conferma l\\'ospite.'), false); setTimeout(openLeMieCase, 300); return; }
+  let sid = strutture[0].id;
   if (strutture.length > 1) {
     const nomi = strutture.map((s, i) => \`\${i + 1}. \${s.nome}\`).join('\\n');
     const pick = prompt(T('A quale casa lo colleghi?') + '\\n' + nomi, '1');
@@ -5994,6 +6012,23 @@ async function enterApp() {
     state._casataAsked = true; setTimeout(() => openCasata(true), 500);
   }
 }
+// Aggiorna lo stato del profilo (ha_casa, is_host, casata\u2026) senza ricaricare tutta l'app.
+// Usato quando l'app torna in primo piano: se l'host ha appena confermato, la casa "si scarica" da sola.
+let _lastRefresh = 0;
+async function refreshSocio(force) {
+  if (!state.token || !state.tessera) return;
+  const now = Date.now();
+  if (!force && now - _lastRefresh < 4000) return; _lastRefresh = now;
+  let s; try { s = await api('/tessera/' + state.tessera); } catch { return; }
+  const eraCasa = !!(state.socio && state.socio.ha_casa);
+  state.socio = s;
+  renderHeader(); renderHome(); applyProfileGating();
+  // Aggancio appena confermato dall'host \u2192 mostra subito "Casa mia" con le indicazioni.
+  const ov = $('#ov');
+  if (!eraCasa && s.ha_casa && ov && !ov.classList.contains('show')) openCasaMia();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSocio(); });
+window.addEventListener('focus', () => refreshSocio());
 async function loginTessera() {
   const code = ($('#gate_tess').value || '').trim().toUpperCase();
   const err = $('#gateErr');
@@ -8793,7 +8828,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 13:17" : "online";
+var BUILD = true ? "2026-08-16 13:34" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
