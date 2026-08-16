@@ -361,6 +361,16 @@ async function initSchema() {
     used       INTEGER NOT NULL DEFAULT 0
   );
 
+  -- Sessioni PERSISTENTI (token). Prima erano in memoria e sparivano a ogni riavvio/redeploy
+  -- (su Render: logout forzato di tutti). Ora vivono nel DB: sopravvivono ai riavvii.
+  CREATE TABLE IF NOT EXISTS sessioni (
+    token      TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,                               -- admin | user
+    dati       TEXT NOT NULL,                               -- JSON: profilo di sessione
+    exp        INTEGER NOT NULL                             -- epoch ms
+  );
+  CREATE INDEX IF NOT EXISTS ix_sessioni_exp ON sessioni(exp);
+
   CREATE TABLE IF NOT EXISTS notifiche (
     id         INTEGER PRIMARY KEY,
     socio_id   INTEGER REFERENCES soci(id) ON DELETE CASCADE,
@@ -670,47 +680,83 @@ function verifyPassword(password, stored) {
   const ref = Buffer.from(hash, "hex");
   return test.length === ref.length && timingSafeEqual(test, ref);
 }
-var sessions = /* @__PURE__ */ new Map();
 var TTL = 8 * 60 * 60 * 1e3;
-function createSession(user) {
-  const token = randomBytes(24).toString("hex");
-  sessions.set(token, { user: { id: user.id, username: user.username, ruolo: user.ruolo, permessi: user.permessi ?? null }, exp: Date.now() + TTL });
-  return token;
+var cache = /* @__PURE__ */ new Map();
+async function persist(token, kind, data, exp) {
+  cache.set(token, { kind, data, exp });
+  try {
+    await db.prepare("INSERT OR REPLACE INTO sessioni (token,kind,dati,exp) VALUES (?,?,?,?)").run(token, kind, JSON.stringify(data), exp);
+  } catch (_) {
+  }
 }
-function getSession(token) {
-  const s = sessions.get(token);
-  if (!s) return null;
-  if (Date.now() > s.exp) {
-    sessions.delete(token);
+async function load(token, kind) {
+  if (!token) return null;
+  const c = cache.get(token);
+  if (c && c.kind === kind) {
+    if (Date.now() > c.exp) {
+      await drop(token);
+      return null;
+    }
+    return c.data;
+  }
+  let row = null;
+  try {
+    row = await db.prepare("SELECT kind,dati,exp FROM sessioni WHERE token=?").get(token);
+  } catch (_) {
+    row = null;
+  }
+  if (!row || row.kind !== kind) return null;
+  const exp = Number(row.exp);
+  if (Date.now() > exp) {
+    await drop(token);
     return null;
   }
-  return s.user;
-}
-function destroySession(token) {
-  sessions.delete(token);
-}
-function requireAdmin(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  const user = token && getSession(token);
-  if (!user) return res.status(401).json({ error: "Autenticazione richiesta" });
-  req.adminUser = user;
-  next();
-}
-var userSessions = /* @__PURE__ */ new Map();
-function createUserSession(socio) {
-  const token = randomBytes(24).toString("hex");
-  userSessions.set(token, { socio: { id: socio.id, tessera_code: socio.tessera_code, nome: socio.nome }, exp: Date.now() + TTL });
-  return token;
-}
-function getUserSession(token) {
-  const s = userSessions.get(token);
-  if (!s) return null;
-  if (Date.now() > s.exp) {
-    userSessions.delete(token);
+  let data;
+  try {
+    data = JSON.parse(row.dati);
+  } catch (_) {
     return null;
   }
-  return s.socio;
+  cache.set(token, { kind, data, exp });
+  return data;
+}
+async function drop(token) {
+  cache.delete(token);
+  try {
+    await db.prepare("DELETE FROM sessioni WHERE token=?").run(token);
+  } catch (_) {
+  }
+}
+async function createSession(user) {
+  const token = randomBytes(24).toString("hex");
+  await persist(token, "admin", { id: user.id, username: user.username, ruolo: user.ruolo, permessi: user.permessi ?? null }, Date.now() + TTL);
+  return token;
+}
+async function getSession(token) {
+  return load(token, "admin");
+}
+async function destroySession(token) {
+  await drop(token);
+}
+async function requireAdmin(req, res, next) {
+  try {
+    const auth = req.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    const user = await getSession(token);
+    if (!user) return res.status(401).json({ error: "Autenticazione richiesta" });
+    req.adminUser = user;
+    next();
+  } catch (_) {
+    res.status(401).json({ error: "Autenticazione richiesta" });
+  }
+}
+async function createUserSession(socio) {
+  const token = randomBytes(24).toString("hex");
+  await persist(token, "user", { id: socio.id, tessera_code: socio.tessera_code, nome: socio.nome }, Date.now() + TTL);
+  return token;
+}
+async function getUserSession(token) {
+  return load(token, "user");
 }
 function genOtp() {
   return String(randomBytes(3).readUIntBE(0, 3) % 1e6).padStart(6, "0");
@@ -3488,13 +3534,13 @@ adminRouter.post("/login", async (req, res) => {
     audit(username || "?", "login_fallito", "utenti_admin", u?.id ?? "");
     return res.status(401).json({ error: "Credenziali non valide" });
   }
-  const token = createSession(u);
+  const token = await createSession(u);
   audit(u.username, "login", "utenti_admin", u.id);
   res.json({ token, user: { username: u.username, ruolo: u.ruolo } });
 });
-adminRouter.post("/logout", requireAdmin, (req, res) => {
+adminRouter.post("/logout", requireAdmin, async (req, res) => {
   const token = (req.headers.authorization || "").slice(7);
-  destroySession(token);
+  await destroySession(token);
   res.json({ ok: true });
 });
 adminRouter.use(requireAdmin);
@@ -4527,9 +4573,9 @@ adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
 import { Router as Router3 } from "express";
 var authUserRouter = asyncify(Router3());
 var DEV = (process.env.KOINE_ENV || "dev") !== "prod";
-function requireUser(req, res, next) {
+async function requireUser(req, res, next) {
   const token = (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
-  const u = token && getUserSession(token);
+  const u = await getUserSession(token);
   if (!u) return res.status(401).json({ error: "Accesso richiesto" });
   req.user = u;
   next();
@@ -4549,7 +4595,7 @@ authUserRouter.post("/login-tessera", async (req, res) => {
   if (!code) return res.status(400).json({ error: "Codice tessera mancante" });
   const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(code);
   if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
-  const token = createUserSession(socio);
+  const token = await createUserSession(socio);
   audit(socio.tessera_code, "login_tessera", "soci", socio.id);
   const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
   res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
@@ -4562,7 +4608,7 @@ authUserRouter.post("/verify-otp", async (req, res) => {
   await db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
   const socio = await db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
   if (!socio) return res.status(404).json({ error: "Nessun profilo associato a questa e-mail" });
-  const token = createUserSession(socio);
+  const token = await createUserSession(socio);
   audit(socio.tessera_code, "login_utente", "soci", socio.id);
   const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
   res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
@@ -4599,7 +4645,7 @@ authUserRouter.post("/registrazione", async (req, res) => {
     ];
     const { id, tessera_code } = await insertSocioUnique(cols, vals);
     const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id);
-    const token = createUserSession(socio);
+    const token = await createUserSession(socio);
     audit(tessera_code, "auto_registrazione", "soci", id, tipo);
     res.status(201).json({ token, socio: { tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
   } catch (e) {
@@ -4894,7 +4940,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.32";
+var VERSION = "4.33";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5378,6 +5424,12 @@ async function api(path, opts = {}) {
     // Mostra il MESSAGGIO del server (non il codice grezzo). Conserva lo stato in err.status.
     let msg = String(r.status);
     try { const j = await r.json(); if (j && j.error) msg = j.error; } catch {}
+    // 401 con token presente = sessione scaduta/non pi\xF9 valida: ripulisci e riporta al login,
+    // cos\xEC invece di un generico "Errore" l'utente vede la schermata di accesso.
+    if (r.status === 401 && state.token) {
+      state.token = null; state.authed = false; store.set('token', null);
+      try { showGate(); } catch {}
+    }
     const err = new Error(msg); err.status = r.status; throw err;
   }
   return r.json();
@@ -5697,7 +5749,7 @@ async function openCasaMia() {
 }
 async function openLeMieCase() {
   let d;
-  try { d = await api('/auth/host/strutture'); } catch (e) { okThen('Errore', false); return; }
+  try { d = await api('/auth/host/strutture'); } catch (e) { if (e.status !== 401) okThen(e.message || 'Errore', false); return; }
   const list = (d.strutture || []).map(st => st.ko
     ? \`<div class="matchrow"><div style="flex:1"><b>\u26A0\uFE0F \${T('Dati della struttura non disponibili')}</b></div></div>\`
     : \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\u{1F3E1} \${esc(st.nome)}</b><div class="ct">\${T('Orario di check-out')} \${esc(st.check_out||'\u2014')} \xB7 CIR \${esc(st.cir||'\u2014')}</div></div><div style="display:flex; gap:6px"><button class="btn ghost sm" data-strutt-edit="\${st.id}">\${T('Modifica')}</button><button class="btn danger sm" data-strutt-del="\${st.id}">\u{1F5D1}</button></div></div>\`).join('');
@@ -8828,7 +8880,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 13:34" : "online";
+var BUILD = true ? "2026-08-16 13:47" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
