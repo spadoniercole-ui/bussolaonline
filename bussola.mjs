@@ -551,6 +551,20 @@ async function initSchema() {
   );
   CREATE INDEX IF NOT EXISTS ix_strutture_socio ON strutture(socio_id);
 
+  -- ====== AGGANCIO Visitatore\u2192Host su consenso (due rotte indipendenti che si incontrano) ======
+  -- Il visitatore (auto-registrato) chiede l'aggancio indicando l'host per nome; l'host conferma.
+  CREATE TABLE IF NOT EXISTS richieste_aggancio (
+    id           INTEGER PRIMARY KEY,
+    ospite_id    INTEGER NOT NULL REFERENCES soci(id) ON DELETE CASCADE,
+    host_id      INTEGER NOT NULL REFERENCES soci(id) ON DELETE CASCADE,
+    struttura_id INTEGER,                                   -- scelta dall'host in fase di conferma
+    stato        TEXT NOT NULL DEFAULT 'in_attesa',         -- in_attesa | approvata | rifiutata
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_richieste_host ON richieste_aggancio(host_id, stato);
+  CREATE INDEX IF NOT EXISTS ix_richieste_ospite ON richieste_aggancio(ospite_id, stato);
+
   CREATE INDEX IF NOT EXISTS ix_soci_casata ON soci(casata_id);
   CREATE INDEX IF NOT EXISTS ix_cdc_conte ON cdc_caffe_conte(data);
   CREATE INDEX IF NOT EXISTS ix_cdc_prestiti ON cdc_prestiti(created_at);
@@ -4484,6 +4498,45 @@ authUserRouter.post("/verify-otp", async (req, res) => {
   const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
   res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
 });
+authUserRouter.post("/registrazione", async (req, res) => {
+  const b = req.body || {};
+  const tipiOk = ["socio", "residente", "ospite_temporaneo"];
+  const tipo = tipiOk.includes(b.tipo_profilo) ? b.tipo_profilo : "socio";
+  const nome = String(b.nome || "").trim(), cognome = String(b.cognome || "").trim();
+  if (!nome || !cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
+  if (!b.consenso_privacy) return res.status(400).json({ error: "Il consenso privacy \xE8 necessario per registrarsi" });
+  const email = b.email ? String(b.email).trim().toLowerCase() : null;
+  if (email) {
+    const dup = await db.prepare("SELECT id FROM soci WHERE lower(email)=?").get(email);
+    if (dup) return res.status(409).json({ error: "Questa e-mail \xE8 gi\xE0 registrata: accedi con e-mail." });
+  }
+  const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : "socio";
+  const lingua = ["it", "en", "fr", "de", "es"].includes(b.lingua) ? b.lingua : "it";
+  const n = (await db.prepare("SELECT count(*) c FROM soci").get()).c + 1;
+  const code = `BR-2026-${String(n).padStart(4, "0")}`;
+  try {
+    const info = await db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,ruolo,tipo_profilo,lingua,consenso_privacy,consenso_marketing,soggiorno_dal,soggiorno_al,attivo)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,1)`).run(
+      code,
+      nome,
+      cognome,
+      email,
+      ruolo,
+      tipo,
+      lingua,
+      1,
+      b.consenso_marketing ? 1 : 0,
+      tipo === "ospite_temporaneo" ? b.soggiorno_dal || null : null,
+      tipo === "ospite_temporaneo" ? b.soggiorno_al || null : null
+    );
+    const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(Number(info.lastInsertRowid));
+    const token = createUserSession(socio);
+    audit(code, "auto_registrazione", "soci", socio.id, tipo);
+    res.status(201).json({ token, socio: { tessera_code: socio.tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
+  } catch (e) {
+    res.status(400).json({ error: "Registrazione non riuscita" });
+  }
+});
 authUserRouter.post("/notifiche/consenso", requireUser, async (req, res) => {
   const on = req.body?.attivo ? 1 : 0;
   await db.prepare("UPDATE soci SET notifiche_push=? WHERE tessera_code=?").run(on, req.user.tessera_code);
@@ -4644,14 +4697,70 @@ authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
   }
   res.json({ collegato: true, struttura: { nome: d.nome, cir: d.cir, cin: d.cin, regole: d.regole, isolato: d.isolato, numero: d.numero, check_out: d.check_out, lat: d.lat, lng: d.lng }, soggiorno: { dal: me.soggiorno_dal, al: me.soggiorno_al } });
 });
-async function nextTesseraLocal() {
-  const n = (await db.prepare("SELECT count(*) c FROM soci").get()).c + 1;
-  return `BR-2026-${String(n).padStart(4, "0")}`;
-}
 async function myStruttureIds(meId) {
   const rows = await db.prepare("SELECT id FROM strutture WHERE socio_id=? AND attivo=1 ORDER BY id").all(meId);
   return rows.map((r) => r.id);
 }
+function notifica(socioId, titolo, corpo) {
+  return db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(socioId, "push", "sistema", titolo, corpo || null);
+}
+authUserRouter.get("/hosts-cerca", requireUser, async (req, res) => {
+  const q = "%" + String(req.query.q || "").trim().toLowerCase() + "%";
+  if (String(req.query.q || "").trim().length < 2) return res.json({ hosts: [] });
+  const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE host=1 AND tipo_profilo='residente' AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
+  res.json({ hosts: rows });
+});
+authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+  if (me.tipo_profilo !== "ospite_temporaneo") return res.status(403).json({ error: "Solo un visitatore pu\xF2 chiedere l'aggancio a una casa" });
+  const hostId = Number(req.body?.host_id);
+  const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND host=1 AND tipo_profilo='residente' AND attivo=1").get(hostId);
+  if (!host) return res.status(404).json({ error: "Host non trovato" });
+  const ex = await db.prepare("SELECT id FROM richieste_aggancio WHERE ospite_id=? AND stato='in_attesa'").get(me.id);
+  if (ex) return res.status(409).json({ error: "Hai gi\xE0 una richiesta in attesa" });
+  const info = await db.prepare("INSERT INTO richieste_aggancio (ospite_id,host_id,stato) VALUES (?,?,'in_attesa')").run(me.id, host.id);
+  notifica(host.id, "Nuovo ospite da confermare \u{1F464}", `${me.nome} ${me.cognome} dice di essere tuo ospite: confermi l'aggancio alla casa?`);
+  audit(me.tessera_code, "aggancio_richiesta", "richieste_aggancio", Number(info.lastInsertRowid), `host ${host.id}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), host: { nome: host.nome, cognome: host.cognome } });
+});
+authUserRouter.get("/aggancio/stato", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+  const r = await db.prepare("SELECT ra.id,ra.stato,ra.created_at,s.nome host_nome,s.cognome host_cognome FROM richieste_aggancio ra JOIN soci s ON s.id=ra.host_id WHERE ra.ospite_id=? ORDER BY ra.id DESC LIMIT 1").get(me.id);
+  res.json({ richiesta: r || null, collegato: !!me.struttura_id });
+});
+authUserRouter.get("/host/richieste", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const rows = await db.prepare("SELECT ra.id,ra.ospite_id,ra.created_at,s.nome,s.cognome,s.soggiorno_dal,s.soggiorno_al FROM richieste_aggancio ra JOIN soci s ON s.id=ra.ospite_id WHERE ra.host_id=? AND ra.stato='in_attesa' ORDER BY ra.id DESC").all(me.id);
+  res.json({ richieste: rows });
+});
+authUserRouter.post("/host/richieste/:id/approva", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
+  if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
+  const ids = await myStruttureIds(me.id);
+  if (!ids.length) return res.status(409).json({ error: "Aggiungi prima una struttura" });
+  const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : ids[0];
+  if (!ids.includes(sid)) return res.status(403).json({ error: "Struttura non tua" });
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await db.prepare("UPDATE richieste_aggancio SET stato='approvata',struttura_id=?,updated_at=? WHERE id=?").run(sid, now, r.id);
+  await db.prepare("UPDATE soci SET struttura_id=? WHERE id=?").run(sid, r.ospite_id);
+  notifica(r.ospite_id, "Casa confermata \u{1F3E1}", `${me.nome} ${me.cognome} ha confermato: ora vedi "Casa mia".`);
+  audit(me.tessera_code, "aggancio_approva", "richieste_aggancio", r.id, `ospite ${r.ospite_id} \u2192 struttura ${sid}`);
+  res.json({ ok: true });
+});
+authUserRouter.post("/host/richieste/:id/rifiuta", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
+  if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
+  await db.prepare("UPDATE richieste_aggancio SET stato='rifiutata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
+  audit(me.tessera_code, "aggancio_rifiuta", "richieste_aggancio", r.id, `ospite ${r.ospite_id}`);
+  res.json({ ok: true });
+});
 authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
   const me = await meSocio(req);
   if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
@@ -4661,53 +4770,19 @@ authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
   const rows = await db.prepare(`SELECT id,nome,cognome,tessera_code,struttura_id,soggiorno_dal,soggiorno_al,attivo FROM soci WHERE tipo_profilo='ospite_temporaneo' AND struttura_id IN (${ph}) ORDER BY id DESC`).all(...ids);
   res.json({ ospiti: rows });
 });
-authUserRouter.post("/host/ospiti", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const b = req.body || {};
-  if (!String(b.nome || "").trim() || !String(b.cognome || "").trim()) return res.status(400).json({ error: "Nome e cognome del visitatore sono obbligatori" });
-  const ids = await myStruttureIds(me.id);
-  if (!ids.length) return res.status(409).json({ error: "Aggiungi prima una struttura" });
-  const sid = b.struttura_id ? Number(b.struttura_id) : ids[0];
-  if (!ids.includes(sid)) return res.status(403).json({ error: "Struttura non tua" });
-  const code = await nextTesseraLocal();
-  try {
-    const info = await db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,ruolo,tipo_profilo,struttura_id,lingua,consenso_privacy,soggiorno_dal,soggiorno_al,attivo)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,1)`).run(
-      code,
-      String(b.nome).trim(),
-      String(b.cognome).trim(),
-      b.email || null,
-      "non_socio",
-      "ospite_temporaneo",
-      sid,
-      me.lingua || "it",
-      1,
-      b.soggiorno_dal || null,
-      b.soggiorno_al || null
-    );
-    audit(me.tessera_code, "host_crea_visitatore", "soci", Number(info.lastInsertRowid), code);
-    res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), tessera_code: code });
-  } catch (e) {
-    res.status(400).json({ error: "Impossibile creare il visitatore" });
-  }
-});
-authUserRouter.delete("/host/ospiti/:id", requireUser, async (req, res) => {
+authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) => {
   const me = await meSocio(req);
   if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const ids = await myStruttureIds(me.id);
-  const g = await db.prepare("SELECT id,struttura_id,tessera_code FROM soci WHERE id=? AND tipo_profilo='ospite_temporaneo'").get(req.params.id);
+  const g = await db.prepare("SELECT id,struttura_id FROM soci WHERE id=? AND tipo_profilo='ospite_temporaneo'").get(req.params.id);
   if (!g || !ids.includes(g.struttura_id)) return res.status(404).json({ error: "Visitatore non trovato" });
-  await db.prepare("DELETE FROM convocazioni WHERE socio_id=?").run(g.id);
-  await db.prepare("DELETE FROM prenotazioni WHERE socio_id=?").run(g.id);
-  await db.prepare("DELETE FROM notifiche WHERE socio_id=?").run(g.id);
-  await db.prepare("DELETE FROM soci WHERE id=?").run(g.id);
-  audit(me.tessera_code, "host_elimina_visitatore", "soci", g.id, g.tessera_code);
+  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE id=?").run(g.id);
+  audit(me.tessera_code, "aggancio_scollega", "soci", g.id);
   res.json({ ok: true });
 });
 
 // server/version.js
-var VERSION = "4.20";
+var VERSION = "4.21";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -4968,6 +5043,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       <input id="gate_tess" placeholder="es. BR-2026-0001" autocapitalize="characters" autocomplete="off">
       <button class="btn gold block" id="gate_enter" style="margin-top:12px">Entra</button>
       <button class="btn ghost block" id="gate_email" style="margin-top:8px">Non ho la tessera \xB7 accedi con e-mail</button>
+      <button class="btn navy block" id="gate_register" style="margin-top:8px">\u2728 Non hai un account? Registrati</button>
       <button class="gate-demo" id="gate_demo">Guarda in anteprima (demo)</button>
     </div>
   </div>
@@ -5360,53 +5436,46 @@ async function openLeMieCase() {
     ? \`<div class="matchrow"><div style="flex:1"><b>\u26A0\uFE0F \${T('Dati della struttura non disponibili')}</b></div></div>\`
     : \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\u{1F3E1} \${esc(st.nome)}</b><div class="ct">\${T('Orario di check-out')} \${esc(st.check_out||'\u2014')} \xB7 CIR \${esc(st.cir||'\u2014')}</div></div><div style="display:flex; gap:6px"><button class="btn ghost sm" data-strutt-edit="\${st.id}">\${T('Modifica')}</button><button class="btn danger sm" data-strutt-del="\${st.id}">\u{1F5D1}</button></div></div>\`).join('');
   window.__strutture = (d.strutture || []).filter(x => !x.ko);
-  // Visitatori collegati alle mie strutture (li crea e li gestisce l'host).
-  let ospiti = [];
+  // Richieste di aggancio in attesa (le manda il visitatore che si \xE8 auto-registrato) + visitatori gi\xE0 collegati.
+  let richieste = [], ospiti = [];
+  try { richieste = (await api('/auth/host/richieste')).richieste || []; } catch { richieste = []; }
   try { ospiti = (await api('/auth/host/ospiti')).ospiti || []; } catch { ospiti = []; }
   const nomeStrutt = (id) => { const s = (window.__strutture || []).find(x => String(x.id) === String(id)); return s ? s.nome : ''; };
-  const ospList = ospiti.map(o => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\u{1F464} \${esc(o.nome)} \${esc(o.cognome)}</b><div class="ct">\${T('Codice')} <b>\${esc(o.tessera_code)}</b>\${o.struttura_id?' \xB7 \u{1F3E1} '+esc(nomeStrutt(o.struttura_id)):''}\${o.soggiorno_dal?' \xB7 '+esc(o.soggiorno_dal)+(o.soggiorno_al?' \u2192 '+esc(o.soggiorno_al):''):''}</div></div><div style="display:flex; gap:6px"><button class="btn danger sm" data-osp-del="\${o.id}">\u{1F5D1}</button></div></div>\`).join('');
-  const canInvite = (window.__strutture || []).length > 0;
+  const reqList = richieste.map(r => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\u{1F464} \${esc(r.nome)} \${esc(r.cognome)}</b><div class="ct">\${T('dice di essere tuo ospite')}\${r.soggiorno_dal?' \xB7 '+esc(r.soggiorno_dal)+(r.soggiorno_al?' \u2192 '+esc(r.soggiorno_al):''):''}</div></div><div style="display:flex; gap:6px"><button class="btn gold sm" data-req-ok="\${r.id}">\u2713 \${T('Conferma')}</button><button class="btn ghost sm" data-req-no="\${r.id}">\u2715</button></div></div>\`).join('');
+  const ospList = ospiti.map(o => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\u{1F464} \${esc(o.nome)} \${esc(o.cognome)}</b><div class="ct">\${o.struttura_id?'\u{1F3E1} '+esc(nomeStrutt(o.struttura_id)):''}\${o.soggiorno_dal?' \xB7 '+esc(o.soggiorno_dal)+(o.soggiorno_al?' \u2192 '+esc(o.soggiorno_al):''):''}</div></div><div style="display:flex; gap:6px"><button class="btn ghost sm" data-osp-scollega="\${o.id}">\${T('Scollega')}</button></div></div>\`).join('');
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F511} \${T('Le mie case')}</div><h2>\${T('Le tue strutture')}</h2>
     <p class="sub">\${T('Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.')}</p>
     <div class="card" style="padding:4px 14px">\${list || \`<p class="tiny muted" style="padding:8px 0">\${T('Non hai ancora aggiunto strutture.')}</p>\`}</div>
     \${(d.strutture||[]).length < 3 ? \`<button class="btn gold block" style="margin-top:10px" data-strutt-new="">+ \${T('Aggiungi struttura')}</button>\` : ''}
+    \${richieste.length ? \`<div class="sect-title" style="margin-top:16px">\${T('Richieste in attesa')}</div>
+    <p class="sub">\${T('Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.')}</p>
+    <div class="card" style="padding:4px 14px">\${reqList}</div>\` : ''}
     <div class="sect-title" style="margin-top:16px">\${T('I miei visitatori')}</div>
-    <p class="sub">\${T('Crea qui i tuoi visitatori: escono gi\xE0 collegati alla casa e vedranno "Casa mia". Condividi con loro il codice per accedere.')}</p>
-    <div class="card" style="padding:4px 14px">\${ospList || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessun visitatore ancora.')}</p>\`}</div>
-    \${canInvite ? \`<button class="btn navy block" style="margin-top:10px" data-osp-new="">+ \${T('Invita visitatore')}</button>\` : \`<p class="tiny muted" style="margin-top:8px">\${T('Aggiungi prima una struttura per invitare visitatori.')}</p>\`}
+    <p class="sub">\${T('Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.')}</p>
+    <div class="card" style="padding:4px 14px">\${ospList || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessun visitatore collegato.')}</p>\`}</div>
     <button class="btn ghost block" style="margin-top:12px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
-function openOspiteForm() {
+async function hostApprova(id) {
   const strutture = window.__strutture || [];
-  const picker = strutture.length > 1
-    ? \`<div class="field"><label>\${T('Casa')}</label><select id="op_strutt" style="width:100%; padding:8px 10px; border:1px solid #cbd2d8; border-radius:9px">\${strutture.map(s => \`<option value="\${s.id}">\${esc(s.nome)}</option>\`).join('')}</select></div>\`
-    : '';
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F464} \${T('Invita visitatore')}</div><h2>\${T('Nuovo visitatore')}</h2>
-    <div class="row" style="gap:8px"><div class="field" style="flex:1"><label>\${T('Nome')}</label><input id="op_nome"></div><div class="field" style="flex:1"><label>\${T('Cognome')}</label><input id="op_cognome"></div></div>
-    <div class="field"><label>Email</label><input id="op_email" type="email" placeholder="(\${T('facoltativa')})"></div>
-    \${picker}
-    <div class="row" style="gap:8px"><div class="field" style="flex:1"><label>\${T('Soggiorno dal')}</label><input id="op_dal" type="date"></div><div class="field" style="flex:1"><label>\${T('al')}</label><input id="op_al" type="date"></div></div>
-    <button class="btn gold block" data-osp-save="">\${T('Crea visitatore')}</button>
-    <button class="btn ghost block" style="margin-top:8px" data-lemiecase="">\${T('Annulla')}</button>\`);
-  showOv();
+  let sid = strutture[0] && strutture[0].id;
+  if (strutture.length > 1) {
+    const nomi = strutture.map((s, i) => \`\${i + 1}. \${s.nome}\`).join('\\n');
+    const pick = prompt(T('A quale casa lo colleghi?') + '\\n' + nomi, '1');
+    const idx = Math.max(1, Math.min(strutture.length, parseInt(pick || '1', 10))) - 1;
+    sid = strutture[idx].id;
+  }
+  try { await api('/auth/host/richieste/' + id + '/approva', { method: 'POST', body: JSON.stringify({ struttura_id: sid }) }); }
+  catch (e) { okThen(e.message || 'Errore', false); return; }
+  okThen(T('Ospite collegato')); openLeMieCase();
 }
-async function ospiteSalva() {
-  const g = (k) => (document.getElementById('op_' + k) || {}).value || '';
-  const body = { nome: g('nome'), cognome: g('cognome'), email: g('email'), soggiorno_dal: g('dal'), soggiorno_al: g('al') };
-  const sp = document.getElementById('op_strutt'); if (sp) body.struttura_id = sp.value;
-  if (!body.nome.trim() || !body.cognome.trim()) { okThen(T('Nome e cognome del visitatore sono obbligatori'), false); return; }
-  let r; try { r = await api('/auth/host/ospiti', { method: 'POST', body: JSON.stringify(body) }); } catch (e) { okThen('Errore', false); return; }
-  // Mostra il codice d'accesso da consegnare al visitatore.
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u2705 \${T('Visitatore creato')}</div><h2>\${esc(body.nome)} \${esc(body.cognome)}</h2>
-    <p class="sub">\${T('Comunica al visitatore questo codice: gli serve per accedere e vedere \xABCasa mia\xBB.')}</p>
-    <div class="card" style="text-align:center;padding:16px"><div class="tiny muted">\${T('Codice di accesso')}</div><div style="font-size:1.6rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(r.tessera_code)}</div></div>
-    <button class="btn gold block" style="margin-top:10px" data-lemiecase="">\${T('Fine')}</button>\`);
-  showOv();
+async function hostRifiuta(id) {
+  try { await api('/auth/host/richieste/' + id + '/rifiuta', { method: 'POST', body: JSON.stringify({}) }); } catch { okThen('Errore', false); return; }
+  openLeMieCase();
 }
-async function ospiteElimina(id) {
-  if (!confirm(T('Rimuovere questo visitatore?'))) return;
-  try { await api('/auth/host/ospiti/' + id, { method: 'DELETE' }); } catch { okThen('Errore', false); return; }
+async function ospiteScollega(id) {
+  if (!confirm(T('Scollegare questo visitatore dalla casa?'))) return;
+  try { await api('/auth/host/ospiti/' + id + '/scollega', { method: 'POST', body: JSON.stringify({}) }); } catch { okThen('Errore', false); return; }
   openLeMieCase();
 }
 function openStrutturaForm(id) {
@@ -5593,6 +5662,88 @@ async function loginTessera() {
 function demoPreview() {   // solo per anteprima: usa la tessera demo e i dati SEED se offline
   state.tessera = 'BR-2026-0001'; store.set('tessera', state.tessera);
   hideGate(); enterApp();
+}
+
+// ---- Registrazione guidata (porta d'ingresso dal QR) ----
+let REG = {};
+function startRegistrazione() { REG = {}; regProfilo(); showOv(); }
+function regProfilo() {
+  const opt = (val, emoji, tit, desc) => \`<div class="card" role="button" tabindex="0" data-reg-tipo="\${val}" style="display:flex;gap:12px;align-items:center;margin-bottom:8px"><div style="font-size:1.5rem">\${emoji}</div><div style="flex:1"><b>\${tit}</b><p class="tiny muted">\${desc}</p></div><span style="font-size:1.2rem">\u203A</span></div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u2728 \${T('Registrati')}</div><h2>\${T('Chi sei?')}</h2>
+    <p class="sub">\${T('Rispondi e l\\'app trova il profilo giusto per te.')}</p>
+    \${opt('socio', '\u{1F3AB}', T('Sono socio KOIN\xC8'), T('Tesserato: casata, Coppa, inviti.'))}
+    \${opt('residente', '\u{1F3E0}', T('Sono residente'), T('Vivo nel residence; posso gestire case vacanza.'))}
+    \${opt('ospite_temporaneo', '\u{1F9F3}', T('Sono in vacanza (visitatore)'), T('Ospite temporaneo: ti colleghi alla casa del tuo host.'))}
+    <button class="btn ghost block" style="margin-top:8px" data-reg-cancel>\${T('Ho gi\xE0 un account')}</button>\`);
+}
+function regDati(tipo) {
+  REG.tipo = tipo;
+  const osp = tipo === 'ospite_temporaneo';
+  const f = (id, lbl, type) => \`<div class="field"><label>\${lbl}</label><input id="\${id}" \${type ? 'type="' + type + '"' : ''}></div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u2728 \${T('Registrati')}</div><h2>\${T('I tuoi dati')}</h2>
+    <div class="row" style="gap:8px"><div class="field" style="flex:1"><label>\${T('Nome')}</label><input id="reg_nome"></div><div class="field" style="flex:1"><label>\${T('Cognome')}</label><input id="reg_cognome"></div></div>
+    \${f('reg_email', 'Email', 'email')}
+    <p class="tiny muted" style="margin-top:-4px">\${T('Serve per accedere di nuovo con un codice via e-mail.')}</p>
+    \${osp ? \`<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>\${T('Soggiorno dal')}</label><input id="reg_dal" type="date"></div><div class="field" style="flex:1"><label>\${T('al')}</label><input id="reg_al" type="date"></div></div>\` : ''}
+    <label class="check" style="margin-top:6px"><input type="checkbox" id="reg_privacy"> \${T('Accetto il trattamento dei dati (privacy)')}</label>
+    <div class="reg-err tiny" id="regErr" style="color:#c0392b"></div>
+    <button class="btn gold block" style="margin-top:8px" data-reg-save>\${T('Crea profilo')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-reg-back>\${T('Indietro')}</button>\`);
+}
+async function regSalva() {
+  const g = (k) => (document.getElementById('reg_' + k) || {}).value || '';
+  const err = $('#regErr'); if (err) err.textContent = '';
+  const body = { tipo_profilo: REG.tipo, nome: g('nome'), cognome: g('cognome'), email: g('email'), lingua: state.lang || 'it', consenso_privacy: $('#reg_privacy') && $('#reg_privacy').checked };
+  if (REG.tipo === 'ospite_temporaneo') { body.soggiorno_dal = g('dal'); body.soggiorno_al = g('al'); }
+  if (!body.nome.trim() || !body.cognome.trim()) { if (err) err.textContent = T('Nome e cognome obbligatori'); return; }
+  if (!body.consenso_privacy) { if (err) err.textContent = T('Il consenso privacy \xE8 necessario per registrarsi'); return; }
+  let r;
+  try { r = await api('/auth/registrazione', { method: 'POST', body: JSON.stringify(body) }); }
+  catch (e) { if (err) err.textContent = e.message || T('Registrazione non riuscita'); return; }
+  // auto-login
+  state.token = r.token; state.tessera = r.socio.tessera_code; state.authed = true;
+  store.set('token', r.token); store.set('tessera', r.socio.tessera_code);
+  REG.code = r.socio.tessera_code;
+  await enterApp();
+  if (REG.tipo === 'ospite_temporaneo') regHost(); else regFine();
+}
+function regFine() {
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u2705 \${T('Tutto pronto')}</div><h2>\${T('Benvenuto!')}</h2>
+    <p class="sub">\${T('Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:')}</p>
+    <div class="card" style="text-align:center;padding:14px"><div class="tiny muted">\${T('Codice di accesso')}</div><div style="font-size:1.5rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(REG.code || '')}</div></div>
+    <button class="btn gold block" style="margin-top:10px" data-close>\${T('Inizia')}</button>\`);
+}
+function regHost() {
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F3E1} \${T('Il tuo host')}</div><h2>\${T('Conosci il tuo host?')}</h2>
+    <p class="sub">\${T('Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai "Casa mia".')}</p>
+    <div class="field"><label>\${T('Nome o cognome dell\\'host')}</label><input id="reg_hq" placeholder="\${T('es. Chiara')}" autocomplete="off"></div>
+    <div id="reg_hres"></div>
+    <button class="btn ghost block" style="margin-top:8px" data-reg-skiphost>\${T('Non lo conosco ora \xB7 salta')}</button>\`);
+  const inp = $('#reg_hq');
+  if (inp) { inp.oninput = () => regHostCerca(inp.value); setTimeout(() => inp.focus(), 60); }
+}
+let _regHTimer = null;
+function regHostCerca(q) {
+  clearTimeout(_regHTimer);
+  _regHTimer = setTimeout(async () => {
+    const box = $('#reg_hres'); if (!box) return;
+    if ((q || '').trim().length < 2) { box.innerHTML = ''; return; }
+    let hosts = [];
+    try { hosts = (await api('/auth/hosts-cerca?q=' + encodeURIComponent(q))).hosts || []; } catch {}
+    box.innerHTML = hosts.length
+      ? '<div class="card" style="padding:4px 14px">' + hosts.map(h => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\${esc(h.nome)} \${esc(h.cognome)}</b></div><button class="btn gold sm" data-reg-host="\${h.id}">\${T('\xC8 lui/lei')}</button></div>\`).join('') + '</div>'
+      : \`<p class="tiny muted" style="padding:6px 0">\${T('Nessun host trovato con questo nome.')}</p>\`;
+  }, 220);
+}
+async function regInviaRichiesta(hostId) {
+  let r;
+  try { r = await api('/auth/aggancio/richiesta', { method: 'POST', body: JSON.stringify({ host_id: Number(hostId) }) }); }
+  catch (e) { okThen(e.message || 'Errore', false); return; }
+  const nome = r.host ? (r.host.nome + ' ' + r.host.cognome) : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4E8} \${T('Richiesta inviata')}</div><h2>\${T('In attesa di conferma')}</h2>
+    <p class="sub">\${T('Abbiamo avvisato')} <b>\${esc(nome)}</b>. \${T('Quando confermer\xE0, comparir\xE0 "Casa mia" con tutte le indicazioni della struttura.')}</p>
+    <div class="card" style="text-align:center;padding:14px"><div class="tiny muted">\${T('Il tuo codice di accesso')}</div><div style="font-size:1.4rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(REG.code || '')}</div></div>
+    <button class="btn gold block" style="margin-top:10px" data-close>\${T('Inizia')}</button>\`);
 }
 function logoutUser() {
   state.token = null; state.tessera = null; state.authed = false; state.socio = null;
@@ -6216,7 +6367,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-new],[data-osp-save],[data-osp-del],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -6238,9 +6389,15 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.struttEdit) return openStrutturaForm(t.dataset.struttEdit);
   if (t.dataset.struttDel) return strutturaElimina(t.dataset.struttDel);
   if (t.dataset.struttNew != null) return openStrutturaForm();
-  if (t.dataset.ospNew != null) return openOspiteForm();
-  if (t.dataset.ospSave != null) return ospiteSalva();
-  if (t.dataset.ospDel) return ospiteElimina(t.dataset.ospDel);
+  if (t.dataset.ospScollega) return ospiteScollega(t.dataset.ospScollega);
+  if (t.dataset.regTipo) return regDati(t.dataset.regTipo);
+  if (t.dataset.regCancel != null) { closeOv(); showGate(); return; }
+  if (t.dataset.regSave != null) return regSalva();
+  if (t.dataset.regBack != null) return regProfilo();
+  if (t.dataset.regHost) return regInviaRichiesta(t.dataset.regHost);
+  if (t.dataset.regSkiphost != null) return regFine();
+  if (t.dataset.reqOk) return hostApprova(t.dataset.reqOk);
+  if (t.dataset.reqNo) return hostRifiuta(t.dataset.reqNo);
   if (t.dataset.struttSave != null) return strutturaSalva(t.dataset.struttSave);
   if (t.dataset.campi != null) return openCampi();
   if (t.dataset.partite != null) return openPartiteAperte();
@@ -6300,6 +6457,7 @@ function bindGate() {
   const enter = $('#gate_enter'); if (enter) enter.addEventListener('click', loginTessera);
   const tess = $('#gate_tess'); if (tess) tess.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginTessera(); });
   const email = $('#gate_email'); if (email) email.addEventListener('click', () => { hideGate(); openLoginOtp(); });
+  const reg = $('#gate_register'); if (reg) reg.addEventListener('click', () => { hideGate(); startRegistrazione(); });
   const demo = $('#gate_demo'); if (demo) demo.addEventListener('click', demoPreview);
 }
 init();
@@ -6662,7 +6820,7 @@ async function editSocio(s, all) {
       <div id="dalWrap"><label>Soggiorno dal</label><input id="f_dal" type="date" value="\${esc(s?.soggiorno_dal||'')}"></div>
       <div id="alWrap"><label>Soggiorno al</label><input id="f_al" type="date" value="\${esc(s?.soggiorno_al||'')}"></div>
     </div>
-    <p class="muted" id="ospitenote" style="display:none">Visitatore (non socio): profilo temporaneo con periodo di soggiorno (dal / al) e nessuna tessera annuale. <b>L'aggancio a una casa vacanza avviene solo se lo crea il residente host dalla sua app</b> ("Le mie case"): quel visitatore vedr\xE0 "Casa mia". Un visitatore creato qui dal back office resta senza casa collegata e non vedr\xE0 le indicazioni della struttura.</p>
+    <p class="muted" id="ospitenote" style="display:none">Visitatore (non socio): profilo temporaneo con periodo di soggiorno (dal / al) e nessuna tessera annuale. <b>L'aggancio a una casa vacanza avviene su consenso</b>: il visitatore si registra dall'app, cerca il proprio host per nome e invia una richiesta; l'host la conferma dalla sua app ("Le mie case") e solo allora il visitatore vede "Casa mia". Un visitatore creato o modificato qui dal back office resta senza casa collegata.</p>
     <label class="check"><input type="checkbox" id="f_privacy" \${(!s||s.consenso_privacy)?'checked':''}> Consenso privacy (necessario)</label>
     <label class="check"><input type="checkbox" id="f_mktg" \${s?.consenso_marketing?'checked':''}> Consenso comunicazioni marketing</label>
     <label class="check"><input type="checkbox" id="f_foto" \${s?.consenso_foto?'checked':''}> Consenso uso immagini eventi</label>
@@ -7934,7 +8092,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 09:41" : "online";
+var BUILD = true ? "2026-08-16 09:58" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
