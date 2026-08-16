@@ -4732,9 +4732,12 @@ function pickStruttura2(b) {
 async function meSocio(req) {
   return db.prepare("SELECT * FROM soci WHERE id=? AND attivo=1").get(req.user.id);
 }
+function canHost(me) {
+  return !!me && (me.host === 1 || ["residente", "socio_residente"].includes(me.tipo_profilo));
+}
 authUserRouter.get("/host/strutture", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(me.id);
   let ko = false;
   const strutture = rows.map((r) => {
@@ -4749,22 +4752,23 @@ authUserRouter.get("/host/strutture", requireUser, async (req, res) => {
     await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
     audit(me.tessera_code, "host_KO", "strutture", me.id, "integrit\xE0 non verificabile");
   }
-  res.json({ host: 1, max: 3, host_ko: ko ? 1 : me.host_ko, strutture });
+  res.json({ host: me.host ? 1 : 0, max: 3, host_ko: ko ? 1 : me.host_ko, strutture });
 });
 authUserRouter.post("/host/strutture", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(me.id)).n;
   if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
   const b = req.body || {};
   if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Il nome della struttura \xE8 obbligatorio" });
   const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(me.id, encryptJSON(pickStruttura2(b)));
+  if (!me.host) await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(me.id);
   audit(me.tessera_code, "host_crea_struttura", "strutture", info.lastInsertRowid);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
 authUserRouter.put("/host/strutture/:id", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
   if (!st) return res.status(404).json({ error: "Struttura non trovata" });
   const b = req.body || {};
@@ -4774,7 +4778,7 @@ authUserRouter.put("/host/strutture/:id", requireUser, async (req, res) => {
 });
 authUserRouter.delete("/host/strutture/:id", requireUser, async (req, res) => {
   const me = await meSocio(req);
-  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
   const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
   if (!st) return res.status(404).json({ error: "Struttura non trovata" });
   await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
@@ -4881,7 +4885,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.28";
+var VERSION = "4.29";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5630,10 +5634,32 @@ function openBooking(kind) {
 // ---- Host / Casa mia ----
 function hostCardsHTML() {
   const s = state.socio || {};
+  const t = s.tipo_profilo;
   let out = '';
   if (s.ha_casa) out += \`<div class="card" role="button" tabindex="0" data-casamia="" style="display:flex; align-items:center; gap:12px; background:linear-gradient(135deg,#12324F,#256b65); color:#fff; border:none; margin-bottom:10px"><div style="font-size:1.5rem">\u{1F3E1}</div><div style="flex:1"><b>\${T('Casa mia')}</b><p class="tiny" style="opacity:.9">\${T('Come raggiungere la casa e le regole del soggiorno.')}</p></div><span style="font-size:1.2rem">\u203A</span></div>\`;
-  if (s.is_host) out += \`<div class="card" role="button" tabindex="0" data-lemiecase="" style="display:flex; align-items:center; gap:12px; margin-bottom:10px"><div style="font-size:1.5rem; color:var(--gold)">\u{1F511}</div><div style="flex:1"><b>\${T('Le mie case')}</b><p class="tiny muted">\${T('Gestisci le case vacanza che ospiti nel residence.')}</p></div><button class="btn navy sm" data-lemiecase="">\${T('Apri')}</button></div>\`;
+  // Visitatore non ancora collegato: qui indica chi lo ospita (campo di ricerca dell'host).
+  if (t === 'ospite_temporaneo' && !s.ha_casa) out += \`<div class="card" role="button" tabindex="0" data-collega="" style="display:flex; align-items:center; gap:12px; margin-bottom:10px"><div style="font-size:1.5rem">\u{1F3E1}</div><div style="flex:1"><b>\${T('Collega la tua casa')}</b><p class="tiny muted">\${T('Indica chi ti ospita per vedere indicazioni e regole del soggiorno.')}</p></div><button class="btn navy sm" data-collega="">\${T('Collega')}</button></div>\`;
+  // Host attivo OPPURE Residente/Socio-residente che pu\xF2 diventarlo (aggiungendo la prima casa).
+  if (s.is_host || ['residente', 'socio_residente'].includes(t)) out += \`<div class="card" role="button" tabindex="0" data-lemiecase="" style="display:flex; align-items:center; gap:12px; margin-bottom:10px"><div style="font-size:1.5rem; color:var(--gold)">\u{1F511}</div><div style="flex:1"><b>\${T('Le mie case')}</b><p class="tiny muted">\${s.is_host ? T('Gestisci le case vacanza che ospiti nel residence.') : T('Aggiungi la tua casa vacanza: potrai accogliere i visitatori.')}</p></div><button class="btn navy sm" data-lemiecase="">\${T('Apri')}</button></div>\`;
   return out;
+}
+// Visitatore: cerca il proprio host e invia la richiesta (stesso flusso della registrazione, ma sempre disponibile).
+async function openCollegaHost() {
+  let st = null; try { st = await api('/auth/aggancio/stato'); } catch {}
+  if (st && st.richiesta && st.richiesta.stato === 'in_attesa') {
+    const hn = (st.richiesta.host_nome || '') + ' ' + (st.richiesta.host_cognome || '');
+    setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4E8} \${T('Richiesta inviata')}</div><h2>\${T('In attesa di conferma')}</h2>
+      <p class="sub">\${T('Abbiamo avvisato')} <b>\${esc(hn.trim())}</b>. \${T('Quando confermer\xE0, comparir\xE0 "Casa mia" con tutte le indicazioni della struttura.')}</p>
+      <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+    showOv(); return;
+  }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F3E1} \${T('Il tuo host')}</div><h2>\${T('Chi ti ospita?')}</h2>
+    <p class="sub">\${T('Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai "Casa mia".')}</p>
+    <div class="field"><label>\${T('Nome o cognome dell\\'host')}</label><input id="reg_hq" placeholder="\${T('es. Chiara')}" autocomplete="off"></div>
+    <div id="reg_hres"></div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+  const inp = $('#reg_hq'); if (inp) { inp.oninput = () => regHostCerca(inp.value); setTimeout(() => inp.focus(), 60); }
 }
 async function openCasaMia() {
   let d;
@@ -6070,12 +6096,14 @@ async function regInviaRichiesta(hostId) {
   try { r = await api('/auth/aggancio/richiesta', { method: 'POST', body: JSON.stringify({ host_id: Number(hostId) }) }); }
   catch (e) { okThen(e.message || 'Errore', false); return; }
   const nome = r.host ? (r.host.nome + ' ' + r.host.cognome) : '';
+  const isReg = !!REG.code;   // durante la registrazione mostro anche codice + installazione; fuori no.
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4E8} \${T('Richiesta inviata')}</div><h2>\${T('In attesa di conferma')}</h2>
     <p class="sub">\${T('Abbiamo avvisato')} <b>\${esc(nome)}</b>. \${T('Quando confermer\xE0, comparir\xE0 "Casa mia" con tutte le indicazioni della struttura.')}</p>
-    <div class="card" style="text-align:center;padding:14px"><div class="tiny muted">\${T('Il tuo codice di accesso')}</div><div style="font-size:1.4rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(REG.code || '')}</div></div>
+    \${isReg ? \`<div class="card" style="text-align:center;padding:14px"><div class="tiny muted">\${T('Il tuo codice di accesso')}</div><div style="font-size:1.4rem;font-weight:800;letter-spacing:1px;color:var(--navy)">\${esc(REG.code || '')}</div></div>
     <button class="btn gold block" style="margin-top:10px" data-savecard>\u{1F4BE} \${T('Salva la tua tessera (immagine)')}</button>
-    \${installHintHTML()}
-    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Inizia')}</button>\`);
+    \${installHintHTML()}\` : ''}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${isReg ? T('Inizia') : T('Fatto')}</button>\`);
+  showOv();
 }
 function logoutUser() {
   state.token = null; state.tessera = null; state.authed = false; state.socio = null;
@@ -6699,7 +6727,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -6718,6 +6746,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.open != null) return openEvent(t.dataset.open);
   if (t.dataset.casamia != null) return openCasaMia();
   if (t.dataset.lemiecase != null) return openLeMieCase();
+  if (t.dataset.collega != null) return openCollegaHost();
   if (t.dataset.struttEdit) return openStrutturaForm(t.dataset.struttEdit);
   if (t.dataset.struttDel) return strutturaElimina(t.dataset.struttDel);
   if (t.dataset.struttNew != null) return openStrutturaForm();
@@ -8764,7 +8793,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 12:51" : "online";
+var BUILD = true ? "2026-08-16 13:00" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
