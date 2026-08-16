@@ -539,6 +539,18 @@ async function initSchema() {
   CREATE INDEX IF NOT EXISTS ix_part_slot ON partite_aperte(campo_id, data, slot);
   CREATE INDEX IF NOT EXISTS ix_part_isc ON partita_iscritti(partita_id);
 
+  -- ====== HOST: case vacanza (dati sensibili CIFRATI a riposo, AES-256-GCM) ======
+  -- In chiaro nel DB restano solo id, socio_id, attivo, created_at.
+  -- Tutto il resto (nome, cir, cin, regole, isolato, numero, check_out, lat, lng) \xE8 dentro dati_cifrati.
+  CREATE TABLE IF NOT EXISTS strutture (
+    id           INTEGER PRIMARY KEY,
+    socio_id     INTEGER NOT NULL REFERENCES soci(id) ON DELETE CASCADE,
+    dati_cifrati TEXT NOT NULL,                            -- AES-256-GCM (base64): iv+tag+ciphertext
+    attivo       INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_strutture_socio ON strutture(socio_id);
+
   CREATE INDEX IF NOT EXISTS ix_soci_casata ON soci(casata_id);
   CREATE INDEX IF NOT EXISTS ix_cdc_conte ON cdc_caffe_conte(data);
   CREATE INDEX IF NOT EXISTS ix_cdc_prestiti ON cdc_prestiti(created_at);
@@ -571,6 +583,11 @@ async function migrate() {
   await addIfMissing("discipline", "regolamento", "regolamento TEXT");
   await addIfMissing("menu_articoli", "descrizione", "descrizione TEXT");
   await addIfMissing("menu_articoli", "allergeni", "allergeni TEXT");
+  await addIfMissing("soci", "host", "host INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("soci", "struttura_id", "struttura_id INTEGER");
+  await addIfMissing("soci", "host_ko", "host_ko INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("comande", "metodo_pagamento", "metodo_pagamento TEXT");
+  await addIfMissing("comande", "pagata_at", "pagata_at TEXT");
   try {
     await db.exec("UPDATE soci SET tipo_profilo='residente' WHERE tipo_profilo='visitatore'");
   } catch (_) {
@@ -806,6 +823,42 @@ async function getTabellone(disciplinaId) {
   return { gironi, finali, completo: tuttiGiocati };
 }
 
+// server/crypto.js
+import crypto from "node:crypto";
+var RAW = process.env.KOINE_ENC_KEY || "";
+var ENC_IS_DEV_KEY = !RAW;
+var KEYSOURCE = RAW || "KOINE-DEV-ENC-KEY-do-not-use-in-produzione";
+var KEY = crypto.createHash("sha256").update(KEYSOURCE, "utf8").digest();
+if (ENC_IS_DEV_KEY && (process.env.KOINE_ENV || "dev") === "prod") {
+  console.warn("[crypto] ATTENZIONE: KOINE_ENC_KEY non impostata in produzione \u2014 i dati host userebbero una chiave di sviluppo.");
+}
+function encryptJSON(obj) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", KEY, iv);
+  const pt = Buffer.from(JSON.stringify(obj), "utf8");
+  const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, ct]).toString("base64");
+}
+function decryptJSON(blob) {
+  const buf = Buffer.from(String(blob || ""), "base64");
+  if (buf.length < 28) throw new Error("blob cifrato non valido");
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const ct = buf.subarray(28);
+  const d = crypto.createDecipheriv("aes-256-gcm", KEY, iv);
+  d.setAuthTag(tag);
+  const pt = Buffer.concat([d.update(ct), d.final()]);
+  return JSON.parse(pt.toString("utf8"));
+}
+function tryDecryptJSON(blob) {
+  try {
+    return decryptJSON(blob);
+  } catch (_) {
+    return null;
+  }
+}
+
 // server/seed.js
 var force = process.argv.includes("--force");
 async function seed({ verbose = false } = {}) {
@@ -816,7 +869,7 @@ async function seed({ verbose = false } = {}) {
     return;
   }
   if (force) {
-    for (const t of ["audit_log", "allegati", "partita_iscritti", "partite_aperte", "prenotazioni_campo", "campi", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
+    for (const t of ["audit_log", "allegati", "strutture", "partita_iscritti", "partite_aperte", "prenotazioni_campo", "campi", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
       await db.exec(`DELETE FROM ${t};`);
     }
   }
@@ -1072,7 +1125,20 @@ async function seed({ verbose = false } = {}) {
   await insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
   await insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
   await db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='BR-2026-0005'").run();
-  await insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30");
+  const residenteId = Number((await insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30")).lastInsertRowid);
+  await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(residenteId);
+  const struttInfo = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(residenteId, encryptJSON({
+    nome: "Villa Aretusa",
+    cir: "CIR-19091-BEA-00123",
+    cin: "IT089017C2X9ABC123",
+    regole: "Check-out entro le 10:00. Silenzio dopo le 23. Rifiuti secondo il calendario del residence. Vietato fumare all'interno. Animali ammessi su richiesta.",
+    isolato: "B",
+    numero: "14",
+    check_out: "10:00",
+    lat: 37.0361,
+    lng: 15.2969
+  }));
+  await db.prepare("UPDATE soci SET struttura_id=? WHERE tessera_code='BR-2026-0005'").run(Number(struttInfo.lastInsertRowid));
   const ort = casataId["Ortigia"];
   const compagni = [["Anna", "B."], ["Paolo", "C."], ["Elena", "D."], ["Davide", "F."], ["Marta", "G."], ["Sara", "L."]];
   for (let i = 0; i < compagni.length; i++) {
@@ -1300,10 +1366,13 @@ publicRouter.get("/discipline/:dominio", async (req, res) => {
   res.json(out);
 });
 publicRouter.get("/tessera/:code", async (req, res) => {
-  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,c.nome AS casata,c.colore
+  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,c.nome AS casata,c.colore
                         FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
                         WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
   if (!s) return res.status(404).json({ error: "Tessera non trovata" });
+  s.is_host = s.host ? 1 : 0;
+  s.ha_casa = s.struttura_id ? 1 : 0;
+  delete s.struttura_id;
   res.json(s);
 });
 publicRouter.get("/convocazioni/:code", async (req, res) => {
@@ -1438,6 +1507,27 @@ publicRouter.post("/prenotazioni-campo/:id/annulla", async (req, res) => {
   audit(req.body?.tessera_code || "socio", "annulla_campo", "campi", p.campo_id, `${p.data} ${p.slot}`);
   res.json({ ok: true });
 });
+async function notifyMancaUno(partitaId) {
+  try {
+    const p = await db.prepare("SELECT pa.*, c.nome AS campo_nome, c.sport FROM partite_aperte pa JOIN campi c ON c.id=pa.campo_id WHERE pa.id=?").get(partitaId);
+    if (!p || p.stato !== "aperta") return;
+    const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+    if (p.posti_totali - n !== 1) return;
+    const iscritti = new Set((await db.prepare("SELECT socio_id FROM partita_iscritti WHERE partita_id=? AND socio_id IS NOT NULL").all(p.id)).map((x) => x.socio_id));
+    const soci = await db.prepare("SELECT id FROM soci WHERE attivo=1 AND notifiche_push=1").all();
+    const titolo = "Manca 1 giocatore \u{1F3BE}";
+    const corpo = `${p.campo_nome} \xB7 ${p.data} ${p.slot}${p.livello ? " \xB7 " + p.livello : ""} \u2014 unisciti alla partita!`;
+    const ins = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+    let cnt = 0;
+    for (const s of soci) {
+      if (iscritti.has(s.id)) continue;
+      await ins.run(s.id, "push", "campi", titolo, corpo);
+      if (++cnt >= 100) break;
+    }
+    audit("sistema", "manca_uno", "campi", p.campo_id, `${cnt} avvisati`);
+  } catch (_) {
+  }
+}
 publicRouter.post("/campi/:id/partita", async (req, res) => {
   const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
   if (!campo) return res.status(404).json({ error: "Campo non trovato" });
@@ -1453,6 +1543,7 @@ publicRouter.post("/campi/:id/partita", async (req, res) => {
   await db.prepare("INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato,partita_id) VALUES (?,?,?,?,?,?,?,?,?)").run(campo.id, data, slot, "partita", socio?.id ?? null, tessera_code || null, nome, "prenotato", partitaId);
   await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(partitaId, socio?.id ?? null, tessera_code || null, nome);
   audit(tessera_code || "ospite", "apre_partita", "campi", campo.id, `${data} ${slot} \xB7 ${posti} posti`);
+  await notifyMancaUno(partitaId);
   res.status(201).json({ ok: true, partita_id: partitaId });
 });
 publicRouter.get("/campi/partite-aperte", async (req, res) => {
@@ -1482,6 +1573,7 @@ publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
   const completa = nuovi >= p.posti_totali;
   if (completa) await db.prepare("UPDATE partite_aperte SET stato='completa' WHERE id=?").run(p.id);
   audit(tessera_code || "ospite", "unisce_partita", "campi", p.campo_id, `${p.data} ${p.slot}`);
+  if (!completa) await notifyMancaUno(p.id);
   res.json({ ok: true, iscritti: nuovi, posti_totali: p.posti_totali, completa });
 });
 
@@ -2206,8 +2298,11 @@ adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) 
     await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), r.magazzino_id);
     await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore) VALUES (?,?,?,?,?)").run(r.magazzino_id, "scarico", Number(r.qta), "Comanda #" + (c.numero || c.id), req.adminUser.username);
   }
-  await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run("chiusa", (/* @__PURE__ */ new Date()).toISOString(), c.id);
-  audit(req.adminUser.username, "chiudi", "comande", c.id, "tot " + c.totale);
+  const metodi = ["contanti", "carta", "satispay", "buoni", "altro"];
+  const metodo = metodi.includes(req.body?.metodo) ? req.body.metodo : "contanti";
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await db.prepare("UPDATE comande SET stato=?,metodo_pagamento=?,pagata_at=?,updated_at=? WHERE id=?").run("chiusa", metodo, now, now, c.id);
+  audit(req.adminUser.username, "chiudi", "comande", c.id, `tot ${c.totale} \xB7 ${metodo}`);
   res.json(await comandaConRighe(c.id));
 });
 adminRouter.delete("/comande/:id", requireCap("comande"), async (req, res) => {
@@ -2224,6 +2319,83 @@ adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
     const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato!='consegnata' ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
     if (righe.length) out.push({ ...c, righe });
   }
+  res.json(out);
+});
+var HOST_FIELDS = ["nome", "cir", "cin", "regole", "isolato", "numero", "check_out", "lat", "lng"];
+function pickStruttura(b) {
+  const o = {};
+  for (const k of HOST_FIELDS) o[k] = b[k] ?? "";
+  if (o.lat !== "") o.lat = Number(o.lat);
+  if (o.lng !== "") o.lng = Number(o.lng);
+  return o;
+}
+adminRouter.get("/soci/:id/host", requireCap("utenti"), async (req, res) => {
+  const s = await db.prepare("SELECT id,host,host_ko,struttura_id,tipo_profilo FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Utente non trovato" });
+  const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(s.id);
+  let ko = false;
+  const strutture = rows.map((r) => {
+    const d = tryDecryptJSON(r.dati_cifrati);
+    if (!d) {
+      ko = true;
+      return { id: r.id, ko: true, attivo: r.attivo };
+    }
+    return { id: r.id, attivo: r.attivo, ...d };
+  });
+  if (ko) {
+    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(s.id);
+    audit(req.adminUser.username, "host_KO", "strutture", s.id, "integrit\xE0 non verificabile");
+  }
+  res.json({ host: s.host, host_ko: ko ? 1 : s.host_ko, struttura_id: s.struttura_id, tipo_profilo: s.tipo_profilo, strutture });
+});
+adminRouter.put("/soci/:id/host", requireCap("utenti"), async (req, res) => {
+  const on = req.body?.host ? 1 : 0;
+  await db.prepare("UPDATE soci SET host=? WHERE id=?").run(on, req.params.id);
+  audit(req.adminUser.username, on ? "abilita_host" : "disabilita_host", "soci", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/soci/:id/strutture", requireCap("utenti"), async (req, res) => {
+  const s = await db.prepare("SELECT id,host FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Utente non trovato" });
+  if (!s.host) return res.status(409).json({ error: "Abilita prima il flag host" });
+  const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(s.id)).n;
+  if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
+  const b = req.body || {};
+  if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Nome struttura obbligatorio" });
+  const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(s.id, encryptJSON(pickStruttura(b)));
+  audit(req.adminUser.username, "crea_struttura", "strutture", info.lastInsertRowid);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.put("/strutture/:id", requireCap("utenti"), async (req, res) => {
+  const st = await db.prepare("SELECT id FROM strutture WHERE id=?").get(req.params.id);
+  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
+  const b = req.body || {};
+  await db.prepare("UPDATE strutture SET dati_cifrati=?,attivo=? WHERE id=?").run(encryptJSON(pickStruttura(b)), b.attivo === false ? 0 : 1, req.params.id);
+  audit(req.adminUser.username, "modifica_struttura", "strutture", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/strutture/:id", requireCap("utenti"), async (req, res) => {
+  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM strutture WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "elimina_struttura", "strutture", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.put("/soci/:id/collega-struttura", requireCap("utenti"), async (req, res) => {
+  const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : null;
+  if (sid) {
+    const st = await db.prepare("SELECT id FROM strutture WHERE id=?").get(sid);
+    if (!st) return res.status(404).json({ error: "Struttura inesistente" });
+  }
+  await db.prepare("UPDATE soci SET struttura_id=? WHERE id=?").run(sid, req.params.id);
+  audit(req.adminUser.username, "collega_struttura", "soci", req.params.id, sid ? "struttura " + sid : "scollegato");
+  res.json({ ok: true });
+});
+adminRouter.get("/strutture-collegabili", requireCap("utenti"), async (req, res) => {
+  const rows = await db.prepare("SELECT st.id, st.dati_cifrati, s.nome AS host_nome, s.cognome AS host_cognome FROM strutture st JOIN soci s ON s.id=st.socio_id WHERE st.attivo=1 ORDER BY st.id").all();
+  const out = rows.map((r) => {
+    const d = tryDecryptJSON(r.dati_cifrati);
+    return { id: r.id, nome: d ? d.nome : "(dati non leggibili)", host: (r.host_nome || "") + " " + (r.host_cognome || "") };
+  });
   res.json(out);
 });
 adminRouter.get("/campi", requireCap("campi"), async (req, res) => {
@@ -2705,9 +2877,84 @@ authUserRouter.get("/notifiche", requireUser, async (req, res) => {
   const rows = socio ? await db.prepare("SELECT id,tipo,titolo,corpo,letta,created_at FROM notifiche WHERE socio_id=? ORDER BY created_at DESC LIMIT 50").all(socio.id) : [];
   res.json(rows);
 });
+var HOST_FIELDS2 = ["nome", "cir", "cin", "regole", "isolato", "numero", "check_out", "lat", "lng"];
+function pickStruttura2(b) {
+  const o = {};
+  for (const k of HOST_FIELDS2) o[k] = b[k] ?? "";
+  if (o.lat !== "") o.lat = Number(o.lat);
+  if (o.lng !== "") o.lng = Number(o.lng);
+  return o;
+}
+async function meSocio(req) {
+  return db.prepare("SELECT * FROM soci WHERE id=? AND attivo=1").get(req.user.id);
+}
+authUserRouter.get("/host/strutture", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(me.id);
+  let ko = false;
+  const strutture = rows.map((r) => {
+    const d = tryDecryptJSON(r.dati_cifrati);
+    if (!d) {
+      ko = true;
+      return { id: r.id, ko: true, attivo: r.attivo };
+    }
+    return { id: r.id, attivo: r.attivo, ...d };
+  });
+  if (ko) {
+    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
+    audit(me.tessera_code, "host_KO", "strutture", me.id, "integrit\xE0 non verificabile");
+  }
+  res.json({ host: 1, max: 3, host_ko: ko ? 1 : me.host_ko, strutture });
+});
+authUserRouter.post("/host/strutture", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(me.id)).n;
+  if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
+  const b = req.body || {};
+  if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Il nome della struttura \xE8 obbligatorio" });
+  const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(me.id, encryptJSON(pickStruttura2(b)));
+  audit(me.tessera_code, "host_crea_struttura", "strutture", info.lastInsertRowid);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+authUserRouter.put("/host/strutture/:id", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
+  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
+  const b = req.body || {};
+  await db.prepare("UPDATE strutture SET dati_cifrati=?,attivo=? WHERE id=?").run(encryptJSON(pickStruttura2(b)), b.attivo === false ? 0 : 1, req.params.id);
+  audit(me.tessera_code, "host_modifica_struttura", "strutture", req.params.id);
+  res.json({ ok: true });
+});
+authUserRouter.delete("/host/strutture/:id", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me || !me.host) return res.status(403).json({ error: "Profilo non abilitato come host" });
+  const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
+  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
+  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM strutture WHERE id=?").run(req.params.id);
+  audit(me.tessera_code, "host_elimina_struttura", "strutture", req.params.id);
+  res.json({ ok: true });
+});
+authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
+  const me = await meSocio(req);
+  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+  if (!me.struttura_id) return res.json({ collegato: false });
+  const st = await db.prepare("SELECT id,dati_cifrati FROM strutture WHERE id=? AND attivo=1").get(me.struttura_id);
+  if (!st) return res.json({ collegato: false });
+  const d = tryDecryptJSON(st.dati_cifrati);
+  if (!d) {
+    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
+    audit(me.tessera_code, "host_KO_vista_ospite", "strutture", st.id, "integrit\xE0 non verificabile");
+    return res.status(423).json({ ko: true, error: "Dati della struttura non disponibili" });
+  }
+  res.json({ collegato: true, struttura: { nome: d.nome, cir: d.cir, cin: d.cin, regole: d.regole, isolato: d.isolato, numero: d.numero, check_out: d.check_out, lat: d.lat, lng: d.lng }, soggiorno: { dal: me.soggiorno_dal, al: me.soggiorno_al } });
+});
 
 // server/version.js
-var VERSION = "4.12";
+var VERSION = "4.17";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -2718,7 +2965,7 @@ var frontend_default = `<!DOCTYPE html>
 <meta name="theme-color" content="#12324F">
 <meta name="description" content="Bussola Residence \u2014 l'app del residence di Fontane Bianche: eventi, sport, Coppa delle Casate, tessera e guida.">
 <title>Bussola Residence \u2014 App</title>
-
+<!-- PWA: manifest + service worker iniettati dal server (server/pwa.js) -->
 <style>
 :root{
   --navy:#12324F; --gold:#8a5a12; --teal:#256b65; --coral:#b14a35;
@@ -3116,13 +3363,13 @@ function go(t) {
 function renderHeader() {
   const s = state.socio;
   $('#greetName').textContent = tr('ciao') + ', ' + (s.nome || '');
-  $('#greetSub').textContent = s.casata ? ('Casata ' + s.casata) : 'Benvenuto alla Bussola';
+  $('#greetSub').textContent = s.casata ? (T('Casata') + ' ' + s.casata) : T('Benvenuto alla Bussola');
   $('#casataNm').textContent = s.casata || '\u2014';
   $('#casataSh').style.background = s.colore || '#2E6DA4';
 }
 function evCardHTML(e, withAction) {
   const action = withAction && e.azione
-    ? \`<button class="btn gold sm" data-ev="\${e.chiave}" data-act="\${e.azione}">\${e.azione==='sheet-vinile'?'Proponi':(e.azione==='sheet-openmic'?'Salgo':(e.azione==='go-coppa'?'Coppa':'Info'))}</button>\`
+    ? \`<button class="btn gold sm" data-ev="\${e.chiave}" data-act="\${e.azione}">\${e.azione==='sheet-vinile'?T('Proponi'):(e.azione==='sheet-openmic'?T('Salgo'):(e.azione==='go-coppa'?T('Coppa'):T('Info')))}</button>\`
     : \`<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>\`;
   const dl = e.ambiente ? \`\${esc(e.giorno)} \xB7 \${esc(e.ambiente)}\` : esc(e.giorno);
   return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${dl}</div><h4>\${esc(e.titolo)}</h4><p>\${esc(e.sottotitolo)}</p></div><div class="cta">\${action}</div></div>\`;
@@ -3133,34 +3380,35 @@ function renderHome() {
   const first = evs.find(e => e.tipo !== 'libero' && e.chiave !== 'lun') || evs[0];
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
-    <div class="welcome"><div class="wl"><div class="eyebrow">Benvenuti alla Bussola</div><h3>\${esc(first.giorno)} \xB7 \${esc(first.titolo)}</h3><p>\${esc(first.sottotitolo)}</p></div><button class="btn gold sm" data-open="\${first.chiave}">Vedi</button></div>
-    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">Stasera alla Bussola</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
-    <div class="sect-title">Prenota</div>
+    <div class="welcome"><div class="wl"><div class="eyebrow">\${T('Benvenuti alla Bussola')}</div><h3>\${esc(first.giorno)} \xB7 \${esc(first.titolo)}</h3><p>\${esc(first.sottotitolo)}</p></div><button class="btn gold sm" data-open="\${first.chiave}">\${T('Vedi')}</button></div>
+    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera alla Bussola')}</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
+    \${hostCardsHTML()}
+    <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
-      <div class="ptile" role="button" tabindex="0" data-campi=""><div class="ic">\u{1F3BE}</div><b>Campi</b><span>prenota o partita</span></div>
-      <div class="ptile" role="button" tabindex="0" data-partite=""><div class="ic">\u{1F465}</div><b>Partite aperte</b><span>unisciti</span></div>
-      <div class="ptile" role="button" tabindex="0" data-book="cowo"><div class="ic">\u{1F4BB}</div><b>Coworking</b><span>postazione</span></div>
+      <div class="ptile" role="button" tabindex="0" data-campi=""><div class="ic">\u{1F3BE}</div><b>\${T('Campi')}</b><span>\${T('prenota o partita')}</span></div>
+      <div class="ptile" role="button" tabindex="0" data-partite=""><div class="ic">\u{1F465}</div><b>\${T('Partite aperte')}</b><span>\${T('unisciti')}</span></div>
+      <div class="ptile" role="button" tabindex="0" data-book="cowo"><div class="ic">\u{1F4BB}</div><b>\${T('Coworking')}</b><span>\${T('postazione')}</span></div>
     </div>
     \${serateSectionHTML()}
-    <div class="sect-title">Questa settimana</div>
+    <div class="sect-title">\${T('Questa settimana')}</div>
     <div>\${evs.map(e => evCardHTML(e, true)).join('')}</div><div style="height:6px"></div>\`;
 }
 function serateSectionHTML() {
   const list = state.data.serate || [];
   if (!list.length) return '';
-  return \`<div class="sect-title">Serate su prenotazione</div>
+  return \`<div class="sect-title">\${T('Serate su prenotazione')}</div>
     <div>\${list.map(s => \`<div class="evcard" role="button" tabindex="0" data-serata="\${s.id}">
       <span class="stripe" style="background:#b14a35"></span>
-      <div class="body"><div class="dl">\${esc(s.quando || '')}</div><h4>\${esc(s.titolo)}</h4><p>\u20AC \${esc(String(s.quota))} a persona\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} posti\` : ''}</p></div>
-      <div class="cta"><button class="btn gold sm" data-serata="\${s.id}">Prenota</button></div></div>\`).join('')}</div>\`;
+      <div class="body"><div class="dl">\${esc(s.quando || '')}</div><h4>\${esc(s.titolo)}</h4><p>\u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti')}\` : ''}</p></div>
+      <div class="cta"><button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button></div></div>\`).join('')}</div>\`;
 }
 function renderEventi() {
   $('#s-eventi').innerHTML = \`
-    <div class="eyebrow" style="margin:4px 2px 2px">Il cartellone</div>
-    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:4px">Il programma</h2>
-    <p class="tiny muted" style="margin-bottom:12px">Tocca una serata per i dettagli e per prenotare.</p>
+    <div class="eyebrow" style="margin:4px 2px 2px">\${T('Il cartellone')}</div>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:4px">\${T('Il programma')}</h2>
+    <p class="tiny muted" style="margin-bottom:12px">\${T('Tocca una serata per i dettagli e per prenotare.')}</p>
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
-    <div class="note">Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.</div>\`;
+    <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}</div>\`;
 }
 function renderCoppa() {
   const sorted = [...state.data.casate].sort((a, b) => b.punti - a.punti);
@@ -3171,26 +3419,26 @@ function renderCoppa() {
   const isCap = String(state.socio.ruolo || '').toLowerCase() === 'capitano';
   const ct = state.data.contest;
   const contestCard = ct ? \`<div class="hero" data-open-contest role="button" tabindex="0" style="min-height:120px; margin-top:12px; background:linear-gradient(180deg, rgba(18,50,79,.15), rgba(18,50,79,.9)), linear-gradient(135deg,#6E5AA6,#b14a35)">
-      <div class="eyebrow" style="color:#ffe1ac">Serata dei Clan \xB7 Contest\${ct.settimana ? ' \xB7 ' + esc(ct.settimana) : ''}</div>
+      <div class="eyebrow" style="color:#ffe1ac">\${T('Serata dei Clan \xB7 Contest')}\${ct.settimana ? ' \xB7 ' + esc(ct.settimana) : ''}</div>
       <h2 class="serif" style="font-size:1.3rem">\${esc(ct.titolo)}</h2>
       <p style="font-size:.8rem; opacity:.95">\${esc((ct.brief || '').slice(0, 90))}\${(ct.brief || '').length > 90 ? '\u2026' : ''}</p>
-      <button class="btn gold sm" style="align-self:flex-start; margin-top:8px">Apri il contest</button>
+      <button class="btn gold sm" style="align-self:flex-start; margin-top:8px">\${T('Apri il contest')}</button>
     </div>\` : '';
   const capCard = isCap ? \`<div class="card" style="background:linear-gradient(135deg,#8a5a12,#6b4406); color:#fff; border:none; margin-top:12px">
-      <div class="eyebrow" style="color:#ffe9c2">Strumenti del capitano \xB7 \${esc(mine)}</div>
+      <div class="eyebrow" style="color:#ffe9c2">\${T('Strumenti del capitano')} \xB7 \${esc(mine)}</div>
       <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
-        <button class="btn sm" style="background:#fff; color:var(--navy); flex:1" data-cap="convoca">\u{1F4E3} Convoca la casata</button>
-        <button class="btn sm" style="background:rgba(255,255,255,.2); color:#fff; flex:1" data-cap="serata">\u{1F3C6} Serata dei Clan</button>
+        <button class="btn sm" style="background:#fff; color:var(--navy); flex:1" data-cap="convoca">\u{1F4E3} \${T('Convoca la casata')}</button>
+        <button class="btn sm" style="background:rgba(255,255,255,.2); color:#fff; flex:1" data-cap="serata">\u{1F3C6} \${T('Serata dei Clan')}</button>
       </div></div>\` : '';
   $('#s-coppa').innerHTML = \`
-    <div class="eyebrow" style="margin:4px 2px 2px">La comunit\xE0</div>
-    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">Coppa delle Casate</h2>
-    <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}</h3><p>La tua casata \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">posto</div></div></div>
+    <div class="eyebrow" style="margin:4px 2px 2px">\${T('La comunit\xE0')}</div>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${T('Coppa delle Casate')}</h2>
+    <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}</h3><p>\${T('La tua casata')} \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">\${T('posto')}</div></div></div>
     \${contestCard}\${capCard}
-    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">Classifica generale</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${i+1}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
-    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>Campionati sport</b><p class="tiny muted">Gironi, calendario e risultati.</p></div><button class="btn navy sm" data-go="sport">Apri</button></div>
-    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>Giochi da Tavolo</b><p class="tiny muted">Burraco, scala 40, briscola, scacchi.</p></div><button class="btn navy sm" data-go="giochi">Apri</button></div>
-    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--gold); font-size:1.4rem">\u{1F4DC}</div><div style="flex:1"><b>Regolamenti & Albo d'Oro</b><p class="tiny muted">Regole di Coppa, Contest e Proposte; le edizioni passate.</p></div><button class="btn navy sm" data-sheet="regolamenti">Apri</button></div>\`;
+    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${i+1}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>\${T('Campionati sport')}</b><p class="tiny muted">\${T('Gironi, calendario e risultati.')}</p></div><button class="btn navy sm" data-go="sport">\${T('Apri')}</button></div>
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>\${T('Giochi da Tavolo')}</b><p class="tiny muted">\${T('Burraco, scala 40, briscola, scacchi.')}</p></div><button class="btn navy sm" data-go="giochi">\${T('Apri')}</button></div>
+    <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--gold); font-size:1.4rem">\u{1F4DC}</div><div style="flex:1"><b>\${T("Regolamenti & Albo d'Oro")}</b><p class="tiny muted">\${T('Regole di Coppa, Contest e Proposte; le edizioni passate.')}</p></div><button class="btn navy sm" data-sheet="regolamenti">\${T('Apri')}</button></div>\`;
 }
 function openRegolamenti() {
   const r = state.data.regolamenti || { generali: [], discipline: [] };
@@ -3198,13 +3446,13 @@ function openRegolamenti() {
   const blocco = (titolo, testo) => \`<div class="card" style="margin-top:10px"><div class="eyebrow" style="color:var(--navy)">\${esc(titolo)}</div><p class="tiny" style="white-space:pre-wrap; margin-top:4px">\${esc(testo || '\u2014')}</p></div>\`;
   const gen = (r.generali || []).map(x => blocco(x.titolo, x.testo)).join('');
   const disc = (r.discipline || []).map(d => blocco(\`\${d.nome}\${d.data_inizio ? ' \xB7 ' + d.data_inizio + (d.data_fine ? '\u2192' + d.data_fine : '') : ''}\`, d.regolamento)).join('');
-  const alboHtml = albo.length ? \`<div class="sect-title" style="margin-top:14px">Albo d'Oro</div><div class="card" style="padding:4px 14px">\${albo.map(e => \`<div class="matchrow"><div class="vs">\${esc(e.disciplina_nome)}<div class="ct">\${esc((e.data_inizio || '') + (e.data_fine ? '\u2192' + e.data_fine : ''))}</div></div><div class="sc">\${esc(e.vincitore || '\u2014')}</div></div>\`).join('')}</div>\` : '';
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Regole & storia</div><h2>Regolamenti</h2>
-    <p class="sub">Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.</p>
-    \${gen || '<p class="tiny muted">Nessun regolamento generale.</p>'}
-    \${disc ? '<div class="sect-title" style="margin-top:14px">Discipline</div>' + disc : ''}
+  const alboHtml = albo.length ? \`<div class="sect-title" style="margin-top:14px">\${T("Albo d'Oro")}</div><div class="card" style="padding:4px 14px">\${albo.map(e => \`<div class="matchrow"><div class="vs">\${esc(e.disciplina_nome)}<div class="ct">\${esc((e.data_inizio || '') + (e.data_fine ? '\u2192' + e.data_fine : ''))}</div></div><div class="sc">\${esc(e.vincitore || '\u2014')}</div></div>\`).join('')}</div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${T('Regole & storia')}</div><h2>\${T('Regolamenti')}</h2>
+    <p class="sub">\${T('Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.')}</p>
+    \${gen || \`<p class="tiny muted">\${T('Nessun regolamento generale.')}</p>\`}
+    \${disc ? \`<div class="sect-title" style="margin-top:14px">\${T('Discipline')}</div>\` + disc : ''}
     \${alboHtml}
-    <button class="btn navy block" style="margin-top:14px" data-close>Chiudi</button>\`);
+    <button class="btn navy block" style="margin-top:14px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 const RIF_DAYS = [['lun','Lun'],['mar','Mar'],['mer','Mer'],['gio','Gio'],['ven','Ven'],['sab','Sab'],['dom','Dom']];
@@ -3214,7 +3462,7 @@ function rifiutiHTML(){
   const tipi = data.tipi || [];
   const cal = data.calendari || [];
   if (!tipi.length && !cal.length) {
-    return \`<div class="card"><p class="tiny muted">Calendario non ancora disponibile.</p></div>\`;
+    return \`<div class="card"><p class="tiny muted">\${T('Calendario non ancora disponibile.')}</p></div>\`;
   }
   const colorOf = (nome) => (tipi.find(t => t.nome === nome) || {}).colore || '#7A8790';
   // iniziali univoche per la pastiglia (in caso di collisione si passa a due lettere)
@@ -3229,14 +3477,14 @@ function rifiutiHTML(){
       const pills = nomi.length
         ? nomi.map(nome => { const col = colorOf(nome); return \`<div title="\${esc(nome)}" style="width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:\${esc(col)};color:\${rifTextColor(col)};font-size:.62rem;font-weight:800">\${esc(inits[nome] || '\u2022')}</div>\`; }).join('')
         : \`<div style="width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:#eef1f3;color:#b5bcc2;font-size:.62rem">\u2013</div>\`;
-      return \`<div style="flex:1;min-width:30px;display:flex;flex-direction:column;align-items:center;gap:4px"><div style="font-size:.6rem;font-weight:700;color:#5c6a73">\${lbl}</div>\${pills}</div>\`;
+      return \`<div style="flex:1;min-width:30px;display:flex;flex-direction:column;align-items:center;gap:4px"><div style="font-size:.6rem;font-weight:700;color:#5c6a73">\${T(lbl)}</div>\${pills}</div>\`;
     }).join('');
     const info = [];
-    if (c.inizio_conf || c.fine_conf) info.push(\`Conferimento \${esc(c.inizio_conf||'')}\${c.fine_conf?'\u2013'+esc(c.fine_conf):''}\`);
-    if (c.ora_ritiro) info.push(\`Ritiro dalle \${esc(c.ora_ritiro)}\`);
+    if (c.inizio_conf || c.fine_conf) info.push(\`\${T('Conferimento')} \${esc(c.inizio_conf||'')}\${c.fine_conf?'\u2013'+esc(c.fine_conf):''}\`);
+    if (c.ora_ritiro) info.push(\`\${T('Ritiro dalle')} \${esc(c.ora_ritiro)}\`);
     return \`<div class="card" style="margin-bottom:10px"><div style="font-weight:700;font-size:.85rem;color:var(--navy);margin-bottom:10px">\${esc(c.periodo)}</div><div style="display:flex;gap:3px">\${cells}</div>\${legendChips}\${info.length?\`<div class="tiny muted" style="margin-top:9px">\${info.join(' \xB7 ')}</div>\`:''}</div>\`;
   }).join('');
-  return \`<div>\${periods || '<div class="card"><p class="tiny muted">Nessun periodo configurato.</p></div>'}</div>\`;
+  return \`<div>\${periods || \`<div class="card"><p class="tiny muted">\${T('Nessun periodo configurato.')}</p></div>\`}</div>\`;
 }
 function renderBussola() {
   const b = state.data.bussola;
@@ -3252,17 +3500,17 @@ function renderBussola() {
     return \`<div class="matchrow" \${has ? \`role="button" tabindex="0" data-map="\${l.lat},\${l.lng}" style="cursor:pointer"\` : ''}><div style="flex:1"><b style="font-size:.9rem">\${iconFor(l.chiave)} \${esc(label)}</b>\${has ? \`<div class="ct">\${esc(tr('apri_mappa'))}</div>\` : ''}</div>\${right}</div>\`;
   }).join('');
   $('#s-bussola').innerHTML = \`
-    <div class="eyebrow" style="margin:4px 2px 2px">Guida del residence</div>
+    <div class="eyebrow" style="margin:4px 2px 2px">\${T('Guida del residence')}</div>
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">Bussola Residence</h2>
     <div class="sect-title" style="margin-top:2px">\${esc(tr('siamo_qui'))}</div>
     <div class="card" style="padding:4px 14px">\${siamoQui}</div>
     <div class="card" style="background:#fbf4e6; border-color:#ecdcbd; margin-top:11px">
-      <div class="benefit" style="border-color:#ecdcbd"><span style="font-size:1.1rem">\u{1F92B}</span><div><b>Silenzio pomeridiano</b><p style="color:#5c4d2a">\${esc(b.orari?.[0]?.dettaglio||'14:00\u201317:00')}</p></div></div>
-      <div class="benefit"><span style="font-size:1.1rem">\u{1F319}</span><div><b>Silenzio notturno</b><p style="color:#5c4d2a">\${esc(b.orari?.[1]?.dettaglio||'dopo le 23:30')}</p></div></div>
+      <div class="benefit" style="border-color:#ecdcbd"><span style="font-size:1.1rem">\u{1F92B}</span><div><b>\${T('Silenzio pomeridiano')}</b><p style="color:#5c4d2a">\${esc(b.orari?.[0]?.dettaglio||'14:00\u201317:00')}</p></div></div>
+      <div class="benefit"><span style="font-size:1.1rem">\u{1F319}</span><div><b>\${T('Silenzio notturno')}</b><p style="color:#5c4d2a">\${esc(b.orari?.[1]?.dettaglio||'dopo le 23:30')}</p></div></div>
     </div>
-    <div class="sect-title">Numeri utili & servizi</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
-    <div class="sect-title">Raccolta rifiuti</div>\${rifiutiHTML()}
-    <div class="sect-title">Cosa vedere</div><div class="card" style="padding:4px 14px">\${rows(b.vedere)}</div>
+    <div class="sect-title">\${T('Numeri utili & servizi')}</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
+    <div class="sect-title">\${T('Raccolta rifiuti')}</div>\${rifiutiHTML()}
+    <div class="sect-title">\${T('Cosa vedere')}</div><div class="card" style="padding:4px 14px">\${rows(b.vedere)}</div>
     <div style="height:6px"></div>\`;
 }
 
@@ -3274,27 +3522,27 @@ function renderDom(dom) {
   const key = dom + '/' + D.cur; const st = state.conv[key] || 'open';
   const el = document.getElementById('s-' + dom);
   const disc = \`<div class="discrow" role="tablist">\${list.map((d,i)=>\`<button class="disc\${i===D.cur?' on':''}" data-dom="\${dom}" data-i="\${i}">\${esc(d.name)}</button>\`).join('')}</div>\`;
-  const conv = s.next[0] || { a: state.socio.casata, b: '\u2014', wh: 'prossimamente', court: '' };
+  const conv = s.next[0] || { a: state.socio.casata, b: '\u2014', wh: T('prossimamente'), court: '' };
   const matchLabel = \`\${conv.a} vs \${conv.b}\`;
   const isOspite = state.socio.tipo_profilo === 'ospite_temporaneo';
   let personal;
   if (st === 'ok') {
-    personal = \`<div class="card" style="background:linear-gradient(135deg,#5f9a5c,#3f6b3d); color:#fff; border:none"><div class="eyebrow" style="color:#e8f3e2">Presenza confermata \u2713</div><div style="margin-top:6px"><b style="font-size:.9rem">\${esc(matchLabel)}</b><div class="tiny" style="opacity:.9">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div></div>\`;
+    personal = \`<div class="card" style="background:linear-gradient(135deg,#5f9a5c,#3f6b3d); color:#fff; border:none"><div class="eyebrow" style="color:#e8f3e2">\${T('Presenza confermata \u2713')}</div><div style="margin-top:6px"><b style="font-size:.9rem">\${esc(matchLabel)}</b><div class="tiny" style="opacity:.9">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div></div>\`;
   } else if (!isOspite && state.rifiuti >= 3) {
-    personal = \`<div class="card" style="background:linear-gradient(135deg,#c0553f,#9c3f2c); color:#fff; border:none"><div class="eyebrow" style="color:#ffd9cf">Convocazione vincolante</div><div style="margin-top:6px"><b>\${esc(matchLabel)}</b><div class="tiny" style="opacity:.9">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div><div class="tiny" style="margin-top:8px">Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.</div><button class="btn gold sm" style="margin-top:10px" data-conv="ok" data-key="\${key}">Confermo</button></div>\`;
+    personal = \`<div class="card" style="background:linear-gradient(135deg,#c0553f,#9c3f2c); color:#fff; border:none"><div class="eyebrow" style="color:#ffd9cf">\${T('Convocazione vincolante')}</div><div style="margin-top:6px"><b>\${esc(matchLabel)}</b><div class="tiny" style="opacity:.9">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div><div class="tiny" style="margin-top:8px">\${T('Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.')}</div><button class="btn gold sm" style="margin-top:10px" data-conv="ok" data-key="\${key}">\${T('Confermo')}</button></div>\`;
   } else if (st === 'no') {
-    personal = \`<div class="card" style="display:flex; align-items:center; gap:12px"><div style="flex:1"><b>Hai declinato</b><p class="tiny muted">\${esc(matchLabel)}\${isOspite?'' :\` \xB7 dinieghi \${state.rifiuti}/3\`}</p></div><button class="btn gold sm" data-conv="ok" data-key="\${key}">Ci ripenso</button></div>\`;
+    personal = \`<div class="card" style="display:flex; align-items:center; gap:12px"><div style="flex:1"><b>\${T('Hai declinato')}</b><p class="tiny muted">\${esc(matchLabel)}\${isOspite?'' :\` \xB7 \${T('dinieghi')} \${state.rifiuti}/3\`}</p></div><button class="btn gold sm" data-conv="ok" data-key="\${key}">\${T('Ci ripenso')}</button></div>\`;
   } else {
     const footer = isOspite
-      ? \`<div class="tiny" style="opacity:.85; margin-top:9px">Sei nostro ospite: partecipa quando vuoi, nessun obbligo.</div>\`
-      : \`<div class="tiny" style="opacity:.8; margin-top:9px">Dinieghi: \${state.rifiuti}/3 \xB7 diventa vincolante solo dopo il terzo</div>\`;
-    personal = \`<div class="card" style="background:linear-gradient(135deg,var(--navy),#1d4a6e); color:#fff; border:none"><div class="eyebrow" style="color:#ffe1ac">La tua casata ti invita</div><div style="margin-top:6px"><b>\${esc(matchLabel)}</b><div class="tiny" style="opacity:.85">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div><div style="display:flex; gap:8px; margin-top:12px"><button class="btn gold sm" data-conv="ok" data-key="\${key}">Disponibile</button><button class="btn ghost sm" style="color:#fff; border-color:rgba(255,255,255,.45)" data-conv="no" data-key="\${key}">Non disponibile</button></div>\${footer}</div>\`;
+      ? \`<div class="tiny" style="opacity:.85; margin-top:9px">\${T('Sei nostro ospite: partecipa quando vuoi, nessun obbligo.')}</div>\`
+      : \`<div class="tiny" style="opacity:.8; margin-top:9px">\${T('Dinieghi:')} \${state.rifiuti}/3 \xB7 \${T('diventa vincolante solo dopo il terzo')}</div>\`;
+    personal = \`<div class="card" style="background:linear-gradient(135deg,var(--navy),#1d4a6e); color:#fff; border:none"><div class="eyebrow" style="color:#ffe1ac">\${T('La tua casata ti invita')}</div><div style="margin-top:6px"><b>\${esc(matchLabel)}</b><div class="tiny" style="opacity:.85">\${esc(conv.wh)} \xB7 \${esc(conv.court)}</div></div><div style="display:flex; gap:8px; margin-top:12px"><button class="btn gold sm" data-conv="ok" data-key="\${key}">\${T('Disponibile')}</button><button class="btn ghost sm" style="color:#fff; border-color:rgba(255,255,255,.45)" data-conv="no" data-key="\${key}">\${T('Non disponibile')}</button></div>\${footer}</div>\`;
   }
-  const gironi = s.gironi.map(g => \`<div class="card"><div class="eyebrow" style="color:var(--navy)">\${esc(g.nome)}</div><table class="gtable"><thead><tr><th style="text-align:left; padding-left:2px">Squadra</th><th>PG</th><th>V</th><th>Pt</th></tr></thead><tbody>\${g.rows.map((r,i)=>\`<tr><td class="team"><span class="gpos">\${i+1}</span><span class="d" style="background:\${r.c}"></span>\${esc(r.t)}</td><td>\${r.pg}</td><td>\${r.v}</td><td style="font-weight:700; color:var(--navy)">\${r.pt}</td></tr>\`).join('')}</tbody></table></div>\`).join('');
-  const next = \`<div class="sect-title">Prossime partite</div><div class="card" style="padding:4px 14px">\${s.next.map(m=>\`<div class="matchrow"><div class="wh">\${esc(m.wh)}</div><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}<div class="ct">\${esc(m.court)}</div></div></div>\`).join('')||'<p class="tiny muted" style="padding:8px 0">Calendario in aggiornamento.</p>'}</div>\`;
-  const res = \`<div class="sect-title">Risultati recenti</div><div class="card" style="padding:4px 14px">\${s.results.map(m=>\`<div class="matchrow"><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}</div><div class="sc">\${esc(m.s)}</div></div>\`).join('')||'<p class="tiny muted" style="padding:8px 0">Nessun risultato ancora.</p>'}</div>\`;
-  const note = \`<div class="note">Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.</div>\`;
-  const head = \`<div class="eyebrow" style="margin:4px 2px 2px">\${dom==='sport'?'Campionati sociali':'Tornei \xB7 Casa di Carta'}</div><h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${dom==='sport'?'Sport & Tornei':'Giochi da Tavolo'}</h2>\`;
+  const gironi = s.gironi.map(g => \`<div class="card"><div class="eyebrow" style="color:var(--navy)">\${esc(g.nome)}</div><table class="gtable"><thead><tr><th style="text-align:left; padding-left:2px">\${T('Squadra')}</th><th>\${T('PG')}</th><th>\${T('V')}</th><th>\${T('Pt')}</th></tr></thead><tbody>\${g.rows.map((r,i)=>\`<tr><td class="team"><span class="gpos">\${i+1}</span><span class="d" style="background:\${r.c}"></span>\${esc(r.t)}</td><td>\${r.pg}</td><td>\${r.v}</td><td style="font-weight:700; color:var(--navy)">\${r.pt}</td></tr>\`).join('')}</tbody></table></div>\`).join('');
+  const next = \`<div class="sect-title">\${T('Prossime partite')}</div><div class="card" style="padding:4px 14px">\${s.next.map(m=>\`<div class="matchrow"><div class="wh">\${esc(m.wh)}</div><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}<div class="ct">\${esc(m.court)}</div></div></div>\`).join('')||\`<p class="tiny muted" style="padding:8px 0">\${T('Calendario in aggiornamento.')}</p>\`}</div>\`;
+  const res = \`<div class="sect-title">\${T('Risultati recenti')}</div><div class="card" style="padding:4px 14px">\${s.results.map(m=>\`<div class="matchrow"><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}</div><div class="sc">\${esc(m.s)}</div></div>\`).join('')||\`<p class="tiny muted" style="padding:8px 0">\${T('Nessun risultato ancora.')}</p>\`}</div>\`;
+  const note = \`<div class="note">\${T('Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.')}</div>\`;
+  const head = \`<div class="eyebrow" style="margin:4px 2px 2px">\${dom==='sport'?T('Campionati sociali'):T('Tornei')+' \xB7 Casa di Carta'}</div><h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${dom==='sport'?T('Sport & Tornei'):T('Giochi da Tavolo')}</h2>\`;
   el.innerHTML = head + disc + personal + gironi + next + res + note;
 }
 
@@ -3308,35 +3556,102 @@ function openEvent(k) {
   if (e.azione === 'go-coppa') btn = \`<button class="btn gold block" data-go="coppa">\${esc(e.cta)}</button>\`;
   else if (e.azione) btn = \`<button class="btn gold block" data-sheet="\${e.azione}">\${esc(e.cta)}</button>\`;
   else btn = \`<button class="btn gold block" data-confirm="\${esc(e.titolo)}">\${esc(e.cta)}</button>\`;
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:\${e.colore}">\${esc(e.giorno)} \xB7 \${esc(e.ambiente)}</div><h2>\${esc(e.titolo)}</h2><p class="sub">\${esc(e.descrizione)}</p>\${btn}<button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:\${e.colore}">\${esc(e.giorno)} \xB7 \${esc(e.ambiente)}</div><h2>\${esc(e.titolo)}</h2><p class="sub">\${esc(e.descrizione)}</p>\${btn}<button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 function openBooking(kind) {
   const b = state.data.risorse.find(r => r.chiave === kind) || SEED.risorse.find(r => r.chiave === kind);
   if (!b) return;
   const days = ['Oggi','Domani','Sab','Dom','Lun'];
-  const capNota = b.tipo === 'coworking' ? \`<div class="note">Posti limitati: massimo 8 la mattina e 8 il pomeriggio. La <b>giornata intera</b> occupa un posto in entrambi i turni.</div>\` : '';
+  const capNota = b.tipo === 'coworking' ? \`<div class="note">\${T('Posti limitati: massimo 8 la mattina e 8 il pomeriggio. La <b>giornata intera</b> occupa un posto in entrambi i turni.')}</div>\` : '';
   const personeField = b.tipo === 'tavolo'
-    ? \`<div class="field"><label>Quante persone</label><div class="chips" data-group="pers">\${[1,2,3,4,5,6].map((n,i)=>\`<button class="chip\${i===1?' sel':''}" data-chip>\${n}</button>\`).join('')}</div></div>\` : '';
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Prenotazione</div><h2>\${esc(b.nome)}</h2><p class="sub">\${esc(b.sottotitolo)}</p>
-    <div class="field"><label>Giorno</label><div class="chips" data-group="day">\${days.map((d,i)=>\`<button class="chip\${i===0?' sel':''}" data-chip>\${d}</button>\`).join('')}</div></div>
-    <div class="field"><label>Turno</label><div class="chips" data-group="slot">\${b.slots.map((s,i)=>\`<button class="chip\${i===0?' sel':''}" data-chip>\${esc(s)}</button>\`).join('')}</div></div>
+    ? \`<div class="field"><label>\${T('Quante persone')}</label><div class="chips" data-group="pers">\${[1,2,3,4,5,6].map((n,i)=>\`<button class="chip\${i===1?' sel':''}" data-chip>\${n}</button>\`).join('')}</div></div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Prenotazione')}</div><h2>\${esc(b.nome)}</h2><p class="sub">\${esc(b.sottotitolo)}</p>
+    <div class="field"><label>\${T('Giorno')}</label><div class="chips" data-group="day">\${days.map((d,i)=>\`<button class="chip\${i===0?' sel':''}" data-chip>\${T(d)}</button>\`).join('')}</div></div>
+    <div class="field"><label>\${T('Turno')}</label><div class="chips" data-group="slot">\${b.slots.map((s,i)=>\`<button class="chip\${i===0?' sel':''}" data-chip>\${esc(s)}</button>\`).join('')}</div></div>
     \${personeField}\${capNota}\${b.nota?\`<div class="note">\${esc(b.nota)}</div>\`:''}
-    <button class="btn gold block" style="margin-top:10px" data-do-book="\${b.chiave}">Conferma prenotazione</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`);
+    <button class="btn gold block" style="margin-top:10px" data-do-book="\${b.chiave}">\${T('Conferma prenotazione')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Annulla')}</button>\`);
   showOv();
 }
+// ---- Host / Casa mia ----
+function hostCardsHTML() {
+  const s = state.socio || {};
+  let out = '';
+  if (s.ha_casa) out += \`<div class="card" role="button" tabindex="0" data-casamia="" style="display:flex; align-items:center; gap:12px; background:linear-gradient(135deg,#12324F,#256b65); color:#fff; border:none; margin-bottom:10px"><div style="font-size:1.5rem">\u{1F3E1}</div><div style="flex:1"><b>\${T('Casa mia')}</b><p class="tiny" style="opacity:.9">\${T('Come raggiungere la casa e le regole del soggiorno.')}</p></div><span style="font-size:1.2rem">\u203A</span></div>\`;
+  if (s.is_host) out += \`<div class="card" role="button" tabindex="0" data-lemiecase="" style="display:flex; align-items:center; gap:12px; margin-bottom:10px"><div style="font-size:1.5rem; color:var(--gold)">\u{1F511}</div><div style="flex:1"><b>\${T('Le mie case')}</b><p class="tiny muted">\${T('Gestisci le case vacanza che ospiti nel residence.')}</p></div><button class="btn navy sm" data-lemiecase="">\${T('Apri')}</button></div>\`;
+  return out;
+}
+async function openCasaMia() {
+  let d;
+  try { d = await api('/auth/casa-mia'); } catch (e) { okThen(String(e.message).includes('423') ? T('Dati della struttura non disponibili') : 'Errore', false); return; }
+  if (!d || !d.collegato) { okThen(T('Casa mia'), false); return; }
+  const st = d.struttura;
+  const arrivo = (st.lat && st.lng)
+    ? \`<div class="matchrow" role="button" tabindex="0" data-map="\${st.lat},\${st.lng}" style="cursor:pointer"><div style="flex:1"><b style="font-size:.9rem">\u{1F4CD} \${esc(st.nome)}</b><div class="ct">\${T('Isolato')} \${esc(st.isolato||'\u2014')} \xB7 \${T('Numero')} \${esc(st.numero||'\u2014')}</div></div><span style="color:var(--teal);font-size:1.1rem">\u2197</span></div>\`
+    : \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\${esc(st.nome)}</b><div class="ct">\${T('Isolato')} \${esc(st.isolato||'\u2014')} \xB7 \${T('Numero')} \${esc(st.numero||'\u2014')}</div></div></div>\`;
+  const sogg = (d.soggiorno && (d.soggiorno.dal || d.soggiorno.al)) ? \`<div class="note">\${T('Il tuo soggiorno')}: \${T('dal')} \${esc(d.soggiorno.dal||'\u2014')} \${T('al')} \${esc(d.soggiorno.al||'\u2014')}</div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F3E1} \${esc(st.nome)}</div><h2>\${T('Casa mia')}</h2>
+    <div class="sect-title" style="margin-top:6px">\${T('Come arrivare')}</div><div class="card" style="padding:4px 14px">\${arrivo}</div>
+    <div class="sect-title">\${T('Orario di check-out')}</div><div class="card"><b style="font-size:1.1rem; color:var(--navy)">\u{1F559} \${esc(st.check_out||'\u2014')}</b></div>
+    <div class="sect-title">\${T('Regole della casa')}</div><div class="card"><p class="tiny" style="white-space:pre-wrap">\${esc(st.regole||'\u2014')}</p></div>
+    <div class="card" style="padding:8px 14px"><p class="tiny muted">CIR \${esc(st.cir||'\u2014')} \xB7 CIN \${esc(st.cin||'\u2014')}</p></div>
+    \${sogg}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+async function openLeMieCase() {
+  let d;
+  try { d = await api('/auth/host/strutture'); } catch (e) { okThen('Errore', false); return; }
+  const list = (d.strutture || []).map(st => st.ko
+    ? \`<div class="matchrow"><div style="flex:1"><b>\u26A0\uFE0F \${T('Dati della struttura non disponibili')}</b></div></div>\`
+    : \`<div class="matchrow"><div style="flex:1"><b style="font-size:.9rem">\u{1F3E1} \${esc(st.nome)}</b><div class="ct">\${T('Orario di check-out')} \${esc(st.check_out||'\u2014')} \xB7 CIR \${esc(st.cir||'\u2014')}</div></div><div style="display:flex; gap:6px"><button class="btn ghost sm" data-strutt-edit="\${st.id}">\${T('Modifica')}</button><button class="btn danger sm" data-strutt-del="\${st.id}">\u{1F5D1}</button></div></div>\`).join('');
+  window.__strutture = d.strutture || [];
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F511} \${T('Le mie case')}</div><h2>\${T('Le tue strutture')}</h2>
+    <p class="sub">\${T('Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.')}</p>
+    <div class="card" style="padding:4px 14px">\${list || \`<p class="tiny muted" style="padding:8px 0">\${T('Non hai ancora aggiunto strutture.')}</p>\`}</div>
+    \${(d.strutture||[]).length < 3 ? \`<button class="btn gold block" style="margin-top:10px" data-strutt-new="">+ \${T('Aggiungi struttura')}</button>\` : ''}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+function openStrutturaForm(id) {
+  const st = (window.__strutture || []).find(x => String(x.id) === String(id)) || {};
+  const f = (k, ph) => \`<div class="field"><label>\${ph}</label><input id="st_\${k}" value="\${esc(st[k] ?? '')}"></div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${id ? T('Modifica') : T('Aggiungi struttura')}</div><h2>\${T('Nome struttura')}</h2>
+    \${f('nome', T('Nome struttura'))}
+    <div class="row" style="gap:8px"><div class="field" style="flex:1"><label>\${T('Isolato')}</label><input id="st_isolato" value="\${esc(st.isolato ?? '')}"></div><div class="field" style="flex:1"><label>\${T('Numero')}</label><input id="st_numero" value="\${esc(st.numero ?? '')}"></div></div>
+    <div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Lat</label><input id="st_lat" value="\${esc(st.lat ?? '')}"></div><div class="field" style="flex:1"><label>Lng</label><input id="st_lng" value="\${esc(st.lng ?? '')}"></div></div>
+    <div class="row" style="gap:8px"><div class="field" style="flex:1"><label>CIR</label><input id="st_cir" value="\${esc(st.cir ?? '')}"></div><div class="field" style="flex:1"><label>CIN</label><input id="st_cin" value="\${esc(st.cin ?? '')}"></div></div>
+    <div class="field"><label>\${T('Orario di check-out')}</label><input id="st_check_out" value="\${esc(st.check_out ?? '')}" placeholder="10:00"></div>
+    <div class="field"><label>\${T('Regole della casa')}</label><textarea id="st_regole" rows="4" style="width:100%; padding:8px 10px; border:1px solid #cbd2d8; border-radius:9px">\${esc(st.regole ?? '')}</textarea></div>
+    <button class="btn gold block" data-strutt-save="\${id || ''}">\${T('Salva')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-lemiecase="">\${T('Annulla')}</button>\`);
+  showOv();
+}
+async function strutturaSalva(id) {
+  const g = (k) => (document.getElementById('st_' + k) || {}).value || '';
+  const body = { nome: g('nome'), isolato: g('isolato'), numero: g('numero'), lat: g('lat'), lng: g('lng'), cir: g('cir'), cin: g('cin'), check_out: g('check_out'), regole: g('regole') };
+  if (!body.nome.trim()) { okThen(T('Nome struttura'), false); return; }
+  try { await api('/auth/host/strutture' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) }); } catch (e) { okThen('Errore', false); return; }
+  okThen(T('Salva')); openLeMieCase();
+}
+async function strutturaElimina(id) {
+  if (!confirm('Eliminare la struttura?')) return;
+  try { await api('/auth/host/strutture/' + id, { method: 'DELETE' }); } catch { okThen('Errore', false); return; }
+  openLeMieCase();
+}
+
 // ---- Campi (prenotazione slot + partite aperte) ----
 function campiDays() {
   const out = []; const g = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
   const base = new Date(); base.setHours(12, 0, 0, 0);
-  for (let i = 0; i < 7; i++) { const d = new Date(base.getTime() + i * 86400000); const iso = d.toISOString().slice(0, 10); out.push({ iso, label: i === 0 ? 'Oggi' : i === 1 ? 'Domani' : \`\${g[d.getDay()]} \${d.getDate()}\` }); }
+  for (let i = 0; i < 7; i++) { const d = new Date(base.getTime() + i * 86400000); const iso = d.toISOString().slice(0, 10); out.push({ iso, label: i === 0 ? T('Oggi') : i === 1 ? T('Domani') : \`\${T(g[d.getDay()])} \${d.getDate()}\` }); }
   return out;
 }
 const sportIcon = (s) => ({ pickleball: '\u{1F3BE}', soft_tennis: '\u{1F3BE}', calcetto: '\u26BD', beach: '\u{1F3D0}' }[s] || '\u{1F3BE}');
 async function openCampi(campoId) {
   const campi = state.data.campi || [];
-  if (!campi.length) { okThen('Prenotazione campi disponibile solo online', false); return; }
+  if (!campi.length) { okThen(T('Prenotazione campi disponibile solo online'), false); return; }
   const sel = (campoId ? campi.find(c => c.id == campoId) : campi.find(c => c.id == state._campoSel)) || campi[0];
   state._campoSel = sel.id;
   const days = campiDays();
@@ -3347,45 +3662,45 @@ async function openCampi(campoId) {
   const courtChips = campi.map(c => \`<button class="chip\${c.id === sel.id ? ' sel' : ''}" data-campo-pick="\${c.id}">\${sportIcon(c.sport)} \${esc(c.nome)}</button>\`).join('');
   const dayChips = days.map(d => \`<button class="chip\${d.iso === data ? ' sel' : ''}" data-campo-date="\${d.iso}">\${esc(d.label)}</button>\`).join('');
   const slotHTML = (disp.slots || []).map(s => {
-    if (s.stato === 'libero') return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">Libero</div></div><div style="display:flex;gap:6px"><button class="btn gold sm" data-prenota="\${sel.id}|\${s.slot}">Prenota</button><button class="btn ghost sm" data-apri="\${sel.id}|\${s.slot}">Partita</button></div></div>\`;
-    if (s.stato === 'partita') { const pieno = s.iscritti >= s.posti_totali; return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F465} Partita aperta \xB7 \${s.iscritti}/\${s.posti_totali}\${s.livello ? ' \xB7 ' + esc(s.livello) : ''}\${s.creatore ? ' \xB7 ' + esc(s.creatore) : ''}</div></div>\${pieno ? '<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">AL COMPLETO</span>' : \`<button class="btn gold sm" data-unisci="\${s.partita_id}">Unisciti</button>\`}</div>\`; }
-    return \`<div class="matchrow" style="opacity:.6"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">Occupato \xB7 \${esc(s.nome || 'prenotato')}</div></div><span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">OCCUPATO</span></div>\`;
+    if (s.stato === 'libero') return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\${T('Libero')}</div></div><div style="display:flex;gap:6px"><button class="btn gold sm" data-prenota="\${sel.id}|\${s.slot}">\${T('Prenota')}</button><button class="btn ghost sm" data-apri="\${sel.id}|\${s.slot}">\${T('Partita')}</button></div></div>\`;
+    if (s.stato === 'partita') { const pieno = s.iscritti >= s.posti_totali; return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F465} \${T('Partita aperta')} \xB7 \${s.iscritti}/\${s.posti_totali}\${s.livello ? ' \xB7 ' + esc(s.livello) : ''}\${s.creatore ? ' \xB7 ' + esc(s.creatore) : ''}</div></div>\${pieno ? \`<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\` : \`<button class="btn gold sm" data-unisci="\${s.partita_id}">\${T('Unisciti')}</button>\`}</div>\`; }
+    return \`<div class="matchrow" style="opacity:.6"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\${T('Occupato')} \xB7 \${esc(s.nome || T('prenotato'))}</div></div><span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('OCCUPATO')}</span></div>\`;
   }).join('');
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Prenotazione campi</div><h2>\${sportIcon(sel.sport)} \${esc(sel.nome)}</h2>
-    <div class="field"><label>Campo</label><div class="chips">\${courtChips}</div></div>
-    <div class="field"><label>Giorno</label><div class="chips">\${dayChips}</div></div>
-    <div class="sect-title" style="margin-top:6px">Fasce orarie</div>
-    <div class="card" style="padding:4px 14px">\${slotHTML || '<p class="tiny muted" style="padding:8px 0">Nessuno slot per questa data.</p>'}</div>
-    <div class="note">\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.</div>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Prenotazione campi')}</div><h2>\${sportIcon(sel.sport)} \${esc(sel.nome)}</h2>
+    <div class="field"><label>\${T('Campo')}</label><div class="chips">\${courtChips}</div></div>
+    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    <div class="sect-title" style="margin-top:6px">\${T('Fasce orarie')}</div>
+    <div class="card" style="padding:4px 14px">\${slotHTML || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessuno slot per questa data.')}</p>\`}</div>
+    <div class="note">\${T('\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 async function openPartiteAperte() {
   let list = [];
-  try { list = await api('/campi/partite-aperte'); } catch { okThen('Disponibile solo online', false); return; }
-  const rows = list.map(p => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.92rem">\${sportIcon(p.sport)} \${esc(p.campo_nome)} \xB7 \${esc(p.slot)}</b><div class="ct">\${esc(dataBella(p.data))} \xB7 \${p.iscritti}/\${p.posti_totali}\${p.livello ? ' \xB7 ' + esc(p.livello) : ''}\${p.mancano ? \` \xB7 manca\${p.mancano > 1 ? 'no' : ''} \${p.mancano}\` : ''}</div></div><button class="btn gold sm" data-unisci="\${p.id}">Unisciti</button></div>\`).join('');
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--plum)">Gioca con gli altri</div><h2>\u{1F465} Partite aperte</h2>
-    <p class="sub">Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.</p>
-    <div class="card" style="padding:4px 14px">\${rows || '<p class="tiny muted" style="padding:8px 0">Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!</p>'}</div>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+  try { list = await api('/campi/partite-aperte'); } catch { okThen(T('Disponibile solo online'), false); return; }
+  const rows = list.map(p => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.92rem">\${sportIcon(p.sport)} \${esc(p.campo_nome)} \xB7 \${esc(p.slot)}</b><div class="ct">\${esc(dataBella(p.data))} \xB7 \${p.iscritti}/\${p.posti_totali}\${p.livello ? ' \xB7 ' + esc(p.livello) : ''}\${p.mancano ? \` \xB7 \${T(p.mancano > 1 ? 'mancano' : 'manca')} \${p.mancano}\` : ''}</div></div><button class="btn gold sm" data-unisci="\${p.id}">\${T('Unisciti')}</button></div>\`).join('');
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--plum)">\${T('Gioca con gli altri')}</div><h2>\u{1F465} \${T('Partite aperte')}</h2>
+    <p class="sub">\${T('Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.')}</p>
+    <div class="card" style="padding:4px 14px">\${rows || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!')}</p>\`}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 function dataBella(iso) { try { const [y, m, d] = iso.split('-'); return \`\${d}/\${m}\`; } catch { return iso; } }
 async function campoPrenota(v) {
   const [id, slot] = v.split('|');
-  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || 'Prenotazione non riuscita', false); return; } } catch { okThen('Errore di rete', false); return; }
-  okThen(\`Campo prenotato \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
+  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; } } catch { okThen(T('Errore di rete'), false); return; }
+  okThen(\`\${T('Campo prenotato')} \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
 }
 async function campoApri(v) {
   const [id, slot] = v.split('|');
   const campo = (state.data.campi || []).find(c => c.id == id);
   const posti = campo ? campo.posti_default : 4;
-  if (!confirm(\`Apri una partita alle \${slot} con \${posti} posti? Gli altri soci potranno unirsi.\`)) return;
-  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/partita', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot, posti_totali: posti }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || 'Non riuscito', false); return; } } catch { okThen('Errore di rete', false); return; }
-  okThen(\`Partita aperta \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
+  if (!confirm(\`\${T('Apri una partita alle')} \${slot} \${T('con')} \${posti} \${T('posti? Gli altri soci potranno unirsi.')}\`)) return;
+  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/partita', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot, posti_totali: posti }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } } catch { okThen(T('Errore di rete'), false); return; }
+  okThen(\`\${T('Partita aperta')} \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
 }
 async function campoUnisci(pid) {
-  try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || 'Non riuscito', false); return; } okThen(j.completa ? 'Partita al completo, ci vediamo in campo! \u{1F3BE}' : \`Iscritto! \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen('Errore di rete', false); return; }
+  try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } okThen(j.completa ? T('Partita al completo, ci vediamo in campo! \u{1F3BE}') : \`\${T('Iscritto!')} \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen(T('Errore di rete'), false); return; }
   if (state._campoSel) openCampi(state._campoSel); else openPartiteAperte();
 }
 async function openTessera() {
@@ -3395,52 +3710,52 @@ async function openTessera() {
   if (state.token) {
     try {
       const list = await api('/auth/notifiche');
-      notifHtml = \`<div class="sect-title" style="margin-top:12px">Le mie notifiche</div><div class="card" style="padding:4px 14px">\${list.length ? list.map(n => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.82rem">\${esc(n.titolo)}</b><div class="ct">\${esc(n.corpo || '')}</div></div>\${n.letta ? '' : '<span style="background:var(--gold);color:#fff;padding:2px 8px;border-radius:10px;font-size:.58rem;font-weight:700">nuovo</span>'}</div>\`).join('') : '<p class="tiny muted" style="padding:8px 0">Nessuna notifica.</p>'}</div>\`;
+      notifHtml = \`<div class="sect-title" style="margin-top:12px">\${T('Le mie notifiche')}</div><div class="card" style="padding:4px 14px">\${list.length ? list.map(n => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.82rem">\${esc(n.titolo)}</b><div class="ct">\${esc(n.corpo || '')}</div></div>\${n.letta ? '' : \`<span style="background:var(--gold);color:#fff;padding:2px 8px;border-radius:10px;font-size:.58rem;font-weight:700">\${T('nuovo')}</span>\`}</div>\`).join('') : \`<p class="tiny muted" style="padding:8px 0">\${T('Nessuna notifica.')}</p>\`}</div>\`;
     } catch {}
     try {
       const cs = (await api('/convocazioni/' + state.tessera)).filter(c => c.stato === 'aperta' || c.stato === 'obbligatoria');
-      if (cs.length) convHtml = \`<div class="sect-title" style="margin-top:12px">Le tue convocazioni</div><div class="card" style="padding:4px 14px">\${cs.map(c => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.85rem">\${esc(c.disciplina)}</b><div class="ct">\${esc(c.match_label || '')}</div></div><div style="display:flex; gap:6px"><button class="btn gold sm" data-convrisp="\${c.id}|disponibile">Ci sono</button><button class="btn ghost sm" data-convrisp="\${c.id}|non_disponibile">No</button></div></div>\`).join('')}</div>\`;
+      if (cs.length) convHtml = \`<div class="sect-title" style="margin-top:12px">\${T('Le tue convocazioni')}</div><div class="card" style="padding:4px 14px">\${cs.map(c => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.85rem">\${esc(c.disciplina)}</b><div class="ct">\${esc(c.match_label || '')}</div></div><div style="display:flex; gap:6px"><button class="btn gold sm" data-convrisp="\${c.id}|disponibile">\${T('Ci sono')}</button><button class="btn ghost sm" data-convrisp="\${c.id}|non_disponibile">\${T('No')}</button></div></div>\`).join('')}</div>\`;
     } catch {}
   }
   setSheet(\`<div class="grab"></div>
-    <div class="tessera"><div class="lab">BUSSOLA \xB7 by KOIN\xC8</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||'Socio')} \xB7 Casata \${esc(s.casata||'')}</div>
+    <div class="tessera"><div class="lab">BUSSOLA \xB7 by KOIN\xC8</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||T('Socio'))} \xB7 \${T('Casata')} \${esc(s.casata||'')}</div>
       <div class="qr">\${qrSvg(s.tessera_code)}</div>
-      <div class="foot"><span class="tiny" style="opacity:.85">Tessera \${esc(s.tessera_code)}</span><span class="tiny" style="opacity:.85">Valida fino al \${esc((s.valida_fino||'').split('-').reverse().join('/'))}</span></div></div>
+      <div class="foot"><span class="tiny" style="opacity:.85">\${T('Tessera')} \${esc(s.tessera_code)}</span><span class="tiny" style="opacity:.85">\${T('Valida fino al')} \${esc((s.valida_fino||'').split('-').reverse().join('/'))}</span></div></div>
     <div class="card" style="margin-top:12px; display:flex; align-items:center; gap:12px">
-      <div style="flex:1"><b style="font-size:.86rem">Notifiche casata & eventi</b><p class="tiny muted">Convocazioni, cambi orario e serate. Con il tuo consenso.</p></div>
-      <button class="btn \${pushOn?'gold':'ghost'} sm" data-push="\${pushOn?'off':'on'}">\${pushOn?'Attive \u2713':'Attiva'}</button>
+      <div style="flex:1"><b style="font-size:.86rem">\${T('Notifiche casata & eventi')}</b><p class="tiny muted">\${T('Convocazioni, cambi orario e serate. Con il tuo consenso.')}</p></div>
+      <button class="btn \${pushOn?'gold':'ghost'} sm" data-push="\${pushOn?'off':'on'}">\${pushOn?T('Attive \u2713'):T('Attiva')}</button>
     </div>
     \${convHtml}\${notifHtml}
-    <div class="sect-title" style="margin-top:12px">Cosa ti d\xE0</div>
+    <div class="sect-title" style="margin-top:12px">\${T('Cosa ti d\xE0')}</div>
     <div class="card">
-      <div class="benefit"><span class="bic">\u2713</span><div><b>Giochi la Coppa delle Casate</b><p>Sport, giochi da tavolo e prove artistiche con il tuo clan.</p></div></div>
-      <div class="benefit"><span class="bic">\u2713</span><div><b>Inviti della casata</b><p>Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.</p></div></div>
-      <div class="benefit"><span class="bic">\u25CB</span><div><b>Copertura infortuni <span class="tiny" style="color:var(--coral)">in definizione</span></b><p>Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.</p></div></div>
-      <div class="benefit"><span class="bic">\u2713</span><div><b>Il tuo posto nell'Albo d'Oro</b><p>I vincitori della stagione restano scritti alla Bussola.</p></div></div>
+      <div class="benefit"><span class="bic">\u2713</span><div><b>\${T('Giochi la Coppa delle Casate')}</b><p>\${T('Sport, giochi da tavolo e prove artistiche con il tuo clan.')}</p></div></div>
+      <div class="benefit"><span class="bic">\u2713</span><div><b>\${T('Inviti della casata')}</b><p>\${T('Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.')}</p></div></div>
+      <div class="benefit"><span class="bic">\u25CB</span><div><b>\${T('Copertura infortuni')} <span class="tiny" style="color:var(--coral)">\${T('in definizione')}</span></b><p>\${T('Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.')}</p></div></div>
+      <div class="benefit"><span class="bic">\u2713</span><div><b>\${T("Il tuo posto nell'Albo d'Oro")}</b><p>\${T('I vincitori della stagione restano scritti alla Bussola.')}</p></div></div>
     </div>
-    <button class="btn ghost block" style="margin-top:12px" data-logout>Esci / cambia tessera</button>
-    <button class="btn navy block" style="margin-top:8px" data-close>Chiudi</button>\`);
+    <button class="btn ghost block" style="margin-top:12px" data-logout>\${T('Esci / cambia tessera')}</button>
+    <button class="btn navy block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 function openLoginOtp() {
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Accesso</div><h2>Entra con la tua e-mail</h2><p class="sub">Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.</p>
-    <div class="field"><label>La tua e-mail</label><input id="ol_email" type="email" placeholder="nome@example.com" value="socio@example.com"></div>
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Accesso')}</div><h2>\${T('Entra con la tua e-mail')}</h2><p class="sub">\${T('Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.')}</p>
+    <div class="field"><label>\${T('La tua e-mail')}</label><input id="ol_email" type="email" placeholder="nome@example.com" value="socio@example.com"></div>
     <div class="err" id="ol_err" style="color:var(--coral); font-size:.75rem; min-height:16px"></div>
-    <button class="btn gold block" data-otp-req>Invia il codice</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`);
+    <button class="btn gold block" data-otp-req>\${T('Invia il codice')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Annulla')}</button>\`);
   showOv();
 }
 async function requestOtp() {
   const email = $('#ol_email').value.trim();
-  if (!email.includes('@')) { $('#ol_err').textContent = 'Inserisci un\u2019e-mail valida'; return; }
+  if (!email.includes('@')) { $('#ol_err').textContent = T('Inserisci un\u2019e-mail valida'); return; }
   let devCode = '';
   try { const r = await api('/auth/request-otp', { method:'POST', body: JSON.stringify({ email }) }); devCode = r.dev_code || ''; } catch {}
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Verifica</div><h2>Inserisci il codice</h2><p class="sub">Ti abbiamo inviato un codice a \${esc(email)}.</p>
-    \${devCode?\`<div class="note">Modalit\xE0 test: il codice \xE8 <b>\${esc(devCode)}</b> (in produzione arriva via e-mail/SMS).</div>\`:''}
-    <div class="field"><label>Codice a 6 cifre</label><input id="ol_code" inputmode="numeric" placeholder="______" value="\${esc(devCode)}"></div>
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Verifica')}</div><h2>\${T('Inserisci il codice')}</h2><p class="sub">\${T('Ti abbiamo inviato un codice a')} \${esc(email)}.</p>
+    \${devCode?\`<div class="note">\${T('Modalit\xE0 test: il codice \xE8')} <b>\${esc(devCode)}</b> \${T('(in produzione arriva via e-mail/SMS).')}</div>\`:''}
+    <div class="field"><label>\${T('Codice a 6 cifre')}</label><input id="ol_code" inputmode="numeric" placeholder="______" value="\${esc(devCode)}"></div>
     <div class="err" id="ol_err" style="color:var(--coral); font-size:.75rem; min-height:16px"></div>
-    <button class="btn gold block" data-otp-verify="\${esc(email)}">Entra</button>
-    <button class="btn ghost block" style="margin-top:8px" data-login>Cambia e-mail</button>\`);
+    <button class="btn gold block" data-otp-verify="\${esc(email)}">\${T('Entra')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-login>\${T('Cambia e-mail')}</button>\`);
   showOv();
 }
 async function verifyOtp(email) {
@@ -3451,8 +3766,8 @@ async function verifyOtp(email) {
     store.set('token', r.token); store.set('tessera', r.socio.tessera_code);
     hideGate(); closeOv();
     await enterApp();
-    okThen('Bentornato, ' + r.socio.nome);
-  } catch { $('#ol_err').textContent = 'Codice non valido o scaduto'; }
+    okThen(T('Bentornato,') + ' ' + r.socio.nome);
+  } catch { $('#ol_err').textContent = T('Codice non valido o scaduto'); }
 }
 
 // ---- Accesso al primo avvio (gate): tessera principale, e-mail di riserva ------
@@ -3468,7 +3783,7 @@ async function loginTessera() {
   const code = ($('#gate_tess').value || '').trim().toUpperCase();
   const err = $('#gateErr');
   if (err) err.textContent = '';
-  if (!code) { if (err) err.textContent = 'Inserisci il codice tessera.'; return; }
+  if (!code) { if (err) err.textContent = T('Inserisci il codice tessera.'); return; }
   try {
     const r = await api('/auth/login-tessera', { method: 'POST', body: JSON.stringify({ tessera_code: code }) });
     state.token = r.token; state.tessera = r.socio.tessera_code; state.authed = true;
@@ -3477,7 +3792,7 @@ async function loginTessera() {
     await enterApp();
     if (!store.get('seen', false)) $('#onb').classList.add('show');
   } catch (e) {
-    if (err) err.textContent = 'Tessera non trovata. Controlla il codice o usa l\u2019e-mail.';
+    if (err) err.textContent = T('Tessera non trovata. Controlla il codice o usa l\u2019e-mail.');
   }
 }
 function demoPreview() {   // solo per anteprima: usa la tessera demo e i dati SEED se offline
@@ -3493,33 +3808,33 @@ async function togglefPush(to) {
   const on = to === 'on';
   if (state.token) { try { await api('/auth/notifiche/consenso', { method:'POST', body: JSON.stringify({ attivo: on }) }); } catch {} }
   state.socio.notifiche_push = on;
-  okThen(on ? 'Notifiche attivate: ti avviseremo per casata ed eventi' : 'Notifiche disattivate');
+  okThen(on ? T('Notifiche attivate: ti avviseremo per casata ed eventi') : T('Notifiche disattivate'));
 }
 const SHEETS = {
-  'sheet-vinile': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">Marted\xEC \xB7 Vinile & Vino</div><h2>Proponi un vinile</h2><p class="sub">Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.</p>
-    <div class="field"><label>Quale vinile?</label><input id="in1" placeholder="Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4"></div>
-    <div class="field"><label>I brani che vuoi ascoltare</label><input id="in2" placeholder="Es. Cr\xEAuza de m\xE4, Sid\xFAn"></div>
-    <div class="field"><label>Perch\xE9 lo proponi?</label><textarea id="in3" placeholder="In due righe cosa significa per te..."></textarea></div>
-    <button class="btn gold block" data-proposta="vinile">Invia la proposta</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`,
-  'sheet-openmic': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Domenica \xB7 Open Mic</div><h2>Salgo sul palco</h2><p class="sub">Hai tre minuti. Scegli cosa porti sul Bussola Stage.</p>
-    <div class="field"><label>La tua esibizione</label><div class="chips" data-group="tipo"><button class="chip" data-chip>\u{1F3A4} Canto</button><button class="chip" data-chip>\u{1F3AD} Monologo</button><button class="chip" data-chip>\u{1F604} Stand-up</button><button class="chip" data-chip>\u{1F3B8} Strumento</button></div></div>
-    <div class="field"><label>Titolo / cosa presenti</label><input id="in1" placeholder="Es. 'Caruso' alla chitarra"></div>
-    <div class="note">La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.</div>
-    <button class="btn gold block" style="margin-top:12px" data-proposta="openmic">Prenota i miei tre minuti</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Annulla</button>\`,
+  'sheet-vinile': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Marted\xEC')} \xB7 Vinile & Vino</div><h2>\${T('Proponi un vinile')}</h2><p class="sub">\${T('Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.')}</p>
+    <div class="field"><label>\${T('Quale vinile?')}</label><input id="in1" placeholder="\${T('Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4')}"></div>
+    <div class="field"><label>\${T('I brani che vuoi ascoltare')}</label><input id="in2" placeholder="\${T('Es. Cr\xEAuza de m\xE4, Sid\xFAn')}"></div>
+    <div class="field"><label>\${T('Perch\xE9 lo proponi?')}</label><textarea id="in3" placeholder="\${T('In due righe cosa significa per te...')}"></textarea></div>
+    <button class="btn gold block" data-proposta="vinile">\${T('Invia la proposta')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Annulla')}</button>\`,
+  'sheet-openmic': () => \`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${T('Domenica')} \xB7 Open Mic</div><h2>\${T('Salgo sul palco')}</h2><p class="sub">\${T('Hai tre minuti. Scegli cosa porti sul Bussola Stage.')}</p>
+    <div class="field"><label>\${T('La tua esibizione')}</label><div class="chips" data-group="tipo"><button class="chip" data-chip>\u{1F3A4} \${T('Canto')}</button><button class="chip" data-chip>\u{1F3AD} \${T('Monologo')}</button><button class="chip" data-chip>\u{1F604} Stand-up</button><button class="chip" data-chip>\u{1F3B8} \${T('Strumento')}</button></div></div>
+    <div class="field"><label>\${T('Titolo / cosa presenti')}</label><input id="in1" placeholder="\${T("Es. 'Caruso' alla chitarra")}"></div>
+    <div class="note">\${T('La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.')}</div>
+    <button class="btn gold block" style="margin-top:12px" data-proposta="openmic">\${T('Prenota i miei tre minuti')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Annulla')}</button>\`,
 };
 function openSheet(id) { setSheet(SHEETS[id]()); showOv(); }
 function okThen(msg, ok = true) {
   const icon = ok ? '<path d="M5 13l4 4L19 7"/>' : '<path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/>';
   const bg = ok ? '' : 'background:var(--coral)';
-  const title = ok ? 'Fatto!' : 'Un momento';
-  const tail = ok ? ". Lo trovi nell'app e te lo ricordiamo noi." : '';
-  setSheet(\`<div class="grab"></div><div class="okmsg" style="text-align:center; padding:12px 0 4px"><div class="big" style="\${bg}"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" aria-hidden="true">\${icon}</svg></div><h2 style="text-align:center">\${title}</h2><p class="sub" style="text-align:center">\${esc(msg)}\${tail}</p></div><button class="btn navy block" style="margin-top:6px" data-close>\${ok ? 'Perfetto' : 'Ho capito'}</button>\`);
+  const title = ok ? T('Fatto!') : T('Un momento');
+  const tail = ok ? T(". Lo trovi nell'app e te lo ricordiamo noi.") : '';
+  setSheet(\`<div class="grab"></div><div class="okmsg" style="text-align:center; padding:12px 0 4px"><div class="big" style="\${bg}"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" aria-hidden="true">\${icon}</svg></div><h2 style="text-align:center">\${title}</h2><p class="sub" style="text-align:center">\${esc(msg)}\${tail}</p></div><button class="btn navy block" style="margin-top:6px" data-close>\${ok ? T('Perfetto') : T('Ho capito')}</button>\`);
   showOv();
 }
-// Lingue: 5 con traduzione fissa salvata + 2 (zh/ja) con traduzione automatica.
-const LANGS = [['it','Italiano','fixed'],['en','English','fixed'],['fr','Fran\xE7ais','fixed'],['de','Deutsch','fixed'],['es','Espa\xF1ol','fixed'],['zh','\u4E2D\u6587 \xB7 auto','auto'],['ja','\u65E5\u672C\u8A9E \xB7 auto','auto']];
+// Lingue: 5 con traduzione fissa salvata (it/en/fr/de/es).
+const LANGS = [['it','Italiano','fixed'],['en','English','fixed'],['fr','Fran\xE7ais','fixed'],['de','Deutsch','fixed'],['es','Espa\xF1ol','fixed']];
 const I18N = {
   it:{home:'Home',eventi:'Eventi',sport:'Sport',giochi:'Giochi',bussola:'Guida',ciao:'Ciao',testo:'Testo',contrasto:'Contrasto',siamo_qui:'Siamo qui',chiosco:'Chiosco La Bussola',isola:'Isola ecologica',qui:'sei qui',apri_mappa:'Tocca per aprire la mappa'},
   en:{home:'Home',eventi:'Events',sport:'Sport',giochi:'Games',bussola:'Guide',ciao:'Hi',testo:'Text',contrasto:'Contrast',siamo_qui:'You are here',chiosco:'La Bussola kiosk',isola:'Recycling point',qui:'you are here',apri_mappa:'Tap to open the map'},
@@ -3528,29 +3843,418 @@ const I18N = {
   es:{home:'Inicio',eventi:'Eventos',sport:'Deporte',giochi:'Juegos',bussola:'Gu\xEDa',ciao:'Hola',testo:'Texto',contrasto:'Contraste',siamo_qui:'Est\xE1s aqu\xED',chiosco:'Quiosco La Bussola',isola:'Punto de reciclaje',qui:'est\xE1s aqu\xED',apri_mappa:'Toca para abrir el mapa'},
 };
 function tr(k){ return (I18N[state.lang] || I18N.it)[k] || I18N.it[k]; }
+// Dizionario stringhe fisse dell'app (chiave = testo italiano esatto). I contenuti
+// dinamici (dati/DB) non passano da qui. T() ricade sull'italiano se manca la voce.
+const UI = {
+  en: {
+    'Casata':'House','Benvenuto alla Bussola':'Welcome to La Bussola','Benvenuti alla Bussola':'Welcome to La Bussola',
+    'Proponi':'Suggest','Salgo':'On stage','Coppa':'Cup','Info':'Info','Vedi':'View','Stasera alla Bussola':'Tonight at La Bussola',
+    'Prenota':'Book','Campi':'Courts','prenota o partita':'book or match','Partite aperte':'Open matches','unisciti':'join',
+    'Coworking':'Coworking','postazione':'workspace','Questa settimana':'This week','Serate su prenotazione':'Evenings by reservation',
+    'a persona':'per person','posti':'spots','Il cartellone':'The lineup','Il programma':'The program',
+    'Tocca una serata per i dettagli e per prenotare.':'Tap an evening for details and to book.',
+    'Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.':'Afternoons are for sport and families; evenings, the shows that go with dinner.',
+    'Serata dei Clan \xB7 Contest':'Clans Night \xB7 Contest','Apri il contest':'Open the contest','Strumenti del capitano':'Captain tools',
+    'Convoca la casata':'Summon your house','Serata dei Clan':'Clans Night','La comunit\xE0':'The community','Coppa delle Casate':'Houses Cup',
+    'La tua casata':'Your house','posto':'place','Classifica generale':'Overall standings','Campionati sport':'Sport championships',
+    'Gironi, calendario e risultati.':'Groups, schedule and results.','Apri':'Open','Giochi da Tavolo':'Board games',
+    'Burraco, scala 40, briscola, scacchi.':'Burraco, Scala 40, Briscola, chess.',"Regolamenti & Albo d'Oro":'Rules & Hall of Fame',
+    'Regole di Coppa, Contest e Proposte; le edizioni passate.':'Cup, Contest and Proposal rules; past editions.',
+    "Albo d'Oro":'Hall of Fame','Regole & storia':'Rules & history','Regolamenti':'Rules',
+    'Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.':'The rules for the Cup, Contest and Proposals, and the rules of the ongoing disciplines.',
+    'Nessun regolamento generale.':'No general rules.','Discipline':'Disciplines','Chiudi':'Close',
+    'Calendario non ancora disponibile.':'Calendar not available yet.','Nessun periodo configurato.':'No period configured.',
+    'Conferimento':'Drop-off','Ritiro dalle':'Pickup from',
+    'Lun':'Mon','Mar':'Tue','Mer':'Wed','Gio':'Thu','Ven':'Fri','Sab':'Sat','Dom':'Sun',
+    'Guida del residence':'Residence guide','Silenzio pomeridiano':'Afternoon quiet','Silenzio notturno':'Night quiet',
+    'Numeri utili & servizi':'Useful numbers & services','Raccolta rifiuti':'Waste collection','Cosa vedere':'What to see',
+    'Presenza confermata \u2713':'Attendance confirmed \u2713','Convocazione vincolante':'Binding call-up',
+    'Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.':'You\u2019ve already declined three times this season: this call-up is binding.',
+    'Confermo':'I confirm','Hai declinato':'You declined','dinieghi':'declines','Ci ripenso':'I\u2019ll reconsider',
+    'Sei nostro ospite: partecipa quando vuoi, nessun obbligo.':'You\u2019re our guest: join whenever you like, no obligation.',
+    'Dinieghi:':'Declines:','diventa vincolante solo dopo il terzo':'becomes binding only after the third',
+    'La tua casata ti invita':'Your house invites you','Disponibile':'Available','Non disponibile':'Not available',
+    'Squadra':'Team','PG':'GP','V':'W','Pt':'Pts','Prossime partite':'Upcoming matches','Calendario in aggiornamento.':'Schedule being updated.',
+    'Risultati recenti':'Recent results','Nessun risultato ancora.':'No results yet.',
+    'Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.':'Every match updates the Cup standings. Format: groups, then semifinals and final.',
+    'Campionati sociali':'Club championships','Tornei':'Tournaments','Sport & Tornei':'Sport & Tournaments','Oggi':'Today','Domani':'Tomorrow',
+    'Posti limitati: massimo 8 la mattina e 8 il pomeriggio. La <b>giornata intera</b> occupa un posto in entrambi i turni.':'Limited spots: max 8 in the morning and 8 in the afternoon. The <b>full day</b> takes a spot in both slots.',
+    'Quante persone':'How many people','Prenotazione':'Booking','Giorno':'Day','Turno':'Slot','Conferma prenotazione':'Confirm booking','Annulla':'Cancel',
+    'Prenotazione campi disponibile solo online':'Court booking available online only','Disponibile solo online':'Available online only','Libero':'Free','Partita':'Match','Partita aperta':'Open match',
+    'AL COMPLETO':'FULL','Unisciti':'Join','Occupato':'Occupied','prenotato':'booked','OCCUPATO':'OCCUPIED','Prenotazione campi':'Court booking',
+    'Campo':'Court','Fasce orarie':'Time slots','Nessuno slot per questa data.':'No slots for this date.',
+    '\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.':'\u201CBook\u201D locks the slot for you. \u201CMatch\u201D opens an <b>open match</b>: other members can join until it\u2019s full.',
+    'manca':'missing','mancano':'missing','Gioca con gli altri':'Play with others',
+    'Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.':'Join a match with open spots: once it\u2019s full, you\u2019re set.',
+    'Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!':'No open matches right now. Start one yourself from the Courts section!',
+    'Prenotazione non riuscita':'Booking failed','Errore di rete':'Network error','Campo prenotato':'Court booked',
+    'Apri una partita alle':'Open a match at','con':'with','posti? Gli altri soci potranno unirsi.':'spots? Other members can join.',
+    'Non riuscito':'Failed','Partita al completo, ci vediamo in campo! \u{1F3BE}':'Match full, see you on court! \u{1F3BE}','Iscritto!':'Signed up!',
+    'Le mie notifiche':'My notifications','Nessuna notifica.':'No notifications.','nuovo':'new','Le tue convocazioni':'Your call-ups',
+    'Ci sono':'I\u2019m in','No':'No','Socio':'Member','Tessera':'Card','Valida fino al':'Valid until','Notifiche casata & eventi':'House & events notifications',
+    'Convocazioni, cambi orario e serate. Con il tuo consenso.':'Call-ups, schedule changes and evenings. With your consent.',
+    'Attive \u2713':'On \u2713','Attiva':'Turn on','Cosa ti d\xE0':'What you get','Giochi la Coppa delle Casate':'You play the Houses Cup',
+    'Sport, giochi da tavolo e prove artistiche con il tuo clan.':'Sport, board games and artistic challenges with your clan.',
+    'Inviti della casata':'House invitations',
+    'Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.':'Reply available or not, no ticket or minimum purchase.',
+    'Copertura infortuni':'Injury coverage','in definizione':'in progress',
+    'Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.':'We\u2019re evaluating coverage for sports activities with the insurer.',
+    "Il tuo posto nell'Albo d'Oro":'Your place in the Hall of Fame','I vincitori della stagione restano scritti alla Bussola.':'The season\u2019s winners stay recorded at La Bussola.',
+    'Esci / cambia tessera':'Log out / change card','Accesso':'Sign in','Entra con la tua e-mail':'Sign in with your email',
+    'Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.':'We\u2019ll send you a one-time code (OTP) or a magic link. No password to remember.',
+    'La tua e-mail':'Your email','Invia il codice':'Send the code','Inserisci un\u2019e-mail valida':'Enter a valid email',
+    'Verifica':'Verify','Inserisci il codice':'Enter the code','Ti abbiamo inviato un codice a':'We sent a code to',
+    'Modalit\xE0 test: il codice \xE8':'Test mode: the code is','(in produzione arriva via e-mail/SMS).':'(in production it arrives via email/SMS).',
+    'Codice a 6 cifre':'6-digit code','Entra':'Enter','Cambia e-mail':'Change email','Codice non valido o scaduto':'Invalid or expired code',
+    'Bentornato,':'Welcome back,','Inserisci il codice tessera.':'Enter your card code.',
+    'Tessera non trovata. Controlla il codice o usa l\u2019e-mail.':'Card not found. Check the code or use email.',
+    'Notifiche attivate: ti avviseremo per casata ed eventi':'Notifications on: we\u2019ll alert you about your house and events','Notifiche disattivate':'Notifications off',
+    'Marted\xEC':'Tuesday','Proponi un vinile':'Suggest a vinyl',
+    'Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.':'This week\u2019s suggestions become next Tuesday\u2019s playlist.',
+    'Quale vinile?':'Which vinyl?','Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4':'E.g. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4',
+    'I brani che vuoi ascoltare':'The tracks you want to hear','Es. Cr\xEAuza de m\xE4, Sid\xFAn':'E.g. Cr\xEAuza de m\xE4, Sid\xFAn',
+    'Perch\xE9 lo proponi?':'Why are you suggesting it?','In due righe cosa significa per te...':'In two lines, what it means to you...',
+    'Invia la proposta':'Send the suggestion','Domenica':'Sunday','Salgo sul palco':'I\u2019m taking the stage',
+    'Hai tre minuti. Scegli cosa porti sul Bussola Stage.':'You have three minutes. Choose what you bring to the Bussola Stage.',
+    'La tua esibizione':'Your performance','Canto':'Singing','Monologo':'Monologue','Strumento':'Instrument','Titolo / cosa presenti':'Title / what you present',
+    "Es. 'Caruso' alla chitarra":'E.g. \u2018Caruso\u2019 on guitar',
+    'La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.':'Stand-up is welcome, with moderate language: there are families at La Bussola too.',
+    'Prenota i miei tre minuti':'Book my three minutes','Fatto!':'Done!','Un momento':'One moment',
+    ". Lo trovi nell'app e te lo ricordiamo noi.":'. You\u2019ll find it in the app and we\u2019ll remind you.','Perfetto':'Perfect','Ho capito':'Got it',
+    'Scegli la lingua':'Choose the language',"Scegli la lingua dell'app":'Choose the app language',
+    'Numeri utili':'Useful numbers','Emergenze & servizi':'Emergencies & services','In caso di necessit\xE0.':'In case of need.',
+    'Emergenze (112)':'Emergencies (112)','Numero unico europeo':'Single European number','Capitano':'Captain','Convoca la tua casata':'Summon your house',
+    "Nessuna partita da coprire al momento (serve l'accesso da capitano e un calendario generato dallo staff).":'No matches to cover right now (requires captain access and a schedule generated by staff).',
+    'dispon.':'avail.','Serve gente \u2014 convoca':'Need players \u2014 call up','Convoca giocatori':'Call up players','Chi copre le partite?':'Who covers the matches?',
+    'Rosso = mancano disponibili rispetto al minimo. Tocca una partita per convocare i singoli.':'Red = fewer available than the minimum. Tap a match to call up individuals.',
+    'disponibile':'available','non disp.':'unavail.','in attesa':'pending','Convoca i giocatori':'Call up players',
+    'servono':'need','disponibili':'available','Spunta chi vuoi convocare.':'Check who you want to call up.',
+    'Convoca i selezionati':'Call up selected','\u2190 Torna alle partite':'\u2190 Back to matches','Seleziona almeno un giocatore':'Select at least one player',
+    'Convocati':'Called up','giocatori':'players','Non riesco a convocare ora':'Can\u2019t call up right now',
+    'Rilancia la sfida ai tuoi. Forza':'Rally your house. Go','Condividi con la casata':'Share with your house','Vincitore:':'Winner:','Condividi':'Share',
+    'Testo copiato: incollalo nel gruppo':'Text copied: paste it in the group','Presenza confermata':'Attendance confirmed',
+    'Prenotazione non riuscita: riprova':'Booking failed: try again','Prenotazione registrata':'Booking recorded','pers.':'ppl',
+    'Serata su prenotazione':'Evening by reservation','Quota':'Fee','Posti disponibili':'Spots available','Posti esauriti per questa serata.':'Sold out for this evening.',
+    'Prenotazione a numero chiuso: la quota si salda in cassa alla conferma (il pagamento in-app arriver\xE0 pi\xF9 avanti).':'Limited-capacity booking: the fee is paid at the desk on confirmation (in-app payment coming later).',
+    'Sei in lista per':'You\u2019re on the list for','da saldare in cassa':'to pay at the desk','da saldare':'to pay','la serata':'the evening',
+    'La tua proposta \xE8 in lista':'Your suggestion is on the list','Sei in scaletta per domenica':'You\u2019re on the lineup for Sunday','Lingua impostata':'Language set',
+    'siamo':'we\u2019re','punti':'points','Forza':'Go','la nostra casata':'our house','La sfida di venerd\xEC':'Friday\u2019s challenge','prossimamente':'coming soon',
+  },
+  fr: {
+    'Casata':'Maison','Benvenuto alla Bussola':'Bienvenue \xE0 La Bussola','Benvenuti alla Bussola':'Bienvenue \xE0 La Bussola',
+    'Proponi':'Proposer','Salgo':'Sur sc\xE8ne','Coppa':'Coupe','Info':'Info','Vedi':'Voir','Stasera alla Bussola':'Ce soir \xE0 La Bussola',
+    'Prenota':'R\xE9server','Campi':'Terrains','prenota o partita':'r\xE9server ou partie','Partite aperte':'Parties ouvertes','unisciti':'rejoindre',
+    'Coworking':'Coworking','postazione':'poste','Questa settimana':'Cette semaine','Serate su prenotazione':'Soir\xE9es sur r\xE9servation',
+    'a persona':'par personne','posti':'places','Il cartellone':'\xC0 l\u2019affiche','Il programma':'Le programme',
+    'Tocca una serata per i dettagli e per prenotare.':'Touchez une soir\xE9e pour les d\xE9tails et pour r\xE9server.',
+    'Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.':'L\u2019apr\xE8s-midi est au sport et aux familles ; le soir, les spectacles qui accompagnent le d\xEEner.',
+    'Serata dei Clan \xB7 Contest':'Soir\xE9e des Clans \xB7 Concours','Apri il contest':'Ouvrir le concours','Strumenti del capitano':'Outils du capitaine',
+    'Convoca la casata':'Convoquer la maison','Serata dei Clan':'Soir\xE9e des Clans','La comunit\xE0':'La communaut\xE9','Coppa delle Casate':'Coupe des Maisons',
+    'La tua casata':'Votre maison','posto':'place','Classifica generale':'Classement g\xE9n\xE9ral','Campionati sport':'Championnats sportifs',
+    'Gironi, calendario e risultati.':'Poules, calendrier et r\xE9sultats.','Apri':'Ouvrir','Giochi da Tavolo':'Jeux de soci\xE9t\xE9',
+    'Burraco, scala 40, briscola, scacchi.':'Burraco, Scala 40, Briscola, \xE9checs.',"Regolamenti & Albo d'Oro":'R\xE8glements & Palmar\xE8s',
+    'Regole di Coppa, Contest e Proposte; le edizioni passate.':'R\xE8gles de la Coupe, du Concours et des Propositions ; \xE9ditions pass\xE9es.',
+    "Albo d'Oro":'Palmar\xE8s','Regole & storia':'R\xE8gles & histoire','Regolamenti':'R\xE8glements',
+    'Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.':'Les r\xE8gles de la Coupe, du Concours et des Propositions, et les r\xE8glements des disciplines en cours.',
+    'Nessun regolamento generale.':'Aucun r\xE8glement g\xE9n\xE9ral.','Discipline':'Disciplines','Chiudi':'Fermer',
+    'Calendario non ancora disponibile.':'Calendrier pas encore disponible.','Nessun periodo configurato.':'Aucune p\xE9riode configur\xE9e.',
+    'Conferimento':'D\xE9p\xF4t','Ritiro dalle':'Collecte \xE0 partir de',
+    'Lun':'Lun','Mar':'Mar','Mer':'Mer','Gio':'Jeu','Ven':'Ven','Sab':'Sam','Dom':'Dim',
+    'Guida del residence':'Guide de la r\xE9sidence','Silenzio pomeridiano':'Silence de l\u2019apr\xE8s-midi','Silenzio notturno':'Silence nocturne',
+    'Numeri utili & servizi':'Num\xE9ros utiles & services','Raccolta rifiuti':'Collecte des d\xE9chets','Cosa vedere':'\xC0 voir',
+    'Presenza confermata \u2713':'Pr\xE9sence confirm\xE9e \u2713','Convocazione vincolante':'Convocation obligatoire',
+    'Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.':'Vous avez d\xE9j\xE0 d\xE9clin\xE9 trois fois cette saison : cette convocation est obligatoire.',
+    'Confermo':'Je confirme','Hai declinato':'Vous avez d\xE9clin\xE9','dinieghi':'refus','Ci ripenso':'Je reconsid\xE8re',
+    'Sei nostro ospite: partecipa quando vuoi, nessun obbligo.':'Vous \xEAtes notre invit\xE9 : participez quand vous voulez, sans obligation.',
+    'Dinieghi:':'Refus :','diventa vincolante solo dopo il terzo':'devient obligatoire seulement apr\xE8s le troisi\xE8me',
+    'La tua casata ti invita':'Votre maison vous invite','Disponibile':'Disponible','Non disponibile':'Indisponible',
+    'Squadra':'\xC9quipe','PG':'J','V':'V','Pt':'Pts','Prossime partite':'Prochains matchs','Calendario in aggiornamento.':'Calendrier en cours de mise \xE0 jour.',
+    'Risultati recenti':'R\xE9sultats r\xE9cents','Nessun risultato ancora.':'Aucun r\xE9sultat pour l\u2019instant.',
+    'Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.':'Chaque match met \xE0 jour le classement de la Coupe. Formule : poules, puis demi-finales et finale.',
+    'Campionati sociali':'Championnats du club','Tornei':'Tournois','Sport & Tornei':'Sport & Tournois','Oggi':'Aujourd\u2019hui','Domani':'Demain',
+    'Posti limitati: massimo 8 la mattina e 8 il pomeriggio. La <b>giornata intera</b> occupa un posto in entrambi i turni.':'Places limit\xE9es : max 8 le matin et 8 l\u2019apr\xE8s-midi. La <b>journ\xE9e enti\xE8re</b> occupe une place sur les deux cr\xE9neaux.',
+    'Quante persone':'Combien de personnes','Prenotazione':'R\xE9servation','Giorno':'Jour','Turno':'Cr\xE9neau','Conferma prenotazione':'Confirmer la r\xE9servation','Annulla':'Annuler',
+    'Prenotazione campi disponibile solo online':'R\xE9servation des terrains disponible en ligne uniquement','Disponibile solo online':'Disponible en ligne uniquement','Libero':'Libre','Partita':'Partie','Partita aperta':'Partie ouverte',
+    'AL COMPLETO':'COMPLET','Unisciti':'Rejoindre','Occupato':'Occup\xE9','prenotato':'r\xE9serv\xE9','OCCUPATO':'OCCUP\xC9','Prenotazione campi':'R\xE9servation des terrains',
+    'Campo':'Terrain','Fasce orarie':'Cr\xE9neaux','Nessuno slot per questa data.':'Aucun cr\xE9neau pour cette date.',
+    '\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.':'\xAB R\xE9server \xBB bloque le cr\xE9neau pour vous. \xAB Partie \xBB ouvre une <b>partie ouverte</b> : d\u2019autres membres peuvent rejoindre tant qu\u2019elle n\u2019est pas compl\xE8te.',
+    'manca':'manque','mancano':'manquent','Gioca con gli altri':'Jouez avec les autres',
+    'Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.':'Rejoignez une partie avec des places libres : une fois compl\xE8te, c\u2019est parti.',
+    'Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!':'Aucune partie ouverte pour le moment. Lancez-en une depuis la section Terrains !',
+    'Prenotazione non riuscita':'\xC9chec de la r\xE9servation','Errore di rete':'Erreur r\xE9seau','Campo prenotato':'Terrain r\xE9serv\xE9',
+    'Apri una partita alle':'Ouvrir une partie \xE0','con':'avec','posti? Gli altri soci potranno unirsi.':'places ? D\u2019autres membres pourront rejoindre.',
+    'Non riuscito':'\xC9chec','Partita al completo, ci vediamo in campo! \u{1F3BE}':'Partie compl\xE8te, on se voit sur le terrain ! \u{1F3BE}','Iscritto!':'Inscrit !',
+    'Le mie notifiche':'Mes notifications','Nessuna notifica.':'Aucune notification.','nuovo':'nouveau','Le tue convocazioni':'Vos convocations',
+    'Ci sono':'Je suis l\xE0','No':'Non','Socio':'Membre','Tessera':'Carte','Valida fino al':'Valable jusqu\u2019au','Notifiche casata & eventi':'Notifications maison & \xE9v\xE9nements',
+    'Convocazioni, cambi orario e serate. Con il tuo consenso.':'Convocations, changements d\u2019horaire et soir\xE9es. Avec votre consentement.',
+    'Attive \u2713':'Activ\xE9es \u2713','Attiva':'Activer','Cosa ti d\xE0':'Ce que \xE7a vous apporte','Giochi la Coppa delle Casate':'Vous jouez la Coupe des Maisons',
+    'Sport, giochi da tavolo e prove artistiche con il tuo clan.':'Sport, jeux de soci\xE9t\xE9 et \xE9preuves artistiques avec votre clan.',
+    'Inviti della casata':'Invitations de la maison',
+    'Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.':'R\xE9pondez disponible ou non, sans billet ni consommation obligatoire.',
+    'Copertura infortuni':'Couverture accidents','in definizione':'en cours',
+    'Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.':'Nous \xE9tudions avec l\u2019assureur une couverture pour les activit\xE9s sportives.',
+    "Il tuo posto nell'Albo d'Oro":'Votre place au Palmar\xE8s','I vincitori della stagione restano scritti alla Bussola.':'Les vainqueurs de la saison restent inscrits \xE0 La Bussola.',
+    'Esci / cambia tessera':'Se d\xE9connecter / changer de carte','Accesso':'Connexion','Entra con la tua e-mail':'Connectez-vous avec votre e-mail',
+    'Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.':'Nous vous envoyons un code \xE0 usage unique (OTP) ou un lien magique. Aucun mot de passe \xE0 retenir.',
+    'La tua e-mail':'Votre e-mail','Invia il codice':'Envoyer le code','Inserisci un\u2019e-mail valida':'Saisissez un e-mail valide',
+    'Verifica':'V\xE9rification','Inserisci il codice':'Saisissez le code','Ti abbiamo inviato un codice a':'Nous avons envoy\xE9 un code \xE0',
+    'Modalit\xE0 test: il codice \xE8':'Mode test : le code est','(in produzione arriva via e-mail/SMS).':'(en production il arrive par e-mail/SMS).',
+    'Codice a 6 cifre':'Code \xE0 6 chiffres','Entra':'Entrer','Cambia e-mail':'Changer d\u2019e-mail','Codice non valido o scaduto':'Code invalide ou expir\xE9',
+    'Bentornato,':'Bon retour,','Inserisci il codice tessera.':'Saisissez le code de la carte.',
+    'Tessera non trovata. Controlla il codice o usa l\u2019e-mail.':'Carte introuvable. V\xE9rifiez le code ou utilisez l\u2019e-mail.',
+    'Notifiche attivate: ti avviseremo per casata ed eventi':'Notifications activ\xE9es : nous vous pr\xE9viendrons pour la maison et les \xE9v\xE9nements','Notifiche disattivate':'Notifications d\xE9sactiv\xE9es',
+    'Marted\xEC':'Mardi','Proponi un vinile':'Proposer un vinyle',
+    'Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.':'Les propositions de cette semaine deviennent la playlist de mardi prochain.',
+    'Quale vinile?':'Quel vinyle ?','Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4':'Ex. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4',
+    'I brani che vuoi ascoltare':'Les morceaux que vous voulez \xE9couter','Es. Cr\xEAuza de m\xE4, Sid\xFAn':'Ex. Cr\xEAuza de m\xE4, Sid\xFAn',
+    'Perch\xE9 lo proponi?':'Pourquoi le proposez-vous ?','In due righe cosa significa per te...':'En deux lignes, ce que \xE7a repr\xE9sente pour vous...',
+    'Invia la proposta':'Envoyer la proposition','Domenica':'Dimanche','Salgo sul palco':'Je monte sur sc\xE8ne',
+    'Hai tre minuti. Scegli cosa porti sul Bussola Stage.':'Vous avez trois minutes. Choisissez ce que vous pr\xE9sentez sur le Bussola Stage.',
+    'La tua esibizione':'Votre prestation','Canto':'Chant','Monologo':'Monologue','Strumento':'Instrument','Titolo / cosa presenti':'Titre / ce que vous pr\xE9sentez',
+    "Es. 'Caruso' alla chitarra":'Ex. \u2018Caruso\u2019 \xE0 la guitare',
+    'La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.':'Le stand-up est bienvenu, avec un langage mod\xE9r\xE9 : il y a aussi des familles \xE0 La Bussola.',
+    'Prenota i miei tre minuti':'R\xE9server mes trois minutes','Fatto!':'C\u2019est fait !','Un momento':'Un instant',
+    ". Lo trovi nell'app e te lo ricordiamo noi.":'. Vous le retrouvez dans l\u2019app et nous vous le rappelons.','Perfetto':'Parfait','Ho capito':'Compris',
+    'Scegli la lingua':'Choisissez la langue',"Scegli la lingua dell'app":'Choisissez la langue de l\u2019app',
+    'Numeri utili':'Num\xE9ros utiles','Emergenze & servizi':'Urgences & services','In caso di necessit\xE0.':'En cas de besoin.',
+    'Emergenze (112)':'Urgences (112)','Numero unico europeo':'Num\xE9ro d\u2019urgence europ\xE9en','Capitano':'Capitaine','Convoca la tua casata':'Convoquez votre maison',
+    "Nessuna partita da coprire al momento (serve l'accesso da capitano e un calendario generato dallo staff).":'Aucun match \xE0 couvrir pour le moment (n\xE9cessite un acc\xE8s capitaine et un calendrier g\xE9n\xE9r\xE9 par le staff).',
+    'dispon.':'dispo.','Serve gente \u2014 convoca':'Besoin de joueurs \u2014 convoquer','Convoca giocatori':'Convoquer des joueurs','Chi copre le partite?':'Qui couvre les matchs ?',
+    'Rosso = mancano disponibili rispetto al minimo. Tocca una partita per convocare i singoli.':'Rouge = moins de disponibles que le minimum. Touchez un match pour convoquer individuellement.',
+    'disponibile':'disponible','non disp.':'indispo.','in attesa':'en attente','Convoca i giocatori':'Convoquer les joueurs',
+    'servono':'il faut','disponibili':'disponibles','Spunta chi vuoi convocare.':'Cochez qui vous voulez convoquer.',
+    'Convoca i selezionati':'Convoquer les s\xE9lectionn\xE9s','\u2190 Torna alle partite':'\u2190 Retour aux matchs','Seleziona almeno un giocatore':'S\xE9lectionnez au moins un joueur',
+    'Convocati':'Convoqu\xE9s','giocatori':'joueurs','Non riesco a convocare ora':'Impossible de convoquer maintenant',
+    'Rilancia la sfida ai tuoi. Forza':'Relancez le d\xE9fi aux v\xF4tres. Allez','Condividi con la casata':'Partager avec la maison','Vincitore:':'Vainqueur :','Condividi':'Partager',
+    'Testo copiato: incollalo nel gruppo':'Texte copi\xE9 : collez-le dans le groupe','Presenza confermata':'Pr\xE9sence confirm\xE9e',
+    'Prenotazione non riuscita: riprova':'\xC9chec de la r\xE9servation : r\xE9essayez','Prenotazione registrata':'R\xE9servation enregistr\xE9e','pers.':'pers.',
+    'Serata su prenotazione':'Soir\xE9e sur r\xE9servation','Quota':'Participation','Posti disponibili':'Places disponibles','Posti esauriti per questa serata.':'Complet pour cette soir\xE9e.',
+    'Prenotazione a numero chiuso: la quota si salda in cassa alla conferma (il pagamento in-app arriver\xE0 pi\xF9 avanti).':'R\xE9servation \xE0 places limit\xE9es : la participation se r\xE8gle en caisse \xE0 la confirmation (le paiement in-app arrivera plus tard).',
+    'Sei in lista per':'Vous \xEAtes sur la liste pour','da saldare in cassa':'\xE0 r\xE9gler en caisse','da saldare':'\xE0 r\xE9gler','la serata':'la soir\xE9e',
+    'La tua proposta \xE8 in lista':'Votre proposition est sur la liste','Sei in scaletta per domenica':'Vous \xEAtes au programme de dimanche','Lingua impostata':'Langue d\xE9finie',
+    'siamo':'nous sommes','punti':'points','Forza':'Allez','la nostra casata':'notre maison','La sfida di venerd\xEC':'Le d\xE9fi de vendredi','prossimamente':'bient\xF4t',
+  },
+  de: {
+    'Casata':'Haus','Benvenuto alla Bussola':'Willkommen in La Bussola','Benvenuti alla Bussola':'Willkommen in La Bussola',
+    'Proponi':'Vorschlagen','Salgo':'Auf die B\xFChne','Coppa':'Pokal','Info':'Info','Vedi':'Ansehen','Stasera alla Bussola':'Heute Abend in La Bussola',
+    'Prenota':'Buchen','Campi':'Pl\xE4tze','prenota o partita':'buchen oder Spiel','Partite aperte':'Offene Spiele','unisciti':'mitmachen',
+    'Coworking':'Coworking','postazione':'Arbeitsplatz','Questa settimana':'Diese Woche','Serate su prenotazione':'Abende auf Reservierung',
+    'a persona':'pro Person','posti':'Pl\xE4tze','Il cartellone':'Das Programm','Il programma':'Das Programm',
+    'Tocca una serata per i dettagli e per prenotare.':'Tippen Sie auf einen Abend f\xFCr Details und zum Buchen.',
+    'Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.':'Der Nachmittag geh\xF6rt dem Sport und den Familien; am Abend die Shows zum Abendessen.',
+    'Serata dei Clan \xB7 Contest':'Clan-Abend \xB7 Contest','Apri il contest':'Contest \xF6ffnen','Strumenti del capitano':'Kapit\xE4n-Tools',
+    'Convoca la casata':'Haus einberufen','Serata dei Clan':'Clan-Abend','La comunit\xE0':'Die Gemeinschaft','Coppa delle Casate':'H\xE4user-Pokal',
+    'La tua casata':'Ihr Haus','posto':'Platz','Classifica generale':'Gesamtwertung','Campionati sport':'Sportmeisterschaften',
+    'Gironi, calendario e risultati.':'Gruppen, Spielplan und Ergebnisse.','Apri':'\xD6ffnen','Giochi da Tavolo':'Brettspiele',
+    'Burraco, scala 40, briscola, scacchi.':'Burraco, Scala 40, Briscola, Schach.',"Regolamenti & Albo d'Oro":'Regeln & Ehrentafel',
+    'Regole di Coppa, Contest e Proposte; le edizioni passate.':'Regeln zu Pokal, Contest und Vorschl\xE4gen; fr\xFChere Ausgaben.',
+    "Albo d'Oro":'Ehrentafel','Regole & storia':'Regeln & Geschichte','Regolamenti':'Regeln',
+    'Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.':'Die Regeln f\xFCr Pokal, Contest und Vorschl\xE4ge sowie die Regelwerke der laufenden Disziplinen.',
+    'Nessun regolamento generale.':'Keine allgemeinen Regeln.','Discipline':'Disziplinen','Chiudi':'Schlie\xDFen',
+    'Calendario non ancora disponibile.':'Kalender noch nicht verf\xFCgbar.','Nessun periodo configurato.':'Kein Zeitraum konfiguriert.',
+    'Conferimento':'Abgabe','Ritiro dalle':'Abholung ab',
+    'Lun':'Mo','Mar':'Di','Mer':'Mi','Gio':'Do','Ven':'Fr','Sab':'Sa','Dom':'So',
+    'Guida del residence':'Residenz-Guide','Silenzio pomeridiano':'Mittagsruhe','Silenzio notturno':'Nachtruhe',
+    'Numeri utili & servizi':'N\xFCtzliche Nummern & Dienste','Raccolta rifiuti':'M\xFCllabfuhr','Cosa vedere':'Sehenswertes',
+    'Presenza confermata \u2713':'Teilnahme best\xE4tigt \u2713','Convocazione vincolante':'Verbindliche Einberufung',
+    'Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.':'Sie haben diese Saison bereits dreimal abgesagt: Diese Einberufung ist verbindlich.',
+    'Confermo':'Best\xE4tigen','Hai declinato':'Sie haben abgesagt','dinieghi':'Absagen','Ci ripenso':'Doch dabei',
+    'Sei nostro ospite: partecipa quando vuoi, nessun obbligo.':'Sie sind unser Gast: Machen Sie mit, wann Sie m\xF6chten, ohne Verpflichtung.',
+    'Dinieghi:':'Absagen:','diventa vincolante solo dopo il terzo':'wird erst nach dem dritten verbindlich',
+    'La tua casata ti invita':'Ihr Haus l\xE4dt Sie ein','Disponibile':'Verf\xFCgbar','Non disponibile':'Nicht verf\xFCgbar',
+    'Squadra':'Team','PG':'Sp','V':'S','Pt':'Pkt','Prossime partite':'N\xE4chste Spiele','Calendario in aggiornamento.':'Spielplan wird aktualisiert.',
+    'Risultati recenti':'Aktuelle Ergebnisse','Nessun risultato ancora.':'Noch keine Ergebnisse.',
+    'Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.':'Jedes Spiel aktualisiert die Pokalwertung. Format: Gruppen, dann Halbfinale und Finale.',
+    'Campionati sociali':'Vereinsmeisterschaften','Tornei':'Turniere','Sport & Tornei':'Sport & Turniere','Oggi':'Heute','Domani':'Morgen',
+    'Posti limitati: massimo 8 la mattina e 8 il pomeriggio. La <b>giornata intera</b> occupa un posto in entrambi i turni.':'Begrenzte Pl\xE4tze: max. 8 vormittags und 8 nachmittags. Der <b>ganze Tag</b> belegt einen Platz in beiden Zeitfenstern.',
+    'Quante persone':'Wie viele Personen','Prenotazione':'Buchung','Giorno':'Tag','Turno':'Zeitfenster','Conferma prenotazione':'Buchung best\xE4tigen','Annulla':'Abbrechen',
+    'Prenotazione campi disponibile solo online':'Platzbuchung nur online verf\xFCgbar','Disponibile solo online':'Nur online verf\xFCgbar','Libero':'Frei','Partita':'Spiel','Partita aperta':'Offenes Spiel',
+    'AL COMPLETO':'VOLL','Unisciti':'Mitmachen','Occupato':'Belegt','prenotato':'gebucht','OCCUPATO':'BELEGT','Prenotazione campi':'Platzbuchung',
+    'Campo':'Platz','Fasce orarie':'Zeitfenster','Nessuno slot per questa data.':'Keine Zeitfenster f\xFCr dieses Datum.',
+    '\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.':'\u201EBuchen\u201C reserviert das Zeitfenster f\xFCr Sie. \u201ESpiel\u201C \xF6ffnet ein <b>offenes Spiel</b>: Andere Mitglieder k\xF6nnen mitmachen, bis es voll ist.',
+    'manca':'fehlt','mancano':'fehlen','Gioca con gli altri':'Mit anderen spielen',
+    'Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.':'Treten Sie einem Spiel mit freien Pl\xE4tzen bei: Sobald es voll ist, geht\u2019s los.',
+    'Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!':'Derzeit keine offenen Spiele. Starten Sie selbst eines im Bereich Pl\xE4tze!',
+    'Prenotazione non riuscita':'Buchung fehlgeschlagen','Errore di rete':'Netzwerkfehler','Campo prenotato':'Platz gebucht',
+    'Apri una partita alle':'Ein Spiel \xF6ffnen um','con':'mit','posti? Gli altri soci potranno unirsi.':'Pl\xE4tzen? Andere Mitglieder k\xF6nnen mitmachen.',
+    'Non riuscito':'Fehlgeschlagen','Partita al completo, ci vediamo in campo! \u{1F3BE}':'Spiel voll, wir sehen uns auf dem Platz! \u{1F3BE}','Iscritto!':'Angemeldet!',
+    'Le mie notifiche':'Meine Benachrichtigungen','Nessuna notifica.':'Keine Benachrichtigungen.','nuovo':'neu','Le tue convocazioni':'Ihre Einberufungen',
+    'Ci sono':'Ich bin dabei','No':'Nein','Socio':'Mitglied','Tessera':'Karte','Valida fino al':'G\xFCltig bis','Notifiche casata & eventi':'Haus- & Event-Benachrichtigungen',
+    'Convocazioni, cambi orario e serate. Con il tuo consenso.':'Einberufungen, Termin\xE4nderungen und Abende. Mit Ihrer Zustimmung.',
+    'Attive \u2713':'Aktiv \u2713','Attiva':'Aktivieren','Cosa ti d\xE0':'Was es Ihnen bringt','Giochi la Coppa delle Casate':'Sie spielen den H\xE4user-Pokal',
+    'Sport, giochi da tavolo e prove artistiche con il tuo clan.':'Sport, Brettspiele und k\xFCnstlerische Wettbewerbe mit Ihrem Clan.',
+    'Inviti della casata':'Haus-Einladungen',
+    'Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.':'Antworten Sie verf\xFCgbar oder nicht, ohne Ticket oder Verzehrzwang.',
+    'Copertura infortuni':'Unfallversicherung','in definizione':'in Kl\xE4rung',
+    'Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.':'Wir pr\xFCfen mit der Versicherung eine Deckung f\xFCr Sportaktivit\xE4ten.',
+    "Il tuo posto nell'Albo d'Oro":'Ihr Platz auf der Ehrentafel','I vincitori della stagione restano scritti alla Bussola.':'Die Sieger der Saison bleiben in La Bussola verzeichnet.',
+    'Esci / cambia tessera':'Abmelden / Karte wechseln','Accesso':'Anmeldung','Entra con la tua e-mail':'Mit Ihrer E-Mail anmelden',
+    'Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.':'Wir senden Ihnen einen Einmalcode (OTP) oder einen Magic Link. Kein Passwort zu merken.',
+    'La tua e-mail':'Ihre E-Mail','Invia il codice':'Code senden','Inserisci un\u2019e-mail valida':'Geben Sie eine g\xFCltige E-Mail ein',
+    'Verifica':'Verifizierung','Inserisci il codice':'Code eingeben','Ti abbiamo inviato un codice a':'Wir haben einen Code gesendet an',
+    'Modalit\xE0 test: il codice \xE8':'Testmodus: Der Code lautet','(in produzione arriva via e-mail/SMS).':'(in der Produktion kommt er per E-Mail/SMS).',
+    'Codice a 6 cifre':'6-stelliger Code','Entra':'Anmelden','Cambia e-mail':'E-Mail \xE4ndern','Codice non valido o scaduto':'Ung\xFCltiger oder abgelaufener Code',
+    'Bentornato,':'Willkommen zur\xFCck,','Inserisci il codice tessera.':'Geben Sie den Kartencode ein.',
+    'Tessera non trovata. Controlla il codice o usa l\u2019e-mail.':'Karte nicht gefunden. Pr\xFCfen Sie den Code oder nutzen Sie die E-Mail.',
+    'Notifiche attivate: ti avviseremo per casata ed eventi':'Benachrichtigungen aktiv: Wir informieren Sie \xFCber Haus und Events','Notifiche disattivate':'Benachrichtigungen deaktiviert',
+    'Marted\xEC':'Dienstag','Proponi un vinile':'Eine Platte vorschlagen',
+    'Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.':'Die Vorschl\xE4ge dieser Woche werden zur Playlist des n\xE4chsten Dienstags.',
+    'Quale vinile?':'Welche Platte?','Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4':'z. B. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4',
+    'I brani che vuoi ascoltare':'Die Titel, die Sie h\xF6ren m\xF6chten','Es. Cr\xEAuza de m\xE4, Sid\xFAn':'z. B. Cr\xEAuza de m\xE4, Sid\xFAn',
+    'Perch\xE9 lo proponi?':'Warum schlagen Sie sie vor?','In due righe cosa significa per te...':'In zwei Zeilen, was es Ihnen bedeutet...',
+    'Invia la proposta':'Vorschlag senden','Domenica':'Sonntag','Salgo sul palco':'Ich gehe auf die B\xFChne',
+    'Hai tre minuti. Scegli cosa porti sul Bussola Stage.':'Sie haben drei Minuten. W\xE4hlen Sie, was Sie auf die Bussola Stage bringen.',
+    'La tua esibizione':'Ihr Auftritt','Canto':'Gesang','Monologo':'Monolog','Strumento':'Instrument','Titolo / cosa presenti':'Titel / was Sie pr\xE4sentieren',
+    "Es. 'Caruso' alla chitarra":'z. B. \u201ACaruso\u2018 auf der Gitarre',
+    'La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.':'Stand-up ist willkommen, mit gem\xE4\xDFigter Sprache: In La Bussola sind auch Familien.',
+    'Prenota i miei tre minuti':'Meine drei Minuten buchen','Fatto!':'Fertig!','Un momento':'Einen Moment',
+    ". Lo trovi nell'app e te lo ricordiamo noi.":'. Sie finden es in der App und wir erinnern Sie.','Perfetto':'Perfekt','Ho capito':'Verstanden',
+    'Scegli la lingua':'Sprache w\xE4hlen',"Scegli la lingua dell'app":'App-Sprache w\xE4hlen',
+    'Numeri utili':'N\xFCtzliche Nummern','Emergenze & servizi':'Notf\xE4lle & Dienste','In caso di necessit\xE0.':'Im Bedarfsfall.',
+    'Emergenze (112)':'Notruf (112)','Numero unico europeo':'Einheitliche europ\xE4ische Notrufnummer','Capitano':'Kapit\xE4n','Convoca la tua casata':'Rufen Sie Ihr Haus ein',
+    "Nessuna partita da coprire al momento (serve l'accesso da capitano e un calendario generato dallo staff).":'Derzeit keine Spiele zu besetzen (erfordert Kapit\xE4n-Zugang und einen vom Staff erstellten Spielplan).',
+    'dispon.':'verf.','Serve gente \u2014 convoca':'Spieler n\xF6tig \u2014 einberufen','Convoca giocatori':'Spieler einberufen','Chi copre le partite?':'Wer besetzt die Spiele?',
+    'Rosso = mancano disponibili rispetto al minimo. Tocca una partita per convocare i singoli.':'Rot = weniger Verf\xFCgbare als das Minimum. Tippen Sie auf ein Spiel, um einzeln einzuberufen.',
+    'disponibile':'verf\xFCgbar','non disp.':'nicht verf.','in attesa':'ausstehend','Convoca i giocatori':'Spieler einberufen',
+    'servono':'ben\xF6tigt','disponibili':'verf\xFCgbar','Spunta chi vuoi convocare.':'W\xE4hlen Sie aus, wen Sie einberufen m\xF6chten.',
+    'Convoca i selezionati':'Ausgew\xE4hlte einberufen','\u2190 Torna alle partite':'\u2190 Zur\xFCck zu den Spielen','Seleziona almeno un giocatore':'W\xE4hlen Sie mindestens einen Spieler',
+    'Convocati':'Einberufen','giocatori':'Spieler','Non riesco a convocare ora':'Einberufung derzeit nicht m\xF6glich',
+    'Rilancia la sfida ai tuoi. Forza':'Fordern Sie die Ihren heraus. Los','Condividi con la casata':'Mit dem Haus teilen','Vincitore:':'Sieger:','Condividi':'Teilen',
+    'Testo copiato: incollalo nel gruppo':'Text kopiert: F\xFCgen Sie ihn in die Gruppe ein','Presenza confermata':'Teilnahme best\xE4tigt',
+    'Prenotazione non riuscita: riprova':'Buchung fehlgeschlagen: erneut versuchen','Prenotazione registrata':'Buchung erfasst','pers.':'Pers.',
+    'Serata su prenotazione':'Abend auf Reservierung','Quota':'Beitrag','Posti disponibili':'Verf\xFCgbare Pl\xE4tze','Posti esauriti per questa serata.':'Ausverkauft f\xFCr diesen Abend.',
+    'Prenotazione a numero chiuso: la quota si salda in cassa alla conferma (il pagamento in-app arriver\xE0 pi\xF9 avanti).':'Buchung mit begrenzter Platzzahl: Der Beitrag wird bei Best\xE4tigung an der Kasse bezahlt (In-App-Zahlung folgt sp\xE4ter).',
+    'Sei in lista per':'Sie stehen auf der Liste f\xFCr','da saldare in cassa':'an der Kasse zu zahlen','da saldare':'zu zahlen','la serata':'den Abend',
+    'La tua proposta \xE8 in lista':'Ihr Vorschlag ist auf der Liste','Sei in scaletta per domenica':'Sie stehen am Sonntag auf dem Programm','Lingua impostata':'Sprache eingestellt',
+    'siamo':'wir sind','punti':'Punkte','Forza':'Los','la nostra casata':'unser Haus','La sfida di venerd\xEC':'Die Freitags-Herausforderung','prossimamente':'demn\xE4chst',
+  },
+  es: {
+    'Casata':'Casa','Benvenuto alla Bussola':'Bienvenido a La Bussola','Benvenuti alla Bussola':'Bienvenidos a La Bussola',
+    'Proponi':'Proponer','Salgo':'Al escenario','Coppa':'Copa','Info':'Info','Vedi':'Ver','Stasera alla Bussola':'Esta noche en La Bussola',
+    'Prenota':'Reservar','Campi':'Pistas','prenota o partita':'reserva o partido','Partite aperte':'Partidas abiertas','unisciti':'\xFAnete',
+    'Coworking':'Coworking','postazione':'puesto','Questa settimana':'Esta semana','Serate su prenotazione':'Veladas con reserva',
+    'a persona':'por persona','posti':'plazas','Il cartellone':'La cartelera','Il programma':'El programa',
+    'Tocca una serata per i dettagli e per prenotare.':'Toca una velada para ver los detalles y reservar.',
+    'Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.':'La tarde es para el deporte y las familias; por la noche, los espect\xE1culos que acompa\xF1an la cena.',
+    'Serata dei Clan \xB7 Contest':'Noche de los Clanes \xB7 Concurso','Apri il contest':'Abrir el concurso','Strumenti del capitano':'Herramientas del capit\xE1n',
+    'Convoca la casata':'Convoca tu casa','Serata dei Clan':'Noche de los Clanes','La comunit\xE0':'La comunidad','Coppa delle Casate':'Copa de las Casas',
+    'La tua casata':'Tu casa','posto':'puesto','Classifica generale':'Clasificaci\xF3n general','Campionati sport':'Campeonatos deportivos',
+    'Gironi, calendario e risultati.':'Grupos, calendario y resultados.','Apri':'Abrir','Giochi da Tavolo':'Juegos de mesa',
+    'Burraco, scala 40, briscola, scacchi.':'Burraco, Escala 40, Briscola, ajedrez.',"Regolamenti & Albo d'Oro":'Reglamentos y Palmar\xE9s',
+    'Regole di Coppa, Contest e Proposte; le edizioni passate.':'Reglas de Copa, Concurso y Propuestas; ediciones pasadas.',
+    "Albo d'Oro":'Palmar\xE9s','Regole & storia':'Reglas e historia','Regolamenti':'Reglamentos',
+    'Le regole di Coppa, Contest e Proposte, e i regolamenti delle discipline in corso.':'Las reglas de la Copa, el Concurso y las Propuestas, y los reglamentos de las disciplinas en curso.',
+    'Nessun regolamento generale.':'Sin reglamento general.','Discipline':'Disciplinas','Chiudi':'Cerrar',
+    'Calendario non ancora disponibile.':'Calendario a\xFAn no disponible.','Nessun periodo configurato.':'Ning\xFAn periodo configurado.',
+    'Conferimento':'Entrega','Ritiro dalle':'Recogida desde',
+    'Lun':'Lun','Mar':'Mar','Mer':'Mi\xE9','Gio':'Jue','Ven':'Vie','Sab':'S\xE1b','Dom':'Dom',
+    'Guida del residence':'Gu\xEDa del residence','Silenzio pomeridiano':'Silencio de la tarde','Silenzio notturno':'Silencio nocturno',
+    'Numeri utili & servizi':'N\xFAmeros \xFAtiles y servicios','Raccolta rifiuti':'Recogida de residuos','Cosa vedere':'Qu\xE9 ver',
+    'Presenza confermata \u2713':'Asistencia confirmada \u2713','Convocazione vincolante':'Convocatoria obligatoria',
+    'Hai gi\xE0 declinato tre volte in stagione: questa convocazione \xE8 vincolante.':'Ya has rechazado tres veces esta temporada: esta convocatoria es obligatoria.',
+    'Confermo':'Confirmo','Hai declinato':'Has rechazado','dinieghi':'rechazos','Ci ripenso':'Me lo repienso',
+    'Sei nostro ospite: partecipa quando vuoi, nessun obbligo.':'Eres nuestro invitado: participa cuando quieras, sin obligaci\xF3n.',
+    'Dinieghi:':'Rechazos:','diventa vincolante solo dopo il terzo':'se vuelve obligatoria solo tras el tercero',
+    'La tua casata ti invita':'Tu casa te invita','Disponibile':'Disponible','Non disponibile':'No disponible',
+    'Squadra':'Equipo','PG':'PJ','V':'V','Pt':'Pts','Prossime partite':'Pr\xF3ximos partidos','Calendario in aggiornamento.':'Calendario en actualizaci\xF3n.',
+    'Risultati recenti':'Resultados recientes','Nessun risultato ancora.':'A\xFAn no hay resultados.',
+    'Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.':'Cada partido actualiza la clasificaci\xF3n de la Copa. Formato: grupos, luego semifinales y final.',
+    'Campionati sociali':'Campeonatos del club','Tornei':'Torneos','Sport & Tornei':'Deporte y Torneos','Oggi':'Hoy','Domani':'Ma\xF1ana',
+    'Posti limitati: massimo 8 la mattina e 8 il pomeriggio. La <b>giornata intera</b> occupa un posto in entrambi i turni.':'Plazas limitadas: m\xE1ximo 8 por la ma\xF1ana y 8 por la tarde. El <b>d\xEDa completo</b> ocupa una plaza en ambos turnos.',
+    'Quante persone':'Cu\xE1ntas personas','Prenotazione':'Reserva','Giorno':'D\xEDa','Turno':'Turno','Conferma prenotazione':'Confirmar reserva','Annulla':'Cancelar',
+    'Prenotazione campi disponibile solo online':'Reserva de pistas disponible solo en l\xEDnea','Disponibile solo online':'Disponible solo en l\xEDnea','Libero':'Libre','Partita':'Partido','Partita aperta':'Partida abierta',
+    'AL COMPLETO':'COMPLETO','Unisciti':'Unirse','Occupato':'Ocupado','prenotato':'reservado','OCCUPATO':'OCUPADO','Prenotazione campi':'Reserva de pistas',
+    'Campo':'Pista','Fasce orarie':'Franjas horarias','Nessuno slot per questa data.':'Sin franjas para esta fecha.',
+    '\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.':'\u201CReservar\u201D bloquea la franja para ti. \u201CPartido\u201D abre una <b>partida abierta</b>: otros socios pueden unirse hasta que se complete.',
+    'manca':'falta','mancano':'faltan','Gioca con gli altri':'Juega con los dem\xE1s',
+    'Unisciti a una partita con posti liberi: quando si completa, \xE8 fatta.':'\xDAnete a una partida con plazas libres: cuando se completa, listo.',
+    'Nessuna partita aperta al momento. Aprine una tu dalla sezione Campi!':'\xA1Ninguna partida abierta ahora mismo. Abre una t\xFA desde la secci\xF3n Pistas!',
+    'Prenotazione non riuscita':'Reserva fallida','Errore di rete':'Error de red','Campo prenotato':'Pista reservada',
+    'Apri una partita alle':'Abrir un partido a las','con':'con','posti? Gli altri soci potranno unirsi.':'plazas? Otros socios podr\xE1n unirse.',
+    'Non riuscito':'No se pudo','Partita al completo, ci vediamo in campo! \u{1F3BE}':'\xA1Partida completa, nos vemos en la pista! \u{1F3BE}','Iscritto!':'\xA1Inscrito!',
+    'Le mie notifiche':'Mis notificaciones','Nessuna notifica.':'Sin notificaciones.','nuovo':'nuevo','Le tue convocazioni':'Tus convocatorias',
+    'Ci sono':'Cuenta conmigo','No':'No','Socio':'Socio','Tessera':'Tarjeta','Valida fino al':'V\xE1lida hasta el','Notifiche casata & eventi':'Notificaciones de casa y eventos',
+    'Convocazioni, cambi orario e serate. Con il tuo consenso.':'Convocatorias, cambios de horario y veladas. Con tu consentimiento.',
+    'Attive \u2713':'Activas \u2713','Attiva':'Activar','Cosa ti d\xE0':'Qu\xE9 te ofrece','Giochi la Coppa delle Casate':'Juegas la Copa de las Casas',
+    'Sport, giochi da tavolo e prove artistiche con il tuo clan.':'Deporte, juegos de mesa y pruebas art\xEDsticas con tu clan.',
+    'Inviti della casata':'Invitaciones de la casa',
+    'Rispondi disponibile o no, senza biglietto n\xE9 consumazione obbligatoria.':'Responde disponible o no, sin entrada ni consumici\xF3n obligatoria.',
+    'Copertura infortuni':'Cobertura de lesiones','in definizione':'en definici\xF3n',
+    'Stiamo valutando con la compagnia una copertura per le attivit\xE0 sportive.':'Estamos evaluando con la compa\xF1\xEDa una cobertura para las actividades deportivas.',
+    "Il tuo posto nell'Albo d'Oro":'Tu lugar en el Palmar\xE9s','I vincitori della stagione restano scritti alla Bussola.':'Los ganadores de la temporada quedan inscritos en La Bussola.',
+    'Esci / cambia tessera':'Salir / cambiar tarjeta','Accesso':'Acceso','Entra con la tua e-mail':'Entra con tu correo',
+    'Ti inviamo un codice usa-e-getta (OTP) o un link magico. Nessuna password da ricordare.':'Te enviamos un c\xF3digo de un solo uso (OTP) o un enlace m\xE1gico. Sin contrase\xF1a que recordar.',
+    'La tua e-mail':'Tu correo','Invia il codice':'Enviar el c\xF3digo','Inserisci un\u2019e-mail valida':'Introduce un correo v\xE1lido',
+    'Verifica':'Verificaci\xF3n','Inserisci il codice':'Introduce el c\xF3digo','Ti abbiamo inviato un codice a':'Hemos enviado un c\xF3digo a',
+    'Modalit\xE0 test: il codice \xE8':'Modo de prueba: el c\xF3digo es','(in produzione arriva via e-mail/SMS).':'(en producci\xF3n llega por correo/SMS).',
+    'Codice a 6 cifre':'C\xF3digo de 6 cifras','Entra':'Entrar','Cambia e-mail':'Cambiar correo','Codice non valido o scaduto':'C\xF3digo no v\xE1lido o caducado',
+    'Bentornato,':'Bienvenido de nuevo,','Inserisci il codice tessera.':'Introduce el c\xF3digo de la tarjeta.',
+    'Tessera non trovata. Controlla il codice o usa l\u2019e-mail.':'Tarjeta no encontrada. Comprueba el c\xF3digo o usa el correo.',
+    'Notifiche attivate: ti avviseremo per casata ed eventi':'Notificaciones activadas: te avisaremos sobre tu casa y los eventos','Notifiche disattivate':'Notificaciones desactivadas',
+    'Marted\xEC':'Martes','Proponi un vinile':'Prop\xF3n un vinilo',
+    'Le proposte di questa settimana diventano la scaletta di marted\xEC prossimo.':'Las propuestas de esta semana forman la lista del pr\xF3ximo martes.',
+    'Quale vinile?':'\xBFQu\xE9 vinilo?','Es. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4':'Ej. Fabrizio De Andr\xE9 \u2014 Cr\xEAuza de m\xE4',
+    'I brani che vuoi ascoltare':'Las canciones que quieres escuchar','Es. Cr\xEAuza de m\xE4, Sid\xFAn':'Ej. Cr\xEAuza de m\xE4, Sid\xFAn',
+    'Perch\xE9 lo proponi?':'\xBFPor qu\xE9 lo propones?','In due righe cosa significa per te...':'En dos l\xEDneas, qu\xE9 significa para ti...',
+    'Invia la proposta':'Enviar la propuesta','Domenica':'Domingo','Salgo sul palco':'Subo al escenario',
+    'Hai tre minuti. Scegli cosa porti sul Bussola Stage.':'Tienes tres minutos. Elige qu\xE9 llevas al Bussola Stage.',
+    'La tua esibizione':'Tu actuaci\xF3n','Canto':'Canto','Monologo':'Mon\xF3logo','Strumento':'Instrumento','Titolo / cosa presenti':'T\xEDtulo / qu\xE9 presentas',
+    "Es. 'Caruso' alla chitarra":'Ej. \u2018Caruso\u2019 a la guitarra',
+    'La stand-up \xE8 benvenuta, con linguaggio moderato: alla Bussola ci sono anche le famiglie.':'El stand-up es bienvenido, con lenguaje moderado: en La Bussola tambi\xE9n hay familias.',
+    'Prenota i miei tre minuti':'Reservar mis tres minutos','Fatto!':'\xA1Hecho!','Un momento':'Un momento',
+    ". Lo trovi nell'app e te lo ricordiamo noi.":'. Lo tienes en la app y te lo recordamos.','Perfetto':'Perfecto','Ho capito':'Entendido',
+    'Scegli la lingua':'Elige el idioma',"Scegli la lingua dell'app":'Elige el idioma de la app',
+    'Numeri utili':'N\xFAmeros \xFAtiles','Emergenze & servizi':'Emergencias y servicios','In caso di necessit\xE0.':'En caso de necesidad.',
+    'Emergenze (112)':'Emergencias (112)','Numero unico europeo':'N\xFAmero \xFAnico europeo','Capitano':'Capit\xE1n','Convoca la tua casata':'Convoca a tu casa',
+    "Nessuna partita da coprire al momento (serve l'accesso da capitano e un calendario generato dallo staff).":'Ning\xFAn partido que cubrir por ahora (requiere acceso de capit\xE1n y un calendario generado por el staff).',
+    'dispon.':'disp.','Serve gente \u2014 convoca':'Faltan jugadores \u2014 convoca','Convoca giocatori':'Convocar jugadores','Chi copre le partite?':'\xBFQui\xE9n cubre los partidos?',
+    'Rosso = mancano disponibili rispetto al minimo. Tocca una partita per convocare i singoli.':'Rojo = menos disponibles que el m\xEDnimo. Toca un partido para convocar individualmente.',
+    'disponibile':'disponible','non disp.':'no disp.','in attesa':'pendiente','Convoca i giocatori':'Convocar a los jugadores',
+    'servono':'hacen falta','disponibili':'disponibles','Spunta chi vuoi convocare.':'Marca a qui\xE9n quieres convocar.',
+    'Convoca i selezionati':'Convocar a los seleccionados','\u2190 Torna alle partite':'\u2190 Volver a los partidos','Seleziona almeno un giocatore':'Selecciona al menos un jugador',
+    'Convocati':'Convocados','giocatori':'jugadores','Non riesco a convocare ora':'No se puede convocar ahora',
+    'Rilancia la sfida ai tuoi. Forza':'Lanza el reto a los tuyos. \xA1Vamos','Condividi con la casata':'Compartir con la casa','Vincitore:':'Ganador:','Condividi':'Compartir',
+    'Testo copiato: incollalo nel gruppo':'Texto copiado: p\xE9galo en el grupo','Presenza confermata':'Asistencia confirmada',
+    'Prenotazione non riuscita: riprova':'Reserva fallida: int\xE9ntalo de nuevo','Prenotazione registrata':'Reserva registrada','pers.':'pers.',
+    'Serata su prenotazione':'Velada con reserva','Quota':'Cuota','Posti disponibili':'Plazas disponibles','Posti esauriti per questa serata.':'Plazas agotadas para esta velada.',
+    'Prenotazione a numero chiuso: la quota si salda in cassa alla conferma (il pagamento in-app arriver\xE0 pi\xF9 avanti).':'Reserva de plazas limitadas: la cuota se paga en caja al confirmar (el pago in-app llegar\xE1 m\xE1s adelante).',
+    'Sei in lista per':'Est\xE1s en la lista para','da saldare in cassa':'a pagar en caja','da saldare':'a pagar','la serata':'la velada',
+    'La tua proposta \xE8 in lista':'Tu propuesta est\xE1 en la lista','Sei in scaletta per domenica':'Est\xE1s en el programa del domingo','Lingua impostata':'Idioma establecido',
+    'siamo':'estamos','punti':'puntos','Forza':'Vamos','la nostra casata':'nuestra casa','La sfida di venerd\xEC':'El reto del viernes','prossimamente':'pr\xF3ximamente',
+  },
+};
+const UI_HOST = {
+  en: { 'Casa mia': 'My stay', 'Le mie case': 'My properties', 'Come arrivare': 'Getting there', 'Regole della casa': 'House rules', 'Orario di check-out': 'Check-out time', 'Apri sulla mappa': 'Open on the map', 'Isolato': 'Block', 'Numero': 'Number', 'Il tuo soggiorno': 'Your stay', 'Aggiungi struttura': 'Add property', 'Modifica': 'Edit', 'Elimina': 'Delete', 'Nome struttura': 'Property name', 'Regole': 'Rules', 'Le tue strutture': 'Your properties', 'Non hai ancora aggiunto strutture.': "You haven't added any properties yet.", 'Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.': 'The information is encrypted: visible only to you and your linked guests.', 'Dati della struttura non disponibili': 'Property data unavailable', 'dal': 'from', 'al': 'to', 'Gestisci le case vacanza che ospiti nel residence.': 'Manage the holiday homes you host in the residence.', 'Come raggiungere la casa e le regole del soggiorno.': 'How to reach the house and the stay rules.' },
+  fr: { 'Casa mia': 'Mon logement', 'Le mie case': 'Mes logements', 'Come arrivare': 'Y arriver', 'Regole della casa': 'R\xE8glement int\xE9rieur', 'Orario di check-out': 'Heure de d\xE9part', 'Apri sulla mappa': 'Ouvrir sur la carte', 'Isolato': '\xCElot', 'Numero': 'Num\xE9ro', 'Il tuo soggiorno': 'Votre s\xE9jour', 'Aggiungi struttura': 'Ajouter un logement', 'Modifica': 'Modifier', 'Elimina': 'Supprimer', 'Nome struttura': 'Nom du logement', 'Regole': 'R\xE8gles', 'Le tue strutture': 'Vos logements', 'Non hai ancora aggiunto strutture.': "Vous n'avez pas encore ajout\xE9 de logement.", 'Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.': 'Les informations sont chiffr\xE9es : visibles uniquement par vous et vos invit\xE9s li\xE9s.', 'Dati della struttura non disponibili': 'Donn\xE9es du logement indisponibles', 'dal': 'du', 'al': 'au', 'Gestisci le case vacanza che ospiti nel residence.': 'G\xE9rez les logements que vous accueillez dans la r\xE9sidence.', 'Come raggiungere la casa e le regole del soggiorno.': "Comment rejoindre le logement et le r\xE8glement du s\xE9jour." },
+  de: { 'Casa mia': 'Meine Unterkunft', 'Le mie case': 'Meine Unterk\xFCnfte', 'Come arrivare': 'Anfahrt', 'Regole della casa': 'Hausordnung', 'Orario di check-out': 'Check-out-Zeit', 'Apri sulla mappa': 'Auf der Karte \xF6ffnen', 'Isolato': 'Block', 'Numero': 'Nummer', 'Il tuo soggiorno': 'Ihr Aufenthalt', 'Aggiungi struttura': 'Unterkunft hinzuf\xFCgen', 'Modifica': 'Bearbeiten', 'Elimina': 'L\xF6schen', 'Nome struttura': 'Name der Unterkunft', 'Regole': 'Regeln', 'Le tue strutture': 'Ihre Unterk\xFCnfte', 'Non hai ancora aggiunto strutture.': 'Sie haben noch keine Unterkunft hinzugef\xFCgt.', 'Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.': 'Die Daten sind verschl\xFCsselt: nur f\xFCr Sie und Ihre verkn\xFCpften G\xE4ste sichtbar.', 'Dati della struttura non disponibili': 'Unterkunftsdaten nicht verf\xFCgbar', 'dal': 'vom', 'al': 'bis', 'Gestisci le case vacanza che ospiti nel residence.': 'Verwalten Sie die Ferienwohnungen, die Sie in der Anlage anbieten.', 'Come raggiungere la casa e le regole del soggiorno.': 'Wie Sie die Unterkunft erreichen und die Aufenthaltsregeln.' },
+  es: { 'Casa mia': 'Mi alojamiento', 'Le mie case': 'Mis alojamientos', 'Come arrivare': 'C\xF3mo llegar', 'Regole della casa': 'Normas de la casa', 'Orario di check-out': 'Hora de salida', 'Apri sulla mappa': 'Abrir en el mapa', 'Isolato': 'Manzana', 'Numero': 'N\xFAmero', 'Il tuo soggiorno': 'Tu estancia', 'Aggiungi struttura': 'A\xF1adir alojamiento', 'Modifica': 'Editar', 'Elimina': 'Eliminar', 'Nome struttura': 'Nombre del alojamiento', 'Regole': 'Normas', 'Le tue strutture': 'Tus alojamientos', 'Non hai ancora aggiunto strutture.': 'A\xFAn no has a\xF1adido alojamientos.', 'Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.': 'La informaci\xF3n est\xE1 cifrada: visible solo para ti y tus hu\xE9spedes vinculados.', 'Dati della struttura non disponibili': 'Datos del alojamiento no disponibles', 'dal': 'del', 'al': 'al', 'Gestisci le case vacanza che ospiti nel residence.': 'Gestiona las casas vacacionales que alojas en el residence.', 'Come raggiungere la casa e le regole del soggiorno.': 'C\xF3mo llegar a la casa y las normas de la estancia.' },
+};
+function T(it){ const d = UI[state.lang]; if (d && d[it] != null) return d[it]; const h = UI_HOST[state.lang]; return (h && h[it]) || it; }
 function applyLang(code){
   state.lang = code; store.set('lang_code', code);
   const el = $('#langLbl'); if (el) el.textContent = code.toUpperCase().slice(0,2);
-  const src = I18N[code] || I18N.en; // zh/ja: senza dizionario salvato ricadono sull'inglese finch\xE9 non c'\xE8 il motore online
+  const src = I18N[code] || I18N.it;
   document.querySelectorAll('.tab').forEach(b => { const k = b.dataset.t; if (src[k]) { const svg = b.querySelector('svg'); b.textContent=''; if (svg) b.appendChild(svg); b.appendChild(document.createTextNode(src[k])); } });
   const lbl = document.querySelector('.a11y .lbl'); if (lbl) lbl.textContent = src.testo || 'Testo';
   const hc = $('#hcBtn'); if (hc) hc.textContent = '\u25D1 ' + (src.contrasto || 'Contrasto');
-  renderHeader();
-  // Ridisegno le schermate con testi tradotti (es. la sezione "Siamo qui" della Guida).
-  try { renderBussola(); } catch {}
+  // Ridisegno tutte le schermate con i testi tradotti cos\xEC il cambio lingua \xE8 live ovunque.
+  try {
+    renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola();
+    renderDom('sport'); renderDom('giochi');
+  } catch {}
 }
 function openLang() {
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Lingua \xB7 Language</div><h2>Scegli la lingua</h2><p class="sub">Le prime cinque hanno traduzione salvata; cinese e giapponese sono tradotti automaticamente.</p>
-    <div class="chips" style="flex-direction:column; align-items:stretch">\${LANGS.map(l=>\`<button class="chip" style="text-align:left; display:flex; justify-content:space-between; align-items:center" data-lang="\${l[0]}">\${l[1]}\${l[2]==='auto'?' <span class="tiny muted">automatica</span>':''}</button>\`).join('')}</div>
-    <button class="btn ghost block" style="margin-top:10px" data-close>Chiudi</button>\`);
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">Lingua \xB7 Language</div><h2>\${T('Scegli la lingua')}</h2><p class="sub">\${T("Scegli la lingua dell'app")}</p>
+    <div class="chips" style="flex-direction:column; align-items:stretch">\${LANGS.map(l=>\`<button class="chip" style="text-align:left; display:flex; justify-content:space-between; align-items:center" data-lang="\${l[0]}">\${l[1]}</button>\`).join('')}</div>
+    <button class="btn ghost block" style="margin-top:10px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 function openSos() {
   const serv = state.data.bussola?.servizi || SEED.bussola.servizi;
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">Numeri utili</div><h2>Emergenze & servizi</h2><p class="sub">In caso di necessit\xE0.</p>
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Numeri utili')}</div><h2>\${T('Emergenze & servizi')}</h2><p class="sub">\${T('In caso di necessit\xE0.')}</p>
     <div class="card" style="padding:4px 14px">\${serv.map(x=>\`<div class="matchrow"><div style="flex:1"><b style="font-size:.85rem">\${esc(x.titolo)}</b><div class="ct">\${esc(x.dettaglio||'')}</div></div><span class="ct">\${esc(x.distanza||'')}</span></div>\`).join('')}
-      <div class="matchrow"><div style="flex:1"><b style="font-size:.85rem; color:var(--coral)">Emergenze (112)</b><div class="ct">Numero unico europeo</div></div></div></div>
-    <button class="btn navy block" style="margin-top:12px" data-close>Chiudi</button>\`);
+      <div class="matchrow"><div style="flex:1"><b style="font-size:.85rem; color:var(--coral)">\${T('Emergenze (112)')}</b><div class="ct">\${T('Numero unico europeo')}</div></div></div></div>
+    <button class="btn navy block" style="margin-top:12px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 
@@ -3561,7 +4265,7 @@ async function openCapConvoca() {
   try { partite = await api('/auth/capitano/partite'); } catch {}
   _capPartite = partite;
   if (!partite.length) {
-    setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Capitano \xB7 \${esc(state.socio.casata || '')}</div><h2>Convoca la tua casata</h2><p class="sub">Nessuna partita da coprire al momento (serve l'accesso da capitano e un calendario generato dallo staff).</p><button class="btn navy block" data-close>Chiudi</button>\`);
+    setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${T('Capitano')} \xB7 \${esc(state.socio.casata || '')}</div><h2>\${T('Convoca la tua casata')}</h2><p class="sub">\${T("Nessuna partita da coprire al momento (serve l'accesso da capitano e un calendario generato dallo staff).")}</p><button class="btn navy block" data-close>\${T('Chiudi')}</button>\`);
     return showOv();
   }
   const rows = partite.map((p, i) => {
@@ -3569,12 +4273,12 @@ async function openCapConvoca() {
     return \`<div class="card" style="padding:12px; margin-bottom:8px">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px">
         <div style="flex:1"><b style="font-size:.9rem">\${esc(p.disciplina)} \xB7 G\${p.giornata}</b><div class="ct">vs \${esc(p.avversario)}</div></div>
-        <div style="text-align:center"><div style="font-family:Georgia,serif; font-weight:700; font-size:1.2rem; color:\${short ? 'var(--coral)' : 'var(--sage)'}">\${p.disponibili}/\${p.minimo}</div><div class="ct">dispon.</div></div>
+        <div style="text-align:center"><div style="font-family:Georgia,serif; font-weight:700; font-size:1.2rem; color:\${short ? 'var(--coral)' : 'var(--sage)'}">\${p.disponibili}/\${p.minimo}</div><div class="ct">\${T('dispon.')}</div></div>
       </div>
-      <button class="btn \${short ? 'gold' : 'ghost'} sm" style="margin-top:8px; width:100%" data-capm="\${i}">\${short ? 'Serve gente \u2014 convoca' : 'Convoca giocatori'}</button>
+      <button class="btn \${short ? 'gold' : 'ghost'} sm" style="margin-top:8px; width:100%" data-capm="\${i}">\${short ? T('Serve gente \u2014 convoca') : T('Convoca giocatori')}</button>
     </div>\`;
   }).join('');
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Capitano \xB7 \${esc(state.socio.casata || '')}</div><h2>Chi copre le partite?</h2><p class="sub">Rosso = mancano disponibili rispetto al minimo. Tocca una partita per convocare i singoli.</p>\${rows}<button class="btn navy block" style="margin-top:6px" data-close>Chiudi</button>\`);
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${T('Capitano')} \xB7 \${esc(state.socio.casata || '')}</div><h2>\${T('Chi copre le partite?')}</h2><p class="sub">\${T('Rosso = mancano disponibili rispetto al minimo. Tocca una partita per convocare i singoli.')}</p>\${rows}<button class="btn navy block" style="margin-top:6px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 function openCapMembri(idx) {
@@ -3582,60 +4286,60 @@ function openCapMembri(idx) {
   _capCurrent = p;
   const rows = p.membri.map(m => {
     const conv = m.stato !== 'non_convocato';
-    const badge = m.stato === 'disponibile' ? '<span style="color:var(--sage); font-weight:700">disponibile</span>'
-      : m.stato === 'non_disponibile' ? '<span style="color:var(--coral)">non disp.</span>'
-      : conv ? '<span class="muted">in attesa</span>' : '';
+    const badge = m.stato === 'disponibile' ? \`<span style="color:var(--sage); font-weight:700">\${T('disponibile')}</span>\`
+      : m.stato === 'non_disponibile' ? \`<span style="color:var(--coral)">\${T('non disp.')}</span>\`
+      : conv ? \`<span class="muted">\${T('in attesa')}</span>\` : '';
     return \`<label style="display:flex; gap:10px; align-items:center; padding:9px 2px; border-bottom:1px solid var(--line)">
       <input type="checkbox" data-capchk value="\${m.id}" \${conv ? 'disabled checked' : ''} style="width:auto; transform:scale(1.3)">
       <span style="flex:1">\${esc(m.nome)}</span>\${badge}</label>\`;
   }).join('');
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${esc(p.disciplina)} \xB7 G\${p.giornata}</div><h2>Convoca i giocatori</h2><p class="sub">vs \${esc(p.avversario)} \u2014 servono \${p.minimo}, disponibili \${p.disponibili}. Spunta chi vuoi convocare.</p>
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${esc(p.disciplina)} \xB7 G\${p.giornata}</div><h2>\${T('Convoca i giocatori')}</h2><p class="sub">vs \${esc(p.avversario)} \u2014 \${T('servono')} \${p.minimo}, \${T('disponibili')} \${p.disponibili}. \${T('Spunta chi vuoi convocare.')}</p>
     <div class="card" style="padding:2px 14px">\${rows}</div>
-    <button class="btn gold block" style="margin-top:12px" data-capsend>Convoca i selezionati</button>
-    <button class="btn ghost block" style="margin-top:8px" data-cap="convoca">\u2190 Torna alle partite</button>\`);
+    <button class="btn gold block" style="margin-top:12px" data-capsend>\${T('Convoca i selezionati')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-cap="convoca">\${T('\u2190 Torna alle partite')}</button>\`);
   showOv();
 }
 async function capSendMirata() {
   const ids = [...document.querySelectorAll('[data-capchk]:not(:disabled):checked')].map(c => Number(c.value));
-  if (!ids.length) { okThen('Seleziona almeno un giocatore'); return; }
-  try { const r = await api('/auth/capitano/convoca-mirata', { method: 'POST', body: JSON.stringify({ partita_id: _capCurrent.partita_id, socio_ids: ids }) }); okThen(\`Convocati \${r.convocati} giocatori\`); }
-  catch { okThen('Non riesco a convocare ora'); }
+  if (!ids.length) { okThen(T('Seleziona almeno un giocatore')); return; }
+  try { const r = await api('/auth/capitano/convoca-mirata', { method: 'POST', body: JSON.stringify({ partita_id: _capCurrent.partita_id, socio_ids: ids }) }); okThen(\`\${T('Convocati')} \${r.convocati} \${T('giocatori')}\`); }
+  catch { okThen(T('Non riesco a convocare ora')); }
 }
 function openCapSerata() {
   const sorted = [...state.data.casate].sort((a, b) => b.punti - a.punti);
   const mine = state.socio.casata; const pos = sorted.findIndex(c => c.nome === mine) + 1;
   const my = sorted.find(c => c.nome === mine) || sorted[0];
   const ct = state.data.contest;
-  const titolo = ct ? ct.titolo : 'Serata dei Clan';
-  const sfida = ct ? (ct.brief || '') : ((state.data.eventi || []).find(e => e.chiave === 'ven')?.descrizione || 'La sfida di venerd\xEC');
-  _serataText = \`\u{1F3AC} Serata dei Clan \u2014 "\${titolo}"\${ct && ct.settimana ? \` (\${ct.settimana})\` : ''}\\n\${sfida}\\nCasata \${mine}: siamo \${pos}\xB0 con \${my.punti} punti. Forza \${mine}! \u{1F4AA}\`;
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">Capitano \xB7 Serata dei Clan</div><h2>\${esc(titolo)}</h2>
+  const titolo = ct ? ct.titolo : T('Serata dei Clan');
+  const sfida = ct ? (ct.brief || '') : ((state.data.eventi || []).find(e => e.chiave === 'ven')?.descrizione || T('La sfida di venerd\xEC'));
+  _serataText = \`\u{1F3AC} \${T('Serata dei Clan')} \u2014 "\${titolo}"\${ct && ct.settimana ? \` (\${ct.settimana})\` : ''}\\n\${sfida}\\n\${T('Casata')} \${mine}: \${T('siamo')} \${pos}\xB0 \${T('con')} \${my.punti} \${T('punti')}. \${T('Forza')} \${mine}! \u{1F4AA}\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${T('Capitano')} \xB7 \${T('Serata dei Clan')}</div><h2>\${esc(titolo)}</h2>
     <div class="card" style="background:linear-gradient(135deg,\${my.colore || '#12324F'},#0d2740); color:#fff; border:none">
-      <div class="eyebrow" style="color:#ffe1ac">Casata \${esc(mine)} \xB7 \${pos}\xB0 posto \xB7 \${my.punti} punti</div>
+      <div class="eyebrow" style="color:#ffe1ac">\${T('Casata')} \${esc(mine)} \xB7 \${pos}\xB0 \${T('posto')} \xB7 \${my.punti} \${T('punti')}</div>
       <p style="font-size:.85rem; opacity:.95; margin-top:6px; white-space:pre-wrap">\${esc(sfida)}</p>
-      <p style="font-size:.8rem; opacity:.85; margin-top:8px">Rilancia la sfida ai tuoi. Forza \${esc(mine)}!</p>
+      <p style="font-size:.8rem; opacity:.85; margin-top:8px">\${T('Rilancia la sfida ai tuoi. Forza')} \${esc(mine)}!</p>
     </div>
-    <button class="btn gold block" style="margin-top:12px" data-cap="share">Condividi con la casata</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+    <button class="btn gold block" style="margin-top:12px" data-cap="share">\${T('Condividi con la casata')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 function openContest() {
   const ct = state.data.contest; if (!ct) return;
-  _serataText = \`\u{1F3AC} Serata dei Clan \u2014 "\${ct.titolo}"\${ct.settimana ? \` (\${ct.settimana})\` : ''}\\n\${ct.brief || ''}\\nForza \${state.socio.casata || 'la nostra casata'}!\`;
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">Serata dei Clan \xB7 Contest\${ct.settimana ? ' \xB7 ' + esc(ct.settimana) : ''}</div><h2>\${esc(ct.titolo)}</h2>
+  _serataText = \`\u{1F3AC} \${T('Serata dei Clan')} \u2014 "\${ct.titolo}"\${ct.settimana ? \` (\${ct.settimana})\` : ''}\\n\${ct.brief || ''}\\n\${T('Forza')} \${state.socio.casata || T('la nostra casata')}!\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Serata dei Clan \xB7 Contest')}\${ct.settimana ? ' \xB7 ' + esc(ct.settimana) : ''}</div><h2>\${esc(ct.titolo)}</h2>
     \${ct.tipo ? \`<p class="sub">\${esc(ct.tipo)}\${ct.stato ? ' \xB7 ' + esc(ct.stato) : ''}</p>\` : ''}
     <div class="card"><p style="font-size:.9rem; line-height:1.5; white-space:pre-wrap">\${esc(ct.brief || '')}</p></div>
-    \${ct.vincitore ? \`<div class="note">\u{1F3C6} Vincitore: \${esc(ct.vincitore)}</div>\` : ''}
-    <button class="btn gold block" style="margin-top:12px" data-cap="share">Condividi</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+    \${ct.vincitore ? \`<div class="note">\u{1F3C6} \${T('Vincitore:')} \${esc(ct.vincitore)}</div>\` : ''}
+    <button class="btn gold block" style="margin-top:12px" data-cap="share">\${T('Condividi')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 async function capShare() {
-  try { if (navigator.share) { await navigator.share({ title: 'Serata dei Clan', text: _serataText }); } else { await navigator.clipboard.writeText(_serataText); okThen('Testo copiato: incollalo nel gruppo'); } } catch {}
+  try { if (navigator.share) { await navigator.share({ title: T('Serata dei Clan'), text: _serataText }); } else { await navigator.clipboard.writeText(_serataText); okThen(T('Testo copiato: incollalo nel gruppo')); } } catch {}
 }
 async function rispondiConvocazione(id, st) {
   try { await api('/convocazioni/' + id + '/risposta', { method: 'POST', body: JSON.stringify({ stato: st }) }); } catch {}
-  okThen(st === 'disponibile' ? 'Presenza confermata' : 'Hai declinato');
+  okThen(st === 'disponibile' ? T('Presenza confermata') : T('Hai declinato'));
 }
 
 // QR semplice (segnaposto grafico \u2014 in produzione libreria QR reale)
@@ -3670,25 +4374,25 @@ async function doBook(kind) {
     const headers = { 'Content-Type':'application/json', ...(state.token ? { Authorization:'Bearer '+state.token } : {}) };
     const r = await fetch(API_BASE + '/api/prenotazioni', { method:'POST', headers, body: JSON.stringify({ tessera_code: state.tessera, risorsa: kind, giorno: day, turno: slot, persone }) });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) return okThen(data.error || 'Prenotazione non riuscita: riprova', false);  // es. turno/coworking al completo
+    if (!r.ok) return okThen(data.error || T('Prenotazione non riuscita: riprova'), false);  // es. turno/coworking al completo
   } catch { /* offline (anteprima): conferma ottimistica */ }
-  okThen(\`Prenotazione registrata \xB7 \${nome}\${day?\` \xB7 \${day} \${slot}\`:''}\${persone?\` \xB7 \${persone} pers.\`:''}\`);
+  okThen(\`\${T('Prenotazione registrata')} \xB7 \${nome}\${day?\` \xB7 \${day} \${slot}\`:''}\${persone?\` \xB7 \${persone} \${T('pers.')}\`:''}\`);
 }
 // --- Serate speciali a numero chiuso con quota (da saldare) ---
 function openSerata(id) {
   const s = (state.data.serate || []).find(x => String(x.id) === String(id)); if (!s) return;
   const esaurita = s.posti_liberi != null && s.posti_liberi <= 0;
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">Serata su prenotazione\${s.quando ? ' \xB7 ' + esc(s.quando) : ''}</div><h2>\${esc(s.titolo)}</h2>
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Serata su prenotazione')}\${s.quando ? ' \xB7 ' + esc(s.quando) : ''}</div><h2>\${esc(s.titolo)}</h2>
     \${s.tema ? \`<p class="sub">\${esc(s.tema)}</p>\` : ''}
     <div class="card"><p style="font-size:.9rem; line-height:1.5">\${esc(s.descrizione || '')}</p>
-      <div style="display:flex; justify-content:space-between; margin-top:8px; font-size:.85rem"><b>Quota</b><span>\u20AC \${esc(String(s.quota))} a persona</span></div>
-      \${s.posti_liberi != null ? \`<div style="display:flex; justify-content:space-between; font-size:.8rem; color:var(--mute)"><span>Posti disponibili</span><span>\${s.posti_liberi}</span></div>\` : ''}
+      <div style="display:flex; justify-content:space-between; margin-top:8px; font-size:.85rem"><b>\${T('Quota')}</b><span>\u20AC \${esc(String(s.quota))} \${T('a persona')}</span></div>
+      \${s.posti_liberi != null ? \`<div style="display:flex; justify-content:space-between; font-size:.8rem; color:var(--mute)"><span>\${T('Posti disponibili')}</span><span>\${s.posti_liberi}</span></div>\` : ''}
     </div>
-    \${esaurita ? \`<div class="note">Posti esauriti per questa serata.</div>\` : \`
-    <div class="field" style="margin-top:10px"><label>Quante persone</label><div class="chips" data-group="serp">\${[1,2,3,4,5,6].map((n,i)=>\`<button class="chip\${i===1?' sel':''}" data-chip>\${n}</button>\`).join('')}</div></div>
-    <div class="note">Prenotazione a numero chiuso: la quota si salda in cassa alla conferma (il pagamento in-app arriver\xE0 pi\xF9 avanti).</div>
-    <button class="btn gold block" style="margin-top:10px" data-do-serata="\${s.id}">Prenota (\u20AC \${esc(String(s.quota))} a persona)</button>\`}
-    <button class="btn ghost block" style="margin-top:8px" data-close>Chiudi</button>\`);
+    \${esaurita ? \`<div class="note">\${T('Posti esauriti per questa serata.')}</div>\` : \`
+    <div class="field" style="margin-top:10px"><label>\${T('Quante persone')}</label><div class="chips" data-group="serp">\${[1,2,3,4,5,6].map((n,i)=>\`<button class="chip\${i===1?' sel':''}" data-chip>\${n}</button>\`).join('')}</div></div>
+    <div class="note">\${T('Prenotazione a numero chiuso: la quota si salda in cassa alla conferma (il pagamento in-app arriver\xE0 pi\xF9 avanti).')}</div>
+    <button class="btn gold block" style="margin-top:10px" data-do-serata="\${s.id}">\${T('Prenota')} (\u20AC \${esc(String(s.quota))} \${T('a persona')})</button>\`}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
 async function prenotaSerata(id) {
@@ -3698,26 +4402,26 @@ async function prenotaSerata(id) {
     const headers = { 'Content-Type':'application/json', ...(state.token ? { Authorization:'Bearer '+state.token } : {}) };
     const r = await fetch(API_BASE + '/api/serate/' + id + '/prenota', { method:'POST', headers, body: JSON.stringify({ tessera_code: state.tessera, persone }) });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) return okThen(data.error || 'Prenotazione non riuscita', false);
+    if (!r.ok) return okThen(data.error || T('Prenotazione non riuscita'), false);
     await loadAll();
-    return okThen(\`Sei in lista per "\${data.titolo || (s && s.titolo) || 'la serata'}" \xB7 \${persone} pers. \xB7 \u20AC \${data.importo} da saldare in cassa\`);
+    return okThen(\`\${T('Sei in lista per')} "\${data.titolo || (s && s.titolo) || T('la serata')}" \xB7 \${persone} \${T('pers.')} \xB7 \u20AC \${data.importo} \${T('da saldare in cassa')}\`);
   } catch {
     const imp = s ? s.quota * persone : 0;
-    okThen(\`Prenotazione registrata \xB7 \${persone} pers.\${imp?\` \xB7 \u20AC \${imp} da saldare\`:''}\`);
+    okThen(\`\${T('Prenotazione registrata')} \xB7 \${persone} \${T('pers.')}\${imp?\` \xB7 \u20AC \${imp} \${T('da saldare')}\`:''}\`);
   }
 }
 async function doProposta(tipo) {
   const titolo = $('#in1')?.value || '';
   const dettaglio = tipo==='vinile' ? [$('#in2')?.value, $('#in3')?.value].filter(Boolean).join(' \u2014 ') : ($('[data-group="tipo"] .sel')?.textContent || '');
   try { await api('/proposte', { method:'POST', body: JSON.stringify({ tessera_code: state.tessera, tipo, titolo, dettaglio }) }); } catch {}
-  okThen(tipo==='vinile' ? 'La tua proposta \xE8 in lista' : 'Sei in scaletta per domenica');
+  okThen(tipo==='vinile' ? T('La tua proposta \xE8 in lista') : T('Sei in scaletta per domenica'));
 }
-function convOk(key) { state.conv[key] = 'ok'; const [dom]=key.split('/'); renderDom(dom); okThen('Presenza confermata'); }
+function convOk(key) { state.conv[key] = 'ok'; const [dom]=key.split('/'); renderDom(dom); okThen(T('Presenza confermata')); }
 function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[key]='no'; const [dom]=key.split('/'); renderDom(dom); }
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -3734,6 +4438,12 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.map) { const url = 'https://www.google.com/maps?q=' + encodeURIComponent(t.dataset.map); try { window.open(url, '_blank'); } catch { location.href = url; } return; }
   if (t.dataset.act) { ev.stopPropagation(); if (t.dataset.act==='go-coppa') return go('coppa'); return openSheet(t.dataset.act); }
   if (t.dataset.open != null) return openEvent(t.dataset.open);
+  if (t.dataset.casamia != null) return openCasaMia();
+  if (t.dataset.lemiecase != null) return openLeMieCase();
+  if (t.dataset.struttEdit) return openStrutturaForm(t.dataset.struttEdit);
+  if (t.dataset.struttDel) return strutturaElimina(t.dataset.struttDel);
+  if (t.dataset.struttNew != null) return openStrutturaForm();
+  if (t.dataset.struttSave != null) return strutturaSalva(t.dataset.struttSave);
   if (t.dataset.campi != null) return openCampi();
   if (t.dataset.partite != null) return openPartiteAperte();
   if (t.dataset.campoPick) return openCampi(Number(t.dataset.campoPick));
@@ -3745,11 +4455,11 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.sheet) return t.dataset.sheet === 'regolamenti' ? openRegolamenti() : openSheet(t.dataset.sheet);
   if (t.dataset.go) return go(t.dataset.go);
   if (t.dataset.close != null) return closeOv();
-  if (t.dataset.confirm != null) return okThen('Prenotazione registrata \xB7 ' + t.dataset.confirm);
+  if (t.dataset.confirm != null) return okThen(T('Prenotazione registrata') + ' \xB7 ' + t.dataset.confirm);
   if (t.dataset.chip != null) { t.parentElement.querySelectorAll('.chip').forEach(c=>c.classList.remove('sel')); t.classList.add('sel'); return; }
   if (t.dataset.doBook) return doBook(t.dataset.doBook);
   if (t.dataset.proposta) return doProposta(t.dataset.proposta);
-  if (t.dataset.lang) { applyLang(t.dataset.lang); return okThen('Lingua impostata'); }
+  if (t.dataset.lang) { applyLang(t.dataset.lang); return okThen(T('Lingua impostata')); }
   if (t.dataset.conv) return t.dataset.conv==='ok' ? convOk(t.dataset.key) : convNo(t.dataset.key);
   if (t.dataset.dom) { DOMAINS[t.dataset.dom].cur = Number(t.dataset.i); return renderDom(t.dataset.dom); }
 });
@@ -3786,7 +4496,7 @@ async function init() {
     // Primo avvio senza identit\xE0: mostra l'accesso
     showGate();
   }
-  /* SW off nel file unico */
+  // Il service worker \xE8 registrato dai tag PWA iniettati dal server (server/pwa.js).
 }
 function bindGate() {
   const enter = $('#gate_enter'); if (enter) enter.addEventListener('click', loginTessera);
@@ -3984,8 +4694,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', magazzino:'Magazzino', comande:'Chiosco \xB7 Comande', kds:'KDS Cucina/Bar', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -4100,8 +4809,14 @@ VIEWS.soci = async () => {
   await render();
 };
 function casataOptions(sel) { return \`<option value="">\u2014 nessuna \u2014</option>\` + CASATE.map(c => \`<option value="\${c.id}" \${sel==c.id?'selected':''}>\${esc(c.nome)}</option>\`).join(''); }
-function editSocio(s, all) {
+async function editSocio(s, all) {
   const isNew = !s;
+  // Strutture collegabili (per l'ospite temporaneo) + stato host del profilo
+  let collegabili = [], hostInfo = null;
+  if (!isNew) {
+    collegabili = await api('/strutture-collegabili').catch(() => []);
+    hostInfo = await api('/soci/' + s.id + '/host').catch(() => null);
+  }
   const genitori = (all || []).filter(x => x.tipo_profilo === 'genitore');
   const profili = [['socio','Socio'],['residente','Residente'],['ospite_temporaneo','Ospite temporaneo'],['genitore','Genitore'],['under14','Under 14 (figlio)']];
   const tutOpts = \`<option value="">\u2014 nessuno \u2014</option>\` + genitori.map(g => \`<option value="\${g.id}" \${s?.tutore_id==g.id?'selected':''}>\${esc(g.nome)} \${esc(g.cognome)}</option>\`).join('');
@@ -4120,6 +4835,7 @@ function editSocio(s, all) {
       <div id="validaWrap"><label>Tessera valida fino</label><input id="f_valida" type="date" value="\${esc(s?.valida_fino||'2027-05-01')}"></div>
       <div id="dalWrap"><label>Soggiorno dal</label><input id="f_dal" type="date" value="\${esc(s?.soggiorno_dal||'')}"></div>
       <div id="alWrap"><label>Soggiorno al</label><input id="f_al" type="date" value="\${esc(s?.soggiorno_al||'')}"></div>
+      <div id="struttWrap"><label>\u{1F3E1} Casa collegata (ospite)</label><select id="f_strutt"><option value="">\u2014 nessuna \u2014</option>\${collegabili.map(c => \`<option value="\${c.id}" \${hostInfo && hostInfo.struttura_id == c.id ? 'selected' : ''}>\${esc(c.nome)} \xB7 \${esc(c.host)}</option>\`).join('')}</select></div>
     </div>
     <p class="muted" id="ospitenote" style="display:none">Ospite temporaneo: indica il periodo di soggiorno (dal / al). Gli eventi selezionabili sono quelli compresi nel periodo; per gli ospiti non serve la data della tessera.</p>
     <label class="check"><input type="checkbox" id="f_privacy" \${(!s||s.consenso_privacy)?'checked':''}> Consenso privacy (necessario)</label>
@@ -4127,6 +4843,8 @@ function editSocio(s, all) {
     <label class="check"><input type="checkbox" id="f_foto" \${s?.consenso_foto?'checked':''}> Consenso uso immagini eventi</label>
     <label class="check"><input type="checkbox" id="f_push" \${s?.notifiche_push?'checked':''}> Consenso notifiche (casata & eventi)</label>
     \${isNew?'':'<label class="check"><input type="checkbox" id="f_attivo" '+(s.attivo?'checked':'')+'> Profilo attivo</label>'}
+    \${isNew?'':'<label class="check"><input type="checkbox" id="f_host" '+((hostInfo&&hostInfo.host)?'checked':'')+'> \u{1F511} Profilo <b>host</b> (case vacanza): gestisce fino a 3 strutture dall\\'app'+((hostInfo&&hostInfo.host_ko)?' <span class="tag no">KO integrit\xE0</span>':'')+'</label>'}
+    \${(!isNew && hostInfo && hostInfo.strutture && hostInfo.strutture.length)?'<p class="muted">Strutture host: '+hostInfo.strutture.map(x=>x.ko?'\u26A0\uFE0F (dati non leggibili)':esc(x.nome)).join(', ')+' \u2014 modifica dal profilo host in app.</p>':''}
     <p class="muted" id="under14note" style="display:none">Per gli under-14 la responsabilit\xE0 del trattamento \xE8 del genitore indicato: seleziona il genitore e la casata del figlio.</p>
     <div class="err" id="mErr"></div>
     <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
@@ -4139,6 +4857,7 @@ function editSocio(s, all) {
     $('#alWrap').style.display = osp ? 'block' : 'none';
     $('#validaWrap').style.display = osp ? 'none' : 'block';
     $('#ospitenote').style.display = osp ? 'block' : 'none';
+    const sw = $('#struttWrap'); if (sw) sw.style.display = osp ? 'block' : 'none';
   };
   $('#f_tipo').onchange = syncTipo; syncTipo();
   $('#mCancel').onclick = closeModal;
@@ -4154,7 +4873,15 @@ function editSocio(s, all) {
       consenso_privacy:$('#f_privacy').checked, consenso_marketing:$('#f_mktg').checked,
       consenso_foto:$('#f_foto').checked, notifiche_push:$('#f_push').checked, attivo: isNew ? true : $('#f_attivo').checked,
     };
-    try { await api(isNew?'/soci':'/soci/'+s.id, { method:isNew?'POST':'PUT', body:JSON.stringify(body) }); closeModal(); show('soci'); }
+    try {
+      await api(isNew?'/soci':'/soci/'+s.id, { method:isNew?'POST':'PUT', body:JSON.stringify(body) });
+      if (!isNew) {
+        // Flag host + eventuale collegamento ospite\u2192struttura
+        await api('/soci/'+s.id+'/host', { method:'PUT', body: JSON.stringify({ host: $('#f_host')?.checked }) }).catch(()=>{});
+        if (osp) await api('/soci/'+s.id+'/collega-struttura', { method:'PUT', body: JSON.stringify({ struttura_id: $('#f_strutt')?.value || null }) }).catch(()=>{});
+      }
+      closeModal(); show('soci');
+    }
     catch (e) { $('#mErr').textContent = e.message; }
   };
 }
@@ -4344,222 +5071,6 @@ function stampaModuloPrelievo(giochi) {
   w.document.write(html); w.document.close(); w.focus();
   setTimeout(() => { try { w.print(); } catch (_) {} }, 300);
 }
-
-// ---- Magazzino unificato ----
-const MAG_AREE = [['chiosco', 'Chiosco'], ['casa_di_carta', 'Casa di Carta'], ['serata_clan', 'Serata Clan'], ['serate_tema', 'Serate a tema']];
-const magAreaLabel = (a) => (MAG_AREE.find(x => x[0] === a) || [a, a])[1];
-const magBadge = (s) => s === 'da_riordinare'
-  ? '<span class="tag no">Da riordinare</span>'
-  : s === 'in_esaurimento' ? '<span class="tag mid">In esaurimento</span>' : '<span class="tag ok">OK</span>';
-VIEWS.magazzino = async () => {
-  const data = await api('/magazzino').catch(() => ({ articoli: [], riepilogo: { da_riordinare: 0, in_esaurimento: 0, totale: 0 }, aree: [] }));
-  const r = data.riepilogo || { da_riordinare: 0, in_esaurimento: 0, totale: 0 };
-  const alert = \`<div class="panel"><h3>\u{1F4E6} Magazzino \xB7 riepilogo</h3>
-    <div class="row" style="gap:10px;flex-wrap:wrap">
-      <div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.6rem;font-weight:800;color:\${r.da_riordinare ? '#b14a35' : 'var(--navy)'}">\${r.da_riordinare}</div></div>
-      <div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.6rem;font-weight:800;color:\${r.in_esaurimento ? '#8a5a12' : 'var(--navy)'}">\${r.in_esaurimento}</div></div>
-      <div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px"><div class="muted" style="font-size:.72rem">Articoli totali</div><div style="font-size:1.6rem;font-weight:800;color:var(--navy)">\${r.totale}</div></div>
-    </div>
-    <p class="muted" style="margin-top:10px;font-size:.78rem">L'alert <b>In esaurimento</b> scatta <i>prima</i> del riordino (soglia di preavviso). <b>Da riordinare</b> quando la giacenza scende al punto di riordino o sotto.</p></div>\`;
-
-  const areeOrdine = [...new Set([...MAG_AREE.map(a => a[0]), ...(data.aree || [])])];
-  const perArea = areeOrdine.map(area => {
-    const arts = (data.articoli || []).filter(a => a.area === area);
-    if (!arts.length) return '';
-    const rows = arts.map(a => \`<tr>
-      <td><input id="mg_n_\${a.id}" value="\${esc(a.nome)}" style="min-width:150px"></td>
-      <td><input id="mg_u_\${a.id}" value="\${esc(a.unita)}" style="width:70px"></td>
-      <td style="text-align:center"><b style="font-size:1rem">\${esc(String(a.giacenza))}</b></td>
-      <td><input id="mg_pr_\${a.id}" type="number" value="\${esc(String(a.punto_riordino))}" style="width:70px"></td>
-      <td><input id="mg_pa_\${a.id}" type="number" value="\${esc(String(a.soglia_preavviso))}" style="width:70px"></td>
-      <td style="text-align:center">\${magBadge(a.stato)}</td>
-      <td style="white-space:nowrap"><input id="mg_q_\${a.id}" type="number" placeholder="q.t\xE0" style="width:64px"> <button class="btn gold sm" data-mgmov="\${a.id}|carico">+ Carico</button> <button class="btn ghost sm" data-mgmov="\${a.id}|scarico">\u2212 Scarico</button> <button class="btn ghost sm" data-mgmov="\${a.id}|rettifica" title="Imposta la giacenza al valore contato">= Rettifica</button></td>
-      <td style="white-space:nowrap"><button class="btn gold sm" data-mgsave="\${a.id}" data-area="\${esc(a.area)}">Salva</button> <button class="btn danger sm" data-mgdel="\${a.id}">\u{1F5D1}</button></td>
-    </tr>\`).join('');
-    return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3>
-      <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giacenza</th><th>Riordino</th><th>Preavviso</th><th>Stato</th><th>Movimento</th><th></th></tr></thead>
-      <tbody>\${rows}</tbody></table></div>\`;
-  }).join('');
-
-  const areaOpts = MAG_AREE.map(a => \`<option value="\${a[0]}">\${esc(a[1])}</option>\`).join('');
-  const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3>
-    <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
-      <input id="mg_new_n" placeholder="Nome (es. Bicchieri)" style="min-width:180px">
-      <select id="mg_new_a">\${areaOpts}</select>
-      <input id="mg_new_u" placeholder="Unit\xE0 (pz)" value="pz" style="width:80px">
-      <input id="mg_new_g" type="number" placeholder="Giacenza" style="width:100px">
-      <input id="mg_new_pr" type="number" placeholder="Riordino" style="width:100px">
-      <input id="mg_new_pa" type="number" placeholder="Preavviso" style="width:100px">
-      <button class="btn gold sm" id="mg_add">+ Aggiungi</button>
-    </div>
-    <p class="muted" style="margin-top:8px;font-size:.76rem">Il <b>preavviso</b> conviene impostarlo un po' sopra il <b>riordino</b>, cos\xEC ricevi l'avviso "in esaurimento" con anticipo.</p></div>\`;
-
-  $('#view').innerHTML = alert + (perArea || '<div class="panel"><p class="muted">Nessun articolo. Aggiungine uno qui sotto.</p></div>') + nuovo;
-
-  document.querySelectorAll('[data-mgmov]').forEach(b => b.onclick = async () => {
-    const [id, tipo] = b.dataset.mgmov.split('|');
-    const q = Number((document.getElementById('mg_q_' + id) || {}).value);
-    if (!q && tipo !== 'rettifica') { alert('Indica la quantit\xE0.'); return; }
-    let causale = null;
-    if (tipo === 'rettifica' && (document.getElementById('mg_q_' + id) || {}).value === '') { alert('Indica la giacenza contata.'); return; }
-    await api('/magazzino/' + id + '/movimento', { method: 'POST', body: JSON.stringify({ tipo, quantita: q, causale }) });
-    show('magazzino');
-  });
-  document.querySelectorAll('[data-mgsave]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.mgsave;
-    await api('/magazzino/' + id, { method: 'PUT', body: JSON.stringify({
-      nome: $('#mg_n_' + id).value, unita: $('#mg_u_' + id).value, area: b.dataset.area,
-      punto_riordino: Number($('#mg_pr_' + id).value), soglia_preavviso: Number($('#mg_pa_' + id).value),
-    }) });
-    show('magazzino');
-  });
-  document.querySelectorAll('[data-mgdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo e il suo storico movimenti?')) return; await api('/magazzino/' + b.dataset.mgdel, { method: 'DELETE' }); show('magazzino'); });
-  $('#mg_add').onclick = async () => {
-    if (!$('#mg_new_n').value) { alert('Indica il nome.'); return; }
-    await api('/magazzino', { method: 'POST', body: JSON.stringify({
-      nome: $('#mg_new_n').value, area: $('#mg_new_a').value, unita: $('#mg_new_u').value || 'pz',
-      giacenza: Number($('#mg_new_g').value || 0), punto_riordino: Number($('#mg_new_pr').value || 0), soglia_preavviso: Number($('#mg_new_pa').value || 0),
-    }) });
-    show('magazzino');
-  };
-};
-
-// ---- Chiosco \xB7 Comande (cassa + board) ----
-const COM_STATI = { aperta: ['Aperta', 'mid'], in_preparazione: ['In preparazione', 'mid'], pronta: ['Pronta', 'ok'], consegnata: ['Consegnata', 'ok'], chiusa: ['Chiusa', ''], annullata: ['Annullata', 'no'] };
-const eur = (n) => '\u20AC ' + Number(n || 0).toFixed(2);
-let COM_CART = {};
-VIEWS.comande = async () => {
-  const menu = (await api('/menu')).filter(m => m.attivo);
-  const comande = await api('/comande');
-  const mag = await api('/magazzino').catch(() => ({ articoli: [] }));
-
-  // --- Cassa ---
-  const perStaz = (st) => menu.filter(m => m.stazione === st);
-  const menuBtns = (st) => perStaz(st).map(m => \`<button class="btn ghost sm" data-add="\${m.id}" style="margin:3px">\${esc(m.nome)} \xB7 \${eur(m.prezzo)}</button>\`).join('') || '<span class="muted">\u2014</span>';
-  const cassa = \`<div class="panel"><h3>\u{1F9FE} Nuova comanda (cassa)</h3>
-    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
-      <label>Origine <select id="co_orig"><option value="chiosco">Chiosco</option><option value="bancone">Bancone</option><option value="tavolo">Tavolo</option></select></label>
-      <input id="co_rif" placeholder="Rif. (n\xB0 tavolo / nome)" style="max-width:200px">
-    </div>
-    <div style="display:flex;gap:14px;flex-wrap:wrap">
-      <div style="flex:1;min-width:260px">
-        <div class="muted" style="font-weight:700;font-size:.75rem;margin:4px 0">\u{1F373} Cucina</div><div>\${menuBtns('cucina')}</div>
-        <div class="muted" style="font-weight:700;font-size:.75rem;margin:10px 0 4px">\u{1F379} Bar</div><div>\${menuBtns('bar')}</div>
-      </div>
-      <div style="flex:1;min-width:240px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px">
-        <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
-        <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
-        <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">Invia comanda</button>
-      </div>
-    </div></div>\`;
-
-  // --- Board comande attive ---
-  const card = (c) => {
-    const righe = (c.righe || []).map(r => \`<div style="display:flex;align-items:center;gap:6px;font-size:.82rem;padding:2px 0">
-      <span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)} <span class="muted">(\${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'})</span>\${r.note ? \`<span class="muted"> \xB7 \${esc(r.note)}</span>\` : ''}</span>
-      <span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
-    const [lbl, cls] = COM_STATI[c.stato] || [c.stato, ''];
-    return \`<div style="border:1px solid var(--line);border-radius:12px;padding:12px;min-width:250px;flex:1">
-      <div class="row" style="justify-content:space-between;align-items:center"><b style="color:var(--navy)">#\${c.numero || c.id} \xB7 \${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</b><span class="tag \${cls}">\${esc(lbl)}</span></div>
-      <div style="margin:8px 0">\${righe}</div>
-      <div style="text-align:right;font-weight:800;margin-bottom:8px">\${eur(c.totale)}</div>
-      <div class="row" style="gap:6px;flex-wrap:wrap">
-        \${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cstato="\${c.id}|in_preparazione">\u25B6 Avvia</button>\` : ''}
-        \${c.stato === 'in_preparazione' ? \`<button class="btn ghost sm" data-cstato="\${c.id}|pronta">\u2714 Pronta</button>\` : ''}
-        \${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cstato="\${c.id}|consegnata">\u{1F6CE} Consegnata</button>\` : ''}
-        <button class="btn gold sm" data-cchiudi="\${c.id}">\u{1F4B6} Chiudi (cassa)</button>
-        <button class="btn danger sm" data-cann="\${c.id}">\u2715</button>
-      </div></div>\`;
-  };
-  const board = \`<div class="panel"><h3>\u{1F4CB} Comande in corso <button class="btn ghost sm" id="co_ref" style="margin-left:8px">\u21BB Aggiorna</button></h3>
-    <div style="display:flex;gap:12px;flex-wrap:wrap">\${comande.map(card).join('') || '<p class="muted">Nessuna comanda attiva.</p>'}</div></div>\`;
-
-  // --- Gestione menu ---
-  const magOpts = (sel) => \`<option value="">\u2014 nessuno \u2014</option>\` + (mag.articoli || []).map(a => \`<option value="\${a.id}" \${String(sel) === String(a.id) ? 'selected' : ''}>\${esc(a.nome)} (\${esc(a.area)})</option>\`).join('');
-  const allMenu = await api('/menu');
-  const menuRows = allMenu.map(m => \`<tr>
-    <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:150px"></td>
-    <td><input id="mn_p_\${m.id}" type="number" step="0.5" value="\${esc(String(m.prezzo))}" style="width:80px"></td>
-    <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
-    <td><select id="mn_m_\${m.id}">\${magOpts(m.magazzino_id)}</select></td>
-    <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
-    <td style="white-space:nowrap"><button class="btn gold sm" data-mnsave="\${m.id}">Salva</button> <button class="btn danger sm" data-mndel="\${m.id}">\u{1F5D1}</button></td>
-  </tr>\`).join('');
-  const menuPanel = \`<div class="panel"><h3>\u{1F354} Menu del chiosco</h3>
-    <p class="muted" style="font-size:.78rem;margin-bottom:8px">Collega un articolo al <b>magazzino</b> per lo scarico automatico alla chiusura della comanda.</p>
-    <table><thead><tr><th>Articolo</th><th>Prezzo</th><th>Stazione</th><th>Scarico magazzino</th><th>Attivo</th><th></th></tr></thead><tbody>\${menuRows || '<tr><td colspan="6" class="muted">Nessun articolo.</td></tr>'}</tbody></table>
-    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
-      <input id="mn_new_n" placeholder="Nome (es. Panino)" style="min-width:160px"><input id="mn_new_p" type="number" step="0.5" placeholder="Prezzo" style="width:90px">
-      <select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select>
-      <select id="mn_new_m">\${magOpts('')}</select>
-      <button class="btn gold sm" id="mn_add">+ Aggiungi</button>
-    </div></div>\`;
-
-  $('#view').innerHTML = cassa + board + menuPanel;
-
-  // Cassa: carrello in memoria
-  const renderCart = () => {
-    const items = Object.values(COM_CART);
-    $('#co_cart').innerHTML = items.length ? items.map(it => \`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:.82rem">
-      <span style="flex:1">\${esc(it.menu.nome)}</span>
-      <button class="btn ghost sm" data-dec="\${it.menu.id}">\u2212</button><b>\${it.qta}</b><button class="btn ghost sm" data-inc="\${it.menu.id}">+</button>
-      <span style="width:60px;text-align:right">\${eur(it.menu.prezzo * it.qta)}</span></div>\`).join('') : '<span class="muted" style="font-size:.8rem">Nessun articolo.</span>';
-    const tot = items.reduce((s, it) => s + it.menu.prezzo * it.qta, 0);
-    $('#co_tot').textContent = 'Totale ' + eur(tot);
-    document.querySelectorAll('[data-inc]').forEach(b => b.onclick = () => { COM_CART[b.dataset.inc].qta++; renderCart(); });
-    document.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => { const it = COM_CART[b.dataset.dec]; it.qta--; if (it.qta <= 0) delete COM_CART[b.dataset.dec]; renderCart(); });
-  };
-  COM_CART = {};
-  renderCart();
-  document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => { const m = menu.find(x => String(x.id) === b.dataset.add); if (!m) return; if (COM_CART[m.id]) COM_CART[m.id].qta++; else COM_CART[m.id] = { menu: m, qta: 1 }; renderCart(); });
-  $('#co_send').onclick = async () => {
-    const righe = Object.values(COM_CART).map(it => ({ menu_id: it.menu.id, qta: it.qta }));
-    if (!righe.length) { alert('Aggiungi almeno un articolo.'); return; }
-    await api('/comande', { method: 'POST', body: JSON.stringify({ origine: $('#co_orig').value, riferimento: $('#co_rif').value, righe }) });
-    COM_CART = {}; show('comande');
-  };
-  $('#co_ref').onclick = () => show('comande');
-
-  // Board azioni
-  document.querySelectorAll('[data-cstato]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cstato.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
-  document.querySelectorAll('[data-cchiudi]').forEach(b => b.onclick = async () => { if (!confirm('Chiudere la comanda come pagata in cassa? Verr\xE0 scaricato il magazzino collegato.')) return; await api('/comande/' + b.dataset.cchiudi + '/chiudi', { method: 'POST' }); show('comande'); });
-  document.querySelectorAll('[data-cann]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare/annullare la comanda?')) return; await api('/comande/' + b.dataset.cann, { method: 'DELETE' }); show('comande'); });
-
-  // Menu azioni
-  document.querySelectorAll('[data-mnsave]').forEach(b => b.onclick = async () => { const id = b.dataset.mnsave; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, magazzino_id: $('#mn_m_' + id).value || null, attivo: $('#mn_a_' + id).checked }) }); show('comande'); });
-  document.querySelectorAll('[data-mndel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo di menu?')) return; await api('/menu/' + b.dataset.mndel, { method: 'DELETE' }); show('comande'); });
-  $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Indica il nome.'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, magazzino_id: $('#mn_new_m').value || null }) }); show('comande'); };
-};
-
-// ---- KDS: schermo cucina/bar con coda in tempo reale ----
-let KDS_STAZ = '';
-VIEWS.kds = async () => {
-  const render = async () => {
-    const q = await api('/kds' + (KDS_STAZ ? '?stazione=' + KDS_STAZ : '')).catch(() => []);
-    const filtro = \`<div class="panel"><h3>\u{1F5A5}\uFE0F KDS \xB7 coda di preparazione
-      <span style="margin-left:10px;font-size:.8rem;font-weight:400">Stazione:
-        <select id="kds_st"><option value="">Tutte</option><option value="cucina" \${KDS_STAZ === 'cucina' ? 'selected' : ''}>Cucina</option><option value="bar" \${KDS_STAZ === 'bar' ? 'selected' : ''}>Bar</option></select></span>
-      <span class="muted" style="margin-left:10px;font-size:.72rem">aggiornamento automatico</span></h3></div>\`;
-    const cards = q.map(c => {
-      const righe = c.righe.map(r => \`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #f0f0f0">
-        <span style="flex:1;font-size:.95rem"><b>\${r.qta}\xD7</b> \${esc(r.nome)} <span class="muted">(\${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'})</span>\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
-        \${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${c.id}|\${r.id}|pronta">Pronta \u2714</button>\` : ''}
-        \${r.stato === 'pronta' ? \`<button class="btn ghost sm" data-kr="\${c.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button><span class="tag ok">pronta</span>\` : ''}
-      </div>\`).join('');
-      const parseTs = (s) => { if (!s) return null; const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z'); return isNaN(d.getTime()) ? null : d; };
-      const dt = parseTs(c.created_at);
-      const mins = dt ? Math.max(0, Math.round((Date.now() - dt.getTime()) / 60000)) : null;
-      return \`<div style="border:2px solid var(--navy);border-radius:12px;padding:12px;min-width:270px;flex:1;background:#fff">
-        <div class="row" style="justify-content:space-between"><b style="font-size:1.05rem;color:var(--navy)">#\${c.numero || c.id} \xB7 \${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</b>\${mins != null ? \`<span class="tag \${mins >= 10 ? 'no' : 'mid'}">\${mins}\u2032</span>\` : ''}</div>
-        <div style="margin-top:6px">\${righe}</div></div>\`;
-    }).join('');
-    $('#view').innerHTML = filtro + \`<div style="display:flex;gap:12px;flex-wrap:wrap">\${cards || '<p class="muted">Nessun ordine in coda. \u{1F389}</p>'}</div>\`;
-    $('#kds_st').onchange = (e) => { KDS_STAZ = e.target.value; render(); };
-    document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
-  };
-  await render();
-  window.__kdsTimer = setInterval(render, 8000); // auto-refresh coda ogni 8s
-};
 
 // ---- Campi & prenotazioni (stile Playtomic) ----
 const SPORTS = [['pickleball', 'Pickleball'], ['soft_tennis', 'Soft tennis'], ['calcetto', 'Calcetto'], ['beach', 'Beach volley'], ['tennis', 'Tennis'], ['altro', 'Altro']];
@@ -5217,6 +5728,21 @@ async function show(v) {
 }
 
 const COM_STATI = { aperta: ['Aperta', 'mid'], in_preparazione: ['In preparazione', 'mid'], pronta: ['Pronta', 'ok'], consegnata: ['Consegnata', 'ok'], chiusa: ['Chiusa', ''], annullata: ['Annullata', 'no'] };
+const METODI = [['contanti', '\u{1F4B6} Contanti'], ['carta', '\u{1F4B3} Carta'], ['satispay', '\u{1F4F1} Satispay'], ['buoni', '\u{1F39F}\uFE0F Buoni'], ['altro', '\u2026 Altro']];
+const metodoLabel = (m) => (METODI.find(x => x[0] === m) || [m, m || '\u2014'])[1];
+// Chooser del metodo di pagamento alla chiusura (overlay touch-friendly).
+function pickMetodo(onPick) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:16px';
+  ov.innerHTML = \`<div style="background:#fff;border-radius:16px;padding:20px;max-width:360px;width:100%">
+    <b style="color:var(--navy);font-size:1.05rem">Come ha pagato?</b>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px">
+      \${METODI.map(m => \`<button class="btn \${m[0] === 'contanti' ? 'gold' : 'ghost'}" data-m="\${m[0]}" style="padding:14px 10px">\${m[1]}</button>\`).join('')}
+    </div>
+    <button class="btn ghost" data-m="" style="width:100%;margin-top:10px">Annulla</button></div>\`;
+  document.body.appendChild(ov);
+  ov.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { const m = b.dataset.m; document.body.removeChild(ov); if (m) onPick(m); });
+}
 
 /* ---------- COMANDE (cassa): l'operatore vede SOLO il men\xF9 ---------- */
 let COM_CART = {};
@@ -5278,7 +5804,7 @@ VIEWS.comande = async () => {
   };
   $('#co_ref').onclick = () => show('comande');
   document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
-  document.querySelectorAll('[data-ch]').forEach(b => b.onclick = async () => { if (!confirm('Chiudere la comanda (pagata in cassa)?')) return; await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST' }); show('comande'); });
+  document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => { await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) }); show('comande'); }));
   document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can, { method: 'DELETE' }); show('comande'); });
 };
 
@@ -5417,11 +5943,17 @@ VIEWS.riepilogo = async () => {
   const incasso = ogg.filter(c => c.stato === 'chiusa').reduce((s, c) => s + Number(c.totale || 0), 0);
   const nPezzi = ogg.reduce((s, c) => s + (c.righe || []).reduce((x, r) => x + Number(r.qta || 0), 0), 0);
   const stat = (l, v, col) => \`<div class="panel" style="flex:1;min-width:140px;margin:0"><div class="muted" style="font-size:.72rem">\${l}</div><div style="font-size:1.6rem;font-weight:800;color:\${col || 'var(--navy)'}">\${v}</div></div>\`;
-  const righe = ogg.slice().reverse().map(c => { const [lbl, cls] = COM_STATI[c.stato] || [c.stato, '']; return \`<tr><td>#\${c.numero || c.id}</td><td>\${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</td><td>\${(c.righe || []).reduce((x, r) => x + r.qta, 0)} pz</td><td>\${eur(c.totale)}</td><td><span class="tag \${cls}">\${esc(lbl)}</span></td></tr>\`; }).join('');
+  // Incasso suddiviso per metodo di pagamento (solo comande chiuse)
+  const chiuse = ogg.filter(c => c.stato === 'chiusa');
+  const perMetodo = {};
+  chiuse.forEach(c => { const m = c.metodo_pagamento || 'contanti'; perMetodo[m] = (perMetodo[m] || 0) + Number(c.totale || 0); });
+  const breakdown = METODI.filter(m => perMetodo[m[0]]).map(m => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>\${m[1]}</span><b>\${eur(perMetodo[m[0]])}</b></div>\`).join('');
+  const righe = ogg.slice().reverse().map(c => { const [lbl, cls] = COM_STATI[c.stato] || [c.stato, '']; return \`<tr><td>#\${c.numero || c.id}</td><td>\${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</td><td>\${(c.righe || []).reduce((x, r) => x + r.qta, 0)} pz</td><td>\${eur(c.totale)}</td><td>\${c.stato === 'chiusa' ? esc(metodoLabel(c.metodo_pagamento || 'contanti')) : '\u2014'}</td><td><span class="tag \${cls}">\${esc(lbl)}</span></td></tr>\`; }).join('');
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F4CA} Riepilogo di oggi</h3>
-      <div class="row" style="gap:10px">\${stat('Comande', ogg.length)}\${stat('Chiuse', cnt('chiusa'), 'var(--ok)')}\${stat('In corso', ogg.length - cnt('chiusa') - cnt('annullata'), 'var(--gold)')}\${stat('Pezzi', nPezzi)}\${stat('Incasso (cassa)', eur(incasso), 'var(--ok)')}</div></div>
-    <div class="panel"><h3>Comande di oggi</h3><table><thead><tr><th>#</th><th>Origine</th><th>Pezzi</th><th>Totale</th><th>Stato</th></tr></thead><tbody>\${righe || '<tr><td colspan="5" class="muted">Nessuna comanda oggi.</td></tr>'}</tbody></table></div>\`;
+      <div class="row" style="gap:10px">\${stat('Comande', ogg.length)}\${stat('Chiuse', cnt('chiusa'), 'var(--ok)')}\${stat('In corso', ogg.length - cnt('chiusa') - cnt('annullata'), 'var(--gold)')}\${stat('Pezzi', nPezzi)}\${stat('Incasso', eur(incasso), 'var(--ok)')}</div></div>
+    <div class="panel"><h3>\u{1F4B6} Incasso per metodo</h3>\${breakdown || '<p class="muted">Nessuna comanda chiusa oggi.</p>'}\${chiuse.length ? \`<div class="row" style="justify-content:space-between;padding:8px 2px;margin-top:4px"><b style="color:var(--navy)">Totale</b><b style="color:var(--ok)">\${eur(incasso)}</b></div>\` : ''}</div>
+    <div class="panel"><h3>Comande di oggi</h3><table><thead><tr><th>#</th><th>Origine</th><th>Pezzi</th><th>Totale</th><th>Pagam.</th><th>Stato</th></tr></thead><tbody>\${righe || '<tr><td colspan="6" class="muted">Nessuna comanda oggi.</td></tr>'}</tbody></table></div>\`;
 };
 
 /* ---------- boot ---------- */
@@ -5435,8 +5967,91 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.
 </html>
 `;
 
+// server/pwa-icons.js
+var ICON_192 = "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCBAGAg+9Zo27AAAzPklEQVR42u19eZRlR33e96uqu7z3eu+eXmZfpNHMaLTMCLSyCZAwMjJIlmQcEtlGPiGJYzhg4tgkJ8FObI7jhGAw59gEjElss0gwBBGBJINkQBpJSCMxmn00+9bdM7332+6tql/+qPte9+w903Pf65Hed3SkntF7fevW/e5v+6rqRx3r348GGrhYiHoPoIHLGw0CNTArNAjUwKzQIFADs0KDQA3MCg0CNTArNAjUwKzQIFADs0KDQA3MCg0CNTArNAjUwKzQIFADs0KDQA3MCg0CNTArNAjUwKzQIFADs0KDQA3MCg0CNTArNAjUwKzQIFADs0KDQA3MCg0CNTArNAjUwKzQIFADs0KDQA3MCg0CNTArqHoPYK6BZ/Yxqvc45wreyARiAAQQJXRw3GGGZXJ/ZAYqHyBiAuB+Blc/UGHcG5RSbzQCcZUxlmEsxRbawDCYiYiVgBTwJJRgKSAJDBgLY6EtaZv8bBlEkAQl4QlIwYJ4Gp/eQGR6gxCIBYEAw1TSiDQYCBSaA17YxH0tttf908ytGW4JuSlgT7IS8CSYERtoS5FGPqJCjLEi9Y+LgQlxbFwcGaXjk2KsRJGGIPgKvoQSzIBNTNPrnEyvWwIxg4gFAUBkqBTDMpoCXNFlVvWYa+abK+fZvhbbmeNcwJ6EIGYmy6j+U3VPAgBBEASBKj84Yk1GNJSng8Nix4DcMSB3HxcHRsRIkQQh9OBLBtgm5q3eM5IO6HV2PlCVNwREhgoRiNDbYtctNDcu0dcvMMs6bWvIRNAWsUFsSNvEWkzjB1fiHvdLk3DHVBjGlc8rAU+yL6EkjMV4ifYPi5cPy+f3q1eOqP5xYkbWhy8Tm/T6Y9Lrh0COOpJgGfmItEVvC9+2LL79Sr1ukZ7fwlIgMijFFBswIAV8yZ6EJyBEYlFig9hSOUZsoS0ZCyAxOZ7krAdPsS+hBIjYMrmvRIaMBQGeROixL2Esjo7TpkPqqd3es3tV/wQpgZzPgqrxVr3n6xLh9UCgKnViQ5MRQoUbFuu71sRvu0IvbrMgFCOUNFmGEgg9DhQIKMUYKtDAhDg8Ig6NiqNj4ti4GC1SIUIppsjAWIoNAEjh4hvO+dwccEeW5zVzd5Nd3G4Xt9ueFtuR5YwHBsoapZi0hSCEijM+mHFoVPzkNfXYNu+lg6qk0eTDk/y6odHlTaAqdSJDk2XqbrbvWhnfc220fpEJFAoxSjExw1ec8eBJ5Ms4NCq2HJOvHpU7BuTBETFaFIUIxiZZlRCVWAcA4EkGEFtyWZtlWAuTeDGSgjMe2rN2UZtd3WvW9plr5ptFbTYXIDYoxog0ESH0OOuhrLHpkNyw2f/RTm9wUjQF7L8uaHS5Emi61ZkoU1+rvefa6IF10Youqy0my6QtPImcz0pguEBbj8mf7lUvHVR7ToiRIjFDCbjYRbgCj6vrICkHESFfppuXagae369yAbu4p1IHSj5vmbRBZKAtiNCe4RVd9k2L9VuW66v7TEeWtUU+othACTQFrAT2nBDfetnfsNk/NiaaA77crdFlSSBmSMGWMV6izhx/cH30z24oL+6wxYgKMTEj43PWQz7C5iPy8R3eM3u9/cOiFMNXCBSUYEoe/9Q8nHIJSXwiLz5+e4kZn3s67MpZw6c/4eT7zmIxoC2VNSKN0MPSDnvb8vg9q+LrFpisj0KMYkREyPqc8fjAsPz6S/43NvlDeWoJWRCMvSw5dHkRiF25TxImyuRL3HNd9NDN5Su7TSGiQkwE5HwOFA6N0hPbve9v9bcekyWNUCFQLAi2Ulw+X3mGBWG4IL70wTwzPvLNXEfWWj7/twAQQQCWUdbkLn11n3nf2ug9q+KFbVzWyEfEQNbjrM+7BuVXNgYbNvuxQXNQNUV8GVWPLicCMUMJjgzlI9yyVH/89tLNS01JoxARgKaAPYnt/eLhl/0fbPOOjgtPIuuxINgkD5/5K84AaYsNvz3BjHu/3Kxk8pczHKfTPdylCzHFBvNb+L1rovvXRat7bWwwWSYAWZ9Dhef2y88+FT63X+V8+JL1ZWWKLg8CVSOesRK1Z/mjby/9+g2REpgoJW9z6OHVo/JrL/iP7/DGCpQNEEh29uYiwgsClw3Nb7Hf/u1JMH71K01Hx0UgmS/QMCRMIgigbKhQRmuW37Mq/o2bomv6TDFGMSYCmkPWFl9/0f/8T8KRArWGl1NUJDN9q+o9hnODXb7DoNEi3X6l/otfLdyxKi5EohCRp7g9y4dG5H//cfgnT4SbDitfUs5nIieIEnAxj0EQChHdsEjfe10cKDy7T712XIYeLpRA5NRXkGWSgrM+jKWXD8vvb/GOjImVPXZBq42ts6B0yzL9jiv1wRG5vV+GHknB9nJwZ3OdQMykBBdjYsYn31n6o7uKrRkeKwkG2jJc1vSlZ4P/8P3sxn3KV5TzXcGXiGb1+gpCIRJ3r41uW24E4bUTYuM+L+tdsAWqwjHJESLrwTL9/KB6bKsXabpugW3NcDGmQkzdTfyBa+KMj437VGwoUI5D9X4G58TcJZCz/0pitERLOuzn78vfd300URZlTYHilhBPv6Z+b0P2O78IiNAUXBrquCs7oeM3boqWd1kGxkvih9s9X81WaT+ZRlzS9NRu72d71YJWu7rXWEYxJsP09ivi9Yv0iwfVsQmR9fnivHDNMEcJVJW0hgvinVfqv/q1/FU9drggwGgNOR/RZ54M//SJzFBetGYYl4w6CQxTzueP3FZuCtgypMCjW/w4iW1ne40qjYTgXMDHxsSjW/wTeXrzYtMaJqboinn2vavj3cfl9n6V9RkXlgHUFHORQMwQxADGS/TQLeU/e38xUJgskxRoz9rnD6jfeTj75A6/OWBfufLJpZxcAsqalnfZ37ipbJkY1BTwEzu9wQnhSVyqiCShkaVAsRJ4br/3k9fUVT1mZbeJDBVjagr4V66J82U8v18Fyun/c5FDc41AzExCsGEqxPSpO0uffFepGCduK+vjr58J/+B7WWd4LCONEMFF0G9Zru9eq0uamNEc4sWDauuxi4mjz40k2CfkAh6YEN971fckbl6mAZQ0AfRLa+KMh6d2e1KQFDwHq0RzalF9knBpQ8biz99f+Fe3lUYKIjbI+WwsPrkh8yePZ6RA1mdtLjLDOi9cTXlNr5UiETekwNW9JqXn5kyRNpT1WQr818czn9yQMRY5n2ODkYL4128p/fn7C8ZCm4RDM164XQvMIQI59kSGiPCF+/IPrIuGCsIyWkMenKQP/0PTI68EHTlLxGlW/dkyAoVVPSY2iewVG6zqMYFy0kcqD48SKYM7cvaRV4IP/0PT8UlqDdkyhgrigXXRF+7LEyGa4tBcwVwhEDOE4NiQIP7L+/LvWa2H8gKM9iy/ekx+6GtNLx6UnTmrDaUdCsSWOnO8tNNGJlHmI4OlnaYzx7FN8cJEYCZtqDNnXzwoP/S1pi3HZHuGwRjKi/esjj//q3kCYkNCVJTdOYA5QSAXNRtLlvG5ewvvuioeyhOA9ixv3Cd/6+9yR8dEa4ZjQ0RIlT2CEGksaTfzclab5Era0LwcL2k3buFzenB3FxtqzfCRMfGbf5/buF+2ZxnAUF7csSr+7L15Y2EsCZorHKo/gVzGzkAxxp+8r/BLq+PhvCCgPctP7VYf+UauEFPOZ21c/JguCNAWq3pM6MFUrmYYoYereqy2tQhfiVgbyvlciOgj38g9tVu1Z5mA4bz45TXxZ36lUNZggOYGh+pPIFfvmSjRp+4ourgHFfb8m2/lXEFW29pkH+yusabXorplrLK47OpeUwlf035uRMTaUqA4NvRvvpX78S5VtUMPrIs+dWdxvESCUIM36ryoL4GYGVJguCA+fEv5X95WdqXCtiw/u09+9JGsW0xoasQeALBMuQAru01kpq5HQGSwstvkgmTPYfoglyv4ihn46LezP9ur2ioceujm6KFbyiMFIYVbnVJPGtWTQMykJI8W6I6r4j94d2msKCyjJeRfHJG/83AuMlRj9jii9DTbhW02MlPBFhFig4VttqfZTidW2sNJOCQ5NvS7D2c3H5HNYbKM7g/vKL1ndTRaICXrnJTVjUBuVWEhoivm2T/7lYJlaIucz0fH6aOPZCdKFNaWPQCIEGms6DLtWTbmpItqQ+1ZXtFlIp1uFH/qiIiNpVDxRJl+95HssTHK+ew2yP7J+4rLu2whcol9zYZ0KupDIBc4G0tS4E/vLnQ2cTEmX3FZ4+PfyR4cEbmgZnHPFAgwFqt7jCdhcZIFsoAneXWPMbbGckISD+UCPjgiPrEhGxn4kosxdTXxZ+4uKIHKa1Yf1IVADEASJsr4xO2lW5bqsSJJQtbDp3+QeX6/15ap5ly1fFjMgJJY3WvdJq/qM+GEW7S61yrJNYmjp4NcXtaW4ef2e3/0g0zWhyCMFenWZfrjt5fGSySpbsFQHQjklviMlehdK/WHby6PFAUBbVn7lY3+wy/7HTnr6j21V3y0pdaQr+gyLgCaHkQTITK4osu0hqzTLCeeBeTisI6s/eYm/2sv+O1ZS8BIUfzmTeV3rYzHSqTqVKGuA4GIODLUkeVP3Vl0h100h/z8fvXZpzItIdxm0DqMCog0FrbZ3hYbnxYpO0Gjt8UubLORrpeYSYbREuK//WPm5wdUc8jGghn/8ZeKXTmODIl6OLJaE4gZkpCP8LF3lFZ2m3xEgeKJEv2nxzKxQUVwrv08JKnWlfNscwBzJhtjLDUHuHKejU0t4+iTRliRC/Gff5DJR+RLzkd05Tzzu28v5aPkyIcao6YEcpnXeJluXaY/uD4aLQoi5Hx87p+CrcdULkhVJT0PKiK8EcLVeU/+vwQGhMCaXn3xK1tnP0iCsdQU8OYj6i+eDpoCEDBWFL+2Prp1mR4v1yEjqymBiBKt+xO3l6SAtmgJ+Z9eU3//86AtY93+4jrhVBH+DINPZHkbeCnK8jOYQxiLtoz9Pz8PntmnWkKOLZTA772zFCpU1uHXDrUjkHNe4yW699ropqV6okS+5EKE//7jkCv2uZZ3fgpOEeHPMFOJLG/TluXPC+flLeO//WNYjOFLTJToxiX6nmujaRlZjVA7ArnYuSvHD91SLsbEQEvI/+eF4JXDqqmuzgtnEeFPhzY0L2drIMufG1VHtumQ+oeX/JbQMlCM6aFbyvOabFQT1Xlq6mpzGWd+Jsv06zdEV8wzhYgyHu8bkl99PmgKuK7OCziLCH86nCy/qsfURpY/14AJ1iIX8Fc2hgeGZcZzNX3zwfXRZLmmRqhGBCLisqH5rfbXbyjnIwKQ8fCVjUH/uPDrreacLsKfLQhyf72m19ZKlj8XLFOg+OiY+JvnfLdzoxDRB9dH81traoRqQaAkdS/TvddFi9ptMaacz9v6xXc3ey0hG66z+cFpIvzZguh6yPJnhYumW0Le8At/e7/M+VyMaXGHuee6mhqhWhDIRT/dzfb+dVExIgJ8ha+9ENSxfnrS8Coi/KL2k0T4M90IIoNFtZblzwpX0x8p0tdeCAIFAMWIHlgXdTfXzgilTqBq5fDOVfHyTuuWF+4YED/Y5jUHmAvmpyrCt2VOFeFPhzHUVgdZ/qwjN4ymAD/Y5u0aFFmfCzEt77R3XBXnI9TGCKVOICI2jIyHD1wbxTY5oPmRl/2RgpgL5gdVobTHepItzmOB6ifLnxnM5AkeyouHX/EzHjMjtrjn2ijjuZczdQalTiBByEf05sV63UKTL1NG8dEx+sF2L+fPieinIsLzml7tOHGOKa/K8mvqI8ufAa4glPP5sa3e0TERepwv0/ULzZsW60JENag1pEsgV/U3FnetiX0JbZH18eQO7/CoCNScMD8AtKW2kFd02VNE+NNRleVX1E2WPwNcOnZoVDy5w8v50BaBwi+viV2tIW0vli6Bkuy9hd96hS7E8ASKMR7d6nln0pvqAifCLziLCH/Gz8eG6i3LnzwkAgOewKNbvGIMT6AQ460r4r4WLqcfSqdLIEEoRrh1ebywzZZiyga85ZjcclRlfLb131AATInw5mwi/OkwFvWV5U+HZWR8fvWo2nJMZn0uxbSwjW9dFhej1CvmqRIoOXTyHVdqMJjhCTy+3askCHNi7hMRvu/MIvwZPj9dlp8zpxwwkyTkI3pih+caxIBw+5W6cjspvqzpWqDIUF+LXb9QF2N4EqNF+ukeFXpJu6Q5gKoIPyP/5ZDI8r021d3yFwQXSoce/3SPGi2SJ1GMsH6R7mux0fkKE7NEigQShFKMdYtMXyuXNGV93tYv9w3JUM2FHZUJYkudObu0w5xNhD/jfUUGSztS3y1/QWAgVLz3hNzWL7M+lzT1tfK6haYUp+vFUiSQaw9w0xLtGqB4kp/Zq4oxiTnjv5wIv7TDzmtifSFvarJbvqPOsvx0MJMgFGN6Zq/yJFuGJNy4RNuUl7+lRyDWlpoDvm6BiQyUQDGinx+UnuQ5kn+hIsJf1W1CdS4R/nQksnx3/WX5qXtxuZjkFw/KYkxKIDK4fqFpCly5IS2jnxaBnMC0uN0u67ClmELFh0aFOyx3juRfUyJ8n8E5RPgz3duckuWrsIxQYfdxeXhEBIpLMS3tsIvb05XtUiMQIdJY2W2bQ44NAg9bj8nhAikxJ+bawTgRfp49hwh/hlubY7L8dCjJwwXa2i9DD7FBS8gru22qsl2KFogZV/cZd1CcIGw9Jiv60ZyY8WSnzgxE+DN818ny7bZ3bsjy08YFY7HlmBQ0dThfqmFQSgQ6aY26JJRibBtIAqB6gwEmsBIwdqYi/OkwhtoyvKLLWAslXCNwrrsvc5trt/fLUgxJ0OkfzpeWBdKWWjK8oNXGBp7kkQIdHBZJjasOYIAFsSR2OWBZ03iZipNiZff5RfjTUZXlV3bbwqQYL1NZk8uDJLGgupGJGb6Ea/zrSY4MFrTZlpBnWGS/CKTStdllN/OabGeOY0OhxwMnxHCBlKjZpCa9maot4mNDkYE2IIEmnxe384p55qpuc/fa2KnWp5WVT/mLk/7IldOAP3BtJAXvHJSvHZf94zTmWtlJ+BKePKWZPGrguxlQAsN5GhgXHb2mFFNXjrub7Z4TMkxn8tMhECE2WNBqmwIeL5ESODgiChG5421Sm7opxrjeb5GG668bKnQ12aUddlWPWdNrVnbbBa22NcOe5EJEcbIpuFL2d7tmSAIAWwAg4X6ubpslgIhjQwvb7O+9sxQbGivS4VGx+7jY2i93DMgDQ+JEXpR00onXT7rc1YJPUvBEiQ6NimvmG23RHPKCVt45APJSMf9pWSDL6G1hJeBaBRweFZWSySWcNca0boHGUmTgmuV6klszvKLLrpxn1vSZVT12aYfpynGgwEBsEGlMlolBrsm3I4bb1ElCsoltPAEiIQMA1pTBLLwsSY+tgTsvg8kt1S0ViIBA8epec+0Ccx/iksbQJO0fljsGxLZ+uWtQHh4TY0WKDUnBvoSvXJ9NntY18VJNCxFYWxweEVLAMjyB3hZrUoujUyEQAGb0tiRJFzP6xy/Jtq/THJOlSMNRMxdgYZtd0WVW95o1vWZFl+1tsW7zr7aINEqaCvHU112X+KRBKlUNjzDlcZXtar3yfbm+N6lcD5h14Xj+6AsTB57WxRMyaJlmiogIisAMy1SMUYgS79ae454WfdsKMGOyjP5x8doJub1fbusXe0/I/gnhOp0pAV/BE5fY2RGhf4K40vy1t8WmF3qmQSB2k9jTbJmTzQP9E0LQRfjgczmmQKEzx0s7zFU95upes7LbLmyzbRn2JDtrFBsaKybBizNUUgAnP5ykfW6FEKY83nbl3fNu+B2V6agueGOgeck7uq5/aPDFL4699n3pN1cJR5UH5n5V9QvaUKSTS0uBRe12RZe9a00cG4wW6dCI2DUot/XLHQPiwIgcylM5BtGlcXZu8vvHhdttx4zuJluZ/Eu/gCAVC+QqEC0hW06kx9HizJdXnuSYLFPZINIwlpTk1pCXddqV8+yaXrOqxyzrtF1NNlQA4PyXc0ynmJkZgYQpT3S/6d92XvMgs3WuiismlBky7Jj/1v8UtC0dfPGL0m8GzBl+x7T/yIr1Zdc/NQYDAgg9vrrPrFtoAJRiHM+L/UNi+4Dc1i93D4ojY2KsSNqSEuwreElTaZ5xt1e42RstUmySnputmeTNSQPpuDCGqhII0AaTZTr74SPndEw+FrTa5Z1TjqmvxTYHEAKxQWQQaSqeyTHN/EVjZhLSlMfbrrqn85oH2WqQICGZK/wBEZFjVec1D0bjh0d3fVcGLWzNeR3zdOPkiqvWUtGg4F4zQmfO9rXYt12hjcVkGcfGxWvH5bZ+uX1A7j0hBibERERuwaEzTud1dswQhMkyxTZp/9sccuU810uPVAhkmTzJOR/GQgguxVSISEy9BGd1TK782JnjJR3mqm57dZ9Z2W0Wtdn2LHsSxiIyiA3GSlR1THDvOp3BMc0QRMQm9nLdXdc9BAAkiE46p6jisBIVpuv6384fedaUJ0jIC7hK5VdV/+2e6MnOjpd22Cvn2fetjSJNI0U6NCJ2Dspt/XLngDgwIkcKVJ5BZicE8hGVYgo9GIsmn33JKR3ckZYL8wT8ivDush6RtMTm0x1TW8jLO+3KbrO6x67sNss67bwmm/EAJGYmXyYLXIxjmslgSVo90XrFL3u5bramYntOugARJRyyxst1Ny1628iOh2XQmuT5F4XqFaY5OyppFGMwSAA5n6+db25YZAAUYwxOigPDYseA3NYvdh+XR0bFWIlcCx9fwZdTmZ0AYoPYIOOxk+iVQJzOwoG0sjAhIGV1VwYZJgYmy1TW5DpULmi1K7rM6h6zpteu6DK9FcekjTMz5Ioo1ePiZVoqWmIasr3r3Z/PdkYaTestkO1dP7LjkUs8jtMicWOpYOAYKgndTXZhq3174uzo2DjtOSG39cvt/WLPCdk/ISbLghmhYiWhLQwnQ1YCQgDpnB2YjgViSIKqrDI2DG3gS37zYnP9QrOm1yzrNN3N3BwkhaLYZUylxJI7MyNT7qsybbhWyMBr6gOAczY/JEoaznlNfUIGszE/58D0SNy1DHe8jQyVp2V2i9vtii77S6tjbTFRosEJ2jcst/XLlw/LzUek67lGFXUs2aWawnymuCIxeV35pKU2F5PLpw5iMLNJhnu+2wLAbDiFlPhS3tK0oHBahHTpkZaUYRjuDbCAEOwJnjBi4z711G7PubC+lqoLS4p+reFJLswwiBODBFTeyHSGyybS+QEA4HPtzWBOKil6sp9NBBWmkdvwtP8wT7kwX7IvoSScCzs4Ik5zYVR1YU2BFSKJh4xNcRdDWjGQ5eTgBJdVurpOLuBqf+4jY2LfkHh8u++C6AVtLog2K7utC6JbpgXR2pDlKe+GS7koNrGThf6XWpbdgal4+fT02MUUAFDo33TJxfbqTmlnMASgJPsSngRODaLl7uPi9CC6I5uskIw0CQFJycugLWxqhyenpsYbRJqossDAV7DJ++TukQOJUMG55rKhHQPy1aNyhmm8seTC86niJF20cSKwFSo7eehn8bWDXq6b2Z6SxmOKPZaEjPMDE4d+KlR2ljFQ1XhZnkrjAwlPQgp2afyO09P4aTXr5uCkNN4m+/DYMtzvcbMUG0pv7XYqBBLEZU35iKSAjV3DZbYWkJVnVnnV3EwK4oyHrJ8UEsdK9OJB9dz+pJDY03JqIbE15GohUVed3TTjdMGFROnF+cETr3y577ZPgS0DFQ4lT9qxB2xB4sQrX9GF4zMsJE5dpbJKE5Xn7QqJVTPjCon7h08tJDp9zRUSQ8VZD6cw5vRrWUbW59Bja0l6PBlRZCil3VTpuDCCtpgoJwuvQokmn23Fo53h0yfzSQn2gykpwzm7J3b4TspY0HYuKUObxDjN3NkREVsjg5bRXf/Xb1nUec2/mJIy3CjYpTBEQg29+r9Hd/3fmbPndMckJfsSvgRmJmW0ZtiFku43mPMtwU7O6whYCZQsBGGyBGMrm3AvNdJyYcZitCjcjjBfoj0785VAhKlFDqc6u8jQzgG55aj89i+8mYiprhnAlLM7RyTOVvpNgy9+IZo4PG/9v1Jhe0VMJSYQkS6NHN/0V6M7N0i/+WzOa3r8O80xJfGvFBwbGi3S7sFzianN4Rkc0wXNv2V0ZNlXKEROFxOVlP7S+7E0CJS44YFxt0wCUqCn2V7U0u7zOLvRIr1wQD27T7nlHL3Npy7naM1MLeeILVl7qnGqVJ5c4AwZtIzu3DB56GfNi9+em3+j19TLVsf5gcKxFycO/sR5rukry05yTFUzQ/AqGZNbznFo5NTlHPkyqss5ZuiYZj5lltHTbCtBNA9MkGVKqYCSVhZGhMEJUVmSwj3N7n2e5T2cy9kZS4dHxd4h8cPtvltQtrDtXAvKtCWXIVayLmJmsJFBi40mR7Y/PLLjEaFCZssmcgvKnOdCQrjki26tVtXjEDCTBWXOMXHFUJ3XMV0QmNHdzK5fFjMNTIj0DnlJSwsThP4J0haCYCwtardKVF/US7b6DtOcHREHCqFXyew0be+Xm49IfuX8S1rdXCdGxRoSUoatAMCWAKjQ/Tw97nHs8SVnfXZLWvecmFrSun9IDJ28pLUpmK1jmuHcO8O2qM0aS4KgLfrH6aIWY80IaUkZnsThUTFZJiWgLRa126zPafbWO4+zG86L/nHxsz3KLarva5laVL+wzZ1pWvVrBAB22lYxto73VfYw4NhzeFR8b4u3q7Ko3pXy3KL6QHHm0jmmmcNYyvq8uN1qCyUwWaYjYynuh0nLAimB45NiKE/zW22k0dNs27N8fJJ8WRst4zRnJ9lXU87u4AjtGxaPvhQYW/z9dxdLBVKnPNxTMyw65Q+GkfX5u5v9//l4JtNkJU1lTCk5phnedmzR3cQ9zTbS8CQfHRPHJ4SX2n6YtLQwJXi8SEdGhScRG+rI8tKOOh7pRQBZJsNkGUQcKG4JONNkdw2K2JDAhb2gzG7JBO0aFNkm2xJwoNj1IjJMlqmyAbrm90mIDJZ02PYsx4Z8icOjYqxEMrUd5SkRiAShpLFjUHpyqsVEbObCsRwEEIO0hSTsOSFHiyTlBc+vlDxapD0npBDQ1mXI9SHNKfemDVb3Jk0/lMSOAVlOzqBJZWxpWaBp++GTKGRtn5FTcXT9wYAn0T8hDo8I/wJDBKfPHBoR/ROiVk55huOCFFjbl+yHNxbb+mV6ETRSJBDDV9g1KCZK5EmUY1zdZzqyc+VoXAcpOF/GzuMJCWY4y+6TvsSu4yJfRl06lZ4N2lBHlq/uM6UYnsR4iXYOCl+luKM8RQvkSxwYkfuGROhxSdPCNnvFvNRPXLsQJMeKb+tXSJb5zPTe3Ae3HZN8zuJ2jeHChivmmYWttqwp9HjfkDg4Il31K62LpvabSQmeLOOVI7JyxDi/aXESBs2FQzpQyRZ3DoiSTpbMzhDuvJEdg7KGu/3Pdy8V4f3Ni03GZ23hS7xyRE6WIekS1t5ORZorEgFBeOGAMgxBiA29ZbnOeE5VnRPTbhm+wv5hcWKS1IXE0Ury8TwdGJa+misHrrkcMOPxW5bHsSFBMIwXDqhUAyCkSiDLCD28fFgdG6NQcSEitxq6pOdCLpbAdSrZPyx9OVMqOHl4/7AcypM3Zw5cI6CkaXmXWdNrCxGFio+O0cuHVdpnCqZ7TrQv+dg4bTqkMj5ig7YMv3WFLsXn2GRYY5AglDV2DAhvxsmUS9929KebHl8QnKhXiumtK3RrhmODjI9Nh1T/OPkXXqG4IKRKIHL39vRrCm6DmMWdq+JKn545wSAXHWzrl3ZmrUlcqGEttvWLdBbYXAxcT62cz3euipNqLePp3dUlZClSPF0LZBkZH8/u9Q6PiNDjQkTXzDdr5+tiTToRzQROtts1KCfKmGG5VgpMlLH7uKzfgWunQhCKEV0zX6/tM4WIQo8PjYpn93lZP/UQLe12TxRIPjpOP92rsp7bK4m718ZxTToRzWiEgK9wZFT0j8/Ii7mNnv3j4vCo8NNMjy/gFjiRwN63Ns54iC2yHn66Rx0bpxo0NE673VOSKj+21XPHjRci3HFVvLDNlnVN25ufA0rwaIn2nJCuHn2OMXGlBr3nhHQNX+s9dsD11NK0qM3euSrOR1ACZY3HtnmqJj21Uu9Y6BZ4//ygevmwzAVc1DS/le9aE+ejmrY3PzuIAG1oW790Sss5JpySk2t4W7/QZk4cWVxpSUvvXRP3tXIpplzArxyWLx5U2Zr01KpB012ShGKM7272PQECyhr3r4s6sjZOcXnQhYwQkIK3D5xflq+K8NsHZEXXqzOI2PWLeWBdVHILqwU2bPaLcY16atWg6S4MI+fjiR3e3iGR9Tgf0VXd9q6r48lyjToLnxvOK+2dmSwvJY8WaM8JmarANPORS8JkGXetiVd220JEWY/3Doknd3o5v0YdsWvRN94t3hucEA+/7Gd8t94UD95YbsuwngNGyMXR/RPi0Plk+USEHxUDc0OEd+anPcMP3lguawDI+PytTf7ghKhB+OxQCwIlRijgDb/wDo2IjMf5iFb32A9cG42XKL3Dsy5gFojzZew+pyw/JcIPyrkgwrvtLhMluue6aHWvyUeU8fjAsPzOZr8pqF1H7FoQCJV8/siY/PpLQc5nAMUYD90S9bXYqP7pWCLLbz0mcQ5ZvirC94u5IMITcaSpr9X+1k1RISIAWZ+/uck/NlY784OaEcgZoaaAv/6S/9pxmfW5GNPSDvPhm8uT5fobIVdr2DEozy3LJyL8QP1FeGd+Jsv00M3lpZ22GFPW593H5ddf8ptraH5QMwKhEgmdyNPfPBdkPCZgvET//M3ldQv1ZJmk4DpyyMnyB84nyyvJx/PiwEidRXhmSMGTZVq3UP+zN5XHSyAg4/GXNwYn8uTV0PyglgRyRqgl5G//wn9+v2oOOTKU8fHJd5UoOcCgnm/1eWX5RIQfEnUX4d0WSEH49+8uZT1EhppDfn6/+u5mvyWsqflBLQmESl/Pssb/fDo0FkpgvEhvW6EfvLE8UhR1dWTJwLafXZZPRPgBUY7rKcI75zVSFP/izeXbluvxEnkC2uB//Dh0DVxr3I+2pgQigrHUEvAze9U3N/ltGcvAZISPvr187fw6O7JElj92Zll+mggv09plPpNBVpzXdQv0x95eniyDgdaM/cYmf+M+1Ry4rZs1HVJNCYTq4SM+/uKfwt2DMudzpKkp4D++q+hLuK2rdeGQk+V3Hz+rLC8FT5Sxq34ivPPyxpIv8UfvLeYCjgzlfN49KL/wkzAX1KhyeApqTSAAlsmXPJSnP30ylCIpZrx5if7kO4vjpQtbm3wJcW5ZPtkDNC6O1FOEZ0kYL+H331188xLtSmhE+C+PZ4bytRDez4g6EIiItaXWkP9xp/fV5wLnyEYL4rduju5fFw0VhCedEar1YzqbLF8V4V+rmwjPzkAOF8QD66PfuDEaLQgA7Rn71eeCH+9SrWHdavp1IJALPw2jOcBnnwqf269aM2wYhRiffm/x5qXxaJGUvCTHwVzYqCqyvDhFlq+K8Nv7ZT1EeGYmJXm0SDcvjT/93mIhgmG0ZvjZfepzT4ctYdV5vTEsEJLuEyQFa4tPPZodmqSMx5GmQOFz9xaWdNh8mZSoNYcqsrw8RZavivDbBkTNRXhmJiU4X6bF7faz9xR8ichQxuMTk/SHj2a1hRT1cV4O9SEQKhlZ1ufXjot//72MICiBfES9LfyF+wotIZc0ydpyyO2mPeNueSV5pEB7ay3Cs3vNSpqaQ/7L+wt9rZyPSAlIgU89mtl7QlQOzanZkE5F3QgEFwwZasvykzv9P/vHsDVjBWGiRNf0mS/en/clR7XlkNNKB06T5avHHdVWhE/YE2nyJP/l/flr+sx4iQShJeQ/fSJ8YofflmVt6qwk1pNA7jAnY9GRtV/ZGHzpmaAja0EYLdIty8zn7ysQITI15ZCT5XcNyumyfEWEr+VO+Ap7DBHhC/cVbltmRotEhI6c/V/P+n/zXNCeta4nYX013foSyE0VuaZon3ky8/DLfmfWAhgp0O1X6i/en1eCy7WzQ9Xd8gIVWb6ajm3tV7US4ZO4p6xJCf7i/fnbr9QjBQLQmbXf3OR/5smMa+ZXx9CnivoTyAXUBGQ8/OGj2e9v9TpyzMBIgd65Uv/VrxWyPheial6WLs4oyzsRfueAqI0I73KufERZn//61wrvXKlHCsRAZ85+f6v3qUezGc/VyusZ+lRRfwIhKU+TECwFfm9D7kc7VVcusUO3Ldd/+6F8X6sdKzqdOd0YtiLLy+OToirLJzvhR0TaIry7O0/yWJHmt9qv/fP8rcsrtidnf7TL++R3c0pACNd+MMWRzBxzgkBwHLLkSQbwbx/J/b+tXmfOgjBSoLV95u8ezN+wyAzlhRKcttbhCR7K0/4h4WT5iggvh/IiVRHeKRVK8FBe3LDI/N2D+at7zUiBQOjM2f+31f+dh3OW4Um2dU27TsFcIRCQCD3OzHzs27lvvex35awgjJWot9l+9UOT911fHi4IF12mxqFTd8tXRPh0d8I7lZSZhgt0/7ryVz802dNsx0okCF05+82X/Y99O8sMX6Z60u3FQGb6VtV7DFUQEVsmKZmIfrjNCzy+bbmJLZU1KYn3Xa3bsvaZvV5JU+g5d3bp30UilDV1NeGOVbFrOORL/N2LwY4BGXiXvltAYngk8hEJwn94T/H3313WjFJMnkRryH/9TPjpxzKhgkxsT4qH/VwE5hSB4BJ7ZpLESuLJnd5okd65UkuBsqbY0K3L9Y1L9KtH5YFhmfFYCKQRDVgmQbh7bUREQiDS+NKzwUhBKIFL+/Cc4QEwUhBX95q/uK9w99p4vCi0pYzHnsQf/zD8/D+FTQELqt7pHGIP5h6BgGpeRsh42LjP2zEg3rJCd+S4GFMppiUd9u61cWyw6bCKTCqmSAhyez3bsywIR8bE3zwXVM4ZvzSXmW54DNNv3lT+8w8UF3fYsaKwQGuGRwr0ie9kH3klaM+68+3nUNwzHXORQKhwCEAu4G398ke7vNU95qpuUzZUismTfOcqvX6R2TUo9w5JT8JTl5JGUmC8TLcsMyu7rRR48aD6zmbftdCePYGq1NGGxori2vnmzz9QfPDGSFsUYpICnVn7/H71r7+Ve+mQas8l9Z65yR7MWQIhORWArKVswEN58egW3/V99iRKmkoxXTHP/sraqD3D2/rl8UkRKLh2HLOebhKEfCSu6DK3LjNE+N4Wf+M+L+vxLAOgSp4FyzRaFJ05/tg7Sp++q7i8044VyTDlfPYlvrwx+IPv5UaL1Bw6pWLusgdzmUAORGwt+YoBemKHt6VfXb/QuO4W7n19ywp9xyoN8K5BOVokT5I3axoRITZoDviuq2PL+Nvn/f3DIlAXH0FXqWOYxkuU9fnXbyh/5u7iHavisqZ8TEqgPWv3Dct/993s3z4fhB58VU245jB95j6BXFhtmYg452PnoHxsqx8oXLfAZD2UYirE1JbhO1fFb79CM2jfkBguCCXgy+RxXySTiLShD1wXR5r+6pmwEJO88ADI8YYIkhAbGi+J5oDvvS7+L79cfGB9HCgeLwlmagmZCH//YvD7381uG5DtmaQv8RwMmc8wTx3r31/vMcwUzFCCI0P5CLcu05+4vXTjElPScPsycz4HCjsHxcMv+49t8w6PCk8i67n8BRdokxggbbHhtyeYce+Xm1WyZ3VG3094A7ijUosxxQYL2+xda+L710VXdduyRr6ylzRU/MIB9T+eCjfuUzkfvnRrC+s91zPG5UQgpzIKYkGYKJOvcM+10UO3lK+cZwoRFeOERqHHR0bFD7d7j27xt/XLYoxAIVQsKOk86m783BcShOGC+NIH88z4yDdyHTk7g35NDIAIArCMkqZyjIyPq3vN3Wuj96yOF7TZYkyO7hmP3V7Sr2wMNmz2I43mgC0ntnbuG54qLi8CJXDlE8sYL1FXjj94Q/TB9dGSDluMUIiJ2T0eFCJsPiof3+E9s8fbNyxKMfmKXaxdbcpUnYdTLiGJT+TFx28vMeNzT4ddOXum3k3J9wUly161pbJGpBF6WNZp3rJc37kqvna+cYMpxkSErMcZnw8My29s8r/xkn8iTy0hu7Z8l5HhmZq4y5FAqLgJSYgMTZapr8Xec130wLpoRZfVFpNl0haeRM5nJTBSoC398md71IsH1Z4TYqRIzFACrq2poKmVItW1/ETIl+mmpRrA8/tVLuBK+06gQjcXqeikWzSEQFuGV3TZNy3Wb12hr+4z7RnWFvmIYgMl0BSwEthzQnzrZX/DL/xj46I5YE+ymduJ+rlxuRLI4RQadTfbd62M77kuWr/QBAqFGKWY3EJVV9jNl3FoVLx6VG45JncOyIMjYqQgCnGyH00ShICgxKIAcOJubJLempbBDJP8QFJw1kd71i5ut6t6zNo+s7bPLGq3OR+xQTGmSIMIocdZD2WNTYfkhs3+j3Z5gxOiKWD/MqeOw+VNIIcqjWJDkxFChRsW67vWxG9boRe1WyIUI5Q0WYYSCD0OFAhc0jScJ3eu1P5hcWxMDEyIsRIVIpRiigyMJXfmsieTnroZj3M+t2V4XhP3NNulHXZRu+1tse1ZDhXcwVmlOOkUGyrO+GDGoRHxkz3qsW3eSwdVSaPJx+Vudabj9UAghyqNDKMQkbbobeZblunbV8Y3LDTzW60UiAxKMcXGbcBImnN7Ei5T0waxQWyorBFbaEuu2ZkSkIJ9hUCxEo5PSYEqtqg2qHf9dUOPfQVjcGRMbDokn9rtbdyn+idICeR8dnnZ64M6Dq8fAjk4GjkfFBkqRCBCTzOvW6hvXKKvX2iWddrWkKWoNJM3pG0STQsCkXNh7HrwUlJJcgtbyVpYJI7MfV6JqRbxxmKsRPtOiFeOyOcPqFcOq4EJYkbWhy85aaT6OqKOw+uNQFVUmQQgMlSKYRlNPha1m5Xddk2vuarbLGyz85q4KWAl3bkWSaBTDXe40saSKtyqMCyxWJMRjeTp4IjYNiC39cvdg+LgiMxHEITQg+tT8brkTRWvWwJNA6OSaRtO0my3dLU54O5mnt9qe5ttb4vtaebWDLeE3BSwJxNvxYzYQFuKNPIRFWKMFenYuDg2LvrHxbExOpEXY0Vyy818hUBBEk+rEbxOiVPBG4FA08GJOQFch+XYQBsXl4DIhTtJ1CwFJLk24TAW2pK2yc+u3CcJSkIJKMGuLVdlC8frnDTTkUrf+DkMmt5MXhCHCuRN1XUA58jIWNIW1doPAVKwEoCLjSoFI8eYurSInyN4oxFoOggVEkyDkyMqssXJrEh2igH1OIhnjuKNTKAzYkbEaLCnijm0K6OByxENAjUwKzQI1MCs0CBQA7NCg0ANzAoNAjUwKzQI1MCs0CBQA7NCg0ANzAoNAjUwKzQI1MCs0CBQA7NCg0ANzAoNAjUwKzQI1MCs0CBQA7NCg0ANzAoNAjUwKzQI1MCs0CBQA7NCg0ANzAoNAjUwKzQI1MCs0CBQA7NCg0ANzAoNAjUwK/x/Jhz60YFviLYAAAAASUVORK5CYII=";
+var ICON_512 = "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";
+var ICON_180 = "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";
+
+// server/pwa.js
+var png192 = Buffer.from(ICON_192, "base64");
+var png512 = Buffer.from(ICON_512, "base64");
+var png180 = Buffer.from(ICON_180, "base64");
+var APPS = {
+  socio: { scope: "/", name: "Bussola Residence", short: "Bussola", theme: "#12324F", bg: "#0d2137" },
+  admin: { scope: "/admin/", name: "Bussola Back Office", short: "Bussola BO", theme: "#12324F", bg: "#0d2137" },
+  chiosco: { scope: "/chiosco/", name: "Bussola Chiosco", short: "Chiosco", theme: "#12324F", bg: "#0d2137" }
+};
+function manifest(app2) {
+  return JSON.stringify({
+    name: app2.name,
+    short_name: app2.short,
+    description: "App del residence Bussola \u2014 by KOIN\xC8",
+    start_url: app2.scope,
+    scope: app2.scope,
+    id: app2.scope,
+    display: "standalone",
+    orientation: "portrait-primary",
+    background_color: app2.bg,
+    theme_color: app2.theme,
+    lang: "it",
+    icons: [
+      { src: "/pwa/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/pwa/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/pwa/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
+    ]
+  });
+}
+function sw(app2) {
+  return `const CACHE='bussola${app2.scope.replace(/\//g, "_")}v1';
+const START=${JSON.stringify(app2.scope)};
+self.addEventListener('install',e=>{self.skipWaiting();});
+self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE&&k.startsWith('bussola${app2.scope.replace(/\//g, "_")}')).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
+self.addEventListener('fetch',e=>{
+  const req=e.request; if(req.method!=='GET'){return;}
+  const url=new URL(req.url);
+  if(url.pathname.startsWith('/api/')){ e.respondWith(fetch(req).catch(()=>caches.match(req))); return; }
+  if(req.mode==='navigate'){
+    e.respondWith(fetch(req).then(r=>{const c=r.clone();caches.open(CACHE).then(x=>x.put(req,c));return r;}).catch(()=>caches.match(req).then(m=>m||caches.match(START))));
+    return;
+  }
+  e.respondWith(caches.match(req).then(r=>r||fetch(req).then(res=>{if(res&&res.ok){const c=res.clone();caches.open(CACHE).then(x=>x.put(req,c));}return res;}).catch(()=>r)));
+});`;
+}
+function pwaHead(appKey) {
+  const app2 = APPS[appKey];
+  const m = app2.scope + "manifest.webmanifest";
+  const s = app2.scope + "sw.js";
+  return `<link rel="manifest" href="${m}">
+<meta name="theme-color" content="${app2.theme}">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="${app2.short}">
+<link rel="apple-touch-icon" href="/pwa/apple-180.png">
+<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('${s}',{scope:'${app2.scope}'}).catch(function(){});});}</script>`;
+}
+function mountPwa(app2) {
+  const send = (res, type, body, sw2) => {
+    res.setHeader("Content-Type", type);
+    if (sw2) res.setHeader("Service-Worker-Allowed", "/");
+    res.send(body);
+  };
+  app2.get("/pwa/icon-192.png", (req, res) => send(res, "image/png", png192));
+  app2.get("/pwa/icon-512.png", (req, res) => send(res, "image/png", png512));
+  app2.get("/pwa/apple-180.png", (req, res) => send(res, "image/png", png180));
+  app2.get("/manifest.webmanifest", (req, res) => send(res, "application/manifest+json", manifest(APPS.socio)));
+  app2.get("/sw.js", (req, res) => send(res, "application/javascript", sw(APPS.socio), true));
+  app2.get("/admin/manifest.webmanifest", (req, res) => send(res, "application/manifest+json", manifest(APPS.admin)));
+  app2.get("/admin/sw.js", (req, res) => send(res, "application/javascript", sw(APPS.admin), true));
+  app2.get("/chiosco/manifest.webmanifest", (req, res) => send(res, "application/manifest+json", manifest(APPS.chiosco)));
+  app2.get("/chiosco/sw.js", (req, res) => send(res, "application/javascript", sw(APPS.chiosco), true));
+}
+
 // build/entry.mjs
-var BUILD = true ? "2026-08-15 20:24" : "online";
+var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
+var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
+var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
+var BUILD = true ? "2026-08-16 08:51" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
@@ -5465,13 +6080,14 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+mountPwa(app);
 app.get("/api/health", (req, res) => res.json({ ok: true, version: VERSION, build: BUILD, env: process.env.KOINE_ENV || "online", ts: (/* @__PURE__ */ new Date()).toISOString() }));
 app.use("/api/auth", authUserRouter);
 app.use("/api", publicRouter);
 app.use("/api/admin", adminRouter);
-app.get(["/", "/index.html"], (req, res) => res.type("html").send(frontend_default));
-app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => res.type("html").send(admin_default));
-app.get(["/chiosco", "/chiosco/", "/chiosco/index.html"], (req, res) => res.type("html").send(chiosco_default));
+app.get(["/", "/index.html"], (req, res) => res.type("html").send(FRONTEND));
+app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => res.type("html").send(ADMIN));
+app.get(["/chiosco", "/chiosco/", "/chiosco/index.html"], (req, res) => res.type("html").send(CHIOSCO));
 app.use((req, res) => res.status(404).json({ error: "Non trovato" }));
 app.use((err, req, res, next) => {
   console.error("Errore API:", err?.message || err);

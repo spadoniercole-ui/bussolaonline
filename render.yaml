@@ -18,3 +18,5 @@ services:
         sync: false
       - key: STAFF_PASSWORD      # password dell'account staff
         sync: false
+      - key: KOINE_ENC_KEY       # chiave di cifratura dati host (AES-256-GCM) — CRITICA: se persa, i dati host non sono recuperabili
+        sync: false
