@@ -4392,6 +4392,25 @@ adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), as
   await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='inviata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
   res.json({ ok: true });
 });
+adminRouter.post("/magazzino/distribuisci", requireCap("magazzino"), async (req, res) => {
+  const arts = await db.prepare("SELECT id,nome,zona,giacenza FROM magazzino_articoli WHERE zona IN ('bar','garden')").all();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  let distribuiti = 0, unita = 0;
+  for (const a of arts) {
+    const q = Number(a.giacenza);
+    if (!(q > 0)) continue;
+    await db.prepare("UPDATE magazzino_articoli SET giacenza=0,aggiornato_at=? WHERE id=?").run(now, a.id);
+    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(a.id, "scarico", q, "distribuzione a " + a.zona, req.adminUser.username, null);
+    const s = await ensureZonaScorta(a.id, a.zona);
+    await db.prepare("UPDATE magazzino_zona_scorte SET giacenza=?,aggiornato_at=? WHERE articolo_id=? AND zona=?").run(Number(s.giacenza) + q, now, a.id, a.zona);
+    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(a.id, "carico", q, "distribuzione dal Centrale", req.adminUser.username, a.zona);
+    distribuiti++;
+    unita += q;
+  }
+  const comune = await db.prepare("SELECT COUNT(*) AS n FROM magazzino_articoli WHERE zona='comune' AND giacenza > 0").get();
+  audit(req.adminUser.username, "distribuisci_zone", "magazzino_articoli", null, `${distribuiti} art, ${unita} pz`);
+  res.json({ ok: true, distribuiti, unita, comune_da_assegnare: Number(comune ? comune.n : 0) });
+});
 adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
   const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
   res.json(rows);
@@ -5552,7 +5571,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.50";
+var VERSION = "4.51";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9474,6 +9493,9 @@ async function magCentrale() {
     <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.5rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div>
     <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Richieste da evadere</div><div style="font-size:1.5rem;font-weight:800;color:\${richieste.length ? 'var(--gold)' : 'var(--navy)'}">\${richieste.length}</div></div></div></div>\`;
   const ricPanel = \`<div class="panel"><h3>\u{1F4E5} Richieste di carico da evadere</h3>\${richieste.length ? richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>\${x.zona === 'bar' ? '\u{1F378}' : '\u{1F33F}'} <b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} \u2192 \${esc(x.zona)}</span><div class="row"><button class="btn gold sm" data-ev="\${x.id}">\u2714 Evadi</button><button class="btn ghost sm" data-evno="\${x.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessuna richiesta in attesa.</p>'}</div>\`;
+  const distPanel = \`<div class="panel"><h3>\u{1F4E6}\u2192\u{1F378}\u{1F33F} Distribuisci alle zone</h3>
+    <p class="muted" style="font-size:.82rem">Sposta la giacenza del Centrale nel sotto-magazzino della zona di ogni articolo <b>bar</b> o <b>garden</b> (il Centrale cala, la zona sale). Utile al primo caricamento per riempire i periferici. Gli articoli <b>comune</b> restano al Centrale: assegnali con una richiesta di carico dalla zona.</p>
+    <button class="btn gold sm" id="mag_dist">Distribuisci ora</button></div>\`;
   const areeOrdine = [...new Set([...MAG_AREE.map(a => a[0]), ...(data.aree || [])])];
   const perArea = areeOrdine.map(area => {
     const arts = (data.articoli || []).filter(a => a.area === area); if (!arts.length) return '';
@@ -9494,7 +9516,13 @@ async function magCentrale() {
     <select id="ma_z"><option value="comune">\u{1F501} Comune</option><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option></select>
     <input id="ma_u" value="pz" style="width:70px"><input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
     <button class="btn gold sm" id="ma_add">+ Aggiungi</button></div></div>\`;
-  $('#view').innerHTML = magSubbar() + alert + ricPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
+  $('#view').innerHTML = magSubbar() + alert + ricPanel + distPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
+  $('#mag_dist').onclick = async () => {
+    if (!confirm('Distribuire le giacenze del Centrale ai sotto-magazzini di zona? Il Centrale degli articoli bar/garden andr\xE0 a 0 e la merce passer\xE0 alle rispettive zone.')) return;
+    const r = await api('/magazzino/distribuisci', { method: 'POST', body: '{}' });
+    alert(\`Distribuiti \${r.distribuiti} articoli (\${r.unita} pz) alle zone.\` + (r.comune_da_assegnare ? \`\\n\${r.comune_da_assegnare} articoli 'comune' restano al Centrale: assegnali con una richiesta di carico.\` : ''));
+    show('magazzino');
+  };
   document.querySelectorAll('[data-ev]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.ev + '/evadi', { method: 'POST', body: '{}' }); show('magazzino'); });
   document.querySelectorAll('[data-evno]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.evno + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
   $('#mimp_tpl').onclick = () => {
@@ -10083,7 +10111,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 09:20" : "online";
+var BUILD = true ? "2026-08-17 09:45" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
