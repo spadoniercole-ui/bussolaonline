@@ -735,7 +735,9 @@ async function migrate() {
       articolo_id   INTEGER REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
       quantita      REAL NOT NULL,
       stato         TEXT NOT NULL DEFAULT 'confermato',  -- confermato (ordinato) | ricevuto | annullato
-      data_prevista TEXT,                                 -- data stimata di riordino/consegna
+      data_invio    TEXT,                                 -- data di invio ordine al fornitore
+      data_prevista TEXT,                                 -- data stimata di consegna
+      lead_time     INTEGER,                              -- giorni di lead time applicati
       note          TEXT,
       created_at    TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at    TEXT
@@ -744,6 +746,8 @@ async function migrate() {
   `);
   } catch (_) {
   }
+  await addIfMissing("magazzino_ordini", "data_invio", "data_invio TEXT");
+  await addIfMissing("magazzino_ordini", "lead_time", "lead_time INTEGER");
   await addIfMissing("magazzino_movimenti", "zona", "zona TEXT");
   await addIfMissing("eventi", "ora_inizio", "ora_inizio TEXT");
   await addIfMissing("eventi", "tipologia", "tipologia TEXT");
@@ -4429,17 +4433,28 @@ adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), as
 async function magFinestra() {
   return Math.max(1, Number(await getSetting("mag_finestra_giorni", "14")) || 14);
 }
+async function magLead() {
+  return Math.max(0, Number(await getSetting("mag_lead_time_giorni", "3")) || 0);
+}
+function addGiorni(base, n) {
+  const d = base ? /* @__PURE__ */ new Date(base + "T00:00:00Z") : /* @__PURE__ */ new Date();
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
 adminRouter.get("/magazzino/config", requireCap("magazzino"), async (req, res) => {
-  res.json({ finestra_giorni: await magFinestra() });
+  res.json({ finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
 });
 adminRouter.post("/magazzino/config", requireCap("magazzino"), async (req, res) => {
-  const g = Math.max(1, Math.round(Number((req.body || {}).finestra_giorni) || 14));
-  await setSetting("mag_finestra_giorni", g);
-  audit(req.adminUser.username, "magazzino_config", "impostazioni", "mag_finestra_giorni", String(g));
-  res.json({ ok: true, finestra_giorni: g });
+  const b = req.body || {};
+  if (b.finestra_giorni != null) await setSetting("mag_finestra_giorni", Math.max(1, Math.round(Number(b.finestra_giorni) || 14)));
+  if (b.lead_time_giorni != null) await setSetting("mag_lead_time_giorni", Math.max(0, Math.round(Number(b.lead_time_giorni) || 0)));
+  audit(req.adminUser.username, "magazzino_config", "impostazioni", "magazzino", JSON.stringify(b));
+  res.json({ ok: true, finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
 });
 adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, res) => {
   const N = await magFinestra();
+  const LEAD = await magLead();
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
   const consumi = await db.prepare(`SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_movimenti WHERE tipo='scarico' AND created_at >= datetime('now', ?) GROUP BY articolo_id`).all("-" + N + " days");
   const cMap = {};
@@ -4472,6 +4487,9 @@ adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, re
     const fabbisogno = Math.ceil(rate * N);
     const suggerito = Math.max(0, fabbisogno - eff - inArrivo);
     const urgente = eff <= pr || giorni != null && giorni <= N;
+    let dataInvio = null;
+    if (dataRiordino != null) dataInvio = addGiorni(dataRiordino, -LEAD);
+    const daInviareOra = suggerito > 0 && (dataInvio == null ? urgente : dataInvio <= oggi2);
     return {
       articolo_id: a.id,
       nome: a.nome,
@@ -4486,13 +4504,15 @@ adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, re
       rate: Math.round(rate * 100) / 100,
       giorni_residui: giorni != null ? Math.max(0, Math.floor(giorni)) : null,
       data_riordino: dataRiordino,
+      data_invio_consigliata: dataInvio,
+      da_inviare_ora: daInviareOra,
       suggerito,
       urgente,
       senza_storico: consumo === 0
     };
   });
-  out.sort((a, b) => Number(b.urgente && b.suggerito > 0) - Number(a.urgente && a.suggerito > 0) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
-  res.json({ finestra_giorni: N, articoli: out });
+  out.sort((a, b) => Number(b.da_inviare_ora) - Number(a.da_inviare_ora) || Number(b.urgente && b.suggerito > 0) - Number(a.urgente && a.suggerito > 0) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
+  res.json({ finestra_giorni: N, lead_time_giorni: LEAD, oggi: oggi2, articoli: out });
 });
 adminRouter.post("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
@@ -4500,9 +4520,12 @@ adminRouter.post("/magazzino/ordini", requireCap("magazzino"), async (req, res) 
   if (!art) return res.status(404).json({ error: "Articolo non trovato" });
   const q = Math.abs(Number(b.quantita || 0));
   if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
-  const info = await db.prepare("INSERT INTO magazzino_ordini (articolo_id,quantita,stato,data_prevista,note) VALUES (?,?,?,?,?)").run(art.id, q, "confermato", b.data_prevista || null, b.note || null);
+  const lead = await magLead();
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const dataPrevista = b.data_prevista || addGiorni(oggi2, lead);
+  const info = await db.prepare("INSERT INTO magazzino_ordini (articolo_id,quantita,stato,data_invio,data_prevista,lead_time,note) VALUES (?,?,?,?,?,?,?)").run(art.id, q, "confermato", oggi2, dataPrevista, lead, b.note || null);
   audit(req.adminUser.username, "ordine_fornitore", "magazzino_ordini", info.lastInsertRowid, String(q));
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), data_prevista: dataPrevista });
 });
 adminRouter.get("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
   const stato = req.query.stato || "confermato";
@@ -5685,7 +5708,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.53";
+var VERSION = "4.54";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9589,16 +9612,48 @@ const magBadge = (s) => s === 'da_riordinare' ? '<span class="tag no">Da riordin
 const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
 // ===== MAGAZZINO A DUE LIVELLI (v4.48): hub Centrale / Bar / Garden =====
 let MAG_SUB = 'centrale';
-const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden' };
+const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden' };
 const magSubbar = () => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
   <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 merce unica al Centrale</span></b>
-  <div class="row">\${['centrale', 'previsione', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
+  <div class="row">\${['centrale', 'previsione', 'calendario', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
 VIEWS.magazzino = async () => {
   if (MAG_SUB === 'centrale') await magCentrale();
   else if (MAG_SUB === 'previsione') await magPrevisione();
+  else if (MAG_SUB === 'calendario') await magCalendario();
   else await magHubZona(MAG_SUB);
   document.querySelectorAll('[data-msub]').forEach(b => b.onclick = () => { MAG_SUB = b.dataset.msub; show('magazzino'); });
 };
+// Helper: formatta una data ISO (YYYY-MM-DD) in gg/mm + etichetta relativa (oggi/domani/in ritardo).
+function magDataLabel(iso, oggi) {
+  if (!iso) return '\u2014';
+  const [y, m, d] = iso.split('-'); const dd = d + '/' + m;
+  if (oggi) { if (iso < oggi) return dd + ' <span class="tag no">in ritardo</span>'; if (iso === oggi) return dd + ' <span class="tag mid">oggi</span>'; }
+  return dd;
+}
+// ---- Sub-tab CALENDARIO (Fase 3): agenda "da inviare" (previsione) + "consegne attese" (ordini) per data ----
+async function magCalendario() {
+  const prev = await api('/magazzino/previsione').catch(() => ({ articoli: [], oggi: '', lead_time_giorni: 0 }));
+  const ordini = await api('/magazzino/ordini?stato=confermato').catch(() => []);
+  const oggi = prev.oggi || new Date().toISOString().slice(0, 10);
+  const LEAD = prev.lead_time_giorni || 0;
+  // Da inviare: articoli con suggerimento > 0, raggruppati per data d'invio consigliata.
+  const daInv = (prev.articoli || []).filter(a => a.suggerito > 0 && a.data_invio_consigliata);
+  daInv.sort((a, b) => String(a.data_invio_consigliata).localeCompare(String(b.data_invio_consigliata)));
+  const gInv = {}; daInv.forEach(a => { (gInv[a.data_invio_consigliata] = gInv[a.data_invio_consigliata] || []).push(a); });
+  const invHtml = Object.keys(gInv).sort().map(dt => \`<div style="margin-bottom:8px"><div style="font-weight:800;color:\${dt <= oggi ? 'var(--coral)' : 'var(--navy)'};font-size:.85rem;margin-bottom:3px">\${magDataLabel(dt, oggi)}</div>\${gInv[dt].map(a => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span>\${magZonaBadge(a.zona)} <b>\${esc(a.nome)}</b> \xB7 ordina <b>\${esc(String(a.suggerito))}</b> \${esc(a.unita)}\${a.in_arrivo ? \` <span class="muted">(\${esc(String(a.in_arrivo))} gi\xE0 in arrivo)</span>\` : ''}</span><div class="row"><input id="cq_\${a.articolo_id}" type="number" value="\${a.suggerito}" style="width:64px"><button class="btn gold sm" data-cord="\${a.articolo_id}">\u2714 Ordina</button></div></div>\`).join('')}</div>\`).join('') || '<p class="muted">Niente da inviare nei prossimi giorni.</p>';
+  // Consegne attese: ordini confermati raggruppati per data prevista.
+  const gCon = {}; (ordini || []).forEach(o => { const k = o.data_prevista || '\u2014'; (gCon[k] = gCon[k] || []).push(o); });
+  const conHtml = Object.keys(gCon).sort().map(dt => \`<div style="margin-bottom:8px"><div style="font-weight:800;color:\${dt !== '\u2014' && dt <= oggi ? 'var(--coral)' : 'var(--navy)'};font-size:.85rem;margin-bottom:3px">\${dt === '\u2014' ? 'senza data' : magDataLabel(dt, oggi)}</div>\${gCon[dt].map(o => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span>\u{1F69A} <b>\${esc(o.nome)}</b> \xB7 \${esc(String(o.quantita))} \${esc(o.unita)}</span><div class="row"><button class="btn gold sm" data-cric="\${o.id}">\u{1F4E5} Ricevi</button><button class="btn ghost sm" data-cann="\${o.id}">Annulla</button></div></div>\`).join('')}</div>\`).join('') || '<p class="muted">Nessuna consegna in programma.</p>';
+  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\u{1F4C5} Calendario ordini <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 lead time fornitore \${LEAD} gg</span></h3>
+    <p class="muted" style="font-size:.78rem">Per far arrivare la merce in tempo, ogni proposta ha una <b>data d'invio consigliata</b> = data di riordino \u2212 lead time. Le voci in rosso sono da inviare <b>subito</b>. Le consegne attese sono gli ordini gi\xE0 inviati, in arrivo alla data prevista.</p>
+    <div class="row" style="margin-top:8px;gap:8px;align-items:center"><label class="muted" style="font-size:.8rem">Lead time fornitore (giorni)</label><input id="mag_lead" type="number" value="\${LEAD}" style="width:80px"><button class="btn ghost sm" id="mag_lead_save">Salva</button></div></div>
+    <div class="panel"><h3>\u{1F4E4} Da inviare</h3>\${invHtml}</div>
+    <div class="panel"><h3>\u{1F4E5} Consegne attese</h3>\${conHtml}</div>\`;
+  $('#mag_lead_save').onclick = async () => { await api('/magazzino/config', { method: 'POST', body: JSON.stringify({ lead_time_giorni: Number($('#mag_lead').value) || 0 }) }); show('magazzino'); };
+  document.querySelectorAll('[data-cord]').forEach(b => b.onclick = async () => { const id = b.dataset.cord; const q = Number(($('#cq_' + id) || {}).value); if (!q) { alert('Indica la quantit\xE0.'); return; } await api('/magazzino/ordini', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), quantita: q }) }); show('magazzino'); });
+  document.querySelectorAll('[data-cric]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.cric + '/ricevi', { method: 'POST', body: '{}' }); show('magazzino'); });
+  document.querySelectorAll('[data-cann]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.cann + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
+}
 // ---- Sub-tab PREVISIONE (Fase 2): ritmo di consumo \u2192 data-riordino stimata + proposta d'ordine al fornitore ----
 async function magPrevisione() {
   const data = await api('/magazzino/previsione').catch(() => ({ finestra_giorni: 14, articoli: [] }));
@@ -10258,7 +10313,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 10:53" : "online";
+var BUILD = true ? "2026-08-17 11:27" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
