@@ -729,6 +729,18 @@ async function migrate() {
       updated_at  TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_mag_ric ON magazzino_richieste(zona, stato);
+    -- Ordini di riordino al fornitore (Fase 2): proposti dalla previsione, validati dall'operatore, poi ricevuti (= carico Centrale).
+    CREATE TABLE IF NOT EXISTS magazzino_ordini (
+      id            INTEGER PRIMARY KEY,
+      articolo_id   INTEGER REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+      quantita      REAL NOT NULL,
+      stato         TEXT NOT NULL DEFAULT 'confermato',  -- confermato (ordinato) | ricevuto | annullato
+      data_prevista TEXT,                                 -- data stimata di riordino/consegna
+      note          TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_mag_ord ON magazzino_ordini(stato);
   `);
   } catch (_) {
   }
@@ -4273,10 +4285,15 @@ adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   imp.forEach((r) => {
     impMap[r.articolo_id] = Number(r.q);
   });
+  const ord = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_ordini WHERE stato='confermato' GROUP BY articolo_id").all();
+  const ordMap = {};
+  ord.forEach((r) => {
+    ordMap[r.articolo_id] = Number(r.q);
+  });
   const articoli = rows.map((a) => {
     const impegno = impMap[a.id] || 0;
     const eff = Number(a.giacenza) - impegno;
-    return { ...a, impegno, giacenza_effettiva: eff, stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso }) };
+    return { ...a, impegno, giacenza_effettiva: eff, in_arrivo: ordMap[a.id] || 0, stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso }) };
   });
   const riepilogo = {
     da_riordinare: articoli.filter((a) => a.stato === "da_riordinare").length,
@@ -4407,6 +4424,105 @@ adminRouter.get("/magazzino/richieste", requireCap("magazzino"), async (req, res
 });
 adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), async (req, res) => {
   await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='impegnata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  res.json({ ok: true });
+});
+async function magFinestra() {
+  return Math.max(1, Number(await getSetting("mag_finestra_giorni", "14")) || 14);
+}
+adminRouter.get("/magazzino/config", requireCap("magazzino"), async (req, res) => {
+  res.json({ finestra_giorni: await magFinestra() });
+});
+adminRouter.post("/magazzino/config", requireCap("magazzino"), async (req, res) => {
+  const g = Math.max(1, Math.round(Number((req.body || {}).finestra_giorni) || 14));
+  await setSetting("mag_finestra_giorni", g);
+  audit(req.adminUser.username, "magazzino_config", "impostazioni", "mag_finestra_giorni", String(g));
+  res.json({ ok: true, finestra_giorni: g });
+});
+adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, res) => {
+  const N = await magFinestra();
+  const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const consumi = await db.prepare(`SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_movimenti WHERE tipo='scarico' AND created_at >= datetime('now', ?) GROUP BY articolo_id`).all("-" + N + " days");
+  const cMap = {};
+  consumi.forEach((r) => {
+    cMap[r.articolo_id] = Number(r.q);
+  });
+  const imp = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE stato='impegnata' GROUP BY articolo_id").all();
+  const iMap = {};
+  imp.forEach((r) => {
+    iMap[r.articolo_id] = Number(r.q);
+  });
+  const ord = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_ordini WHERE stato='confermato' GROUP BY articolo_id").all();
+  const oMap = {};
+  ord.forEach((r) => {
+    oMap[r.articolo_id] = Number(r.q);
+  });
+  const out = arts.map((a) => {
+    const consumo = cMap[a.id] || 0;
+    const rate = consumo / N;
+    const eff = Number(a.giacenza) - (iMap[a.id] || 0);
+    const inArrivo = oMap[a.id] || 0;
+    const pr = Number(a.punto_riordino);
+    const giorni = rate > 0 ? (eff - pr) / rate : null;
+    let dataRiordino = null;
+    if (giorni != null) {
+      const d = /* @__PURE__ */ new Date();
+      d.setDate(d.getDate() + Math.max(0, Math.floor(giorni)));
+      dataRiordino = d.toISOString().slice(0, 10);
+    }
+    const fabbisogno = Math.ceil(rate * N);
+    const suggerito = Math.max(0, fabbisogno - eff - inArrivo);
+    const urgente = eff <= pr || giorni != null && giorni <= N;
+    return {
+      articolo_id: a.id,
+      nome: a.nome,
+      area: a.area,
+      zona: a.zona,
+      unita: a.unita,
+      giacenza: Number(a.giacenza),
+      giacenza_effettiva: eff,
+      in_arrivo: inArrivo,
+      punto_riordino: pr,
+      consumo_finestra: consumo,
+      rate: Math.round(rate * 100) / 100,
+      giorni_residui: giorni != null ? Math.max(0, Math.floor(giorni)) : null,
+      data_riordino: dataRiordino,
+      suggerito,
+      urgente,
+      senza_storico: consumo === 0
+    };
+  });
+  out.sort((a, b) => Number(b.urgente && b.suggerito > 0) - Number(a.urgente && a.suggerito > 0) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
+  res.json({ finestra_giorni: N, articoli: out });
+});
+adminRouter.post("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
+  const info = await db.prepare("INSERT INTO magazzino_ordini (articolo_id,quantita,stato,data_prevista,note) VALUES (?,?,?,?,?)").run(art.id, q, "confermato", b.data_prevista || null, b.note || null);
+  audit(req.adminUser.username, "ordine_fornitore", "magazzino_ordini", info.lastInsertRowid, String(q));
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.get("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
+  const stato = req.query.stato || "confermato";
+  const rows = await db.prepare("SELECT o.*, a.nome, a.unita FROM magazzino_ordini o JOIN magazzino_articoli a ON a.id=o.articolo_id WHERE o.stato=? ORDER BY o.data_prevista IS NULL, o.data_prevista, o.created_at DESC LIMIT 200").all(stato);
+  res.json(rows);
+});
+adminRouter.post("/magazzino/ordini/:id/ricevi", requireCap("magazzino"), async (req, res) => {
+  const o = await db.prepare("SELECT * FROM magazzino_ordini WHERE id=?").get(req.params.id);
+  if (!o || o.stato !== "confermato") return res.status(400).json({ error: "Ordine non ricevibile" });
+  const q = Number(o.quantita);
+  const art = await db.prepare("SELECT giacenza FROM magazzino_articoli WHERE id=?").get(o.articolo_id);
+  const nuova = Number(art.giacenza) + q;
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), o.articolo_id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(o.articolo_id, "carico", q, "ricezione ordine fornitore", req.adminUser.username, null);
+  await db.prepare("UPDATE magazzino_ordini SET stato='ricevuto',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), o.id);
+  audit(req.adminUser.username, "ricevi_ordine", "magazzino_ordini", o.id, String(q));
+  res.json({ ok: true, giacenza: nuova });
+});
+adminRouter.post("/magazzino/ordini/:id/annulla", requireCap("magazzino"), async (req, res) => {
+  await db.prepare("UPDATE magazzino_ordini SET stato='annullato',updated_at=? WHERE id=? AND stato='confermato'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
   res.json({ ok: true });
 });
 adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
@@ -5569,7 +5685,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.52";
+var VERSION = "4.53";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9473,13 +9589,54 @@ const magBadge = (s) => s === 'da_riordinare' ? '<span class="tag no">Da riordin
 const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
 // ===== MAGAZZINO A DUE LIVELLI (v4.48): hub Centrale / Bar / Garden =====
 let MAG_SUB = 'centrale';
+const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden' };
 const magSubbar = () => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-  <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 logistica a due livelli</span></b>
-  <div class="row">\${['centrale', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${k === 'centrale' ? '\u{1F3EC} Centrale' : k === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden'}</button>\`).join('')}</div></div></div>\`;
+  <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 merce unica al Centrale</span></b>
+  <div class="row">\${['centrale', 'previsione', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
 VIEWS.magazzino = async () => {
-  if (MAG_SUB === 'centrale') await magCentrale(); else await magHubZona(MAG_SUB);
+  if (MAG_SUB === 'centrale') await magCentrale();
+  else if (MAG_SUB === 'previsione') await magPrevisione();
+  else await magHubZona(MAG_SUB);
   document.querySelectorAll('[data-msub]').forEach(b => b.onclick = () => { MAG_SUB = b.dataset.msub; show('magazzino'); });
 };
+// ---- Sub-tab PREVISIONE (Fase 2): ritmo di consumo \u2192 data-riordino stimata + proposta d'ordine al fornitore ----
+async function magPrevisione() {
+  const data = await api('/magazzino/previsione').catch(() => ({ finestra_giorni: 14, articoli: [] }));
+  const ordini = await api('/magazzino/ordini?stato=confermato').catch(() => []);
+  const N = data.finestra_giorni || 14;
+  const arts = data.articoli || [];
+  const conStorico = arts.filter(a => !a.senza_storico);
+  const rows = conStorico.map(a => {
+    const badge = a.urgente ? '<span class="tag no">\u{1F534} riordina</span>' : (a.giorni_residui != null && a.giorni_residui <= N * 2 ? '<span class="tag mid">\u{1F7E1} presto</span>' : '<span class="tag ok">\u{1F7E2} ok</span>');
+    return \`<tr>
+      <td><b>\${esc(a.nome)}</b> \${magZonaBadge(a.zona)}</td>
+      <td style="text-align:center">\${esc(String(a.rate))}<span class="muted" style="font-size:.7rem">/gg</span></td>
+      <td style="text-align:center"><b>\${esc(String(a.giacenza_effettiva))}</b></td>
+      <td style="text-align:center;color:\${a.in_arrivo ? 'var(--teal)' : 'var(--muted)'}">\${esc(String(a.in_arrivo || 0))}</td>
+      <td style="text-align:center">\${a.giorni_residui != null ? esc(String(a.giorni_residui)) + ' gg' : '\u2014'}</td>
+      <td style="text-align:center">\${a.data_riordino ? esc(a.data_riordino) : '\u2014'}</td>
+      <td style="text-align:center">\${badge}</td>
+      <td class="row"><input id="oq_\${a.articolo_id}" type="number" value="\${a.suggerito || ''}" placeholder="q.t\xE0" style="width:70px"><button class="btn gold sm" data-ord="\${a.articolo_id}">\u2714 Ordina</button></td>
+    </tr>\`;
+  }).join('');
+  const senza = arts.filter(a => a.senza_storico).length;
+  const ordPanel = \`<div class="panel"><h3>\u{1F69A} Ordini al fornitore in corso</h3>\${ordini.length ? ordini.map(o => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(o.nome)}</b> \xB7 \${esc(String(o.quantita))} \${esc(o.unita)}\${o.data_prevista ? \` \xB7 <span class="muted">arrivo ~\${esc(o.data_prevista)}</span>\` : ''}</span><div class="row"><button class="btn gold sm" data-oric="\${o.id}">\u{1F4E5} Ricevi</button><button class="btn ghost sm" data-oann="\${o.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessun ordine in corso.</p>'}</div>\`;
+  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\u{1F52E} Previsione riordino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 finestra \${N} giorni</span></h3>
+    <p class="muted" style="font-size:.78rem">Dal ritmo di consumo degli ultimi <b>\${N} giorni</b> stimo quando la giacenza effettiva raggiunge il punto di riordino e propongo una quantit\xE0 da ordinare al fornitore (gi\xE0 al netto di ci\xF2 che \xE8 in arrivo). <b>Valida</b> l'ordine con "Ordina": la merce risulter\xE0 <b>in arrivo</b> finch\xE9 non la ricevi (che equivale a un carico del Centrale).</p>
+    <div class="row" style="margin-top:8px;gap:8px;align-items:center"><label class="muted" style="font-size:.8rem">Finestra (giorni)</label><input id="mag_fin" type="number" value="\${N}" style="width:80px"><button class="btn ghost sm" id="mag_fin_save">Salva</button></div></div>
+    <div class="panel"><table><thead><tr><th>Articolo</th><th>Ritmo</th><th>Disp.eff</th><th>In arrivo</th><th>Residui</th><th>Data riordino</th><th></th><th>Ordine fornitore</th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo con storico di consumo. Registra qualche scarico per attivare la previsione.</td></tr>'}</tbody></table>
+    \${senza ? \`<p class="muted" style="font-size:.74rem;margin-top:8px">\${senza} articoli senza consumi nella finestra non compaiono (nessun ritmo da stimare).</p>\` : ''}</div>\` + ordPanel;
+  $('#mag_fin_save').onclick = async () => { await api('/magazzino/config', { method: 'POST', body: JSON.stringify({ finestra_giorni: Number($('#mag_fin').value) || 14 }) }); show('magazzino'); };
+  document.querySelectorAll('[data-ord]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.ord; const q = Number(($('#oq_' + id) || {}).value);
+    if (!q) { alert('Indica la quantit\xE0 da ordinare.'); return; }
+    const a = conStorico.find(x => String(x.articolo_id) === String(id));
+    await api('/magazzino/ordini', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), quantita: q, data_prevista: a ? a.data_riordino : null }) });
+    show('magazzino');
+  });
+  document.querySelectorAll('[data-oric]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.oric + '/ricevi', { method: 'POST', body: '{}' }); show('magazzino'); });
+  document.querySelectorAll('[data-oann]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.oann + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
+}
 // ---- Sub-tab CENTRALE: giacenza del centro + import master + richieste da evadere ----
 async function magCentrale() {
   const data = await api('/magazzino').catch(() => ({ articoli: [], riepilogo: {}, aree: [] }));
@@ -10101,7 +10258,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 10:22" : "online";
+var BUILD = true ? "2026-08-17 10:53" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
