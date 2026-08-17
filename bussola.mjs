@@ -705,6 +705,7 @@ async function migrate() {
   await addIfMissing("comande", "punto", "punto TEXT");
   await addIfMissing("comande", "socio_id", "socio_id INTEGER");
   await addIfMissing("comande", "pronta_at", "pronta_at TEXT");
+  await addIfMissing("comande", "zona", "zona TEXT NOT NULL DEFAULT 'garden'");
   await addIfMissing("eventi", "ora_inizio", "ora_inizio TEXT");
   await addIfMissing("eventi", "tipologia", "tipologia TEXT");
   await addIfMissing("eventi", "artista", "artista TEXT");
@@ -1577,8 +1578,14 @@ async function getConfig() {
     // soglia (modalità statica): comande da smaltire
     press_max_minuti: Number(await g("so_press_max_minuti", "10")) || 10,
     // soglia (modalità tempo): attesa massima ammessa
-    press_auto: await g("so_press_auto", "0") === "1"
+    press_auto: await g("so_press_auto", "0") === "1",
     // se on: sotto pressione sospende in automatico; se off: solo avviso
+    // Mappa tavoli (Bussola Garden): numero di tavoli e soglie di colore (minuti di attesa) per box.
+    garden_tavoli: Math.max(1, Number(await g("garden_tavoli", "12")) || 12),
+    map_giallo_min: Number(await g("map_giallo_min", "5")) || 5,
+    // oltre → giallo
+    map_rosso_min: Number(await g("map_rosso_min", "10")) || 10
+    // oltre → rosso
   };
 }
 async function setConfig(patch) {
@@ -1589,7 +1596,10 @@ async function setConfig(patch) {
     press_modo: "so_press_modo",
     press_max_comande: "so_press_max_comande",
     press_max_minuti: "so_press_max_minuti",
-    press_auto: "so_press_auto"
+    press_auto: "so_press_auto",
+    garden_tavoli: "garden_tavoli",
+    map_giallo_min: "map_giallo_min",
+    map_rosso_min: "map_rosso_min"
   };
   for (const [k, key] of Object.entries(map)) {
     if (patch[k] === void 0) continue;
@@ -1676,7 +1686,7 @@ publicRouter.post("/self-order", async (req, res) => {
   const socio = chi ? await db.prepare("SELECT id FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(chi) : null;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "garden", "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
   for (const r of righeIn) {
@@ -4459,7 +4469,8 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const righe = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
   if (!righe.length) return res.status(400).json({ error: "Aggiungi almeno un articolo" });
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco"].includes(b.origine) ? b.origine : "chiosco", b.riferimento || null, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
+  const zona = b.zona === "bar" ? "bar" : "garden";
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,zona,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco", "bar"].includes(b.origine) ? b.origine : zona === "bar" ? "bar" : "tavolo", b.riferimento || null, zona, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
   for (const r of righe) {
@@ -5397,7 +5408,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.42";
+var VERSION = "4.44";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -5724,7 +5735,7 @@ window.Comanda = (function () {
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
-      .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
+      .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
       .cmd-list{columns:280px;column-gap:16px}
@@ -8782,6 +8793,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <div class="sub">Comande \xB7 Cucine \xB7 Magazzino</div>
     <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
+    <label for="zona">Zona di questa postazione</label>
+    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option></select>
     <button class="btn gold" id="loginBtn" style="width:100%;margin-top:16px">Entra</button>
     <div id="loginErr"></div>
   </div>
@@ -8795,7 +8808,9 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     </div>
     <div id="tabs">
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
-      <button data-v="kds">\u{1F5A5}\uFE0F Cucine (KDS)</button>
+      <button data-v="tavoli">\u{1F5FA}\uFE0F Tavoli</button>
+      <button data-v="bar">\u{1F378} Bar</button>
+      <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
@@ -8849,7 +8864,7 @@ window.Comanda = (function () {
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
-      .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
+      .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
       .cmd-list{columns:280px;column-gap:16px}
@@ -8956,6 +8971,8 @@ window.Comanda = (function () {
    Stesso server/API del back office, ma ambiente e login dedicati agli operatori. */
 'use strict';
 let TOKEN = null, ME = { gestore: false, caps: [] };
+// Zona della postazione (dichiarata al login): 'garden' = comande a tavolo \xB7 'bar' = comande a nome.
+let ZONA = (typeof localStorage !== 'undefined' && localStorage.getItem('bussola_zona')) || 'garden';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const eur = (n) => '\u20AC ' + Number(n || 0).toFixed(2);
@@ -8976,14 +8993,23 @@ async function login() {
     const j = await res.json(); TOKEN = j.token;
     ME = await api('/me').catch(() => ({ gestore: false, caps: [] }));
     if (!(ME.gestore || (ME.caps || []).includes('comande'))) throw new Error('Questo operatore non ha accesso alle comande');
+    ZONA = $('#zona') ? $('#zona').value : ZONA;
+    try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
-    $('#whoName').textContent = j.user.username;
+    $('#whoName').textContent = j.user.username + ' \xB7 ' + (ZONA === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden');
     // il magazzino \xE8 visibile solo a chi ha la relativa capacit\xE0
     document.querySelector('#tabs [data-v="magazzino"]').classList.toggle('hide', !(ME.gestore || (ME.caps || []).includes('magazzino')));
+    applyZona();
     show('comande');
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
+// Mostra i tab pertinenti alla zona: Garden \u2192 Tavoli (no Bar), Bar \u2192 Bar (no Tavoli).
+function applyZona() {
+  const t = document.querySelector('#tabs [data-v="tavoli"]'); if (t) t.classList.toggle('hide', ZONA !== 'garden');
+  const b = document.querySelector('#tabs [data-v="bar"]'); if (b) b.classList.toggle('hide', ZONA !== 'bar');
+  const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
+}
 
 const VIEWS = {};
 async function show(v) {
@@ -9017,36 +9043,20 @@ function pickMetodo(onPick) {
 /* ---------- COMANDE (cassa): l'operatore vede il men\xF9 ESATTAMENTE come il cliente ---------- */
 VIEWS.comande = async () => {
   const menu = (await api('/menu')).filter(m => m.attivo);
-  const comande = await api('/comande');
-  const so = await api('/self-order/stato').catch(() => ({ aperto: true, eta_min: 0 }));
+  const garden = ZONA === 'garden';
+  // Il pannello self-order (pausa/pressione/ETA/mappa) riguarda il Garden (QR al tavolo): solo l\xEC.
+  const so = garden ? await api('/self-order/stato').catch(() => ({ aperto: true, eta_min: 0, config: {} })) : null;
+  const cfg = so ? (so.config || {}) : {};
 
-  const card = (c) => {
-    const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0"><span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)}\${r.note ? \` \xB7 \${esc(r.note)}\` : ''}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
-    const [lbl, cls] = COM_STATI[c.stato] || [c.stato, ''];
-    return \`<div class="panel" style="min-width:250px;flex:1;margin:0">
-      <div class="row" style="justify-content:space-between;align-items:center"><b style="color:var(--navy)">#\${c.numero || c.id} \xB7 \${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</b><span class="tag \${cls}">\${esc(lbl)}</span></div>
-      <div style="margin-top:4px">\${canaleBadge(c)}</div>
-      <div style="margin:8px 0">\${righe}</div>
-      <div style="text-align:right;font-weight:800;margin-bottom:8px">\${eur(c.totale)}</div>
-      <div class="row">
-        \${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|in_preparazione">\u25B6 Avvia</button>\` : ''}
-        \${c.stato === 'in_preparazione' ? \`<button class="btn ghost sm" data-cs="\${c.id}|pronta">\u2714 Pronta</button>\` : ''}
-        \${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|consegnata">\u{1F6CE} Consegnata</button>\` : ''}
-        <button class="btn gold sm" data-ch="\${c.id}">\u{1F4B6} Chiudi</button>
-        <button class="btn danger sm" data-can="\${c.id}">\u2715</button>
-      </div></div>\`;
-  };
-
-  const cfg = so.config || {};
-  const etaTxt = so.eta_min > 0 ? \`attesa stimata ~\${so.eta_min} min\` : 'coda libera';
-  const bordo = !so.aperto ? 'var(--coral,#C0553F)' : (so.pressione ? 'var(--gold,#8a5a12)' : 'var(--ok,#2e6b45)');
-  const statoRiga = !so.aperto
-    ? '\u{1F534} <b>sospesi</b> (manuale) \u2014 i clienti col QR non possono ordinare'
-    : (so.sospeso_pressione ? '\u{1F7E0} <b>sospesi in automatico</b> \u2014 cucina sotto pressione' : (so.pressione ? '\u{1F7E0} <b>aperti</b> \xB7 \u26A0\uFE0F cucina sotto pressione' : '\u{1F7E2} <b>aperti</b> \xB7 cucina regolare'));
-  const pressSpieg = cfg.press_modo === 'tempo'
-    ? \`oltre \${cfg.press_max_minuti} min di attesa stimata\`
-    : \`oltre \${cfg.press_max_comande} comande da smaltire\`;
-  $('#view').innerHTML = \`
+  let soPanel = '';
+  if (garden) {
+    const etaTxt = so.eta_min > 0 ? \`attesa stimata ~\${so.eta_min} min\` : 'coda libera';
+    const bordo = !so.aperto ? 'var(--coral,#C0553F)' : (so.pressione ? 'var(--gold,#8a5a12)' : 'var(--ok,#2e6b45)');
+    const statoRiga = !so.aperto
+      ? '\u{1F534} <b>sospesi</b> (manuale) \u2014 i clienti col QR non possono ordinare'
+      : (so.sospeso_pressione ? '\u{1F7E0} <b>sospesi in automatico</b> \u2014 cucina sotto pressione' : (so.pressione ? '\u{1F7E0} <b>aperti</b> \xB7 \u26A0\uFE0F cucina sotto pressione' : '\u{1F7E2} <b>aperti</b> \xB7 cucina regolare'));
+    const pressSpieg = cfg.press_modo === 'tempo' ? \`oltre \${cfg.press_max_minuti} min di attesa stimata\` : \`oltre \${cfg.press_max_comande} comande da smaltire\`;
+    soPanel = \`
     <div class="panel" style="border-left:5px solid \${bordo}">
       <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div><b style="color:var(--navy)">\u{1F4F1} Ordini dal telefono (self-order): \${statoRiga}</b>
@@ -9070,17 +9080,25 @@ VIEWS.comande = async () => {
             <b style="color:var(--navy);font-size:.9rem">\u23F1\uFE0F Tempo stimato d'attesa</b>
             <label style="display:block;font-size:.8rem;margin-top:6px">Come si calcola
               <select id="cf_emodo"><option value="statico" \${cfg.eta_modo !== 'tempo' ? 'selected' : ''}>stima fissa (\${cfg.eta_base || 3} min + \${cfg.eta_per_item || 2}/articolo)</option><option value="tempo" \${cfg.eta_modo === 'tempo' ? 'selected' : ''}>misura tempo reale (ritmo di smaltimento)</option></select></label>
-            <p class="muted" style="font-size:.76rem;margin-top:6px">In "tempo reale" la stima usa il ritmo effettivo con cui segni le comande pronte; se i dati non bastano ricade sulla stima fissa.</p>
+          </div>
+          <div style="min-width:230px">
+            <b style="color:var(--navy);font-size:.9rem">\u{1F5FA}\uFE0F Mappa tavoli (Garden)</b>
+            <label style="display:block;font-size:.8rem;margin-top:6px">Numero tavoli <input id="cf_tav" type="number" min="1" value="\${cfg.garden_tavoli || 12}" style="width:70px"></label>
+            <label style="display:block;font-size:.8rem;margin-top:6px">Rosso dopo (min) <input id="cf_mrosso" type="number" min="1" value="\${cfg.map_rosso_min || 10}" style="width:70px"></label>
           </div>
         </div>
         <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn gold sm" id="cf_save">Salva regole</button></div>
       </div>
-    </div>
-    <div class="panel"><h3>\u{1F9FE} Nuova comanda</h3>
-      <div class="row" style="margin-bottom:8px">
-        <label>Origine <select id="co_orig"><option value="chiosco">Chiosco</option><option value="bancone">Bancone</option><option value="tavolo">Tavolo</option></select></label>
-        <input id="co_rif" placeholder="Rif. (n\xB0 tavolo / nome)" style="max-width:200px">
-      </div>
+    </div>\`;
+  }
+
+  const entry = garden
+    ? \`<label>Tavolo <input id="co_tav" type="number" min="1" inputmode="numeric" placeholder="n\xB0" style="width:100px"></label>\`
+    : \`<label>Nome cliente <input id="co_nome" placeholder="es. Mario" style="max-width:220px"></label>\`;
+
+  $('#view').innerHTML = soPanel + \`
+    <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
+      <div class="row" style="margin-bottom:8px">\${entry}</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
         <div style="flex:2;min-width:280px">
           \${menu.length ? '<div id="co_menu"></div>' : '<p class="muted">Men\xF9 vuoto. Vai su \u201CMen\xF9\u201D per caricarlo.</p>'}
@@ -9088,63 +9106,170 @@ VIEWS.comande = async () => {
         <div style="flex:1;min-width:230px" class="panel">
           <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
           <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
-          <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">Invia in cucina/bar</button>
+          <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
+          <p class="muted" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'} e in \u{1F373} <b>Cucina</b>.</p>
         </div>
-      </div></div>
-    <div class="panel"><h3>\u{1F4CB} Comande in corso <button class="btn ghost sm" id="co_ref" style="margin-left:6px">\u21BB</button></h3>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">\${comande.map(card).join('') || '<p class="muted">Nessuna comanda attiva.</p>'}</div></div>\`;
+      </div></div>\`;
 
-  // Riepilogo comanda (solo lettura): le quantit\xE0 si toccano nel men\xF9 (componente condiviso).
   const renderCart = (cart) => {
     const ids = Object.keys(cart || {});
     $('#co_cart').innerHTML = ids.length
       ? ids.map(id => { const m = menu.find(x => String(x.id) === id); return \`<div style="display:flex;gap:6px;padding:3px 0;font-size:.85rem"><span style="flex:1">\${cart[id]}\xD7 \${esc(m.nome)}</span><span style="width:60px;text-align:right">\${eur(m.prezzo * cart[id])}</span></div>\`; }).join('')
       : '<span class="muted" style="font-size:.85rem">Tocca un prodotto del men\xF9.</span>';
   };
-  // Step 0/1: carico il men\xF9 e lo rendo col componente condiviso \u2192 lo staff lo legge come il cliente.
   let CO = null;
   if (menu.length) {
-    CO = Comanda.create({
-      mount: $('#co_menu'), menu, search: true,
-      onChange: (cart, tot) => { $('#co_tot').textContent = 'Totale ' + eur(tot); renderCart(cart); }
-    });
+    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, onChange: (cart, tot) => { $('#co_tot').textContent = 'Totale ' + eur(tot); renderCart(cart); } });
     CO.focusSearch();
   } else { renderCart({}); }
   $('#co_send').onclick = async () => {
     const righe = CO ? CO.getRighe() : [];
     if (!righe.length) { alert('Aggiungi almeno un prodotto.'); return; }
-    await api('/comande', { method: 'POST', body: JSON.stringify({ origine: $('#co_orig').value, riferimento: $('#co_rif').value, righe }) });
-    show('comande');
+    let riferimento, zona, origine;
+    if (garden) { riferimento = ($('#co_tav').value || '').trim(); if (!riferimento) { alert('Indica il numero del tavolo.'); return; } zona = 'garden'; origine = 'tavolo'; }
+    else { riferimento = ($('#co_nome').value || '').trim(); if (!riferimento) { alert('Indica il nome del cliente.'); return; } zona = 'bar'; origine = 'bar'; }
+    await api('/comande', { method: 'POST', body: JSON.stringify({ origine, zona, riferimento, righe }) });
+    show('comande');   // pronto per la comanda successiva; la fotografia \xE8 nella tab Tavoli/Bar
   };
-  $('#co_ref').onclick = () => show('comande');
-  $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
-  $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
-  $('#cf_save').onclick = async () => {
-    await api('/self-order/config', { method: 'POST', body: JSON.stringify({
-      press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
-      press_auto: $('#cf_pauto').checked, eta_modo: $('#cf_emodo').value,
-    }) });
-    show('comande');
-  };
-  document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); show('comande'); });
-  document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => { await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) }); show('comande'); }));
-  document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can, { method: 'DELETE' }); show('comande'); });
+  if (garden) {
+    $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
+    $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
+    $('#cf_save').onclick = async () => {
+      await api('/self-order/config', { method: 'POST', body: JSON.stringify({
+        press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
+        press_auto: $('#cf_pauto').checked, eta_modo: $('#cf_emodo').value,
+        garden_tavoli: Number($('#cf_tav').value || 12), map_rosso_min: Number($('#cf_mrosso').value || 10),
+      }) });
+      show('comande');
+    };
+  }
 };
 
 /* ---------- KDS ---------- */
-let KDS_STAZ = '';
+// --- Helper condivisi per tabelloni (Cucina / Tavoli / Bar): stato + colore per gruppo di comande ---
+const parseTs = (s) => { if (!s) return null; const d = new Date(String(s).includes('T') ? s : String(s).replace(' ', 'T') + 'Z'); return isNaN(d.getTime()) ? null : d; };
+const ZCOL = {
+  giallo:  { bg: '#fff6e0', bd: '#c79200', tx: '#7a5c00', lb: 'in lavorazione' },
+  rosso:   { bg: '#fdecea', bd: '#d64535', tx: '#8a2a20', lb: 'in ritardo' },
+  verde:   { bg: '#e8f5ea', bd: '#3f8f4e', tx: '#245c30', lb: 'consegnato' },
+  arancio: { bg: '#fdece0', bd: '#d98a2b', tx: '#8a4b12', lb: 'libero' },
+};
+// Ciclo colore (specifica utente): giallo appena acquisita \xB7 rosso oltre soglia \xB7 verde consegnata \xB7 arancio = libero/base.
+function statoGruppo(cs, rossoMin, nowMs) {
+  const open = cs.filter(c => ['aperta', 'in_preparazione', 'pronta'].includes(c.stato));
+  const delivered = cs.filter(c => c.stato === 'consegnata');
+  if (open.length) {
+    const ts = open.map(c => parseTs(c.created_at)).filter(Boolean).map(d => d.getTime());
+    const since = ts.length ? Math.min(...ts) : null;
+    const mins = since != null ? Math.max(0, Math.round((nowMs - since) / 60000)) : null;
+    return { key: (mins != null && mins >= rossoMin) ? 'rosso' : 'giallo', since, mins, open, delivered };
+  }
+  if (delivered.length) {
+    const ts = delivered.map(c => parseTs(c.created_at)).filter(Boolean).map(d => d.getTime());
+    return { key: 'verde', since: ts.length ? Math.min(...ts) : null, mins: null, open, delivered };
+  }
+  return { key: 'arancio', since: null, mins: null, open, delivered };
+}
+const URG = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
+
+/* ---------- CUCINA: piatti da cucinare raggruppati per tavolo (Garden) / nome (Bar), per urgenza ---------- */
 VIEWS.kds = async () => {
+  const cfg = await api('/self-order/config').catch(() => ({}));
+  const rMin = Number(cfg.map_rosso_min || 10);
   const render = async () => {
-    const q = await api('/kds' + (KDS_STAZ ? '?stazione=' + KDS_STAZ : '')).catch(() => []);
-    const cards = q.map(c => {
-      const righe = c.righe.map(r => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #f0efe8"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)} <span class="muted">(\${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'})</span>\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${c.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${c.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button><span class="tag ok">pronta</span>\`}</div>\`).join('');
-      const parseTs = (s) => { if (!s) return null; const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z'); return isNaN(d.getTime()) ? null : d; };
-      const dt = parseTs(c.created_at); const mins = dt ? Math.max(0, Math.round((Date.now() - dt.getTime()) / 60000)) : null;
-      return \`<div class="panel" style="border:2px solid var(--navy);min-width:270px;flex:1;margin:0"><div class="row" style="justify-content:space-between"><b style="color:var(--navy);font-size:1.05rem">#\${c.numero || c.id} \xB7 \${esc(c.origine)}\${c.riferimento ? ' ' + esc(c.riferimento) : ''}</b>\${mins != null ? \`<span class="tag \${mins >= 10 ? 'no' : 'mid'}">\${mins}\u2032</span>\` : ''}</div><div style="margin-top:4px">\${canaleBadge(c)}</div><div style="margin-top:6px">\${righe}</div></div>\`;
-    }).join('');
-    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F5A5}\uFE0F Coda di preparazione <span style="font-weight:400;font-size:.85rem;margin-left:8px">Stazione: <select id="kds_st"><option value="">Tutte</option><option value="cucina" \${KDS_STAZ === 'cucina' ? 'selected' : ''}>\u{1F373} Cucina</option><option value="bar" \${KDS_STAZ === 'bar' ? 'selected' : ''}>\u{1F379} Bar</option></select></span> <span class="muted" style="font-size:.72rem">\xB7 auto-aggiornamento</span></h3></div><div style="display:flex;gap:12px;flex-wrap:wrap">\${cards || '<p class="muted">Nessun ordine in coda. \u{1F389}</p>'}</div>\`;
-    $('#kds_st').onchange = (e) => { KDS_STAZ = e.target.value; render(); };
+    const q = await api('/kds?stazione=cucina').catch(() => []);   // il bar non ha cucina: qui solo i piatti
+    const groups = {};
+    for (const c of q) {
+      const zona = c.zona === 'bar' ? 'bar' : 'garden';
+      const key = zona + '|' + (c.riferimento || '\u2014');
+      (groups[key] = groups[key] || { zona, rif: c.riferimento || '\u2014', comande: [] }).comande.push(c);
+    }
+    const now = Date.now();
+    const arr = Object.values(groups).map(g => ({ ...g, st: statoGruppo(g.comande, rMin, now) }));
+    arr.sort((a, b) => (URG[a.st.key] - URG[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)));
+    const card = (g) => {
+      const c = ZCOL[g.st.key];
+      const label = g.zona === 'bar' ? ('\u{1F378} ' + esc(g.rif)) : ('\u{1F37D}\uFE0F Tavolo ' + esc(g.rif));
+      const hhmm = g.st.since ? new Date(g.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+      const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #f0efe8"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button><span class="tag ok">pronta</span>\`}</div>\`).join('');
+      return \`<div class="panel" style="border:2px solid \${c.bd};background:\${c.bg};min-width:260px;flex:1 1 260px;max-width:340px;margin:0"><div class="row" style="justify-content:space-between"><b style="color:\${c.tx};font-size:1.05rem">\${label}</b>\${g.st.mins != null ? \`<span class="tag" style="background:\${c.bd};color:#fff">\${g.st.mins}\u2032</span>\` : (g.st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '')}</div><div style="font-size:.72rem;color:\${c.tx};font-weight:700">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div><div style="margin-top:6px">\${righe}</div></div>\`;
+    };
+    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F373} Cucina <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:8px">\xB7 per tavolo / nome \xB7 auto-aggiornamento</span></h3>
+      <div class="muted" style="font-size:.76rem">I piatti da cucinare, raggruppati per <b>tavolo</b> (Garden) o <b>nome</b> (Bar) e ordinati per urgenza: decidi tu quale lavorare prima, senza bloccare gli altri.</div></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">\${arr.map(card).join('') || '<p class="muted">Nessun piatto in coda. \u{1F389}</p>'}</div>\`;
     document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
+  };
+  await render();
+  window.__kdsTimer = setInterval(render, 8000);
+};
+
+/* ---------- BAR: comande a nome (prepara, consegna, incassa qui) ---------- */
+VIEWS.bar = async () => {
+  const cfg = await api('/self-order/config').catch(() => ({}));
+  const rMin = Number(cfg.map_rosso_min || 10);
+  const render = async () => {
+    const comande = (await api('/comande').catch(() => [])).filter(c => c.zona === 'bar');
+    const now = Date.now();
+    const arr = comande.map(c => ({ c, st: statoGruppo([c], rMin, now) }));
+    arr.sort((a, b) => (URG[a.st.key] - URG[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)));
+    const card = ({ c, st }) => {
+      const col = ZCOL[st.key];
+      const hhmm = st.since ? new Date(st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+      const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0"><span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)} \${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+      const actions = \`\${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|in_preparazione">\u25B6 Avvia</button>\` : ''}\${c.stato === 'in_preparazione' ? \`<button class="btn ghost sm" data-cs="\${c.id}|pronta">\u2714 Pronta</button>\` : ''}\${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|consegnata">\u{1F6CE} Consegna</button>\` : ''}<button class="btn gold sm" data-ch="\${c.id}">\u{1F4B6} Incassa</button><button class="btn danger sm" data-can="\${c.id}">\u2715</button>\`;
+      return \`<div class="panel" style="border:2px solid \${col.bd};background:\${col.bg};min-width:250px;flex:1 1 250px;max-width:340px;margin:0"><div class="row" style="justify-content:space-between"><b style="color:\${col.tx};font-size:1.05rem">\u{1F378} \${esc(c.riferimento || '\u2014')}</b>\${st.mins != null ? \`<span class="tag" style="background:\${col.bd};color:#fff">\${st.mins}\u2032</span>\` : (st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '')}</div><div style="font-size:.72rem;color:\${col.tx};font-weight:700">#\${c.numero || c.id}\${hhmm ? ' \xB7 ' + hhmm : ''}</div><div style="margin:8px 0">\${righe}</div><div style="text-align:right;font-weight:800;margin-bottom:6px">\${eur(c.totale)}</div><div class="row">\${actions}</div></div>\`;
+    };
+    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F378} Bar \xB7 comande a nome <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:8px">\xB7 auto-aggiornamento</span></h3>
+      <div class="muted" style="font-size:.76rem">Ordini del bar per nome. <b style="color:#c79200">Giallo</b> in lavorazione \xB7 <b style="color:#d64535">rosso</b> oltre \${rMin}\u2032 \xB7 <b style="color:#3f8f4e">verde</b> consegnato. L'incasso si registra qui.</div></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">\${arr.map(card).join('') || '<p class="muted">Nessuna comanda bar attiva.</p>'}</div>\`;
+    document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
+    document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => { await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) }); render(); }));
+    document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can, { method: 'DELETE' }); render(); });
+  };
+  await render();
+  window.__kdsTimer = setInterval(render, 8000);
+};
+
+/* ---------- MAPPA TAVOLI (Bussola Garden) ----------
+   Un box per tavolo, ordinato dinamicamente per urgenza. Ciclo colore:
+   arancio = libero/base \xB7 giallo = comanda acquisita \xB7 rosso = oltre soglia \xB7 verde = consegnato.
+   Un nuovo ordine sul tavolo riparte da giallo; all'incasso torna arancio. */
+VIEWS.tavoli = async () => {
+  const cfg = await api('/self-order/config').catch(() => ({}));
+  const N = Math.max(1, Number(cfg.garden_tavoli || 12));
+  const rMin = Number(cfg.map_rosso_min || 10);
+  const render = async () => {
+    const comande = (await api('/comande').catch(() => [])).filter(c => c.zona !== 'bar');   // solo Garden
+    const byTable = {};
+    for (const c of comande) {
+      const ref = String(c.riferimento || '').trim();
+      if (!/^\\d+$/.test(ref)) continue;                       // solo riferimenti numerici = tavoli Garden
+      const t = Number(ref); (byTable[t] = byTable[t] || []).push(c);
+    }
+    const now = Date.now();
+    const tables = [];
+    for (let t = 1; t <= N; t++) { const cs = byTable[t] || []; tables.push({ t, cs, st: statoGruppo(cs, rMin, now) }); }
+    const rank = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
+    tables.sort((a, b) => (rank[a.st.key] - rank[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)) || (a.t - b.t));
+    const box = (tb) => {
+      const c = ZCOL[tb.st.key];
+      const hhmm = tb.st.since ? new Date(tb.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+      const items = tb.cs.flatMap(x => x.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`);
+      const right = tb.st.mins != null ? \`<span class="tag" style="background:\${c.bd};color:#fff">\${tb.st.mins}\u2032</span>\` : (tb.st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '');
+      const pay = tb.st.key === 'verde' ? \`<button class="btn gold sm" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:8px;width:100%">\u{1F4B6} Incassa</button>\` : '';
+      return \`<div style="background:\${c.bg};border:2px solid \${c.bd};border-radius:14px;padding:10px 12px;min-width:150px;flex:1 1 150px;max-width:230px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:1.2rem;color:\${c.tx}">\u{1F37D}\uFE0F \${tb.t}</b>\${right}</div>
+        <div style="font-size:.72rem;margin-top:2px;color:\${c.tx};font-weight:700">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div>
+        \${items.length ? \`<div style="margin-top:6px;font-size:.8rem;color:#333">\${items.slice(0, 4).join('<br>')}\${items.length > 4 ? '<br>\u2026' : ''}</div>\` : ''}
+        \${pay}</div>\`;
+    };
+    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${N} tavoli \xB7 auto-aggiornamento</span></h3>
+      <div class="muted" style="font-size:.76rem">Ordine dinamico per urgenza. Colori: <b style="color:#d98a2b">arancio</b> libero \xB7 <b style="color:#c79200">giallo</b> comanda acquisita \xB7 <b style="color:#d64535">rosso</b> oltre \${rMin}\u2032 \xB7 <b style="color:#3f8f4e">verde</b> consegnato (da incassare).</div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">\${tables.map(box).join('')}</div>\`;
+    document.querySelectorAll('[data-tpay]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => {
+      for (const id of String(b.dataset.tpay).split(',').filter(Boolean)) await api('/comande/' + id + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) });
+      render();
+    }));
   };
   await render();
   window.__kdsTimer = setInterval(render, 8000);
@@ -9421,7 +9546,7 @@ window.Comanda = (function () {
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
-      .cmd-chips{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin-bottom:8px}
+      .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
       .cmd-list{columns:280px;column-gap:16px}
@@ -9696,7 +9821,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-16 17:03" : "online";
+var BUILD = true ? "2026-08-17 06:25" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
