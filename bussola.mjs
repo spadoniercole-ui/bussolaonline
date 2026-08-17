@@ -4489,6 +4489,23 @@ adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) 
   audit(req.adminUser.username, "import", "magazzino_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
   res.json({ ok: true, creati, aggiornati });
 });
+function xlsxB64(rows, sheet) {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheet);
+  return XLSX.write(wb, { type: "base64", bookType: "xlsx" });
+}
+var XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) => {
+  const arts = await db.prepare("SELECT nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso FROM magazzino_articoli ORDER BY area,nome").all();
+  const rows = arts.map((a) => ({ nome: a.nome, area: a.area, zona: a.zona, unita: a.unita, giacenza: Number(a.giacenza), riordino: Number(a.punto_riordino), preavviso: Number(a.soglia_preavviso) }));
+  res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
+});
+adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
+  const m = await db.prepare("SELECT nome,prezzo,stazione,categoria,descrizione,allergeni FROM menu_articoli ORDER BY ordine,id").all();
+  const rows = m.map((x) => ({ nome: x.nome, prezzo: Number(x.prezzo), stazione: x.stazione, categoria: x.categoria || "", descrizione: x.descrizione || "", allergeni: x.allergeni || "" }));
+  res.json({ filename: "menu.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Menu") });
+});
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
   res.json(rows);
@@ -5535,7 +5552,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.48";
+var VERSION = "4.49";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9156,6 +9173,16 @@ function applyZona() {
   const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
 }
 
+// Scarica un file (base64) restituito da un endpoint di export.
+function downloadB64(filename, mime, b64) {
+  const bin = atob(b64); const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([arr], { type: mime || 'application/octet-stream' }));
+  const a = document.createElement('a'); a.href = url; a.download = filename || 'export'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+async function esporta(path) { try { const d = await api(path); downloadB64(d.filename, d.mime, d.b64); } catch (e) { alert('Export non riuscito: ' + (e.message || '')); } }
+
 const VIEWS = {};
 async function show(v) {
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
@@ -9457,7 +9484,8 @@ async function magCentrale() {
   const areaOpts = MAG_AREE.map(a => \`<option value="\${a[0]}">\${esc(a[1])}</option>\`).join('');
   const imp = \`<div class="panel"><h3>\u2B06\uFE0F Caricamento magazzino (master) da Excel/CSV</h3>
     <p class="muted" style="font-size:.82rem;margin-bottom:8px">Un solo file alimenta il Centrale. Colonne (in qualsiasi ordine): <b>nome</b>, <b>area</b>, <b>zona</b> (<b>bar</b>/<b>garden</b>/<b>comune</b>), <b>unita</b>, <b>giacenza</b>, <b>riordino</b>, <b>preavviso</b>. La zona rende l'articolo disponibile ai sotto-magazzini Bar/Garden (comune = entrambi).</p>
-    <div class="row"><input type="file" id="mimp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="mimp_tpl">\u2193 Scarica modello CSV</button></div>
+    <div class="row"><input type="file" id="mimp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="mimp_tpl">\u2193 Scarica modello CSV</button><button class="btn ghost sm" id="mimp_exp">\u2B07\uFE0F Esporta magazzino (Excel)</button></div>
+    <p class="muted" style="font-size:.78rem;margin-top:6px">Esporta lo stato attuale in un Excel nello stesso formato: lo modifichi (anche la colonna <b>zona</b>) e lo ricarichi qui.</p>
     <div id="mimp_prev" style="margin-top:10px"></div></div>\`;
   const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3><div class="row">
     <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select>
@@ -9471,6 +9499,7 @@ async function magCentrale() {
     const csv = 'nome,area,zona,unita,giacenza,riordino,preavviso\\nBicchieri di carta,chiosco,comune,pz,300,100,150\\nBirra media,chiosco,bar,pz,60,24,40\\nSalsiccia,chiosco,garden,kg,10,3,5\\nCapsule caff\xE8,casa di carta,comune,capsule,120,50,80\\n';
     const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'modello_magazzino.csv'; a.click();
   };
+  $('#mimp_exp').onclick = () => esporta('/magazzino/export');
   const magToB64 = (f) => new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).replace(/^data:[^,]*,/, '')); rd.onerror = rej; rd.readAsDataURL(f); });
   $('#mimp_file').onchange = async (ev) => {
     const f = ev.target.files[0]; if (!f) return;
@@ -9593,7 +9622,7 @@ VIEWS.menu = async () => {
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u2B06\uFE0F Importa men\xF9 da Excel/CSV</h3>
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>prezzo</b>, <b>stazione</b> (cucina/bar), <b>categoria</b>, <b>descrizione</b>, <b>allergeni</b>. Puoi caricare un file solo-prezzi o solo-allergeni: i campi mancanti non vengono sovrascritti.</p>
-      <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button></div>
+      <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button><button class="btn ghost sm" id="menu_exp">\u2B07\uFE0F Esporta men\xF9 (Excel)</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
     <div class="panel"><h3>\u{1F5A8}\uFE0F Stampa men\xF9 (PDF)</h3>
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
@@ -9625,6 +9654,7 @@ VIEWS.menu = async () => {
   $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
 
   // template CSV
+  $('#menu_exp').onclick = () => esporta('/menu/export');
   $('#imp_tpl').onclick = () => {
     const csv = 'nome,prezzo,stazione,categoria,descrizione,allergeni\\nPanino salsiccia,4.5,cucina,panini,Salsiccia alla griglia,glutine\\nBirra media,4,bar,birre,Bionda alla spina,glutine\\nAcqua 0.5L,1,bar,bibite,Naturale,\\n';
     const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'modello_menu.csv'; a.click();
@@ -10051,7 +10081,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 08:32" : "online";
+var BUILD = true ? "2026-08-17 08:47" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
