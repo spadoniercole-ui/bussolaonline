@@ -4268,7 +4268,16 @@ adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   }
   const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
   const rows = await db.prepare(`SELECT * FROM magazzino_articoli ${where} ORDER BY area,ordine,id`).all(...args);
-  const articoli = rows.map((a) => ({ ...a, stato: magStato(a) }));
+  const imp = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE stato='impegnata' GROUP BY articolo_id").all();
+  const impMap = {};
+  imp.forEach((r) => {
+    impMap[r.articolo_id] = Number(r.q);
+  });
+  const articoli = rows.map((a) => {
+    const impegno = impMap[a.id] || 0;
+    const eff = Number(a.giacenza) - impegno;
+    return { ...a, impegno, giacenza_effettiva: eff, stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso }) };
+  });
   const riepilogo = {
     da_riordinare: articoli.filter((a) => a.stato === "da_riordinare").length,
     in_esaurimento: articoli.filter((a) => a.stato === "in_esaurimento").length,
@@ -4313,23 +4322,36 @@ adminRouter.post("/magazzino/:id/movimento", requireCap("magazzino"), async (req
   const aggiornato = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
   res.json({ ok: true, giacenza: nuova, stato: magStato(aggiornato) });
 });
-async function ensureZonaScorta(articoloId, zona) {
-  let s = await db.prepare("SELECT * FROM magazzino_zona_scorte WHERE articolo_id=? AND zona=?").get(articoloId, zona);
-  if (!s) {
-    const art = await db.prepare("SELECT punto_riordino,soglia_preavviso FROM magazzino_articoli WHERE id=?").get(articoloId);
-    await db.prepare("INSERT INTO magazzino_zona_scorte (articolo_id,zona,giacenza,punto_riordino,soglia_preavviso,aggiornato_at) VALUES (?,?,?,?,?,?)").run(articoloId, zona, 0, art ? Number(art.punto_riordino || 0) : 0, art ? Number(art.soglia_preavviso || 0) : 0, (/* @__PURE__ */ new Date()).toISOString());
-    s = await db.prepare("SELECT * FROM magazzino_zona_scorte WHERE articolo_id=? AND zona=?").get(articoloId, zona);
-  }
-  return s;
+async function impegnoTot(articoloId) {
+  const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND stato='impegnata'").get(articoloId);
+  return Number(r.q);
+}
+async function impegnoZona(articoloId, zona) {
+  const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata'").get(articoloId, zona);
+  return Number(r.q);
 }
 adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, res) => {
   const zona = req.params.zona === "bar" ? "bar" : "garden";
   const arts = await db.prepare("SELECT * FROM magazzino_articoli WHERE zona=? OR zona='comune' ORDER BY nome").all(zona);
   const out = [];
   for (const a of arts) {
-    const s = await ensureZonaScorta(a.id, zona);
-    const riordino = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='inviata'").get(a.id, zona);
-    out.push({ articolo_id: a.id, nome: a.nome, unita: a.unita, zona_art: a.zona, giacenza: Number(s.giacenza), punto_riordino: Number(s.punto_riordino), soglia_preavviso: Number(s.soglia_preavviso), in_arrivo: Number(riordino.q), stato: magStato(s) });
+    const impTot = await impegnoTot(a.id);
+    const impZona = await impegnoZona(a.id, zona);
+    const eff = Number(a.giacenza) - impTot;
+    out.push({
+      articolo_id: a.id,
+      nome: a.nome,
+      unita: a.unita,
+      zona_art: a.zona,
+      giacenza_centrale: Number(a.giacenza),
+      impegno_tot: impTot,
+      impegno_zona: impZona,
+      giacenza: eff,
+      // disponibile = giacenza effettiva (ciò che la zona può ancora usare)
+      punto_riordino: Number(a.punto_riordino),
+      soglia_preavviso: Number(a.soglia_preavviso),
+      stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso })
+    });
   }
   const riepilogo = { da_riordinare: out.filter((a) => a.stato === "da_riordinare").length, in_esaurimento: out.filter((a) => a.stato === "in_esaurimento").length, totale: out.length };
   res.json({ articoli: out, riepilogo });
@@ -4341,12 +4363,22 @@ adminRouter.post("/magazzino/zona/:zona/scarico", requireCap("magazzino"), async
   if (!art) return res.status(404).json({ error: "Articolo non trovato" });
   const q = Math.abs(Number(b.quantita || 0));
   if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
-  const s = await ensureZonaScorta(art.id, zona);
-  const nuova = Math.max(0, Number(s.giacenza) - q);
-  await db.prepare("UPDATE magazzino_zona_scorte SET giacenza=?,aggiornato_at=? WHERE articolo_id=? AND zona=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id, zona);
-  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "consumo " + zona, req.adminUser.username, zona);
-  audit(req.adminUser.username, "scarico_zona", "magazzino_zona_scorte", art.id, `${zona} -${q}`);
-  res.json({ ok: true, giacenza: nuova, stato: magStato({ ...s, giacenza: nuova }) });
+  const nuova = Math.max(0, Number(art.giacenza) - q);
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "consumo fine giornata " + zona, req.adminUser.username, zona);
+  let resto = q;
+  const aperte = await db.prepare("SELECT * FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata' ORDER BY created_at").all(art.id, zona);
+  for (const r of aperte) {
+    if (resto <= 0) break;
+    const usa = Math.min(resto, Number(r.quantita));
+    const residuo = Number(r.quantita) - usa;
+    if (residuo > 0) await db.prepare("UPDATE magazzino_richieste SET quantita=?,updated_at=? WHERE id=?").run(residuo, (/* @__PURE__ */ new Date()).toISOString(), r.id);
+    else await db.prepare("UPDATE magazzino_richieste SET stato='consumata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
+    resto -= usa;
+  }
+  audit(req.adminUser.username, "scarico_zona", "magazzino_articoli", art.id, `${zona} -${q}`);
+  const eff = nuova - await impegnoTot(art.id);
+  res.json({ ok: true, giacenza: eff, giacenza_centrale: nuova, stato: magStato({ giacenza: eff, punto_riordino: art.punto_riordino, soglia_preavviso: art.soglia_preavviso }) });
 });
 adminRouter.post("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
@@ -4355,8 +4387,8 @@ adminRouter.post("/magazzino/richieste", requireCap("magazzino"), async (req, re
   if (!art) return res.status(404).json({ error: "Articolo non trovato" });
   const q = Math.abs(Number(b.quantita || 0));
   if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
-  const info = await db.prepare("INSERT INTO magazzino_richieste (articolo_id,zona,quantita,stato,note) VALUES (?,?,?,?,?)").run(art.id, zona, q, "inviata", b.note || null);
-  audit(req.adminUser.username, "richiesta_carico", "magazzino_richieste", info.lastInsertRowid, `${zona} ${q}`);
+  const info = await db.prepare("INSERT INTO magazzino_richieste (articolo_id,zona,quantita,stato,note) VALUES (?,?,?,?,?)").run(art.id, zona, q, "impegnata", b.note || null);
+  audit(req.adminUser.username, "impegno", "magazzino_richieste", info.lastInsertRowid, `${zona} ${q}`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
 adminRouter.get("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
@@ -4368,48 +4400,14 @@ adminRouter.get("/magazzino/richieste", requireCap("magazzino"), async (req, res
   if (req.query.stato) {
     conds.push("r.stato=?");
     args.push(req.query.stato);
-  }
-  const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
+  } else conds.push("r.stato='impegnata'");
+  const where = "WHERE " + conds.join(" AND ");
   const rows = await db.prepare(`SELECT r.*, a.nome, a.unita FROM magazzino_richieste r JOIN magazzino_articoli a ON a.id=r.articolo_id ${where} ORDER BY r.created_at DESC LIMIT 200`).all(...args);
   res.json(rows);
 });
-adminRouter.post("/magazzino/richieste/:id/evadi", requireCap("magazzino"), async (req, res) => {
-  const r = await db.prepare("SELECT * FROM magazzino_richieste WHERE id=?").get(req.params.id);
-  if (!r || r.stato !== "inviata") return res.status(400).json({ error: "Richiesta non evadibile" });
-  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(r.articolo_id);
-  const q = Number(r.quantita);
-  const nuovaC = Math.max(0, Number(art.giacenza) - q);
-  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuovaC, (/* @__PURE__ */ new Date()).toISOString(), art.id);
-  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "trasferimento a " + r.zona, req.adminUser.username, null);
-  const s = await ensureZonaScorta(art.id, r.zona);
-  await db.prepare("UPDATE magazzino_zona_scorte SET giacenza=?,aggiornato_at=? WHERE articolo_id=? AND zona=?").run(Number(s.giacenza) + q, (/* @__PURE__ */ new Date()).toISOString(), art.id, r.zona);
-  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "carico", q, "da Centrale", req.adminUser.username, r.zona);
-  await db.prepare("UPDATE magazzino_richieste SET stato='evasa',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
-  audit(req.adminUser.username, "evadi_richiesta", "magazzino_richieste", r.id, `${r.zona} ${q}`);
-  res.json({ ok: true });
-});
 adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), async (req, res) => {
-  await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='inviata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='impegnata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
   res.json({ ok: true });
-});
-adminRouter.post("/magazzino/distribuisci", requireCap("magazzino"), async (req, res) => {
-  const arts = await db.prepare("SELECT id,nome,zona,giacenza FROM magazzino_articoli WHERE zona IN ('bar','garden')").all();
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  let distribuiti = 0, unita = 0;
-  for (const a of arts) {
-    const q = Number(a.giacenza);
-    if (!(q > 0)) continue;
-    await db.prepare("UPDATE magazzino_articoli SET giacenza=0,aggiornato_at=? WHERE id=?").run(now, a.id);
-    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(a.id, "scarico", q, "distribuzione a " + a.zona, req.adminUser.username, null);
-    const s = await ensureZonaScorta(a.id, a.zona);
-    await db.prepare("UPDATE magazzino_zona_scorte SET giacenza=?,aggiornato_at=? WHERE articolo_id=? AND zona=?").run(Number(s.giacenza) + q, now, a.id, a.zona);
-    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(a.id, "carico", q, "distribuzione dal Centrale", req.adminUser.username, a.zona);
-    distribuiti++;
-    unita += q;
-  }
-  const comune = await db.prepare("SELECT COUNT(*) AS n FROM magazzino_articoli WHERE zona='comune' AND giacenza > 0").get();
-  audit(req.adminUser.username, "distribuisci_zone", "magazzino_articoli", null, `${distribuiti} art, ${unita} pz`);
-  res.json({ ok: true, distribuiti, unita, comune_da_assegnare: Number(comune ? comune.n : 0) });
 });
 adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
   const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
@@ -5571,7 +5569,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.51";
+var VERSION = "4.52";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9485,25 +9483,23 @@ VIEWS.magazzino = async () => {
 // ---- Sub-tab CENTRALE: giacenza del centro + import master + richieste da evadere ----
 async function magCentrale() {
   const data = await api('/magazzino').catch(() => ({ articoli: [], riepilogo: {}, aree: [] }));
-  const richieste = await api('/magazzino/richieste?stato=inviata').catch(() => []);
+  const impegni = await api('/magazzino/richieste?stato=impegnata').catch(() => []);
   const r = data.riepilogo || {};
   const alert = \`<div class="panel"><div class="row" style="gap:10px">
     <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.5rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
     <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.5rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
     <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.5rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div>
-    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Richieste da evadere</div><div style="font-size:1.5rem;font-weight:800;color:\${richieste.length ? 'var(--gold)' : 'var(--navy)'}">\${richieste.length}</div></div></div></div>\`;
-  const ricPanel = \`<div class="panel"><h3>\u{1F4E5} Richieste di carico da evadere</h3>\${richieste.length ? richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>\${x.zona === 'bar' ? '\u{1F378}' : '\u{1F33F}'} <b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} \u2192 \${esc(x.zona)}</span><div class="row"><button class="btn gold sm" data-ev="\${x.id}">\u2714 Evadi</button><button class="btn ghost sm" data-evno="\${x.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessuna richiesta in attesa.</p>'}</div>\`;
-  const distPanel = \`<div class="panel"><h3>\u{1F4E6}\u2192\u{1F378}\u{1F33F} Distribuisci alle zone</h3>
-    <p class="muted" style="font-size:.82rem">Sposta la giacenza del Centrale nel sotto-magazzino della zona di ogni articolo <b>bar</b> o <b>garden</b> (il Centrale cala, la zona sale). Utile al primo caricamento per riempire i periferici. Gli articoli <b>comune</b> restano al Centrale: assegnali con una richiesta di carico dalla zona.</p>
-    <button class="btn gold sm" id="mag_dist">Distribuisci ora</button></div>\`;
+    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Impegni attivi</div><div style="font-size:1.5rem;font-weight:800;color:\${impegni.length ? 'var(--gold)' : 'var(--navy)'}">\${impegni.length}</div></div></div>
+    <p class="muted" style="font-size:.76rem;margin-top:8px">La merce \xE8 <b>unica</b> e sta qui al Centrale. La <b>zona</b> di un articolo \xE8 solo un'abilitazione (chi pu\xF2 usarlo). Bar e Garden non hanno scorta propria: vedono la disponibilit\xE0 in sola lettura, scaricano i consumi (che scendono da qui) e possono <b>impegnare</b> merce. <b>Giac.</b> = fisica \xB7 <b>Imp.</b> = impegnata \xB7 <b>Eff.</b> = effettiva (Giac. \u2212 Imp.), il numero che fa scattare il riordino.</p></div>\`;
+  const ricPanel = \`<div class="panel"><h3>\u{1F4CC} Impegni in corso <span class="muted" style="font-weight:400;font-size:.72rem">(merce prenotata dalle zone, non ancora consumata)</span></h3>\${impegni.length ? impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>\${x.zona === 'bar' ? '\u{1F378}' : '\u{1F33F}'} <b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} impegnati per \${esc(x.zona)}</span><button class="btn ghost sm" data-evno="\${x.id}">Rilascia</button></div>\`).join('') : '<p class="muted">Nessun impegno attivo.</p>'}</div>\`;
   const areeOrdine = [...new Set([...MAG_AREE.map(a => a[0]), ...(data.aree || [])])];
   const perArea = areeOrdine.map(area => {
     const arts = (data.articoli || []).filter(a => a.area === area); if (!arts.length) return '';
     const rows = arts.map(a => \`<tr>
-      <td><b>\${esc(a.nome)}</b></td><td>\${magZonaBadge(a.zona)}</td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td>\${magBadge(a.stato)}</td>
+      <td><b>\${esc(a.nome)}</b></td><td>\${magZonaBadge(a.zona)}</td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno || 0))}</td><td style="text-align:center"><b>\${esc(String(a.giacenza_effettiva))}</b></td><td>\${magBadge(a.stato)}</td>
       <td class="row"><input id="mq_\${a.id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn gold sm" data-mv="\${a.id}|carico">+ Carico</button><button class="btn ghost sm" data-mv="\${a.id}|scarico">\u2212 Scarico</button><button class="btn ghost sm" data-mv="\${a.id}|rettifica">= Rettifica</button></td>
     </tr>\`).join('');
-    return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3><table><thead><tr><th>Articolo</th><th>Zona</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th><th>Movimento</th></tr></thead><tbody>\${rows}</tbody></table></div>\`;
+    return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3><table><thead><tr><th>Articolo</th><th>Zona</th><th>Unit\xE0</th><th>Giac.</th><th>Imp.</th><th>Eff.</th><th>Stato</th><th>Movimento</th></tr></thead><tbody>\${rows}</tbody></table></div>\`;
   }).join('');
   const areaOpts = MAG_AREE.map(a => \`<option value="\${a[0]}">\${esc(a[1])}</option>\`).join('');
   const imp = \`<div class="panel"><h3>\u2B06\uFE0F Caricamento magazzino (master) da Excel/CSV</h3>
@@ -9516,14 +9512,7 @@ async function magCentrale() {
     <select id="ma_z"><option value="comune">\u{1F501} Comune</option><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option></select>
     <input id="ma_u" value="pz" style="width:70px"><input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
     <button class="btn gold sm" id="ma_add">+ Aggiungi</button></div></div>\`;
-  $('#view').innerHTML = magSubbar() + alert + ricPanel + distPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
-  $('#mag_dist').onclick = async () => {
-    if (!confirm('Distribuire le giacenze del Centrale ai sotto-magazzini di zona? Il Centrale degli articoli bar/garden andr\xE0 a 0 e la merce passer\xE0 alle rispettive zone.')) return;
-    const r = await api('/magazzino/distribuisci', { method: 'POST', body: '{}' });
-    alert(\`Distribuiti \${r.distribuiti} articoli (\${r.unita} pz) alle zone.\` + (r.comune_da_assegnare ? \`\\n\${r.comune_da_assegnare} articoli 'comune' restano al Centrale: assegnali con una richiesta di carico.\` : ''));
-    show('magazzino');
-  };
-  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.ev + '/evadi', { method: 'POST', body: '{}' }); show('magazzino'); });
+  $('#view').innerHTML = magSubbar() + alert + ricPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
   document.querySelectorAll('[data-evno]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.evno + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
   $('#mimp_tpl').onclick = () => {
     const csv = 'nome,area,zona,unita,giacenza,riordino,preavviso\\nBicchieri di carta,chiosco,comune,pz,300,100,150\\nBirra media,chiosco,bar,pz,60,24,40\\nSalsiccia,chiosco,garden,kg,10,3,5\\nCapsule caff\xE8,casa di carta,comune,capsule,120,50,80\\n';
@@ -9550,13 +9539,13 @@ async function magCentrale() {
 // ---- Sub-tab BAR/GARDEN nel hub: sola lettura delle giacenze di zona + richieste (con Evadi) ----
 async function magHubZona(zona) {
   const data = await api('/magazzino/zona/' + zona).catch(() => ({ articoli: [], riepilogo: {} }));
-  const richieste = await api('/magazzino/richieste?zona=' + zona + '&stato=inviata').catch(() => []);
+  const impegni = await api('/magazzino/richieste?zona=' + zona + '&stato=impegnata').catch(() => []);
   const arts = (data.articoli || []).slice().sort((a, b) => (a.stato === 'da_riordinare' ? -1 : 0));
-  const rows = arts.map(a => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td>\${magBadge(a.stato)}\${a.in_arrivo ? \` <span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F4E5} \${esc(String(a.in_arrivo))}</span>\` : ''}</td></tr>\`).join('');
-  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\${zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden'} \xB7 sotto-magazzino <span class="muted" style="font-weight:400;font-size:.72rem">(sola lettura dal Centrale)</span></h3>
-    <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th></tr></thead><tbody>\${rows || '<tr><td colspan="4" class="muted">Nessun articolo.</td></tr>'}</tbody></table></div>
-    <div class="panel"><h3>\u{1F4E5} Richieste di carico di questa zona</h3>\${richieste.length ? richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)}</span><div class="row"><button class="btn gold sm" data-ev="\${x.id}">\u2714 Evadi</button><button class="btn ghost sm" data-evno="\${x.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessuna richiesta in attesa.</p>'}</div>\`;
-  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.ev + '/evadi', { method: 'POST', body: '{}' }); show('magazzino'); });
+  const rows = arts.map(a => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td><td>\${magBadge(a.stato)}</td></tr>\`).join('');
+  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\${zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden'} \xB7 disponibilit\xE0 <span class="muted" style="font-weight:400;font-size:.72rem">(sola lettura dal Centrale \xB7 merce unica)</span></h3>
+    <p class="muted" style="font-size:.74rem"><b>Disp.</b> = giacenza effettiva del Centrale (fisica \u2212 impegni) per gli articoli abilitati a questa zona. <b>Imp.</b> = quanto ha impegnato questa zona.</p>
+    <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Disp.</th><th>Imp.</th><th>Stato</th></tr></thead><tbody>\${rows || '<tr><td colspan="5" class="muted">Nessun articolo.</td></tr>'}</tbody></table></div>
+    <div class="panel"><h3>\u{1F4CC} Impegni di questa zona</h3>\${impegni.length ? impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)}</span><button class="btn ghost sm" data-evno="\${x.id}">Rilascia</button></div>\`).join('') : '<p class="muted">Nessun impegno attivo.</p>'}</div>\`;
   document.querySelectorAll('[data-evno]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.evno + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
 }
 
@@ -9565,27 +9554,28 @@ VIEWS.scorte = async () => {
   const zona = ZONA, zonaLabel = zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden';
   const render = async () => {
     const data = await api('/magazzino/zona/' + zona).catch(() => ({ articoli: [], riepilogo: {} }));
-    const richieste = await api('/magazzino/richieste?zona=' + zona + '&stato=inviata').catch(() => []);
+    const impegni = await api('/magazzino/richieste?zona=' + zona + '&stato=impegnata').catch(() => []);
     const r = data.riepilogo || {}; const arts = data.articoli || [];
     const rank = { da_riordinare: 0, in_esaurimento: 1, ok: 2 };
     arts.sort((a, b) => (rank[a.stato] - rank[b.stato]) || String(a.nome).localeCompare(String(b.nome)));
     const rows = arts.map(a => \`<tr>
       <td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td>
-      <td>\${magBadge(a.stato)}\${a.in_arrivo ? \` <span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F4E5} \${esc(String(a.in_arrivo))} in arrivo</span>\` : ''}</td>
-      <td class="row"><input id="gq_\${a.articolo_id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn ghost sm" data-gsc="\${a.articolo_id}">\u2212 Scarico</button><button class="btn gold sm" data-grc="\${a.articolo_id}">\u{1F4E6} Richiesta</button></td>
+      <td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td>
+      <td>\${magBadge(a.stato)}</td>
+      <td class="row"><input id="gq_\${a.articolo_id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn ghost sm" data-gsc="\${a.articolo_id}">\u2212 Scarico</button><button class="btn gold sm" data-grc="\${a.articolo_id}">\u{1F4CC} Impegna</button></td>
     </tr>\`).join('');
-    const ric = richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} \u2014 in attesa</span><button class="btn ghost sm" data-gann="\${x.id}">Annulla</button></div>\`).join('');
-    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F4CA} Giacenze \xB7 \${zonaLabel} <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 sotto-magazzino della zona (+ comuni)</span></h3>
-      <p class="muted" style="font-size:.76rem">A fine servizio <b>scarica</b> le quantit\xE0 usate; quando un prodotto \xE8 sotto il riordino, invia una <b>richiesta di carico</b> al Centrale.</p>
+    const ric = impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} impegnati</span><button class="btn ghost sm" data-gann="\${x.id}">Rilascia</button></div>\`).join('');
+    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F4CA} Giacenze \xB7 \${zonaLabel} <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 merce unica al Centrale, qui in sola lettura</span></h3>
+      <p class="muted" style="font-size:.76rem">La merce \xE8 una sola, al Centrale. <b>Disp.</b> = giacenza effettiva (fisica \u2212 impegni). A fine servizio <b>scarica</b> le quantit\xE0 usate: scendono dal Centrale. Puoi <b>impegnare</b> merce per il tuo servizio: la prenoti senza spostarla (riduce la disponibilit\xE0 per l'altra zona). Lo scarico libera l'impegno corrispondente.</p>
       <div class="row" style="gap:10px;margin-top:6px">
         <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.4rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
         <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.4rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
         <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.4rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div></div></div>
-      <div class="panel"><table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th><th>Scarico / Richiesta</th></tr></thead><tbody>\${rows || '<tr><td colspan="5" class="muted">Nessun articolo per questa zona.</td></tr>'}</tbody></table></div>
-      \${richieste.length ? \`<div class="panel"><h3>\u{1F4E6} Richieste di carico inviate</h3>\${ric}</div>\` : ''}\`;
+      <div class="panel"><table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Disp.</th><th>Imp.</th><th>Stato</th><th>Scarico / Impegna</th></tr></thead><tbody>\${rows || '<tr><td colspan="6" class="muted">Nessun articolo per questa zona.</td></tr>'}</tbody></table></div>
+      \${impegni.length ? \`<div class="panel"><h3>\u{1F4CC} Impegni in corso</h3>\${ric}</div>\` : ''}\`;
     const q = (id) => Number(($('#gq_' + id) || {}).value);
     document.querySelectorAll('[data-gsc]').forEach(b => b.onclick = async () => { const id = b.dataset.gsc; if (!q(id)) { alert('Indica la quantit\xE0.'); return; } await api('/magazzino/zona/' + zona + '/scarico', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), quantita: q(id) }) }); render(); });
-    document.querySelectorAll('[data-grc]').forEach(b => b.onclick = async () => { const id = b.dataset.grc; if (!q(id)) { alert('Indica la quantit\xE0 da richiedere.'); return; } await api('/magazzino/richieste', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), zona, quantita: q(id) }) }); render(); });
+    document.querySelectorAll('[data-grc]').forEach(b => b.onclick = async () => { const id = b.dataset.grc; if (!q(id)) { alert('Indica la quantit\xE0 da impegnare.'); return; } await api('/magazzino/richieste', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), zona, quantita: q(id) }) }); render(); });
     document.querySelectorAll('[data-gann]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.gann + '/annulla', { method: 'POST', body: '{}' }); render(); });
   };
   await render();
@@ -10111,7 +10101,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 09:45" : "online";
+var BUILD = true ? "2026-08-17 10:22" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
