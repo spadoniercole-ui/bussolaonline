@@ -5822,7 +5822,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.55";
+var VERSION = "4.56";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9198,6 +9198,20 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 #login input{width:100%}
 #loginErr{color:var(--coral);font-size:.85rem;margin-top:8px;min-height:1em}
 .hide{display:none!important}
+/* board tabelloni (Tavoli / Cucina): griglia che riempie tutto lo spazio + card accattivanti */
+.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.tcard{border-radius:16px;padding:12px 14px;border:2px solid;position:relative;box-shadow:0 3px 10px rgba(18,50,79,.07);transition:transform .12s,box-shadow .12s;display:flex;flex-direction:column}
+.tcard:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(18,50,79,.13)}
+.tcard .thd{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.tcard .tnum{font-size:1.6rem;font-weight:800;line-height:1}
+.tcard .tst{font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+.tcard.libero{opacity:.7;box-shadow:none;border-style:dashed}
+.tchip{font-size:.8rem;font-weight:800;color:#fff;border-radius:20px;padding:2px 10px;white-space:nowrap}
+.split{display:flex;flex-direction:column;gap:12px;min-height:calc(100vh - 150px)}
+.split>section{flex:1;min-height:180px;display:flex;flex-direction:column}
+.split>section>.shd{display:flex;align-items:center;gap:8px;font-weight:800;color:var(--navy);margin-bottom:8px;position:sticky;top:0}
+.split>section>.board{overflow:auto;align-content:start;padding-bottom:4px}
+.split .divider{height:2px;background:repeating-linear-gradient(90deg,var(--line) 0 12px,transparent 12px 20px)}
 </style>
 </head>
 <body>
@@ -9615,6 +9629,32 @@ function statoGruppo(cs, rossoMin, nowMs) {
   return { key: 'arancio', since: null, mins: null, open, delivered };
 }
 const URG = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
+// Card TAVOLO (mappa Garden): numero grande, chip tempo, righe comanda, incasso su verde.
+function tavoloCard(tb) {
+  const c = ZCOL[tb.st.key];
+  const hhmm = tb.st.since ? new Date(tb.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+  const items = tb.cs.flatMap(x => x.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`);
+  const chip = tb.st.mins != null ? \`<span class="tchip" style="background:\${c.bd}">\${tb.st.mins}\u2032</span>\` : (tb.st.key === 'verde' ? '<span class="tchip" style="background:#3f8f4e">\u2714</span>' : '');
+  const libero = tb.st.key === 'arancio' && !tb.cs.length;
+  const pay = tb.st.key === 'verde' ? \`<button class="btn gold sm" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:8px;width:100%">\u{1F4B6} Incassa</button>\` : '';
+  return \`<div class="tcard\${libero ? ' libero' : ''}" style="border-color:\${c.bd};background:\${c.bg}">
+    <div class="thd"><span class="tnum" style="color:\${c.tx}">\u{1F37D}\uFE0F \${tb.t}</span>\${chip}</div>
+    <div class="tst" style="color:\${c.tx}">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div>
+    \${items.length ? \`<div style="margin-top:8px;font-size:.82rem;color:#2a2a2a;line-height:1.45">\${items.slice(0, 6).join('<br>')}\${items.length > 6 ? '<br>\u2026' : ''}</div>\` : (libero ? '<div class="muted" style="margin-top:8px;font-size:.78rem">\u2014 libero \u2014</div>' : '')}
+    \${pay}</div>\`;
+}
+// Card CUCINA (per tavolo/nome): righe piatti con azioni Pronta/Consegna.
+function cucinaCard(g) {
+  const c = ZCOL[g.st.key];
+  const label = g.zona === 'bar' ? ('\u{1F378} ' + esc(g.rif)) : ('\u{1F37D}\uFE0F ' + esc(g.rif));
+  const hhmm = g.st.since ? new Date(g.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+  const chip = g.st.mins != null ? \`<span class="tchip" style="background:\${c.bd}">\${g.st.mins}\u2032</span>\` : (g.st.key === 'verde' ? '<span class="tchip" style="background:#3f8f4e">\u2714</span>' : '');
+  const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button>\`}</div>\`).join('');
+  return \`<div class="tcard" style="border-color:\${c.bd};background:\${c.bg}">
+    <div class="thd"><span style="font-size:1.15rem;font-weight:800;color:\${c.tx}">\${label}</span>\${chip}</div>
+    <div class="tst" style="color:\${c.tx}">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div>
+    <div style="margin-top:6px">\${righe}</div></div>\`;
+}
 
 /* ---------- CUCINA: piatti da cucinare raggruppati per tavolo (Garden) / nome (Bar), per urgenza ---------- */
 VIEWS.kds = async () => {
@@ -9629,18 +9669,22 @@ VIEWS.kds = async () => {
       (groups[key] = groups[key] || { zona, rif: c.riferimento || '\u2014', comande: [] }).comande.push(c);
     }
     const now = Date.now();
-    const arr = Object.values(groups).map(g => ({ ...g, st: statoGruppo(g.comande, rMin, now) }));
-    arr.sort((a, b) => (URG[a.st.key] - URG[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)));
-    const card = (g) => {
-      const c = ZCOL[g.st.key];
-      const label = g.zona === 'bar' ? ('\u{1F378} ' + esc(g.rif)) : ('\u{1F37D}\uFE0F Tavolo ' + esc(g.rif));
-      const hhmm = g.st.since ? new Date(g.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-      const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #f0efe8"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button><span class="tag ok">pronta</span>\`}</div>\`).join('');
-      return \`<div class="panel" style="border:2px solid \${c.bd};background:\${c.bg};min-width:260px;flex:1 1 260px;max-width:340px;margin:0"><div class="row" style="justify-content:space-between"><b style="color:\${c.tx};font-size:1.05rem">\${label}</b>\${g.st.mins != null ? \`<span class="tag" style="background:\${c.bd};color:#fff">\${g.st.mins}\u2032</span>\` : (g.st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '')}</div><div style="font-size:.72rem;color:\${c.tx};font-weight:700">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div><div style="margin-top:6px">\${righe}</div></div>\`;
-    };
-    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F373} Cucina <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:8px">\xB7 per tavolo / nome \xB7 auto-aggiornamento</span></h3>
-      <div class="muted" style="font-size:.76rem">I piatti da cucinare, raggruppati per <b>tavolo</b> (Garden) o <b>nome</b> (Bar) e ordinati per urgenza: decidi tu quale lavorare prima, senza bloccare gli altri.</div></div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">\${arr.map(card).join('') || '<p class="muted">Nessun piatto in coda. \u{1F389}</p>'}</div>\`;
+    const all = Object.values(groups).map(g => ({ ...g, st: statoGruppo(g.comande, rMin, now) }));
+    const byUrg = (a, b) => (URG[a.st.key] - URG[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity));
+    const bar = all.filter(g => g.zona === 'bar').sort(byUrg);
+    const garden = all.filter(g => g.zona === 'garden').sort(byUrg);
+    // Board diviso a met\xE0: sopra il Bar (a nome), sotto i Tavoli Garden \u2014 stesso ciclo colore.
+    $('#view').innerHTML = \`<div class="split">
+      <section>
+        <div class="shd">\u{1F378} Bar <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 a nome \xB7 \${bar.length} in coda</span></div>
+        <div class="board">\${bar.map(cucinaCard).join('') || '<p class="muted">Nessuna comanda bar da cucinare. \u{1F389}</p>'}</div>
+      </section>
+      <div class="divider"></div>
+      <section>
+        <div class="shd">\u{1F37D}\uFE0F Tavoli \xB7 Garden <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 a tavolo \xB7 \u{1F7E8}\u2192\u{1F7E5} oltre \${rMin}\u2032 \xB7 \${garden.length} in coda</span></div>
+        <div class="board">\${garden.map(cucinaCard).join('') || '<p class="muted">Nessuna comanda tavolo da cucinare. \u{1F389}</p>'}</div>
+      </section>
+    </div>\`;
     document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
   };
   await render();
@@ -9695,21 +9739,9 @@ VIEWS.tavoli = async () => {
     for (let t = 1; t <= N; t++) { const cs = byTable[t] || []; tables.push({ t, cs, st: statoGruppo(cs, rMin, now) }); }
     const rank = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
     tables.sort((a, b) => (rank[a.st.key] - rank[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)) || (a.t - b.t));
-    const box = (tb) => {
-      const c = ZCOL[tb.st.key];
-      const hhmm = tb.st.since ? new Date(tb.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-      const items = tb.cs.flatMap(x => x.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`);
-      const right = tb.st.mins != null ? \`<span class="tag" style="background:\${c.bd};color:#fff">\${tb.st.mins}\u2032</span>\` : (tb.st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '');
-      const pay = tb.st.key === 'verde' ? \`<button class="btn gold sm" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:8px;width:100%">\u{1F4B6} Incassa</button>\` : '';
-      return \`<div style="background:\${c.bg};border:2px solid \${c.bd};border-radius:14px;padding:10px 12px;min-width:150px;flex:1 1 150px;max-width:230px">
-        <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:1.2rem;color:\${c.tx}">\u{1F37D}\uFE0F \${tb.t}</b>\${right}</div>
-        <div style="font-size:.72rem;margin-top:2px;color:\${c.tx};font-weight:700">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div>
-        \${items.length ? \`<div style="margin-top:6px;font-size:.8rem;color:#333">\${items.slice(0, 4).join('<br>')}\${items.length > 4 ? '<br>\u2026' : ''}</div>\` : ''}
-        \${pay}</div>\`;
-    };
-    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${N} tavoli \xB7 auto-aggiornamento</span></h3>
-      <div class="muted" style="font-size:.76rem">Ordine dinamico per urgenza. Colori: <b style="color:#d98a2b">arancio</b> libero \xB7 <b style="color:#c79200">giallo</b> comanda acquisita \xB7 <b style="color:#d64535">rosso</b> oltre \${rMin}\u2032 \xB7 <b style="color:#3f8f4e">verde</b> consegnato (da incassare).</div></div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">\${tables.map(box).join('')}</div>\`;
+    $('#view').innerHTML = \`<div class="panel" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 style="margin:0">\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${N} tavoli \xB7 auto-aggiornamento</span></h3>
+      <div class="muted" style="font-size:.74rem">\u{1F7E7} libero \xB7 \u{1F7E8} acquisita \xB7 \u{1F7E5} oltre \${rMin}\u2032 \xB7 \u{1F7E9} consegnato</div></div></div>
+      <div class="board">\${tables.map(tavoloCard).join('')}</div>\`;
     document.querySelectorAll('[data-tpay]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => {
       for (const id of String(b.dataset.tpay).split(',').filter(Boolean)) await api('/comande/' + id + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) });
       render();
@@ -10463,7 +10495,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 12:12" : "online";
+var BUILD = true ? "2026-08-17 13:09" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
