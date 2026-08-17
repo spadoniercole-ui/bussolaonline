@@ -743,6 +743,20 @@ async function migrate() {
       updated_at    TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_mag_ord ON magazzino_ordini(stato);
+    -- Quadratura mensile (Fase 4): snapshot di fine mese per articolo (flussi + giacenza iniziale/finale).
+    CREATE TABLE IF NOT EXISTS magazzino_quadrature (
+      mese              TEXT NOT NULL,                 -- YYYY-MM
+      articolo_id       INTEGER REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+      giacenza_iniziale REAL,                          -- = finale del mese precedente (null se non disponibile)
+      giacenza_finale   REAL NOT NULL,                 -- giacenza reale al momento della chiusura
+      carico            REAL NOT NULL DEFAULT 0,
+      scarico           REAL NOT NULL DEFAULT 0,
+      scarico_bar       REAL NOT NULL DEFAULT 0,
+      scarico_garden    REAL NOT NULL DEFAULT 0,
+      scarico_centrale  REAL NOT NULL DEFAULT 0,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (mese, articolo_id)
+    );
   `);
   } catch (_) {
   }
@@ -4548,6 +4562,106 @@ adminRouter.post("/magazzino/ordini/:id/annulla", requireCap("magazzino"), async
   await db.prepare("UPDATE magazzino_ordini SET stato='annullato',updated_at=? WHERE id=? AND stato='confermato'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
   res.json({ ok: true });
 });
+function meseCorrente() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+}
+function mesePrecedente(mese) {
+  const [y, m] = mese.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return d.toISOString().slice(0, 7);
+}
+async function flussiMese(mese) {
+  const rows = await db.prepare(`SELECT articolo_id,
+      COALESCE(SUM(CASE WHEN tipo='carico' THEN quantita END),0) carico,
+      COALESCE(SUM(CASE WHEN tipo='scarico' THEN quantita END),0) scarico,
+      COALESCE(SUM(CASE WHEN tipo='scarico' AND zona='bar' THEN quantita END),0) scarico_bar,
+      COALESCE(SUM(CASE WHEN tipo='scarico' AND zona='garden' THEN quantita END),0) scarico_garden,
+      COALESCE(SUM(CASE WHEN tipo='scarico' AND (zona IS NULL OR zona NOT IN ('bar','garden')) THEN quantita END),0) scarico_centrale
+    FROM magazzino_movimenti WHERE strftime('%Y-%m', created_at)=? GROUP BY articolo_id`).all(mese);
+  const map = {};
+  rows.forEach((r) => {
+    map[r.articolo_id] = r;
+  });
+  return map;
+}
+async function chiudiMese(mese) {
+  const prev = mesePrecedente(mese);
+  const flussi = await flussiMese(mese);
+  const prevClose = {};
+  (await db.prepare("SELECT articolo_id, giacenza_finale FROM magazzino_quadrature WHERE mese=?").all(prev)).forEach((r) => {
+    prevClose[r.articolo_id] = Number(r.giacenza_finale);
+  });
+  const arts = await db.prepare("SELECT id, giacenza FROM magazzino_articoli").all();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  for (const a of arts) {
+    const f = flussi[a.id] || { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scarico_centrale: 0 };
+    const iniziale = a.id in prevClose ? prevClose[a.id] : null;
+    await db.prepare("INSERT OR REPLACE INTO magazzino_quadrature (mese,articolo_id,giacenza_iniziale,giacenza_finale,carico,scarico,scarico_bar,scarico_garden,scarico_centrale,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(mese, a.id, iniziale, Number(a.giacenza), Number(f.carico), Number(f.scarico), Number(f.scarico_bar), Number(f.scarico_garden), Number(f.scarico_centrale), now);
+  }
+  return arts.length;
+}
+async function magAutoChiusura() {
+  try {
+    const oggi2 = /* @__PURE__ */ new Date();
+    const prev = mesePrecedente(meseCorrente());
+    const marker = await getSetting("mag_ultima_chiusura_auto", "");
+    if (marker === prev) return;
+    if (oggi2.getUTCDate() > 4) return;
+    const has = await db.prepare("SELECT 1 FROM magazzino_movimenti WHERE strftime('%Y-%m',created_at)=? LIMIT 1").get(prev);
+    if (!has) return;
+    const closed = await db.prepare("SELECT 1 FROM magazzino_quadrature WHERE mese=? LIMIT 1").get(prev);
+    if (closed) {
+      await setSetting("mag_ultima_chiusura_auto", prev);
+      return;
+    }
+    await chiudiMese(prev);
+    await setSetting("mag_ultima_chiusura_auto", prev);
+  } catch (_) {
+  }
+}
+adminRouter.get("/magazzino/quadratura", requireCap("magazzino"), async (req, res) => {
+  await magAutoChiusura();
+  const mese = /^\d{4}-\d{2}$/.test(req.query.mese || "") ? req.query.mese : meseCorrente();
+  const chiuso = await db.prepare("SELECT * FROM magazzino_quadrature WHERE mese=?").all(mese);
+  const chiusaMap = {};
+  chiuso.forEach((r) => {
+    chiusaMap[r.articolo_id] = r;
+  });
+  const prevClose = {};
+  (await db.prepare("SELECT articolo_id, giacenza_finale FROM magazzino_quadrature WHERE mese=?").all(mesePrecedente(mese))).forEach((r) => {
+    prevClose[r.articolo_id] = Number(r.giacenza_finale);
+  });
+  const flussi = await flussiMese(mese);
+  const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const out = [];
+  for (const a of arts) {
+    const c = chiusaMap[a.id];
+    const f = flussi[a.id] || { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scarico_centrale: 0 };
+    const carico = c ? Number(c.carico) : Number(f.carico);
+    const scarico = c ? Number(c.scarico) : Number(f.scarico);
+    const scarico_bar = c ? Number(c.scarico_bar) : Number(f.scarico_bar);
+    const scarico_garden = c ? Number(c.scarico_garden) : Number(f.scarico_garden);
+    const scarico_centrale = c ? Number(c.scarico_centrale) : Number(f.scarico_centrale);
+    const iniziale = c ? c.giacenza_iniziale != null ? Number(c.giacenza_iniziale) : null : a.id in prevClose ? prevClose[a.id] : null;
+    const finale = c ? Number(c.giacenza_finale) : Number(a.giacenza);
+    if (!carico && !scarico && !Number(a.giacenza) && iniziale == null) continue;
+    const atteso = iniziale != null ? iniziale + carico - scarico : null;
+    const scostamento = atteso != null ? Math.round((finale - atteso) * 100) / 100 : null;
+    out.push({ articolo_id: a.id, nome: a.nome, zona: a.zona, unita: a.unita, giacenza_iniziale: iniziale, carico, scarico, scarico_bar, scarico_garden, scarico_centrale, giacenza_finale: finale, atteso, scostamento });
+  }
+  const tot = out.reduce((t, r) => ({ carico: t.carico + r.carico, scarico: t.scarico + r.scarico, scarico_bar: t.scarico_bar + r.scarico_bar, scarico_garden: t.scarico_garden + r.scarico_garden, scostamenti: t.scostamenti + (r.scostamento ? 1 : 0) }), { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scostamenti: 0 });
+  const mesiMov = (await db.prepare("SELECT DISTINCT strftime('%Y-%m', created_at) m FROM magazzino_movimenti ORDER BY m DESC").all()).map((r) => r.m).filter(Boolean);
+  const mesiChiusi = (await db.prepare("SELECT DISTINCT mese m FROM magazzino_quadrature ORDER BY m DESC").all()).map((r) => r.m);
+  const mesi = [.../* @__PURE__ */ new Set([meseCorrente(), ...mesiMov, ...mesiChiusi])].sort().reverse();
+  res.json({ mese, chiusa: chiuso.length > 0, articoli: out, totali: tot, mesi });
+});
+adminRouter.post("/magazzino/quadratura/chiudi", requireCap("magazzino"), async (req, res) => {
+  const mese = /^\d{4}-\d{2}$/.test((req.body || {}).mese || "") ? req.body.mese : meseCorrente();
+  const n = await chiudiMese(mese);
+  audit(req.adminUser.username, "chiudi_mese", "magazzino_quadrature", mese, String(n));
+  res.json({ ok: true, mese, articoli: n });
+});
 adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
   const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
   res.json(rows);
@@ -5708,7 +5822,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.54";
+var VERSION = "4.55";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9612,17 +9726,50 @@ const magBadge = (s) => s === 'da_riordinare' ? '<span class="tag no">Da riordin
 const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
 // ===== MAGAZZINO A DUE LIVELLI (v4.48): hub Centrale / Bar / Garden =====
 let MAG_SUB = 'centrale';
-const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden' };
+const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', quadratura: '\u{1F4CA} Quadratura', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden' };
 const magSubbar = () => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
   <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 merce unica al Centrale</span></b>
-  <div class="row">\${['centrale', 'previsione', 'calendario', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
+  <div class="row">\${['centrale', 'previsione', 'calendario', 'quadratura', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
 VIEWS.magazzino = async () => {
   if (MAG_SUB === 'centrale') await magCentrale();
   else if (MAG_SUB === 'previsione') await magPrevisione();
   else if (MAG_SUB === 'calendario') await magCalendario();
+  else if (MAG_SUB === 'quadratura') await magQuadratura();
   else await magHubZona(MAG_SUB);
   document.querySelectorAll('[data-msub]').forEach(b => b.onclick = () => { MAG_SUB = b.dataset.msub; show('magazzino'); });
 };
+// ---- Sub-tab QUADRATURA (Fase 4): report mensile flussi + consumi per zona + riconciliazione ----
+let MAG_MESE = '';
+async function magQuadratura() {
+  const q = MAG_MESE ? '?mese=' + MAG_MESE : '';
+  const data = await api('/magazzino/quadratura' + q).catch(() => ({ mese: '', articoli: [], totali: {}, mesi: [], chiusa: false }));
+  MAG_MESE = data.mese || MAG_MESE;
+  const t = data.totali || {};
+  const scEl = (v) => v == null ? '<span class="muted">\u2014</span>' : (v === 0 ? '<span class="tag ok">0</span>' : \`<span class="tag no">\${esc(String(v > 0 ? '+' + v : v))}</span>\`);
+  const rows = (data.articoli || []).map(a => \`<tr>
+    <td><b>\${esc(a.nome)}</b> \${magZonaBadge(a.zona)}</td>
+    <td style="text-align:center">\${a.giacenza_iniziale == null ? '\u2014' : esc(String(a.giacenza_iniziale))}</td>
+    <td style="text-align:center;color:\${a.carico ? 'var(--teal)' : 'var(--muted)'}">\${esc(String(a.carico))}</td>
+    <td style="text-align:center;color:\${a.scarico ? 'var(--coral)' : 'var(--muted)'}">\${esc(String(a.scarico))}</td>
+    <td style="text-align:center" class="muted">\${esc(String(a.scarico_bar))} / \${esc(String(a.scarico_garden))}</td>
+    <td style="text-align:center"><b>\${esc(String(a.giacenza_finale))}</b></td>
+    <td style="text-align:center">\${a.atteso == null ? '\u2014' : esc(String(a.atteso))}</td>
+    <td style="text-align:center">\${scEl(a.scostamento)}</td>
+  </tr>\`).join('');
+  const mesiOpts = (data.mesi || [data.mese]).map(m => \`<option value="\${m}" \${m === data.mese ? 'selected' : ''}>\${esc(m)}</option>\`).join('');
+  $('#view').innerHTML = magSubbar() + \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <h3 style="margin:0">\u{1F4CA} Quadratura mensile \${data.chiusa ? '<span class="tag ok">chiusa</span>' : '<span class="tag mid">in corso</span>'}</h3>
+      <div class="row"><label class="muted" style="font-size:.8rem">Mese</label><select id="mag_mese">\${mesiOpts}</select><button class="btn ghost sm" id="mag_chiudi">\u{1F512} Chiudi mese</button></div></div>
+    <p class="muted" style="font-size:.78rem;margin-top:6px">Flussi del mese per articolo e <b>consumi per zona</b> (bar/garden). <b>Atteso</b> = iniziale + carichi \u2212 scarichi; lo <b>scostamento</b> vs la giacenza reale evidenzia rettifiche/cali/anomalie (0 = quadra). L'iniziale c'\xE8 dal mese successivo alla prima chiusura. A fine mese la chiusura \xE8 automatica; puoi anche chiudere qui.</p>
+    <div class="row" style="gap:10px;margin-top:8px">
+      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Carichi</div><div style="font-size:1.3rem;font-weight:800;color:var(--teal)">\${t.carico || 0}</div></div>
+      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Consumo \u{1F378} Bar</div><div style="font-size:1.3rem;font-weight:800;color:var(--navy)">\${t.scarico_bar || 0}</div></div>
+      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Consumo \u{1F33F} Garden</div><div style="font-size:1.3rem;font-weight:800;color:var(--navy)">\${t.scarico_garden || 0}</div></div>
+      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Scostamenti</div><div style="font-size:1.3rem;font-weight:800;color:\${t.scostamenti ? 'var(--coral)' : 'var(--navy)'}">\${t.scostamenti || 0}</div></div></div></div>
+    <div class="panel"><table><thead><tr><th>Articolo</th><th>Iniz.</th><th>Carico</th><th>Scarico</th><th>bar/garden</th><th>Finale</th><th>Atteso</th><th>Scost.</th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun movimento nel mese.</td></tr>'}</tbody></table></div>\`;
+  $('#mag_mese').onchange = (e) => { MAG_MESE = e.target.value; show('magazzino'); };
+  $('#mag_chiudi').onclick = async () => { if (!confirm('Chiudere il mese ' + data.mese + '? Registra la giacenza attuale come giacenza di fine mese (base per la riconciliazione del mese successivo).')) return; await api('/magazzino/quadratura/chiudi', { method: 'POST', body: JSON.stringify({ mese: data.mese }) }); show('magazzino'); };
+}
 // Helper: formatta una data ISO (YYYY-MM-DD) in gg/mm + etichetta relativa (oggi/domani/in ritardo).
 function magDataLabel(iso, oggi) {
   if (!iso) return '\u2014';
@@ -9662,7 +9809,10 @@ async function magPrevisione() {
   const arts = data.articoli || [];
   const conStorico = arts.filter(a => !a.senza_storico);
   const rows = conStorico.map(a => {
-    const badge = a.urgente ? '<span class="tag no">\u{1F534} riordina</span>' : (a.giorni_residui != null && a.giorni_residui <= N * 2 ? '<span class="tag mid">\u{1F7E1} presto</span>' : '<span class="tag ok">\u{1F7E2} ok</span>');
+    // \u{1F534} solo se c'\xE8 davvero da ordinare (urgente E suggerito > 0); \u{1F7E1} attenzione se urgente ma gi\xE0 coperto o in avvicinamento; \u{1F7E2} ok.
+    const badge = (a.urgente && a.suggerito > 0) ? '<span class="tag no">\u{1F534} riordina</span>'
+      : (a.urgente || (a.giorni_residui != null && a.giorni_residui <= N * 2)) ? '<span class="tag mid">\u{1F7E1} attenzione</span>'
+      : '<span class="tag ok">\u{1F7E2} ok</span>';
     return \`<tr>
       <td><b>\${esc(a.nome)}</b> \${magZonaBadge(a.zona)}</td>
       <td style="text-align:center">\${esc(String(a.rate))}<span class="muted" style="font-size:.7rem">/gg</span></td>
@@ -10313,7 +10463,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 11:27" : "online";
+var BUILD = true ? "2026-08-17 12:12" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
