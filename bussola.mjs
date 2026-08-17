@@ -5408,7 +5408,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.44";
+var VERSION = "4.45";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9332,7 +9332,7 @@ VIEWS.magazzino = async () => {
 /* ---------- MEN\xD9 (config + import Excel/CSV) ---------- */
 let IMPORT_B64 = null;
 // Men\xF9 stampabile (PDF via "Salva come PDF" del browser) con logo, punto vendita, categorie, composizione, allergeni.
-function stampaMenuPDF(menu, punto) {
+function stampaMenuPDF(menu, punto, qr) {
   const attivi = (menu || []).filter(m => m.attivo);
   // Stesso raggruppamento e ordine della comanda: un solo vettore, niente "scalini" tra PDF e ordini.
   const catOf = (window.Comanda && Comanda.catOf) ? Comanda.catOf : (m => m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'));
@@ -9363,9 +9363,13 @@ function stampaMenuPDF(menu, punto) {
     .desc{font-size:.85rem;color:#333;font-family:Arial,sans-serif;margin-top:2px}
     .alg{font-size:.75rem;color:#8a6d1f;font-style:italic;font-family:Arial,sans-serif}
     footer{margin-top:20px;border-top:1px solid #e6ddc7;padding-top:8px;font-size:.72rem;color:#777;font-family:Arial,sans-serif}
+    .qr{margin-top:24px;text-align:center;break-inside:avoid}
+    .qr svg{width:132px;height:132px}
+    .qrcap{font-size:.9rem;color:#12324F;font-family:Arial,sans-serif;margin-top:6px;font-weight:bold}
   </style></head><body>
     <header>\${logo}<div class="t"><h1>BUSSOLA RESIDENCE</h1><div class="sub">by KOIN\xC8</div></div><div class="punto">\${esc(punto)}</div></header>
     \${sezioni || '<p>Nessun articolo attivo.</p>'}
+    \${qr && qr.svg ? \`<div class="qr">\${qr.svg}<div class="qrcap">\${esc(qr.caption || '')}</div></div>\` : ''}
     <footer>Allergeni indicati secondo Reg. UE 1169/2011. Men\xF9 generato dall'app Bussola Chiosco.</footer>
     <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
   </body></html>\`);
@@ -9389,8 +9393,8 @@ VIEWS.menu = async () => {
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
     <div class="panel"><h3>\u{1F5A8}\uFE0F Stampa men\xF9 (PDF)</h3>
-      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, il punto vendita, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento.</p>
-      <div class="row"><label>Punto <select id="menu_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label><input id="menu_punto_x" placeholder="oppure scrivi il punto\u2026" style="min-width:180px"><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
+      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
+      <div class="row"><span class="muted" style="font-size:.85rem">Punto: <b>\${ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden'}</b> (dalla zona della postazione)</span><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
       <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
       <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button></div></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
@@ -9401,7 +9405,20 @@ VIEWS.menu = async () => {
   document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
   $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
-  $('#menu_pdf').onclick = () => { const punto = ($('#menu_punto_x').value || '').trim() || $('#menu_punto').value; stampaMenuPDF(menu, punto); };
+  $('#menu_pdf').onclick = async () => {
+    const punto = ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden';
+    let qr = null;
+    try {
+      if (ZONA === 'bar') {
+        const d = await api('/pwa-qr'); const soci = (d.items || []).find(x => x.scope === 'soci');
+        if (soci) qr = { svg: soci.svg, caption: '\u{1F4F2} Inquadra per l\u2019app Bussola' };
+      } else {
+        const d = await api('/qr-ordina?punto=' + encodeURIComponent(punto)); // senza tavolo: /ordina chieder\xE0 il numero
+        qr = { svg: d.svg, caption: '\u{1F4F1} Inquadra e ordina dal tuo tavolo' };
+      }
+    } catch (_) {}
+    stampaMenuPDF(menu, punto, qr);
+  };
   $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
 
   // template CSV
@@ -9681,6 +9698,13 @@ async function load() {
     return;
   }
   const eta = etaLabel(stato.eta_min);
+  // Se il QR \xE8 quello generico del men\xF9 (senza tavolo), chiediamo il numero del tavolo.
+  if (!TAVOLO) {
+    let tb = document.getElementById('so_tav_box');
+    if (!tb) { tb = document.createElement('div'); tb.id = 'so_tav_box'; const m = document.getElementById('menu'); m.parentNode.insertBefore(tb, m); }
+    tb.style.cssText = 'border-radius:12px;padding:12px 14px;margin:0 0 12px;background:#fff6e0;border:1px solid #e7cf8a;color:#7a5c00;font-size:.95rem';
+    tb.innerHTML = '\u{1F37D}\uFE0F <b>A che tavolo sei?</b><br><input id="so_tav" type="number" min="1" inputmode="numeric" placeholder="Numero del tavolo" style="margin-top:8px;padding:9px 11px;border:1.5px solid #cbd2d8;border-radius:10px;font-size:1rem;width:180px">';
+  }
   if (eta) setBanner('\u23F1\uFE0F Attesa stimata al momento: <b>' + eta + '</b>', 'eta');
   let menu;
   try { menu = await (await fetch('/api/menu')).json(); }
@@ -9697,9 +9721,12 @@ async function load() {
 document.getElementById('send').onclick = async () => {
   const righe = COM ? COM.getRighe() : [];
   if (!righe.length) return;
+  const tavInput = document.getElementById('so_tav');
+  const tavolo = TAVOLO || (tavInput ? tavInput.value.trim() : '');
+  if (!tavolo) { alert('Indica il numero del tavolo per inviare l\u2019ordine.'); if (tavInput) tavInput.focus(); return; }
   document.getElementById('send').disabled = true;
   let r;
-  try { r = await (await fetch('/api/self-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ punto: PUNTO, tavolo: TAVOLO, righe }) })).json(); }
+  try { r = await (await fetch('/api/self-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ punto: PUNTO, tavolo, righe }) })).json(); }
   catch (e) { alert('Invio non riuscito, riprova.'); document.getElementById('send').disabled = false; return; }
   if (!r.ok) { alert(r.error || 'Ordini momentaneamente non disponibili.'); document.getElementById('send').disabled = false; return; }
   document.getElementById('okn').textContent = '#' + r.numero;
@@ -9821,7 +9848,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 06:25" : "online";
+var BUILD = true ? "2026-08-17 07:14" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
