@@ -5408,7 +5408,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.45";
+var VERSION = "4.46";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8794,7 +8794,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
     <label for="zona">Zona di questa postazione</label>
-    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option></select>
+    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option><option value="cucina">\u{1F373} Cucina \u2014 ai fornelli</option></select>
+    <div class="sub" style="margin-top:4px">Potrai cambiarla al volo dalla barra in alto, senza rifare l'accesso.</div>
     <button class="btn gold" id="loginBtn" style="width:100%;margin-top:16px">Entra</button>
     <div id="loginErr"></div>
   </div>
@@ -8804,7 +8805,12 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
   <div id="top">
     <div class="row" style="justify-content:space-between">
       <span class="brand">\u{1F354} Bussola Chiosco</span>
-      <span class="who"><span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
+      <span class="who" style="display:flex;align-items:center;gap:8px">
+        <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Zona
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option></select>
+        </label>
+        <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
+      </span>
     </div>
     <div id="tabs">
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
@@ -8993,22 +8999,32 @@ async function login() {
     const j = await res.json(); TOKEN = j.token;
     ME = await api('/me').catch(() => ({ gestore: false, caps: [] }));
     if (!(ME.gestore || (ME.caps || []).includes('comande'))) throw new Error('Questo operatore non ha accesso alle comande');
-    ZONA = $('#zona') ? $('#zona').value : ZONA;
-    try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
-    $('#whoName').textContent = j.user.username + ' \xB7 ' + (ZONA === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden');
+    $('#whoName').textContent = j.user.username;
     // il magazzino \xE8 visibile solo a chi ha la relativa capacit\xE0
     document.querySelector('#tabs [data-v="magazzino"]').classList.toggle('hide', !(ME.gestore || (ME.caps || []).includes('magazzino')));
-    applyZona();
-    show('comande');
+    const zs = $('#zonaSwitch'); if (zs && !zs.__wired) { zs.__wired = true; zs.onchange = () => setZona(zs.value); }
+    setZona($('#zona') ? $('#zona').value : ZONA);   // dichiara la zona iniziale e mostra la vista giusta
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
-// Mostra i tab pertinenti alla zona: Garden \u2192 Tavoli (no Bar), Bar \u2192 Bar (no Tavoli).
+// Cambio zona AL VOLO (stessa persona, stesse autorizzazioni): non serve rifare il login.
+function setZona(z) {
+  ZONA = ['garden', 'bar', 'cucina'].includes(z) ? z : 'garden';
+  try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
+  applyZona();
+  show(ZONA === 'cucina' ? 'kds' : 'comande');   // il cuoco parte dalla Cucina, gli altri dalla presa comanda
+}
+// Mostra solo i tab pertinenti alla zona corrente:
+//  Garden \u2192 Comande + Tavoli \xB7 Bar \u2192 Comande + Bar \xB7 Cucina \u2192 Cucina (il cuoco non prende comande).
 function applyZona() {
-  const t = document.querySelector('#tabs [data-v="tavoli"]'); if (t) t.classList.toggle('hide', ZONA !== 'garden');
-  const b = document.querySelector('#tabs [data-v="bar"]'); if (b) b.classList.toggle('hide', ZONA !== 'bar');
+  const tog = (v, show) => { const el = document.querySelector('#tabs [data-v="' + v + '"]'); if (el) el.classList.toggle('hide', !show); };
+  tog('comande', ZONA !== 'cucina');
+  tog('tavoli', ZONA === 'garden');
+  tog('bar', ZONA === 'bar');
+  tog('kds', ZONA === 'cucina');
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
+  const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
 }
 
 const VIEWS = {};
@@ -9107,7 +9123,7 @@ VIEWS.comande = async () => {
           <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
           <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
           <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
-          <p class="muted" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'} e in \u{1F373} <b>Cucina</b>.</p>
+          <p class="muted" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'}; i piatti li lavora la postazione \u{1F373} <b>Cucina</b>.</p>
         </div>
       </div></div>\`;
 
@@ -9848,7 +9864,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 07:14" : "online";
+var BUILD = true ? "2026-08-17 07:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
