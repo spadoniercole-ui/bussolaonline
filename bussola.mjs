@@ -706,6 +706,33 @@ async function migrate() {
   await addIfMissing("comande", "socio_id", "socio_id INTEGER");
   await addIfMissing("comande", "pronta_at", "pronta_at TEXT");
   await addIfMissing("comande", "zona", "zona TEXT NOT NULL DEFAULT 'garden'");
+  await addIfMissing("magazzino_articoli", "zona", "zona TEXT NOT NULL DEFAULT 'comune'");
+  try {
+    await db.exec(`
+    CREATE TABLE IF NOT EXISTS magazzino_zona_scorte (
+      articolo_id     INTEGER NOT NULL REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+      zona            TEXT NOT NULL,                 -- bar | garden
+      giacenza        REAL NOT NULL DEFAULT 0,
+      punto_riordino  REAL NOT NULL DEFAULT 0,
+      soglia_preavviso REAL NOT NULL DEFAULT 0,
+      aggiornato_at   TEXT,
+      PRIMARY KEY (articolo_id, zona)
+    );
+    CREATE TABLE IF NOT EXISTS magazzino_richieste (
+      id          INTEGER PRIMARY KEY,
+      articolo_id INTEGER REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+      zona        TEXT NOT NULL,
+      quantita    REAL NOT NULL,
+      stato       TEXT NOT NULL DEFAULT 'inviata',    -- inviata | evasa | annullata
+      note        TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_mag_ric ON magazzino_richieste(zona, stato);
+  `);
+  } catch (_) {
+  }
+  await addIfMissing("magazzino_movimenti", "zona", "zona TEXT");
   await addIfMissing("eventi", "ora_inizio", "ora_inizio TEXT");
   await addIfMissing("eventi", "tipologia", "tipologia TEXT");
   await addIfMissing("eventi", "artista", "artista TEXT");
@@ -4227,7 +4254,20 @@ function magStato(a) {
 }
 adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   const area = req.query.area;
-  const rows = area ? await db.prepare("SELECT * FROM magazzino_articoli WHERE area=? ORDER BY ordine,id").all(area) : await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const zona = req.query.zona;
+  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
+  const conds = [];
+  const args = [];
+  if (area) {
+    conds.push("area=?");
+    args.push(area);
+  }
+  if (zonaWhere) {
+    conds.push(zonaWhere);
+    if (zona && !["bar", "garden", "comune"].includes(zona)) args.push(zona);
+  }
+  const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
+  const rows = await db.prepare(`SELECT * FROM magazzino_articoli ${where} ORDER BY area,ordine,id`).all(...args);
   const articoli = rows.map((a) => ({ ...a, stato: magStato(a) }));
   const riepilogo = {
     da_riordinare: articoli.filter((a) => a.stato === "da_riordinare").length,
@@ -4241,13 +4281,13 @@ adminRouter.post("/magazzino", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString());
+  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString());
   audit(req.adminUser.username, "crea", "magazzino_articoli", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=? WHERE id=?").run(b.nome, b.area || "chiosco", b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,zona=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=? WHERE id=?").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
   audit(req.adminUser.username, "modifica", "magazzino_articoli", req.params.id);
   res.json({ ok: true });
 });
@@ -4273,6 +4313,85 @@ adminRouter.post("/magazzino/:id/movimento", requireCap("magazzino"), async (req
   const aggiornato = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
   res.json({ ok: true, giacenza: nuova, stato: magStato(aggiornato) });
 });
+async function ensureZonaScorta(articoloId, zona) {
+  let s = await db.prepare("SELECT * FROM magazzino_zona_scorte WHERE articolo_id=? AND zona=?").get(articoloId, zona);
+  if (!s) {
+    const art = await db.prepare("SELECT punto_riordino,soglia_preavviso FROM magazzino_articoli WHERE id=?").get(articoloId);
+    await db.prepare("INSERT INTO magazzino_zona_scorte (articolo_id,zona,giacenza,punto_riordino,soglia_preavviso,aggiornato_at) VALUES (?,?,?,?,?,?)").run(articoloId, zona, 0, art ? Number(art.punto_riordino || 0) : 0, art ? Number(art.soglia_preavviso || 0) : 0, (/* @__PURE__ */ new Date()).toISOString());
+    s = await db.prepare("SELECT * FROM magazzino_zona_scorte WHERE articolo_id=? AND zona=?").get(articoloId, zona);
+  }
+  return s;
+}
+adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, res) => {
+  const zona = req.params.zona === "bar" ? "bar" : "garden";
+  const arts = await db.prepare("SELECT * FROM magazzino_articoli WHERE zona=? OR zona='comune' ORDER BY nome").all(zona);
+  const out = [];
+  for (const a of arts) {
+    const s = await ensureZonaScorta(a.id, zona);
+    const riordino = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='inviata'").get(a.id, zona);
+    out.push({ articolo_id: a.id, nome: a.nome, unita: a.unita, zona_art: a.zona, giacenza: Number(s.giacenza), punto_riordino: Number(s.punto_riordino), soglia_preavviso: Number(s.soglia_preavviso), in_arrivo: Number(riordino.q), stato: magStato(s) });
+  }
+  const riepilogo = { da_riordinare: out.filter((a) => a.stato === "da_riordinare").length, in_esaurimento: out.filter((a) => a.stato === "in_esaurimento").length, totale: out.length };
+  res.json({ articoli: out, riepilogo });
+});
+adminRouter.post("/magazzino/zona/:zona/scarico", requireCap("magazzino"), async (req, res) => {
+  const zona = req.params.zona === "bar" ? "bar" : "garden";
+  const b = req.body || {};
+  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
+  const s = await ensureZonaScorta(art.id, zona);
+  const nuova = Math.max(0, Number(s.giacenza) - q);
+  await db.prepare("UPDATE magazzino_zona_scorte SET giacenza=?,aggiornato_at=? WHERE articolo_id=? AND zona=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id, zona);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "consumo " + zona, req.adminUser.username, zona);
+  audit(req.adminUser.username, "scarico_zona", "magazzino_zona_scorte", art.id, `${zona} -${q}`);
+  res.json({ ok: true, giacenza: nuova, stato: magStato({ ...s, giacenza: nuova }) });
+});
+adminRouter.post("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  const zona = b.zona === "bar" ? "bar" : "garden";
+  const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
+  const info = await db.prepare("INSERT INTO magazzino_richieste (articolo_id,zona,quantita,stato,note) VALUES (?,?,?,?,?)").run(art.id, zona, q, "inviata", b.note || null);
+  audit(req.adminUser.username, "richiesta_carico", "magazzino_richieste", info.lastInsertRowid, `${zona} ${q}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.get("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
+  const conds = [], args = [];
+  if (req.query.zona) {
+    conds.push("r.zona=?");
+    args.push(req.query.zona);
+  }
+  if (req.query.stato) {
+    conds.push("r.stato=?");
+    args.push(req.query.stato);
+  }
+  const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
+  const rows = await db.prepare(`SELECT r.*, a.nome, a.unita FROM magazzino_richieste r JOIN magazzino_articoli a ON a.id=r.articolo_id ${where} ORDER BY r.created_at DESC LIMIT 200`).all(...args);
+  res.json(rows);
+});
+adminRouter.post("/magazzino/richieste/:id/evadi", requireCap("magazzino"), async (req, res) => {
+  const r = await db.prepare("SELECT * FROM magazzino_richieste WHERE id=?").get(req.params.id);
+  if (!r || r.stato !== "inviata") return res.status(400).json({ error: "Richiesta non evadibile" });
+  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(r.articolo_id);
+  const q = Number(r.quantita);
+  const nuovaC = Math.max(0, Number(art.giacenza) - q);
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuovaC, (/* @__PURE__ */ new Date()).toISOString(), art.id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "trasferimento a " + r.zona, req.adminUser.username, null);
+  const s = await ensureZonaScorta(art.id, r.zona);
+  await db.prepare("UPDATE magazzino_zona_scorte SET giacenza=?,aggiornato_at=? WHERE articolo_id=? AND zona=?").run(Number(s.giacenza) + q, (/* @__PURE__ */ new Date()).toISOString(), art.id, r.zona);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "carico", q, "da Centrale", req.adminUser.username, r.zona);
+  await db.prepare("UPDATE magazzino_richieste SET stato='evasa',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
+  audit(req.adminUser.username, "evadi_richiesta", "magazzino_richieste", r.id, `${r.zona} ${q}`);
+  res.json({ ok: true });
+});
+adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), async (req, res) => {
+  await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='inviata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  res.json({ ok: true });
+});
 adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
   const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
   res.json(rows);
@@ -4282,6 +4401,12 @@ function magNormArea(v) {
   if (!s) return "chiosco";
   const map = { "casa di carta": "casa_di_carta", "serata clan": "serata_clan", "serate a tema": "serate_tema", "serate tema": "serate_tema" };
   return map[s] || s.replace(/\s+/g, "_");
+}
+function magNormZona(v) {
+  const s = String(v || "").trim().toLowerCase();
+  if (s.startsWith("bar")) return "bar";
+  if (s.startsWith("gard") || s.startsWith("giard")) return "garden";
+  return "comune";
 }
 function toNum(v) {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -4317,14 +4442,14 @@ function sheetRows(fileB64) {
 function parseMagFile(fileB64) {
   const json = sheetRows(fileB64);
   const norm = (s) => String(s || "").trim().toLowerCase();
-  const alias = { nome: ["nome", "articolo", "prodotto", "name"], area: ["area", "reparto"], unita: ["unita", "unit\xE0", "um", "unit"], giacenza: ["giacenza", "quantita", "quantit\xE0", "qta", "stock"], punto_riordino: ["punto_riordino", "riordino", "minimo", "min", "reorder"], soglia_preavviso: ["soglia_preavviso", "preavviso", "avviso", "soglia", "warning"] };
+  const alias = { nome: ["nome", "articolo", "prodotto", "name"], area: ["area", "reparto"], zona: ["zona", "zone", "ambiente"], unita: ["unita", "unit\xE0", "um", "unit"], giacenza: ["giacenza", "quantita", "quantit\xE0", "qta", "stock"], punto_riordino: ["punto_riordino", "riordino", "minimo", "min", "reorder"], soglia_preavviso: ["soglia_preavviso", "preavviso", "avviso", "soglia", "warning"] };
   return json.map((r) => {
     const keys = Object.keys(r);
     const pick = (al) => {
       const k = keys.find((k2) => al.includes(norm(k2)));
       return k != null ? r[k] : "";
     };
-    return { nome: pick(alias.nome), area: pick(alias.area), unita: pick(alias.unita), giacenza: pick(alias.giacenza), punto_riordino: pick(alias.punto_riordino), soglia_preavviso: pick(alias.soglia_preavviso) };
+    return { nome: pick(alias.nome), area: pick(alias.area), zona: pick(alias.zona), unita: pick(alias.unita), giacenza: pick(alias.giacenza), punto_riordino: pick(alias.punto_riordino), soglia_preavviso: pick(alias.soglia_preavviso) };
   }).filter((r) => String(r.nome).trim());
 }
 adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) => {
@@ -4337,7 +4462,7 @@ adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) 
   }
   if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
   const num = toNum;
-  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area), giacenza: num(r.giacenza), punto_riordino: num(r.punto_riordino), soglia_preavviso: num(r.soglia_preavviso) })) });
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area), zona: magNormZona(r.zona), giacenza: num(r.giacenza), punto_riordino: num(r.punto_riordino), soglia_preavviso: num(r.soglia_preavviso) })) });
   const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   let creati = 0, aggiornati = 0;
@@ -4348,14 +4473,16 @@ adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) 
     const nome = clean(r.nome);
     if (!nome) continue;
     const area = magNormArea(r.area);
+    const zona = magNormZona(r.zona);
+    const hasZona = r.zona != null && String(r.zona).trim() !== "";
     const ex = await db.prepare("SELECT * FROM magazzino_articoli WHERE nome=? AND area=?").get(nome, area);
     const hasG = r.giacenza != null && String(r.giacenza).trim() !== "";
     if (ex) {
-      await db.prepare("UPDATE magazzino_articoli SET unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run(clean(r.unita) ?? ex.unita, hasG ? num(r.giacenza) : ex.giacenza, r.punto_riordino !== "" ? num(r.punto_riordino) : ex.punto_riordino, r.soglia_preavviso !== "" ? num(r.soglia_preavviso) : ex.soglia_preavviso, now, ex.id);
+      await db.prepare("UPDATE magazzino_articoli SET zona=?,unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run(hasZona ? zona : ex.zona, clean(r.unita) ?? ex.unita, hasG ? num(r.giacenza) : ex.giacenza, r.punto_riordino !== "" ? num(r.punto_riordino) : ex.punto_riordino, r.soglia_preavviso !== "" ? num(r.soglia_preavviso) : ex.soglia_preavviso, now, ex.id);
       aggiornati++;
     } else {
       const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
-      await db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?)").run(nome, area, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
+      await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run(nome, area, zona, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
       creati++;
     }
   }
@@ -5408,7 +5535,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.46";
+var VERSION = "4.48";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8794,7 +8921,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
     <label for="zona">Zona di questa postazione</label>
-    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option><option value="cucina">\u{1F373} Cucina \u2014 ai fornelli</option></select>
+    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option><option value="cucina">\u{1F373} Cucina \u2014 ai fornelli</option><option value="magazzino">\u{1F4E6} Magazzino \u2014 logistica</option></select>
     <div class="sub" style="margin-top:4px">Potrai cambiarla al volo dalla barra in alto, senza rifare l'accesso.</div>
     <button class="btn gold" id="loginBtn" style="width:100%;margin-top:16px">Entra</button>
     <div id="loginErr"></div>
@@ -8807,7 +8934,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <span class="brand">\u{1F354} Bussola Chiosco</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Zona
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option></select>
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -8817,6 +8944,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="tavoli">\u{1F5FA}\uFE0F Tavoli</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
+      <button data-v="scorte">\u{1F4CA} Giacenze</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
@@ -9001,8 +9129,6 @@ async function login() {
     if (!(ME.gestore || (ME.caps || []).includes('comande'))) throw new Error('Questo operatore non ha accesso alle comande');
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
-    // il magazzino \xE8 visibile solo a chi ha la relativa capacit\xE0
-    document.querySelector('#tabs [data-v="magazzino"]').classList.toggle('hide', !(ME.gestore || (ME.caps || []).includes('magazzino')));
     const zs = $('#zonaSwitch'); if (zs && !zs.__wired) { zs.__wired = true; zs.onchange = () => setZona(zs.value); }
     setZona($('#zona') ? $('#zona').value : ZONA);   // dichiara la zona iniziale e mostra la vista giusta
   } catch (e) { $('#loginErr').textContent = e.message; }
@@ -9010,19 +9136,22 @@ async function login() {
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
 // Cambio zona AL VOLO (stessa persona, stesse autorizzazioni): non serve rifare il login.
 function setZona(z) {
-  ZONA = ['garden', 'bar', 'cucina'].includes(z) ? z : 'garden';
+  ZONA = ['garden', 'bar', 'cucina', 'magazzino'].includes(z) ? z : 'garden';
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  show(ZONA === 'cucina' ? 'kds' : 'comande');   // il cuoco parte dalla Cucina, gli altri dalla presa comanda
+  show(ZONA === 'cucina' ? 'kds' : ZONA === 'magazzino' ? 'magazzino' : ZONA === 'bar' || ZONA === 'garden' ? 'comande' : 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
-//  Garden \u2192 Comande + Tavoli \xB7 Bar \u2192 Comande + Bar \xB7 Cucina \u2192 Cucina (il cuoco non prende comande).
+//  Garden \u2192 Comande+Tavoli+Giacenze \xB7 Bar \u2192 Comande+Bar+Giacenze \xB7 Cucina \u2192 Cucina \xB7 Magazzino \u2192 hub Centrale/Bar/Garden.
 function applyZona() {
   const tog = (v, show) => { const el = document.querySelector('#tabs [data-v="' + v + '"]'); if (el) el.classList.toggle('hide', !show); };
-  tog('comande', ZONA !== 'cucina');
+  const hasMag = ME.gestore || (ME.caps || []).includes('magazzino');
+  tog('comande', ZONA === 'garden' || ZONA === 'bar');
   tog('tavoli', ZONA === 'garden');
   tog('bar', ZONA === 'bar');
   tog('kds', ZONA === 'cucina');
+  tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
+  tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
   const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
 }
@@ -9295,54 +9424,112 @@ VIEWS.tavoli = async () => {
 const MAG_AREE = [['chiosco', 'Chiosco'], ['casa_di_carta', 'Casa di Carta'], ['serata_clan', 'Serata Clan'], ['serate_tema', 'Serate a tema']];
 const magAreaLabel = (a) => (MAG_AREE.find(x => x[0] === a) || [a, a])[1];
 const magBadge = (s) => s === 'da_riordinare' ? '<span class="tag no">Da riordinare</span>' : s === 'in_esaurimento' ? '<span class="tag mid">In esaurimento</span>' : '<span class="tag ok">OK</span>';
+const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
+// ===== MAGAZZINO A DUE LIVELLI (v4.48): hub Centrale / Bar / Garden =====
+let MAG_SUB = 'centrale';
+const magSubbar = () => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+  <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 logistica a due livelli</span></b>
+  <div class="row">\${['centrale', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${k === 'centrale' ? '\u{1F3EC} Centrale' : k === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden'}</button>\`).join('')}</div></div></div>\`;
 VIEWS.magazzino = async () => {
+  if (MAG_SUB === 'centrale') await magCentrale(); else await magHubZona(MAG_SUB);
+  document.querySelectorAll('[data-msub]').forEach(b => b.onclick = () => { MAG_SUB = b.dataset.msub; show('magazzino'); });
+};
+// ---- Sub-tab CENTRALE: giacenza del centro + import master + richieste da evadere ----
+async function magCentrale() {
   const data = await api('/magazzino').catch(() => ({ articoli: [], riepilogo: {}, aree: [] }));
+  const richieste = await api('/magazzino/richieste?stato=inviata').catch(() => []);
   const r = data.riepilogo || {};
-  const alert = \`<div class="panel"><h3>\u{1F4E6} Magazzino</h3><div class="row" style="gap:10px">
-    <div style="flex:1;min-width:130px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.5rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
-    <div style="flex:1;min-width:130px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.5rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
-    <div style="flex:1;min-width:130px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.5rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div></div></div>\`;
+  const alert = \`<div class="panel"><div class="row" style="gap:10px">
+    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.5rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
+    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.5rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
+    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.5rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div>
+    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Richieste da evadere</div><div style="font-size:1.5rem;font-weight:800;color:\${richieste.length ? 'var(--gold)' : 'var(--navy)'}">\${richieste.length}</div></div></div></div>\`;
+  const ricPanel = \`<div class="panel"><h3>\u{1F4E5} Richieste di carico da evadere</h3>\${richieste.length ? richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>\${x.zona === 'bar' ? '\u{1F378}' : '\u{1F33F}'} <b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} \u2192 \${esc(x.zona)}</span><div class="row"><button class="btn gold sm" data-ev="\${x.id}">\u2714 Evadi</button><button class="btn ghost sm" data-evno="\${x.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessuna richiesta in attesa.</p>'}</div>\`;
   const areeOrdine = [...new Set([...MAG_AREE.map(a => a[0]), ...(data.aree || [])])];
   const perArea = areeOrdine.map(area => {
     const arts = (data.articoli || []).filter(a => a.area === area); if (!arts.length) return '';
     const rows = arts.map(a => \`<tr>
-      <td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td>
-      <td>\${magBadge(a.stato)}</td>
+      <td><b>\${esc(a.nome)}</b></td><td>\${magZonaBadge(a.zona)}</td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td>\${magBadge(a.stato)}</td>
       <td class="row"><input id="mq_\${a.id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn gold sm" data-mv="\${a.id}|carico">+ Carico</button><button class="btn ghost sm" data-mv="\${a.id}|scarico">\u2212 Scarico</button><button class="btn ghost sm" data-mv="\${a.id}|rettifica">= Rettifica</button></td>
     </tr>\`).join('');
-    return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3><table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th><th>Movimento</th></tr></thead><tbody>\${rows}</tbody></table></div>\`;
+    return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3><table><thead><tr><th>Articolo</th><th>Zona</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th><th>Movimento</th></tr></thead><tbody>\${rows}</tbody></table></div>\`;
   }).join('');
   const areaOpts = MAG_AREE.map(a => \`<option value="\${a[0]}">\${esc(a[1])}</option>\`).join('');
-  const imp = \`<div class="panel"><h3>\u2B06\uFE0F Primo caricamento magazzino da Excel/CSV</h3>
-    <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>area</b> (chiosco/casa di carta/serata clan/serate a tema), <b>unita</b>, <b>giacenza</b>, <b>riordino</b>, <b>preavviso</b>. Aggiorna gli articoli esistenti (per nome+area) e crea i nuovi.</p>
+  const imp = \`<div class="panel"><h3>\u2B06\uFE0F Caricamento magazzino (master) da Excel/CSV</h3>
+    <p class="muted" style="font-size:.82rem;margin-bottom:8px">Un solo file alimenta il Centrale. Colonne (in qualsiasi ordine): <b>nome</b>, <b>area</b>, <b>zona</b> (<b>bar</b>/<b>garden</b>/<b>comune</b>), <b>unita</b>, <b>giacenza</b>, <b>riordino</b>, <b>preavviso</b>. La zona rende l'articolo disponibile ai sotto-magazzini Bar/Garden (comune = entrambi).</p>
     <div class="row"><input type="file" id="mimp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="mimp_tpl">\u2193 Scarica modello CSV</button></div>
     <div id="mimp_prev" style="margin-top:10px"></div></div>\`;
   const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3><div class="row">
-    <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select><input id="ma_u" value="pz" style="width:70px">
-    <input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
+    <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select>
+    <select id="ma_z"><option value="comune">\u{1F501} Comune</option><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option></select>
+    <input id="ma_u" value="pz" style="width:70px"><input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
     <button class="btn gold sm" id="ma_add">+ Aggiungi</button></div></div>\`;
-  $('#view').innerHTML = alert + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
-  // template + import
+  $('#view').innerHTML = magSubbar() + alert + ricPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
+  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.ev + '/evadi', { method: 'POST', body: '{}' }); show('magazzino'); });
+  document.querySelectorAll('[data-evno]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.evno + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
   $('#mimp_tpl').onclick = () => {
-    const csv = 'nome,area,unita,giacenza,riordino,preavviso\\nBicchieri di carta,chiosco,pz,300,100,150\\nBirra media,chiosco,pz,60,24,40\\nCapsule caff\xE8,casa di carta,capsule,120,50,80\\n';
+    const csv = 'nome,area,zona,unita,giacenza,riordino,preavviso\\nBicchieri di carta,chiosco,comune,pz,300,100,150\\nBirra media,chiosco,bar,pz,60,24,40\\nSalsiccia,chiosco,garden,kg,10,3,5\\nCapsule caff\xE8,casa di carta,comune,capsule,120,50,80\\n';
     const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'modello_magazzino.csv'; a.click();
   };
-  const magToB64 = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).replace(/^data:[^,]*,/, '')); r.onerror = rej; r.readAsDataURL(f); });
+  const magToB64 = (f) => new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).replace(/^data:[^,]*,/, '')); rd.onerror = rej; rd.readAsDataURL(f); });
   $('#mimp_file').onchange = async (ev) => {
     const f = ev.target.files[0]; if (!f) return;
     $('#mimp_prev').innerHTML = '<p class="muted">Leggo il file\u2026</p>';
     try {
       const b64 = await magToB64(f);
       const dry = await api('/magazzino/import', { method: 'POST', body: JSON.stringify({ fileB64: b64, dryRun: true }) });
-      const preview = (dry.anteprima || []).map(r => \`<tr><td>\${esc(r.nome)}</td><td>\${esc(r.area)}</td><td>\${esc(r.unita)}</td><td>\${esc(String(r.giacenza))}</td><td>\${esc(String(r.punto_riordino))}</td><td>\${esc(String(r.soglia_preavviso))}</td></tr>\`).join('');
+      const preview = (dry.anteprima || []).map(x => \`<tr><td>\${esc(x.nome)}</td><td>\${esc(x.area)}</td><td>\${esc(x.zona)}</td><td>\${esc(x.unita)}</td><td>\${esc(String(x.giacenza))}</td><td>\${esc(String(x.punto_riordino))}</td><td>\${esc(String(x.soglia_preavviso))}</td></tr>\`).join('');
       $('#mimp_prev').innerHTML = \`<p class="muted" style="font-size:.82rem">Trovate <b>\${dry.totale}</b> righe. Anteprima:</p>
-        <table><thead><tr><th>Nome</th><th>Area</th><th>Unit\xE0</th><th>Giac.</th><th>Riordino</th><th>Preavviso</th></tr></thead><tbody>\${preview}</tbody></table>
+        <table><thead><tr><th>Nome</th><th>Area</th><th>Zona</th><th>Unit\xE0</th><th>Giac.</th><th>Riordino</th><th>Preavviso</th></tr></thead><tbody>\${preview}</tbody></table>
         <div class="row" style="margin-top:8px"><label><input type="checkbox" id="mimp_repl"> sostituisci l'intero magazzino</label><button class="btn gold" id="mimp_go">Importa \${dry.totale} righe</button></div>\`;
       $('#mimp_go').onclick = async () => { const res = await api('/magazzino/import', { method: 'POST', body: JSON.stringify({ fileB64: b64, mode: $('#mimp_repl').checked ? 'replace' : 'merge' }) }); alert(\`Import completato: \${res.creati} creati, \${res.aggiornati} aggiornati.\`); show('magazzino'); };
     } catch (err) { $('#mimp_prev').innerHTML = \`<p class="muted">\${esc(err.message)}</p>\`; }
   };
   document.querySelectorAll('[data-mv]').forEach(b => b.onclick = async () => { const [id, tipo] = b.dataset.mv.split('|'); const q = Number(($('#mq_' + id) || {}).value); if (!($('#mq_' + id).value)) { alert('Indica la quantit\xE0.'); return; } await api('/magazzino/' + id + '/movimento', { method: 'POST', body: JSON.stringify({ tipo, quantita: q }) }); show('magazzino'); });
-  $('#ma_add').onclick = async () => { if (!$('#ma_n').value) { alert('Nome?'); return; } await api('/magazzino', { method: 'POST', body: JSON.stringify({ nome: $('#ma_n').value, area: $('#ma_a').value, unita: $('#ma_u').value || 'pz', giacenza: Number($('#ma_g').value || 0), punto_riordino: Number($('#ma_pr').value || 0), soglia_preavviso: Number($('#ma_pa').value || 0) }) }); show('magazzino'); };
+  $('#ma_add').onclick = async () => { if (!$('#ma_n').value) { alert('Nome?'); return; } await api('/magazzino', { method: 'POST', body: JSON.stringify({ nome: $('#ma_n').value, area: $('#ma_a').value, zona: $('#ma_z').value, unita: $('#ma_u').value || 'pz', giacenza: Number($('#ma_g').value || 0), punto_riordino: Number($('#ma_pr').value || 0), soglia_preavviso: Number($('#ma_pa').value || 0) }) }); show('magazzino'); };
+}
+// ---- Sub-tab BAR/GARDEN nel hub: sola lettura delle giacenze di zona + richieste (con Evadi) ----
+async function magHubZona(zona) {
+  const data = await api('/magazzino/zona/' + zona).catch(() => ({ articoli: [], riepilogo: {} }));
+  const richieste = await api('/magazzino/richieste?zona=' + zona + '&stato=inviata').catch(() => []);
+  const arts = (data.articoli || []).slice().sort((a, b) => (a.stato === 'da_riordinare' ? -1 : 0));
+  const rows = arts.map(a => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td>\${magBadge(a.stato)}\${a.in_arrivo ? \` <span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F4E5} \${esc(String(a.in_arrivo))}</span>\` : ''}</td></tr>\`).join('');
+  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\${zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden'} \xB7 sotto-magazzino <span class="muted" style="font-weight:400;font-size:.72rem">(sola lettura dal Centrale)</span></h3>
+    <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th></tr></thead><tbody>\${rows || '<tr><td colspan="4" class="muted">Nessun articolo.</td></tr>'}</tbody></table></div>
+    <div class="panel"><h3>\u{1F4E5} Richieste di carico di questa zona</h3>\${richieste.length ? richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)}</span><div class="row"><button class="btn gold sm" data-ev="\${x.id}">\u2714 Evadi</button><button class="btn ghost sm" data-evno="\${x.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessuna richiesta in attesa.</p>'}</div>\`;
+  document.querySelectorAll('[data-ev]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.ev + '/evadi', { method: 'POST', body: '{}' }); show('magazzino'); });
+  document.querySelectorAll('[data-evno]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.evno + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
+}
+
+/* ---------- GIACENZE DI ZONA (Bar/Garden): sotto-magazzino operativo \u2014 scarico + richiesta di carico ---------- */
+VIEWS.scorte = async () => {
+  const zona = ZONA, zonaLabel = zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden';
+  const render = async () => {
+    const data = await api('/magazzino/zona/' + zona).catch(() => ({ articoli: [], riepilogo: {} }));
+    const richieste = await api('/magazzino/richieste?zona=' + zona + '&stato=inviata').catch(() => []);
+    const r = data.riepilogo || {}; const arts = data.articoli || [];
+    const rank = { da_riordinare: 0, in_esaurimento: 1, ok: 2 };
+    arts.sort((a, b) => (rank[a.stato] - rank[b.stato]) || String(a.nome).localeCompare(String(b.nome)));
+    const rows = arts.map(a => \`<tr>
+      <td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td>
+      <td>\${magBadge(a.stato)}\${a.in_arrivo ? \` <span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F4E5} \${esc(String(a.in_arrivo))} in arrivo</span>\` : ''}</td>
+      <td class="row"><input id="gq_\${a.articolo_id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn ghost sm" data-gsc="\${a.articolo_id}">\u2212 Scarico</button><button class="btn gold sm" data-grc="\${a.articolo_id}">\u{1F4E6} Richiesta</button></td>
+    </tr>\`).join('');
+    const ric = richieste.map(x => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} \u2014 in attesa</span><button class="btn ghost sm" data-gann="\${x.id}">Annulla</button></div>\`).join('');
+    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F4CA} Giacenze \xB7 \${zonaLabel} <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 sotto-magazzino della zona (+ comuni)</span></h3>
+      <p class="muted" style="font-size:.76rem">A fine servizio <b>scarica</b> le quantit\xE0 usate; quando un prodotto \xE8 sotto il riordino, invia una <b>richiesta di carico</b> al Centrale.</p>
+      <div class="row" style="gap:10px;margin-top:6px">
+        <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.4rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
+        <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.4rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
+        <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.4rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div></div></div>
+      <div class="panel"><table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Giac.</th><th>Stato</th><th>Scarico / Richiesta</th></tr></thead><tbody>\${rows || '<tr><td colspan="5" class="muted">Nessun articolo per questa zona.</td></tr>'}</tbody></table></div>
+      \${richieste.length ? \`<div class="panel"><h3>\u{1F4E6} Richieste di carico inviate</h3>\${ric}</div>\` : ''}\`;
+    const q = (id) => Number(($('#gq_' + id) || {}).value);
+    document.querySelectorAll('[data-gsc]').forEach(b => b.onclick = async () => { const id = b.dataset.gsc; if (!q(id)) { alert('Indica la quantit\xE0.'); return; } await api('/magazzino/zona/' + zona + '/scarico', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), quantita: q(id) }) }); render(); });
+    document.querySelectorAll('[data-grc]').forEach(b => b.onclick = async () => { const id = b.dataset.grc; if (!q(id)) { alert('Indica la quantit\xE0 da richiedere.'); return; } await api('/magazzino/richieste', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), zona, quantita: q(id) }) }); render(); });
+    document.querySelectorAll('[data-gann]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.gann + '/annulla', { method: 'POST', body: '{}' }); render(); });
+  };
+  await render();
 };
 
 /* ---------- MEN\xD9 (config + import Excel/CSV) ---------- */
@@ -9864,7 +10051,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 07:23" : "online";
+var BUILD = true ? "2026-08-17 08:32" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
