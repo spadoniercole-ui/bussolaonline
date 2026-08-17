@@ -5552,7 +5552,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.49";
+var VERSION = "4.50";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9169,6 +9169,8 @@ function applyZona() {
   tog('kds', ZONA === 'cucina');
   tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
+  tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
+  tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
   const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
 }
@@ -10081,7 +10083,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 08:47" : "online";
+var BUILD = true ? "2026-08-17 09:20" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
