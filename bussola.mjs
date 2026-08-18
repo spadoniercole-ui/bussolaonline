@@ -13,6 +13,552 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// server/asyncroute.js
+function asyncify(router) {
+  for (const m of ["get", "post", "put", "delete", "patch"]) {
+    const orig = router[m].bind(router);
+    router[m] = (path, ...handlers) => orig(path, ...handlers.map((h) => typeof h === "function" && h.length < 4 ? (req, res, next) => Promise.resolve(h(req, res, next)).catch(next) : h));
+  }
+  return router;
+}
+var init_asyncroute = __esm({
+  "server/asyncroute.js"() {
+  }
+});
+
+// server/push.js
+var push_exports = {};
+__export(push_exports, {
+  publicKey: () => publicKey,
+  pushEnabled: () => pushEnabled,
+  removeSubscription: () => removeSubscription,
+  saveSubscription: () => saveSubscription,
+  sendToSoci: () => sendToSoci,
+  sendToSocio: () => sendToSocio
+});
+import webpush from "web-push";
+function pushEnabled() {
+  return ENABLED;
+}
+function publicKey() {
+  return ENABLED ? PUB : null;
+}
+async function saveSubscription(socioId, sub) {
+  if (!sub || !sub.endpoint) return false;
+  const k = sub.keys || {};
+  try {
+    await db.prepare("INSERT OR REPLACE INTO push_sub (endpoint,socio_id,p256dh,auth,created_at) VALUES (?,?,?,?,datetime('now'))").run(sub.endpoint, socioId, k.p256dh || "", k.auth || "");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+async function removeSubscription(endpoint) {
+  if (endpoint) {
+    try {
+      await db.prepare("DELETE FROM push_sub WHERE endpoint=?").run(endpoint);
+    } catch (_) {
+    }
+  }
+}
+async function sendToSubs(subs, payload) {
+  if (!ENABLED || !subs.length) return 0;
+  const data = JSON.stringify(payload);
+  let sent = 0;
+  for (const s of subs) {
+    const sub = { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } };
+    try {
+      await webpush.sendNotification(sub, data);
+      sent++;
+    } catch (e) {
+      const code = e && e.statusCode;
+      if (code === 404 || code === 410) await removeSubscription(s.endpoint);
+    }
+  }
+  return sent;
+}
+async function sendToSocio(socioId, payload) {
+  if (!ENABLED) return 0;
+  const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(socioId);
+  return sendToSubs(subs, payload);
+}
+async function sendToSoci(socioIds, payload) {
+  if (!ENABLED || !socioIds || !socioIds.length) return 0;
+  const uniq = [...new Set(socioIds.filter(Boolean).map(Number))];
+  const rows = [];
+  for (const id of uniq) {
+    const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(id);
+    rows.push(...subs);
+  }
+  return sendToSubs(rows, payload);
+}
+var PUB, PRIV, SUBJ, ENABLED;
+var init_push = __esm({
+  "server/push.js"() {
+    init_db();
+    PUB = process.env.VAPID_PUBLIC || process.env.VAPID_PUBLIC_KEY || "";
+    PRIV = process.env.VAPID_PRIVATE || process.env.VAPID_PRIVATE_KEY || "";
+    SUBJ = process.env.VAPID_SUBJECT || "mailto:info@koine.local";
+    ENABLED = false;
+    if (PUB && PRIV) {
+      try {
+        webpush.setVapidDetails(SUBJ, PUB, PRIV);
+        ENABLED = true;
+      } catch (e) {
+        console.error("VAPID non valido:", e?.message || e);
+      }
+    }
+  }
+});
+
+// server/routes/authuser.js
+import { Router as Router3 } from "express";
+async function requireUser(req, res, next) {
+  const token = (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
+  const u = await getUserSession(token);
+  if (!u) return res.status(401).json({ error: "Accesso richiesto" });
+  req.user = u;
+  next();
+}
+async function contaSoci(casataId) {
+  return (await db.prepare("SELECT COUNT(*) n FROM soci WHERE casata_id=? AND tipo_profilo!='ospite_temporaneo' AND attivo=1").get(casataId)).n;
+}
+function pickStruttura2(b) {
+  const o = {};
+  for (const k of HOST_FIELDS2) o[k] = b[k] ?? "";
+  if (o.lat !== "") o.lat = Number(o.lat);
+  if (o.lng !== "") o.lng = Number(o.lng);
+  return o;
+}
+async function meSocio(req) {
+  return db.prepare("SELECT * FROM soci WHERE id=? AND attivo=1").get(req.user.id);
+}
+function canHost(me) {
+  return !!me && (me.host === 1 || ["residente", "socio_residente"].includes(me.tipo_profilo));
+}
+function oggiISO() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+async function sganciaScaduti() {
+  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE tipo_profilo='ospite_temporaneo' AND struttura_id IS NOT NULL AND soggiorno_al IS NOT NULL AND soggiorno_al < ?").run(oggiISO());
+}
+async function myStruttureIds(meId) {
+  const rows = await db.prepare("SELECT id FROM strutture WHERE socio_id=? AND attivo=1 ORDER BY id").all(meId);
+  return rows.map((r) => r.id);
+}
+function notifica(socioId, titolo, corpo) {
+  return db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(socioId, "push", "sistema", titolo, corpo || null);
+}
+var authUserRouter, DEV, CAP_SOCI_CASATA, HOST_FIELDS2;
+var init_authuser = __esm({
+  "server/routes/authuser.js"() {
+    init_asyncroute();
+    init_auth();
+    init_crypto();
+    init_db();
+    init_push();
+    authUserRouter = asyncify(Router3());
+    DEV = (process.env.KOINE_ENV || "dev") !== "prod";
+    authUserRouter.post("/request-otp", async (req, res) => {
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      if (!email || !email.includes("@")) return res.status(400).json({ error: "E-mail non valida" });
+      const socio = await db.prepare("SELECT id FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+      const code = genOtp();
+      const exp = Date.now() + 10 * 60 * 1e3;
+      await db.prepare("INSERT INTO otp (email,code,exp) VALUES (?,?,?)").run(email, code, exp);
+      audit(email, "otp_richiesto", "otp", "", socio ? "utente noto" : "email sconosciuta");
+      res.json({ ok: true, ...DEV ? { dev_code: code, dev_note: "In produzione arriva via e-mail/SMS; qui \xE8 mostrato solo per test." } : {} });
+    });
+    authUserRouter.post("/login-tessera", async (req, res) => {
+      const code = String(req.body?.tessera_code || "").trim().toUpperCase();
+      if (!code) return res.status(400).json({ error: "Codice tessera mancante" });
+      const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(code);
+      if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+      const token = await createUserSession(socio);
+      audit(socio.tessera_code, "login_tessera", "soci", socio.id);
+      const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
+      res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
+    });
+    authUserRouter.post("/verify-otp", async (req, res) => {
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const code = String(req.body?.code || "").trim();
+      const row = await db.prepare("SELECT * FROM otp WHERE email=? AND code=? AND used=0 ORDER BY id DESC").get(email, code);
+      if (!row || Date.now() > row.exp) return res.status(401).json({ error: "Codice non valido o scaduto" });
+      await db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
+      const socio = await db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+      if (!socio) return res.status(404).json({ error: "Nessun profilo associato a questa e-mail" });
+      const token = await createUserSession(socio);
+      audit(socio.tessera_code, "login_utente", "soci", socio.id);
+      const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
+      res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
+    });
+    authUserRouter.post("/registrazione", async (req, res) => {
+      const b = req.body || {};
+      const tipiOk = ["socio", "residente", "socio_residente", "ospite_temporaneo"];
+      const tipo = tipiOk.includes(b.tipo_profilo) ? b.tipo_profilo : "socio";
+      const nome = String(b.nome || "").trim(), cognome = String(b.cognome || "").trim();
+      if (!nome || !cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
+      if (!b.consenso_privacy) return res.status(400).json({ error: "Il consenso privacy \xE8 necessario per registrarsi" });
+      const email = b.email ? String(b.email).trim().toLowerCase() : null;
+      if (email) {
+        const dup = await db.prepare("SELECT id FROM soci WHERE lower(email)=?").get(email);
+        if (dup) return res.status(409).json({ error: "Questa e-mail \xE8 gi\xE0 registrata: accedi con e-mail." });
+      }
+      const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : "socio";
+      const lingua = ["it", "en", "fr", "de", "es"].includes(b.lingua) ? b.lingua : "it";
+      try {
+        const cols = ["tessera_code", "nome", "cognome", "email", "ruolo", "tipo_profilo", "lingua", "consenso_privacy", "consenso_marketing", "soggiorno_dal", "soggiorno_al", "attivo"];
+        const vals = [
+          "",
+          nome,
+          cognome,
+          email,
+          ruolo,
+          tipo,
+          lingua,
+          1,
+          b.consenso_marketing ? 1 : 0,
+          tipo === "ospite_temporaneo" ? b.soggiorno_dal || null : null,
+          tipo === "ospite_temporaneo" ? b.soggiorno_al || null : null,
+          1
+        ];
+        const { id, tessera_code } = await insertSocioUnique(cols, vals);
+        const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id);
+        const token = await createUserSession(socio);
+        audit(tessera_code, "auto_registrazione", "soci", id, tipo);
+        res.status(201).json({ token, socio: { tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
+      } catch (e) {
+        console.error("registrazione:", e?.message || e);
+        res.status(400).json({ error: "Registrazione non riuscita" });
+      }
+    });
+    CAP_SOCI_CASATA = 12;
+    authUserRouter.get("/casate", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY nome").all();
+      const casate = [];
+      for (const c of rows) {
+        const n = await contaSoci(c.id);
+        casate.push({ id: c.id, nome: c.nome, colore: c.colore, motto: c.motto, punti: c.punti, soci: n, capienza: CAP_SOCI_CASATA, pieno: n >= CAP_SOCI_CASATA, mia: !!(me && me.casata_id === c.id) });
+      }
+      res.json({ casate, mia: me ? me.casata_id : null, capienza: CAP_SOCI_CASATA });
+    });
+    authUserRouter.post("/scegli-casata", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+      if (!["socio", "socio_residente"].includes(me.tipo_profilo)) return res.status(403).json({ error: "Solo i soci scelgono una casata" });
+      const cid = Number(req.body?.casata_id);
+      const c = await db.prepare("SELECT id,nome FROM casate WHERE id=?").get(cid);
+      if (!c) return res.status(404).json({ error: "Casata non trovata" });
+      if (me.casata_id !== cid) {
+        const n = await contaSoci(cid);
+        if (n >= CAP_SOCI_CASATA) return res.status(409).json({ error: `Casata ${c.nome} al completo (${CAP_SOCI_CASATA} soci): scegline un'altra.` });
+      }
+      await db.prepare("UPDATE soci SET casata_id=? WHERE id=?").run(cid, me.id);
+      audit(me.tessera_code, "scegli_casata", "soci", me.id, c.nome);
+      res.json({ ok: true, casata: c.nome });
+    });
+    authUserRouter.post("/notifiche/consenso", requireUser, async (req, res) => {
+      const on = req.body?.attivo ? 1 : 0;
+      await db.prepare("UPDATE soci SET notifiche_push=? WHERE tessera_code=?").run(on, req.user.tessera_code);
+      audit(req.user.tessera_code, "consenso_notifiche", "soci", "", on ? "attivo" : "disattivo");
+      res.json({ ok: true, attivo: !!on });
+    });
+    authUserRouter.post("/push/subscribe", requireUser, async (req, res) => {
+      const me = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+      if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+      const ok = await saveSubscription(me.id, req.body?.subscription || req.body);
+      if (ok) await db.prepare("UPDATE soci SET notifiche_push=1 WHERE id=?").run(me.id);
+      res.json({ ok, enabled: pushEnabled() });
+    });
+    authUserRouter.post("/push/unsubscribe", requireUser, async (req, res) => {
+      await removeSubscription(req.body?.endpoint);
+      res.json({ ok: true });
+    });
+    authUserRouter.post("/convoca", requireUser, async (req, res) => {
+      const me = await db.prepare("SELECT id, casata_id, ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+      if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
+      if (!me.casata_id) return res.status(400).json({ error: "Nessuna casata associata" });
+      const { dominio, disciplina_chiave, match_label, quando, luogo } = req.body || {};
+      const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio === "giochi" ? "giochi" : "sport");
+      if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
+      const soci = await db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(me.casata_id);
+      const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
+      const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+      let notificati = 0;
+      const pushIds = [];
+      const corpo = `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim();
+      for (const s of soci) {
+        await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
+        if (s.notifiche_push) {
+          await insN.run(s.id, "push", "casata", "La tua casata ti convoca", corpo);
+          notificati++;
+          pushIds.push(s.id);
+        }
+      }
+      try {
+        await sendToSoci(pushIds, { title: "La tua casata ti convoca", body: corpo, url: "/", tag: "convocazione" });
+      } catch (_) {
+      }
+      audit(req.user.tessera_code, "convoca_capitano", "convocazioni", me.casata_id, `${soci.length} soci`);
+      res.status(201).json({ ok: true, convocati: soci.length, notificati });
+    });
+    authUserRouter.get("/capitano/partite", requireUser, async (req, res) => {
+      const me = await db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+      if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
+      const cas = me.casata_id;
+      const partite = await db.prepare(`SELECT p.id, p.giornata, p.casata_a_id, p.casata_b_id, p.casa_a, p.casa_b,
+      d.id disc_id, d.nome disciplina, d.dominio, d.min_giocatori minimo, d.max_giocatori massimo
+    FROM partite p JOIN discipline d ON d.id=p.disciplina_id
+    WHERE p.stato='da_giocare' AND d.attivo=1 AND (p.casata_a_id=? OR p.casata_b_id=?)
+    ORDER BY d.dominio, d.ordine, p.giornata, p.id`).all(cas, cas);
+      const membri = await db.prepare("SELECT id,nome,cognome FROM soci WHERE casata_id=? AND attivo=1 ORDER BY nome").all(cas);
+      const out = [];
+      for (const p of partite) {
+        const conv = await db.prepare("SELECT socio_id,stato FROM convocazioni WHERE partita_id=? AND socio_id IN (SELECT id FROM soci WHERE casata_id=?)").all(p.id, cas);
+        const byS = {};
+        conv.forEach((c) => byS[c.socio_id] = c.stato);
+        out.push({
+          partita_id: p.id,
+          disciplina: p.disciplina,
+          dominio: p.dominio,
+          giornata: p.giornata,
+          avversario: p.casata_a_id === cas ? p.casa_b : p.casa_a,
+          minimo: p.minimo,
+          massimo: p.massimo,
+          disponibili: conv.filter((c) => c.stato === "disponibile").length,
+          convocati: conv.length,
+          membri: membri.map((m) => ({ id: m.id, nome: `${m.nome} ${m.cognome}`.trim(), stato: byS[m.id] || "non_convocato" }))
+        });
+      }
+      res.json(out);
+    });
+    authUserRouter.post("/capitano/convoca-mirata", requireUser, async (req, res) => {
+      const me = await db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+      if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
+      const { partita_id, socio_ids } = req.body || {};
+      const p = await db.prepare("SELECT p.*, d.nome disc, d.id disc_id FROM partite p JOIN discipline d ON d.id=p.disciplina_id WHERE p.id=?").get(partita_id);
+      if (!p) return res.status(400).json({ error: "Partita inesistente" });
+      if (p.casata_a_id !== me.casata_id && p.casata_b_id !== me.casata_id) return res.status(403).json({ error: "Partita non della tua casata" });
+      const label = `${p.casa_a} vs ${p.casa_b} \xB7 G${p.giornata}`;
+      const ids = (Array.isArray(socio_ids) ? socio_ids : []).map(Number);
+      const insC = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,partita_id,match_label,quando,luogo,stato) VALUES (?,?,?,?,?,?, 'aperta')");
+      const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+      let n = 0;
+      const pushIds = [];
+      for (const sid of ids) {
+        const s = await db.prepare("SELECT id,notifiche_push FROM soci WHERE id=? AND casata_id=? AND attivo=1").get(sid, me.casata_id);
+        if (!s) continue;
+        if (await db.prepare("SELECT id FROM convocazioni WHERE partita_id=? AND socio_id=?").get(partita_id, sid)) continue;
+        await insC.run(sid, p.disc_id, partita_id, label, "", "");
+        if (s.notifiche_push) {
+          await insN.run(sid, "push", "casata", "Convocazione \xB7 " + p.disc, label);
+          pushIds.push(sid);
+        }
+        n++;
+      }
+      try {
+        await sendToSoci(pushIds, { title: "Convocazione \xB7 " + p.disc, body: label, url: "/", tag: "convocazione" });
+      } catch (_) {
+      }
+      audit(req.user.tessera_code, "convoca_mirata", "partite", partita_id, `${n} convocati`);
+      res.status(201).json({ ok: true, convocati: n });
+    });
+    authUserRouter.get("/notifiche", requireUser, async (req, res) => {
+      const socio = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
+      const rows = socio ? await db.prepare("SELECT id,tipo,titolo,corpo,letta,created_at FROM notifiche WHERE socio_id=? ORDER BY created_at DESC LIMIT 50").all(socio.id) : [];
+      res.json(rows);
+    });
+    HOST_FIELDS2 = ["nome", "cir", "cin", "regole", "isolato", "numero", "check_out", "lat", "lng"];
+    authUserRouter.get("/host/strutture", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(me.id);
+      let ko = false;
+      const strutture = rows.map((r) => {
+        const d = tryDecryptJSON(r.dati_cifrati);
+        if (!d) {
+          ko = true;
+          return { id: r.id, ko: true, attivo: r.attivo };
+        }
+        return { id: r.id, attivo: r.attivo, ...d };
+      });
+      if (ko) {
+        await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
+        audit(me.tessera_code, "host_KO", "strutture", me.id, "integrit\xE0 non verificabile");
+      }
+      res.json({ host: me.host ? 1 : 0, max: 3, host_ko: ko ? 1 : me.host_ko, strutture });
+    });
+    authUserRouter.post("/host/strutture", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(me.id)).n;
+      if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
+      const b = req.body || {};
+      if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Il nome della struttura \xE8 obbligatorio" });
+      const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(me.id, encryptJSON(pickStruttura2(b)));
+      if (!me.host) await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(me.id);
+      audit(me.tessera_code, "host_crea_struttura", "strutture", info.lastInsertRowid);
+      res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+    });
+    authUserRouter.put("/host/strutture/:id", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
+      if (!st) return res.status(404).json({ error: "Struttura non trovata" });
+      const b = req.body || {};
+      await db.prepare("UPDATE strutture SET dati_cifrati=?,attivo=? WHERE id=?").run(encryptJSON(pickStruttura2(b)), b.attivo === false ? 0 : 1, req.params.id);
+      audit(me.tessera_code, "host_modifica_struttura", "strutture", req.params.id);
+      res.json({ ok: true });
+    });
+    authUserRouter.delete("/host/strutture/:id", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
+      if (!st) return res.status(404).json({ error: "Struttura non trovata" });
+      await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
+      await db.prepare("DELETE FROM strutture WHERE id=?").run(req.params.id);
+      audit(me.tessera_code, "host_elimina_struttura", "strutture", req.params.id);
+      res.json({ ok: true });
+    });
+    authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
+      await sganciaScaduti();
+      const me = await meSocio(req);
+      if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+      if (me.soggiorno_al && me.soggiorno_al < oggiISO()) return res.json({ collegato: false, terminato: true });
+      if (!me.struttura_id) return res.json({ collegato: false });
+      const st = await db.prepare("SELECT id,dati_cifrati FROM strutture WHERE id=? AND attivo=1").get(me.struttura_id);
+      if (!st) return res.json({ collegato: false });
+      const d = tryDecryptJSON(st.dati_cifrati);
+      if (!d) {
+        await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
+        audit(me.tessera_code, "host_KO_vista_ospite", "strutture", st.id, "integrit\xE0 non verificabile");
+        return res.status(423).json({ ko: true, error: "Dati della struttura non disponibili" });
+      }
+      res.json({ collegato: true, struttura: { nome: d.nome, cir: d.cir, cin: d.cin, regole: d.regole, isolato: d.isolato, numero: d.numero, check_out: d.check_out, lat: d.lat, lng: d.lng }, soggiorno: { dal: me.soggiorno_dal, al: me.soggiorno_al } });
+    });
+    authUserRouter.get("/hosts-cerca", requireUser, async (req, res) => {
+      const q = "%" + String(req.query.q || "").trim().toLowerCase() + "%";
+      if (String(req.query.q || "").trim().length < 2) return res.json({ hosts: [] });
+      const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE tipo_profilo IN ('residente','socio_residente') AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
+      res.json({ hosts: rows });
+    });
+    authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+      if (me.tipo_profilo !== "ospite_temporaneo") return res.status(403).json({ error: "Solo un visitatore pu\xF2 chiedere l'aggancio a una casa" });
+      const hostId = Number(req.body?.host_id);
+      const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND tipo_profilo IN ('residente','socio_residente') AND attivo=1").get(hostId);
+      if (!host) return res.status(404).json({ error: "Host non trovato" });
+      const ex = await db.prepare("SELECT id FROM richieste_aggancio WHERE ospite_id=? AND stato='in_attesa'").get(me.id);
+      if (ex) return res.status(409).json({ error: "Hai gi\xE0 una richiesta in attesa" });
+      const info = await db.prepare("INSERT INTO richieste_aggancio (ospite_id,host_id,stato) VALUES (?,?,'in_attesa')").run(me.id, host.id);
+      notifica(host.id, "Nuovo ospite da confermare \u{1F464}", `${me.nome} ${me.cognome} dice di essere tuo ospite: confermi l'aggancio alla casa?`);
+      audit(me.tessera_code, "aggancio_richiesta", "richieste_aggancio", Number(info.lastInsertRowid), `host ${host.id}`);
+      res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), host: { nome: host.nome, cognome: host.cognome } });
+    });
+    authUserRouter.get("/aggancio/stato", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!me) return res.status(404).json({ error: "Profilo non trovato" });
+      const r = await db.prepare("SELECT ra.id,ra.stato,ra.created_at,s.nome host_nome,s.cognome host_cognome FROM richieste_aggancio ra JOIN soci s ON s.id=ra.host_id WHERE ra.ospite_id=? ORDER BY ra.id DESC LIMIT 1").get(me.id);
+      res.json({ richiesta: r || null, collegato: !!me.struttura_id });
+    });
+    authUserRouter.get("/host/richieste", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const rows = await db.prepare("SELECT ra.id,ra.ospite_id,ra.created_at,s.nome,s.cognome,s.soggiorno_dal,s.soggiorno_al FROM richieste_aggancio ra JOIN soci s ON s.id=ra.ospite_id WHERE ra.host_id=? AND ra.stato='in_attesa' ORDER BY ra.id DESC").all(me.id);
+      res.json({ richieste: rows });
+    });
+    authUserRouter.post("/host/richieste/:id/approva", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
+      if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
+      const ids = await myStruttureIds(me.id);
+      if (!ids.length) return res.status(409).json({ error: `Aggiungi prima la tua casa in "Le mie case", poi conferma l'ospite.` });
+      const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : ids[0];
+      if (!ids.includes(sid)) return res.status(403).json({ error: "Struttura non tua" });
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      await db.prepare("UPDATE richieste_aggancio SET stato='approvata',struttura_id=?,updated_at=? WHERE id=?").run(sid, now, r.id);
+      await db.prepare("UPDATE soci SET struttura_id=? WHERE id=?").run(sid, r.ospite_id);
+      notifica(r.ospite_id, "Casa confermata \u{1F3E1}", `${me.nome} ${me.cognome} ha confermato: ora vedi "Casa mia".`);
+      audit(me.tessera_code, "aggancio_approva", "richieste_aggancio", r.id, `ospite ${r.ospite_id} \u2192 struttura ${sid}`);
+      res.json({ ok: true });
+    });
+    authUserRouter.post("/host/richieste/:id/rifiuta", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
+      if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
+      await db.prepare("UPDATE richieste_aggancio SET stato='rifiutata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
+      audit(me.tessera_code, "aggancio_rifiuta", "richieste_aggancio", r.id, `ospite ${r.ospite_id}`);
+      res.json({ ok: true });
+    });
+    authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
+      await sganciaScaduti();
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const ids = await myStruttureIds(me.id);
+      if (!ids.length) return res.json({ ospiti: [] });
+      const ph = ids.map(() => "?").join(",");
+      const rows = await db.prepare(`SELECT id,nome,cognome,tessera_code,struttura_id,soggiorno_dal,soggiorno_al,attivo FROM soci WHERE tipo_profilo='ospite_temporaneo' AND struttura_id IN (${ph}) ORDER BY id DESC`).all(...ids);
+      res.json({ ospiti: rows });
+    });
+    authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) => {
+      const me = await meSocio(req);
+      if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
+      const ids = await myStruttureIds(me.id);
+      const g = await db.prepare("SELECT id,struttura_id FROM soci WHERE id=? AND tipo_profilo='ospite_temporaneo'").get(req.params.id);
+      if (!g || !ids.includes(g.struttura_id)) return res.status(404).json({ error: "Visitatore non trovato" });
+      await db.prepare("UPDATE soci SET struttura_id=NULL WHERE id=?").run(g.id);
+      audit(me.tessera_code, "aggancio_scollega", "soci", g.id);
+      res.json({ ok: true });
+    });
+  }
+});
+
+// server/crypto.js
+import crypto from "node:crypto";
+function encryptJSON(obj) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", KEY, iv);
+  const pt = Buffer.from(JSON.stringify(obj), "utf8");
+  const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, ct]).toString("base64");
+}
+function decryptJSON(blob) {
+  const buf = Buffer.from(String(blob || ""), "base64");
+  if (buf.length < 28) throw new Error("blob cifrato non valido");
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const ct = buf.subarray(28);
+  const d = crypto.createDecipheriv("aes-256-gcm", KEY, iv);
+  d.setAuthTag(tag);
+  const pt = Buffer.concat([d.update(ct), d.final()]);
+  return JSON.parse(pt.toString("utf8"));
+}
+function tryDecryptJSON(blob) {
+  try {
+    return decryptJSON(blob);
+  } catch (_) {
+    return null;
+  }
+}
+var RAW, ENC_IS_DEV_KEY, KEYSOURCE, KEY;
+var init_crypto = __esm({
+  "server/crypto.js"() {
+    init_authuser();
+    RAW = process.env.KOINE_ENC_KEY || "";
+    ENC_IS_DEV_KEY = !RAW;
+    KEYSOURCE = RAW || "KOINE-DEV-ENC-KEY-do-not-use-in-produzione";
+    KEY = crypto.createHash("sha256").update(KEYSOURCE, "utf8").digest();
+    if (ENC_IS_DEV_KEY && (process.env.KOINE_ENV || "dev") === "prod") {
+      console.warn("[crypto] ATTENZIONE: KOINE_ENC_KEY non impostata in produzione \u2014 i dati host userebbero una chiave di sviluppo.");
+    }
+  }
+});
+
 // server/menucat.js
 var menucat_exports = {};
 __export(menucat_exports, {
@@ -62,6 +608,214 @@ var init_menucat = __esm({
     ];
     CATEGORIE_ORDINE = CAT_RULES.map((r) => r[0]).concat(["Bar", "Cucina"]);
     PUNTO_GARDEN_RX = /panin|toast|piadin|hamburger|cheeseburger|hot\s*dog|hotdog|pizz|focacc|tramezzin|\bwrap\b|insalat|\bpasta\b|bruschett|tagliere|\bfritt|arancin|panell|crocch|wurstel|petto\s*di\s*pollo|cotolett|\bpiatt|contorn|combo|bambini|salsicc|melanzan|\bkebab\b/i;
+  }
+});
+
+// server/tournament.js
+async function casateByName() {
+  const rows = await db.prepare("SELECT id,nome FROM casate").all();
+  const m = {};
+  rows.forEach((r) => m[r.nome] = r.id);
+  return m;
+}
+function roundRobinRounds(teams) {
+  const arr = teams.slice();
+  if (arr.length % 2 === 1) arr.push(null);
+  const n = arr.length;
+  const fixed = arr[0];
+  let rest = arr.slice(1);
+  const rounds = [];
+  for (let r = 0; r < n - 1; r++) {
+    const line = [fixed, ...rest];
+    const pairs = [];
+    for (let i = 0; i < n / 2; i++) {
+      const a = line[i], b = line[n - 1 - i];
+      if (a != null && b != null) pairs.push([a, b]);
+    }
+    rounds.push(pairs);
+    rest = [rest[rest.length - 1], ...rest.slice(0, rest.length - 1)];
+  }
+  return rounds;
+}
+async function generaCalendario(disciplinaId) {
+  const disc = await db.prepare("SELECT id FROM discipline WHERE id=?").get(disciplinaId);
+  if (!disc) throw new Error("Disciplina inesistente");
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
+  const oldGironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
+  for (const g of oldGironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
+  const idByName = await casateByName();
+  const nomi = [
+    ...ORDINE_CASATE.filter((n) => idByName[n]),
+    ...Object.keys(idByName).filter((n) => !ORDINE_CASATE.includes(n))
+  ];
+  const off = nomi.length ? ((disciplinaId - 1) % nomi.length + nomi.length) % nomi.length : 0;
+  const rot = nomi.slice(off).concat(nomi.slice(0, off));
+  const gA = rot.filter((_, i) => i % 2 === 0).slice(0, 4);
+  const gB = rot.filter((_, i) => i % 2 === 1).slice(0, 4);
+  const insGir = db.prepare("INSERT INTO gironi (disciplina_id,nome) VALUES (?,?)");
+  const insCla = db.prepare("INSERT INTO classifica (girone_id,casata_id) VALUES (?,?)");
+  const insPar = db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
+    VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`);
+  for (const [nome, sq] of [["Girone A", gA], ["Girone B", gB]]) {
+    if (!sq.length) continue;
+    const gid = (await insGir.run(disciplinaId, nome)).lastInsertRowid;
+    for (const n of sq) await insCla.run(gid, idByName[n]);
+    const giornate = roundRobinRounds(sq);
+    for (let ri = 0; ri < giornate.length; ri++) {
+      for (const [a, b] of giornate[ri]) await insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b);
+    }
+  }
+  await db.prepare("UPDATE discipline SET stato='in_corso' WHERE id=?").run(disciplinaId);
+  return getTabellone(disciplinaId);
+}
+async function classificaCombinata(disciplinaId) {
+  return await db.prepare(`SELECT ca.nome, ca.colore, c.pt, c.v, c.p, c.pg, c.gf, c.gs
+    FROM classifica c JOIN casate ca ON ca.id=c.casata_id JOIN gironi g ON g.id=c.girone_id
+    WHERE g.disciplina_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(disciplinaId);
+}
+async function archiviaEdizione(disciplinaId) {
+  const d = await db.prepare("SELECT id,nome,dominio,data_inizio,data_fine FROM discipline WHERE id=?").get(disciplinaId);
+  if (!d) throw new Error("Disciplina inesistente");
+  const cl = await classificaCombinata(disciplinaId);
+  const vincitore = cl[0]?.nome || null;
+  await db.prepare("INSERT INTO edizioni (disciplina_id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,classifica) VALUES (?,?,?,?,?,?,?)").run(d.id, d.nome, d.dominio, d.data_inizio || null, d.data_fine || null, vincitore, JSON.stringify(cl));
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
+  const g = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
+  for (const x of g) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(x.id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
+  await db.prepare("UPDATE discipline SET stato='preparazione' WHERE id=?").run(disciplinaId);
+  return { vincitore, casate: cl.length };
+}
+async function recomputeGirone(gironeId) {
+  const disc = await db.prepare(`SELECT d.punti_vitt pv, d.punti_par pp FROM gironi g JOIN discipline d ON d.id=g.disciplina_id WHERE g.id=?`).get(gironeId);
+  const rows = await db.prepare("SELECT casata_id FROM classifica WHERE girone_id=?").all(gironeId);
+  const st = {};
+  rows.forEach((r) => st[r.casata_id] = { pg: 0, v: 0, p: 0, gf: 0, gs: 0, pt: 0 });
+  const partite = await db.prepare("SELECT * FROM partite WHERE girone_id=? AND stato='giocata'").all(gironeId);
+  for (const m of partite) {
+    const A = st[m.casata_a_id], B = st[m.casata_b_id];
+    if (!A || !B) continue;
+    A.pg++;
+    B.pg++;
+    A.gf += m.gol_a;
+    A.gs += m.gol_b;
+    B.gf += m.gol_b;
+    B.gs += m.gol_a;
+    if (m.gol_a > m.gol_b) {
+      A.v++;
+      A.pt += disc.pv;
+    } else if (m.gol_a < m.gol_b) {
+      B.v++;
+      B.pt += disc.pv;
+    } else {
+      A.p++;
+      B.p++;
+      A.pt += disc.pp;
+      B.pt += disc.pp;
+    }
+  }
+  const upd = db.prepare("UPDATE classifica SET pg=?,v=?,p=?,gf=?,gs=?,pt=? WHERE girone_id=? AND casata_id=?");
+  for (const cid of Object.keys(st)) {
+    const s = st[cid];
+    await upd.run(s.pg, s.v, s.p, s.gf, s.gs, s.pt, gironeId, cid);
+  }
+}
+async function registraRisultato(partitaId, golA, golB) {
+  const m = await db.prepare("SELECT * FROM partite WHERE id=?").get(partitaId);
+  if (!m) throw new Error("Partita inesistente");
+  await db.prepare("UPDATE partite SET gol_a=?,gol_b=?,punteggio=?,stato='giocata' WHERE id=?").run(golA, golB, `${golA}\u2013${golB}`, partitaId);
+  if (m.girone_id) await recomputeGirone(m.girone_id);
+  await avanzaFaseFinale(m.disciplina_id);
+  return true;
+}
+async function faseMatches(disciplinaId, fase) {
+  return db.prepare("SELECT * FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
+}
+async function insFinale(disciplinaId, fase, slot, a, b) {
+  await db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
+    VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`).run(disciplinaId, null, fase, slot, a.id, b.id, a.nome, b.nome);
+}
+async function avanzaFaseFinale(disciplinaId) {
+  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
+  if (gironi.length !== 2) return;
+  const gironiCompleti = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n > 0;
+  if (!gironiCompleti) return;
+  if (!(await faseMatches(disciplinaId, "quarti")).length) {
+    const A = await classificaOrdinata(gironi[0].id), B = await classificaOrdinata(gironi[1].id);
+    if (A.length >= 4 && B.length >= 4) {
+      const coppie = [[A[0], B[3]], [A[1], B[2]], [A[2], B[1]], [A[3], B[0]]];
+      for (let i = 0; i < 4; i++) await insFinale(disciplinaId, "quarti", i + 1, { id: coppie[i][0].casata_id, nome: coppie[i][0].nome }, { id: coppie[i][1].casata_id, nome: coppie[i][1].nome });
+    }
+    return;
+  }
+  const quarti = await faseMatches(disciplinaId, "quarti");
+  const quartiOk = quarti.length === 4 && quarti.every((m) => vincitrice(m));
+  if (quartiOk && !(await faseMatches(disciplinaId, "semifinale")).length) {
+    const w = quarti.map(vincitrice);
+    await insFinale(disciplinaId, "semifinale", 1, w[0], w[3]);
+    await insFinale(disciplinaId, "semifinale", 2, w[1], w[2]);
+    return;
+  }
+  const semi = await faseMatches(disciplinaId, "semifinale");
+  const semiOk = semi.length === 2 && semi.every((m) => vincitrice(m));
+  if (semiOk && !(await faseMatches(disciplinaId, "finale1")).length) {
+    await insFinale(disciplinaId, "finale1", 1, vincitrice(semi[0]), vincitrice(semi[1]));
+    await insFinale(disciplinaId, "finale3", 1, perdente(semi[0]), perdente(semi[1]));
+  }
+}
+async function graduatoriaFinale(disciplinaId) {
+  const f1 = (await faseMatches(disciplinaId, "finale1"))[0];
+  const f3 = (await faseMatches(disciplinaId, "finale3"))[0];
+  if (!f1 || !vincitrice(f1) || !f3 || !vincitrice(f3)) return null;
+  const quarti = await faseMatches(disciplinaId, "quarti");
+  const eliminatiQuarti = quarti.map(perdente).filter(Boolean);
+  const out = [
+    { posizione: 1, punti: COPPA_PUNTI[1], ...vincitrice(f1) },
+    { posizione: 2, punti: COPPA_PUNTI[2], ...perdente(f1) },
+    { posizione: 3, punti: COPPA_PUNTI[3], ...vincitrice(f3) },
+    { posizione: 4, punti: COPPA_PUNTI[4], ...perdente(f3) }
+  ];
+  eliminatiQuarti.forEach((e, i) => out.push({ posizione: 5 + i, punti: COPPA_PUNTI.altri, ...e }));
+  return out;
+}
+async function classificaOrdinata(gironeId) {
+  return await db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
+    WHERE c.girone_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(gironeId);
+}
+async function getTabellone(disciplinaId) {
+  await avanzaFaseFinale(disciplinaId);
+  const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
+  const gironi = [];
+  for (const g of gironiRows) {
+    gironi.push({
+      id: g.id,
+      nome: g.nome,
+      classifica: await classificaOrdinata(g.id),
+      partite: await db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
+    });
+  }
+  const nGir = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n;
+  const tuttiGiocati = nGir > 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0;
+  const selFase = (fase) => db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato,fase FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
+  const fasi = {
+    quarti: await selFase("quarti"),
+    semifinali: await selFase("semifinale"),
+    finale3: await selFase("finale3"),
+    finale1: await selFase("finale1")
+  };
+  const hasFinale = fasi.quarti.length > 0;
+  const graduatoria = await graduatoriaFinale(disciplinaId);
+  return { gironi, fasi, hasFinale, graduatoria, completo: tuttiGiocati };
+}
+var ORDINE_CASATE, COPPA_PUNTI, vincitrice, perdente;
+var init_tournament = __esm({
+  "server/tournament.js"() {
+    init_db();
+    ORDINE_CASATE = ["Aretusa", "Ortigia", "Neapolis", "Dionisio", "Ciane", "Plemmirio", "Epipoli", "Anapo"];
+    COPPA_PUNTI = { 1: 12, 2: 10, 3: 8, 4: 6, altri: 4 };
+    vincitrice = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_a_id, nome: m.casa_a } : { id: m.casata_b_id, nome: m.casa_b };
+    perdente = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_b_id, nome: m.casa_b } : { id: m.casata_a_id, nome: m.casa_a };
   }
 });
 
@@ -807,6 +1561,29 @@ async function migrate() {
     }
   } catch (_) {
   }
+  await addIfMissing("campi", "max_slot_prenotazione", "max_slot_prenotazione INTEGER NOT NULL DEFAULT 2");
+  await addIfMissing("campi", "max_pren_settimana", "max_pren_settimana INTEGER NOT NULL DEFAULT 3");
+  await addIfMissing("partite_aperte", "aperta_ai_soci", "aperta_ai_soci INTEGER NOT NULL DEFAULT 1");
+  await addIfMissing("partite_aperte", "n_slot", "n_slot INTEGER NOT NULL DEFAULT 1");
+  await addIfMissing("partite_aperte", "slot_fine", "slot_fine TEXT");
+  await addIfMissing("partite_aperte", "titolare_socio_id", "titolare_socio_id INTEGER");
+  await addIfMissing("prenotazioni_campo", "titolare_socio_id", "titolare_socio_id INTEGER");
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS campi_blocchi (
+    id        INTEGER PRIMARY KEY,
+    campo_id  INTEGER NOT NULL REFERENCES campi(id) ON DELETE CASCADE,
+    data      TEXT NOT NULL,                          -- YYYY-MM-DD
+    slot_da   TEXT NOT NULL DEFAULT '00:00',          -- HH:MM inclusa
+    slot_a    TEXT NOT NULL DEFAULT '23:59',          -- HH:MM inclusa
+    motivo    TEXT NOT NULL DEFAULT 'torneo',         -- torneo | manutenzione | evento
+    nota      TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_blocchi_campo ON campi_blocchi(campo_id, data);
+  `);
+  } catch (_) {
+  }
   try {
     if (await getSetting("campi_categoria_backfill", "") !== "v1") {
       const MAP = { pickleball: "tennis", soft_tennis: "tennis", beach: "volley", calcetto: "calcio" };
@@ -839,6 +1616,9 @@ async function migrate() {
 var TURSO_URL, AUTH, url, LOCAL_FILE, IS_REMOTE, DB_PATH, client, flat, db;
 var init_db = __esm({
   "server/db.js"() {
+    init_crypto();
+    init_menucat();
+    init_tournament();
     TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.KOINE_DB_URL || "";
     AUTH = process.env.TURSO_AUTH_TOKEN || void 0;
     LOCAL_FILE = null;
@@ -879,100 +1659,7 @@ var init_db = __esm({
   }
 });
 
-// server/push.js
-var push_exports = {};
-__export(push_exports, {
-  publicKey: () => publicKey,
-  pushEnabled: () => pushEnabled,
-  removeSubscription: () => removeSubscription,
-  saveSubscription: () => saveSubscription,
-  sendToSoci: () => sendToSoci,
-  sendToSocio: () => sendToSocio
-});
-import webpush from "web-push";
-function pushEnabled() {
-  return ENABLED;
-}
-function publicKey() {
-  return ENABLED ? PUB : null;
-}
-async function saveSubscription(socioId, sub) {
-  if (!sub || !sub.endpoint) return false;
-  const k = sub.keys || {};
-  try {
-    await db.prepare("INSERT OR REPLACE INTO push_sub (endpoint,socio_id,p256dh,auth,created_at) VALUES (?,?,?,?,datetime('now'))").run(sub.endpoint, socioId, k.p256dh || "", k.auth || "");
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-async function removeSubscription(endpoint) {
-  if (endpoint) {
-    try {
-      await db.prepare("DELETE FROM push_sub WHERE endpoint=?").run(endpoint);
-    } catch (_) {
-    }
-  }
-}
-async function sendToSubs(subs, payload) {
-  if (!ENABLED || !subs.length) return 0;
-  const data = JSON.stringify(payload);
-  let sent = 0;
-  for (const s of subs) {
-    const sub = { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } };
-    try {
-      await webpush.sendNotification(sub, data);
-      sent++;
-    } catch (e) {
-      const code = e && e.statusCode;
-      if (code === 404 || code === 410) await removeSubscription(s.endpoint);
-    }
-  }
-  return sent;
-}
-async function sendToSocio(socioId, payload) {
-  if (!ENABLED) return 0;
-  const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(socioId);
-  return sendToSubs(subs, payload);
-}
-async function sendToSoci(socioIds, payload) {
-  if (!ENABLED || !socioIds || !socioIds.length) return 0;
-  const uniq = [...new Set(socioIds.filter(Boolean).map(Number))];
-  const rows = [];
-  for (const id of uniq) {
-    const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(id);
-    rows.push(...subs);
-  }
-  return sendToSubs(rows, payload);
-}
-var PUB, PRIV, SUBJ, ENABLED;
-var init_push = __esm({
-  "server/push.js"() {
-    init_db();
-    PUB = process.env.VAPID_PUBLIC || process.env.VAPID_PUBLIC_KEY || "";
-    PRIV = process.env.VAPID_PRIVATE || process.env.VAPID_PRIVATE_KEY || "";
-    SUBJ = process.env.VAPID_SUBJECT || "mailto:info@koine.local";
-    ENABLED = false;
-    if (PUB && PRIV) {
-      try {
-        webpush.setVapidDetails(SUBJ, PUB, PRIV);
-        ENABLED = true;
-      } catch (e) {
-        console.error("VAPID non valido:", e?.message || e);
-      }
-    }
-  }
-});
-
-// build/entry.mjs
-init_db();
-import express from "express";
-
-// server/seed.js
-init_db();
-
 // server/auth.js
-init_db();
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
@@ -986,8 +1673,6 @@ function verifyPassword(password, stored) {
   const ref = Buffer.from(hash, "hex");
   return test.length === ref.length && timingSafeEqual(test, ref);
 }
-var TTL = 8 * 60 * 60 * 1e3;
-var cache = /* @__PURE__ */ new Map();
 async function persist(token, kind, data, exp) {
   cache.set(token, { kind, data, exp });
   try {
@@ -1067,4890 +1752,17 @@ async function getUserSession(token) {
 function genOtp() {
   return String(randomBytes(3).readUIntBE(0, 3) % 1e6).padStart(6, "0");
 }
-
-// server/tournament.js
-init_db();
-var ORDINE_CASATE = ["Aretusa", "Ortigia", "Neapolis", "Dionisio", "Ciane", "Plemmirio", "Epipoli", "Anapo"];
-async function casateByName() {
-  const rows = await db.prepare("SELECT id,nome FROM casate").all();
-  const m = {};
-  rows.forEach((r) => m[r.nome] = r.id);
-  return m;
-}
-function roundRobinRounds(teams) {
-  const arr = teams.slice();
-  if (arr.length % 2 === 1) arr.push(null);
-  const n = arr.length;
-  const fixed = arr[0];
-  let rest = arr.slice(1);
-  const rounds = [];
-  for (let r = 0; r < n - 1; r++) {
-    const line = [fixed, ...rest];
-    const pairs = [];
-    for (let i = 0; i < n / 2; i++) {
-      const a = line[i], b = line[n - 1 - i];
-      if (a != null && b != null) pairs.push([a, b]);
-    }
-    rounds.push(pairs);
-    rest = [rest[rest.length - 1], ...rest.slice(0, rest.length - 1)];
+var TTL, cache;
+var init_auth = __esm({
+  "server/auth.js"() {
+    init_db();
+    TTL = 8 * 60 * 60 * 1e3;
+    cache = /* @__PURE__ */ new Map();
   }
-  return rounds;
-}
-async function generaCalendario(disciplinaId) {
-  const disc = await db.prepare("SELECT id FROM discipline WHERE id=?").get(disciplinaId);
-  if (!disc) throw new Error("Disciplina inesistente");
-  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
-  const oldGironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
-  for (const g of oldGironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
-  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
-  const idByName = await casateByName();
-  const nomi = [
-    ...ORDINE_CASATE.filter((n) => idByName[n]),
-    ...Object.keys(idByName).filter((n) => !ORDINE_CASATE.includes(n))
-  ];
-  const off = nomi.length ? ((disciplinaId - 1) % nomi.length + nomi.length) % nomi.length : 0;
-  const rot = nomi.slice(off).concat(nomi.slice(0, off));
-  const gA = rot.filter((_, i) => i % 2 === 0).slice(0, 4);
-  const gB = rot.filter((_, i) => i % 2 === 1).slice(0, 4);
-  const insGir = db.prepare("INSERT INTO gironi (disciplina_id,nome) VALUES (?,?)");
-  const insCla = db.prepare("INSERT INTO classifica (girone_id,casata_id) VALUES (?,?)");
-  const insPar = db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
-    VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`);
-  for (const [nome, sq] of [["Girone A", gA], ["Girone B", gB]]) {
-    if (!sq.length) continue;
-    const gid = (await insGir.run(disciplinaId, nome)).lastInsertRowid;
-    for (const n of sq) await insCla.run(gid, idByName[n]);
-    const giornate = roundRobinRounds(sq);
-    for (let ri = 0; ri < giornate.length; ri++) {
-      for (const [a, b] of giornate[ri]) await insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b);
-    }
-  }
-  await db.prepare("UPDATE discipline SET stato='in_corso' WHERE id=?").run(disciplinaId);
-  return getTabellone(disciplinaId);
-}
-async function classificaCombinata(disciplinaId) {
-  return await db.prepare(`SELECT ca.nome, ca.colore, c.pt, c.v, c.p, c.pg, c.gf, c.gs
-    FROM classifica c JOIN casate ca ON ca.id=c.casata_id JOIN gironi g ON g.id=c.girone_id
-    WHERE g.disciplina_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(disciplinaId);
-}
-async function archiviaEdizione(disciplinaId) {
-  const d = await db.prepare("SELECT id,nome,dominio,data_inizio,data_fine FROM discipline WHERE id=?").get(disciplinaId);
-  if (!d) throw new Error("Disciplina inesistente");
-  const cl = await classificaCombinata(disciplinaId);
-  const vincitore = cl[0]?.nome || null;
-  await db.prepare("INSERT INTO edizioni (disciplina_id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,classifica) VALUES (?,?,?,?,?,?,?)").run(d.id, d.nome, d.dominio, d.data_inizio || null, d.data_fine || null, vincitore, JSON.stringify(cl));
-  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
-  const g = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
-  for (const x of g) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(x.id);
-  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(disciplinaId);
-  await db.prepare("UPDATE discipline SET stato='preparazione' WHERE id=?").run(disciplinaId);
-  return { vincitore, casate: cl.length };
-}
-async function recomputeGirone(gironeId) {
-  const disc = await db.prepare(`SELECT d.punti_vitt pv, d.punti_par pp FROM gironi g JOIN discipline d ON d.id=g.disciplina_id WHERE g.id=?`).get(gironeId);
-  const rows = await db.prepare("SELECT casata_id FROM classifica WHERE girone_id=?").all(gironeId);
-  const st = {};
-  rows.forEach((r) => st[r.casata_id] = { pg: 0, v: 0, p: 0, gf: 0, gs: 0, pt: 0 });
-  const partite = await db.prepare("SELECT * FROM partite WHERE girone_id=? AND stato='giocata'").all(gironeId);
-  for (const m of partite) {
-    const A = st[m.casata_a_id], B = st[m.casata_b_id];
-    if (!A || !B) continue;
-    A.pg++;
-    B.pg++;
-    A.gf += m.gol_a;
-    A.gs += m.gol_b;
-    B.gf += m.gol_b;
-    B.gs += m.gol_a;
-    if (m.gol_a > m.gol_b) {
-      A.v++;
-      A.pt += disc.pv;
-    } else if (m.gol_a < m.gol_b) {
-      B.v++;
-      B.pt += disc.pv;
-    } else {
-      A.p++;
-      B.p++;
-      A.pt += disc.pp;
-      B.pt += disc.pp;
-    }
-  }
-  const upd = db.prepare("UPDATE classifica SET pg=?,v=?,p=?,gf=?,gs=?,pt=? WHERE girone_id=? AND casata_id=?");
-  for (const cid of Object.keys(st)) {
-    const s = st[cid];
-    await upd.run(s.pg, s.v, s.p, s.gf, s.gs, s.pt, gironeId, cid);
-  }
-}
-async function registraRisultato(partitaId, golA, golB) {
-  const m = await db.prepare("SELECT * FROM partite WHERE id=?").get(partitaId);
-  if (!m) throw new Error("Partita inesistente");
-  await db.prepare("UPDATE partite SET gol_a=?,gol_b=?,punteggio=?,stato='giocata' WHERE id=?").run(golA, golB, `${golA}\u2013${golB}`, partitaId);
-  if (m.girone_id) await recomputeGirone(m.girone_id);
-  await avanzaFaseFinale(m.disciplina_id);
-  return true;
-}
-var COPPA_PUNTI = { 1: 12, 2: 10, 3: 8, 4: 6, altri: 4 };
-var vincitrice = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_a_id, nome: m.casa_a } : { id: m.casata_b_id, nome: m.casa_b };
-var perdente = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_b_id, nome: m.casa_b } : { id: m.casata_a_id, nome: m.casa_a };
-async function faseMatches(disciplinaId, fase) {
-  return db.prepare("SELECT * FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
-}
-async function insFinale(disciplinaId, fase, slot, a, b) {
-  await db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
-    VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`).run(disciplinaId, null, fase, slot, a.id, b.id, a.nome, b.nome);
-}
-async function avanzaFaseFinale(disciplinaId) {
-  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
-  if (gironi.length !== 2) return;
-  const gironiCompleti = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n > 0;
-  if (!gironiCompleti) return;
-  if (!(await faseMatches(disciplinaId, "quarti")).length) {
-    const A = await classificaOrdinata(gironi[0].id), B = await classificaOrdinata(gironi[1].id);
-    if (A.length >= 4 && B.length >= 4) {
-      const coppie = [[A[0], B[3]], [A[1], B[2]], [A[2], B[1]], [A[3], B[0]]];
-      for (let i = 0; i < 4; i++) await insFinale(disciplinaId, "quarti", i + 1, { id: coppie[i][0].casata_id, nome: coppie[i][0].nome }, { id: coppie[i][1].casata_id, nome: coppie[i][1].nome });
-    }
-    return;
-  }
-  const quarti = await faseMatches(disciplinaId, "quarti");
-  const quartiOk = quarti.length === 4 && quarti.every((m) => vincitrice(m));
-  if (quartiOk && !(await faseMatches(disciplinaId, "semifinale")).length) {
-    const w = quarti.map(vincitrice);
-    await insFinale(disciplinaId, "semifinale", 1, w[0], w[3]);
-    await insFinale(disciplinaId, "semifinale", 2, w[1], w[2]);
-    return;
-  }
-  const semi = await faseMatches(disciplinaId, "semifinale");
-  const semiOk = semi.length === 2 && semi.every((m) => vincitrice(m));
-  if (semiOk && !(await faseMatches(disciplinaId, "finale1")).length) {
-    await insFinale(disciplinaId, "finale1", 1, vincitrice(semi[0]), vincitrice(semi[1]));
-    await insFinale(disciplinaId, "finale3", 1, perdente(semi[0]), perdente(semi[1]));
-  }
-}
-async function graduatoriaFinale(disciplinaId) {
-  const f1 = (await faseMatches(disciplinaId, "finale1"))[0];
-  const f3 = (await faseMatches(disciplinaId, "finale3"))[0];
-  if (!f1 || !vincitrice(f1) || !f3 || !vincitrice(f3)) return null;
-  const quarti = await faseMatches(disciplinaId, "quarti");
-  const eliminatiQuarti = quarti.map(perdente).filter(Boolean);
-  const out = [
-    { posizione: 1, punti: COPPA_PUNTI[1], ...vincitrice(f1) },
-    { posizione: 2, punti: COPPA_PUNTI[2], ...perdente(f1) },
-    { posizione: 3, punti: COPPA_PUNTI[3], ...vincitrice(f3) },
-    { posizione: 4, punti: COPPA_PUNTI[4], ...perdente(f3) }
-  ];
-  eliminatiQuarti.forEach((e, i) => out.push({ posizione: 5 + i, punti: COPPA_PUNTI.altri, ...e }));
-  return out;
-}
-async function classificaOrdinata(gironeId) {
-  return await db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
-    WHERE c.girone_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(gironeId);
-}
-async function getTabellone(disciplinaId) {
-  await avanzaFaseFinale(disciplinaId);
-  const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
-  const gironi = [];
-  for (const g of gironiRows) {
-    gironi.push({
-      id: g.id,
-      nome: g.nome,
-      classifica: await classificaOrdinata(g.id),
-      partite: await db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
-    });
-  }
-  const nGir = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n;
-  const tuttiGiocati = nGir > 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0;
-  const selFase = (fase) => db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato,fase FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
-  const fasi = {
-    quarti: await selFase("quarti"),
-    semifinali: await selFase("semifinale"),
-    finale3: await selFase("finale3"),
-    finale1: await selFase("finale1")
-  };
-  const hasFinale = fasi.quarti.length > 0;
-  const graduatoria = await graduatoriaFinale(disciplinaId);
-  return { gironi, fasi, hasFinale, graduatoria, completo: tuttiGiocati };
-}
-
-// server/crypto.js
-import crypto from "node:crypto";
-var RAW = process.env.KOINE_ENC_KEY || "";
-var ENC_IS_DEV_KEY = !RAW;
-var KEYSOURCE = RAW || "KOINE-DEV-ENC-KEY-do-not-use-in-produzione";
-var KEY = crypto.createHash("sha256").update(KEYSOURCE, "utf8").digest();
-if (ENC_IS_DEV_KEY && (process.env.KOINE_ENV || "dev") === "prod") {
-  console.warn("[crypto] ATTENZIONE: KOINE_ENC_KEY non impostata in produzione \u2014 i dati host userebbero una chiave di sviluppo.");
-}
-function encryptJSON(obj) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", KEY, iv);
-  const pt = Buffer.from(JSON.stringify(obj), "utf8");
-  const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, ct]).toString("base64");
-}
-function decryptJSON(blob) {
-  const buf = Buffer.from(String(blob || ""), "base64");
-  if (buf.length < 28) throw new Error("blob cifrato non valido");
-  const iv = buf.subarray(0, 12);
-  const tag = buf.subarray(12, 28);
-  const ct = buf.subarray(28);
-  const d = crypto.createDecipheriv("aes-256-gcm", KEY, iv);
-  d.setAuthTag(tag);
-  const pt = Buffer.concat([d.update(ct), d.final()]);
-  return JSON.parse(pt.toString("utf8"));
-}
-function tryDecryptJSON(blob) {
-  try {
-    return decryptJSON(blob);
-  } catch (_) {
-    return null;
-  }
-}
-
-// server/seed.js
-var force = process.argv.includes("--force");
-async function seed({ verbose = false } = {}) {
-  await initSchema();
-  const already = (await db.prepare("SELECT count(*) c FROM casate").get()).c;
-  if (already > 0 && !force) {
-    if (verbose) console.log("DB gi\xE0 popolato \u2014 salto il seed (usa --force per riscrivere).");
-    return;
-  }
-  if (force) {
-    for (const t of ["audit_log", "allegati", "strutture", "partita_iscritti", "partite_aperte", "prenotazioni_campo", "campi", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
-      await db.exec(`DELETE FROM ${t};`);
-    }
-  }
-  const CASATE = [
-    ["Aretusa", "#2E6DA4", "l'onda", 62],
-    ["Ortigia", "#B7791F", "la rosa dei venti", 66],
-    ["Neapolis", "#C0553F", "il teatro", 54],
-    ["Dionisio", "#6E5AA6", "la maschera", 50],
-    ["Ciane", "#4d7a4a", "il papiro", 47],
-    ["Plemmirio", "#12324F", "il faro", 44],
-    ["Epipoli", "#7A8790", "le mura", 40],
-    ["Anapo", "#2E7D77", "il fiume", 37]
-  ];
-  const insCasata = db.prepare("INSERT INTO casate (nome,colore,motto,punti) VALUES (?,?,?,?)");
-  const casataId = {};
-  for (const c of CASATE) {
-    const r = await insCasata.run(...c);
-    casataId[c[0]] = r.lastInsertRowid;
-  }
-  const EVENTI = [
-    // Lunedì lasciato VUOTO di proposito: coincide con l'inizio dei periodi di vacanza (arrivi/partenze degli esterni).
-    ["lun", "Luned\xEC", "Giornata libera", "", "#7A8790", "Arrivi, partenze e riposo", "Nessuna attivit\xE0 in cartellone: il luned\xEC coincide con il cambio degli ospiti (arrivi e partenze). \xC8 il giorno di riposo del residence.", null, null, "libero", 1],
-    ["mar", "Marted\xEC", "Vinile & Vino", "Bussola Garden", "#C0553F", "Scegli tu la musica della serata", "La serata la costruisci tu: proponi un vinile, i brani e il perch\xE9. Le proposte della settimana diventano la scaletta di quella successiva.", "Proponi un vinile", "sheet-vinile", "serata", 2],
-    ["mer", "Mercoled\xEC", "Cinema d'autore sotto le stelle", "Bussola Stage", "#12324F", "Ortigia Film Festival & titoli d'autore", "Una proiezione a settimana: opere premiate all'Ortigia Film Festival, alternate a titoli pi\xF9 leggeri ma sempre d'autore.", "Prenota un posto", null, "cinema", 3],
-    ["gio", "Gioved\xEC", "Jazz & Cocktail", "Bussola Garden", "#2E7D77", "La serata-firma \xB7 trio live", "La serata-firma della Bussola: trio live acustico, luci basse, cocktail. Si cena prima dello spettacolo.", "Prenota un tavolo", null, "serata", 4],
-    ["ven", "Venerd\xEC", "Serata dei Clan", "Bussola Stage", "#6E5AA6", "Le otto casate si sfidano", "Le otto casate si sfidano dall\u2019apericena a tarda sera. Questa settimana: gara di karaoke. Coinvolgi un ospite e la tua casata guadagna punti extra.", "Vai alla Coppa", "go-coppa", "serata", 5],
-    ["sab", "Sabato", "Live Session", "Bussola Stage", "#B7791F", "Band e cantautori emergenti", "Band e cantautori emergenti dal vivo sul Bussola Stage.", "Prenota un posto", null, "serata", 6],
-    ["dom", "Domenica", "Open Mic", "Bussola Stage", "#B7791F", "Tre minuti di palco per te", "Microfono aperto: tre minuti a testa per cantare, recitare un monologo, fare stand-up (linguaggio moderato) o suonare.", "Salgo sul palco", "sheet-openmic", "serata", 7]
-  ];
-  const insEvento = db.prepare("INSERT INTO eventi (chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
-  for (const e of EVENTI) await insEvento.run(...e);
-  const RISORSE = [
-    ["pickleball", "Campo di Pickleball", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera sul palco."],
-    ["soft", "Campo di Soft tennis", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera."],
-    ["cowo", "Postazione Coworking", "coworking", "Casa di Carta \xB7 wi-fi e caff\xE8", JSON.stringify(["Mattina (9\u201313)", "Pomeriggio (14\u201318)", "Giornata intera"]), null],
-    ["tavolo", "Tavolo per la cena", "tavolo", "~40 coperti serviti \xB7 turni 20:00 e 21:30", JSON.stringify(["20:00", "21:30"]), "Indica il numero di persone. All\u2019apertura di stagione c\u2019\xE8 un unico turno alle 20:00 (segue la sfilata dei clan)."]
-  ];
-  const insRis = db.prepare("INSERT INTO risorse (chiave,nome,tipo,sottotitolo,slots,nota) VALUES (?,?,?,?,?,?)");
-  for (const r of RISORSE) await insRis.run(...r);
-  const CAS_A = ["Aretusa", "Ortigia", "Ciane", "Epipoli"];
-  const CAS_B = ["Neapolis", "Dionisio", "Plemmirio", "Anapo"];
-  const SPORT = [
-    [
-      "pickle",
-      "Pickleball",
-      [[3, 3, 9], [3, 2, 6], [3, 1, 3], [3, 0, 0]],
-      [[3, 2, 6], [3, 2, 6], [3, 1, 3], [3, 1, 3]],
-      [["Aretusa", "Ortigia", "Dom 17:30", "Campo 1"], ["Neapolis", "Dionisio", "Dom 19:00", "Campo 1"], ["Ciane", "Epipoli", "Mar 17:30", "Campo 1"]],
-      [["Aretusa", "Ciane", "11\u20136"], ["Ortigia", "Epipoli", "11\u20139"], ["Plemmirio", "Anapo", "9\u201311"]]
-    ],
-    [
-      "soft",
-      "Soft tennis",
-      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
-      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
-      [["Aretusa", "Plemmirio", "Gio 18:00", "Campo 1"], ["Ortigia", "Ciane", "Sab 17:30", "Campo 1"]],
-      [["Neapolis", "Anapo", "6\u20132"], ["Dionisio", "Epipoli", "6\u20134"]]
-    ],
-    [
-      "pingpong",
-      "Ping pong",
-      [[3, 3, 6], [3, 2, 4], [3, 1, 2], [3, 0, 0]],
-      [[3, 2, 4], [3, 2, 4], [3, 1, 2], [3, 1, 2]],
-      [["Ciane", "Aretusa", "Lun 18:30", "Bussola Bar"], ["Anapo", "Neapolis", "Mer 18:30", "Bussola Bar"]],
-      [["Ortigia", "Epipoli", "3\u20131"], ["Dionisio", "Plemmirio", "3\u20132"]]
-    ],
-    [
-      "balilla",
-      "Calcio balilla",
-      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
-      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
-      [["Aretusa", "Epipoli", "Ven 19:00", "Bussola Bar"], ["Neapolis", "Plemmirio", "Ven 19:30", "Bussola Bar"]],
-      [["Ortigia", "Ciane", "10\u20137"], ["Dionisio", "Anapo", "10\u20134"]]
-    ],
-    [
-      "basket",
-      "Basket 3\xD73",
-      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
-      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
-      [["Aretusa", "Ciane", "Sab 18:00", "Campo del residence"], ["Neapolis", "Plemmirio", "Dom 18:00", "Campo del residence"]],
-      [["Ortigia", "Epipoli", "21\u201315"], ["Dionisio", "Anapo", "21\u201312"]]
-    ],
-    [
-      "calcetto",
-      "Calcetto a 5",
-      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
-      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
-      [["Aretusa", "Epipoli", "Ven 18:30", "Campo del residence"], ["Neapolis", "Dionisio", "Sab 19:00", "Campo del residence"]],
-      [["Ortigia", "Ciane", "5\u20133"], ["Plemmirio", "Anapo", "4\u20134"]]
-    ]
-  ];
-  const GIOCHI = [
-    [
-      "burraco",
-      "Burraco",
-      [[3, 3, 9], [3, 2, 6], [3, 1, 3], [3, 0, 0]],
-      [[3, 2, 6], [3, 2, 6], [3, 1, 3], [3, 1, 3]],
-      [["Aretusa", "Neapolis", "Mar 21:00", "Casa di Carta"], ["Ortigia", "Dionisio", "Gio 21:00", "Casa di Carta"]],
-      [["Ciane", "Epipoli", "2\u20130"], ["Plemmirio", "Anapo", "1\u20132"]]
-    ],
-    [
-      "scala",
-      "Scala 40",
-      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
-      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
-      [["Aretusa", "Epipoli", "Gio 21:30", "Casa di Carta"], ["Neapolis", "Anapo", "Sab 21:00", "Casa di Carta"]],
-      [["Ortigia", "Ciane", "1\u20130"], ["Dionisio", "Plemmirio", "1\u20131"]]
-    ],
-    [
-      "briscola",
-      "Briscola/Scopa",
-      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
-      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
-      [["Aretusa", "Ciane", "Ven 21:00", "Casa di Carta"], ["Neapolis", "Dionisio", "Dom 21:00", "Casa di Carta"]],
-      [["Ortigia", "Epipoli", "2\u20131"], ["Plemmirio", "Anapo", "2\u20130"]]
-    ],
-    [
-      "scacchi",
-      "Scacchi/Dama",
-      [[3, 3, 6], [3, 2, 4], [3, 1, 2], [3, 0, 0]],
-      [[3, 2, 4], [3, 2, 4], [3, 1, 2], [3, 1, 2]],
-      [["Aretusa", "Ortigia", "Lun 21:00", "Casa di Carta"], ["Ciane", "Epipoli", "Mer 21:00", "Casa di Carta"]],
-      [["Dionisio", "Plemmirio", "1\u20130"], ["Neapolis", "Anapo", "\xBD\u2013\xBD"]]
-    ]
-  ];
-  const MINMAX = {
-    pickle: [2, 2],
-    soft: [2, 2],
-    pingpong: [1, 2],
-    balilla: [2, 2],
-    basket: [3, 4],
-    calcetto: [5, 7],
-    burraco: [2, 4],
-    scala: [2, 4],
-    briscola: [2, 4],
-    scacchi: [1, 1]
-  };
-  const insDisc = db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,ordine) VALUES (?,?,?,?,?,?,?)");
-  const discIds = [];
-  async function loadDomain(dom, list) {
-    for (let i = 0; i < list.length; i++) {
-      const d = list[i];
-      const mm = MINMAX[d[0]] || [1, 1];
-      discIds.push((await insDisc.run(dom, d[0], d[1], 1, mm[0], mm[1], i)).lastInsertRowid);
-    }
-  }
-  await loadDomain("sport", SPORT);
-  await loadDomain("giochi", GIOCHI);
-  const demoScores = [[2, 1], [1, 1], [2, 0], [1, 0]];
-  for (const did of discIds) {
-    await generaCalendario(did);
-    const g1 = await db.prepare("SELECT id FROM partite WHERE disciplina_id=? AND giornata=1").all(did);
-    for (let k = 0; k < g1.length; k++) {
-      await registraRisultato(g1[k].id, demoScores[k % demoScores.length][0], demoScores[k % demoScores.length][1]);
-    }
-  }
-  const BUSSOLA = [
-    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1],
-    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2],
-    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3],
-    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4],
-    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5],
-    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1],
-    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2],
-    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3],
-    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4],
-    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5],
-    ["rifiuti", "Lun \xB7 Organico", "", "", 1],
-    ["rifiuti", "Mar \xB7 Plastica", "", "", 2],
-    ["rifiuti", "Mer \xB7 Carta", "", "", 3],
-    ["rifiuti", "Gio \xB7 Organico", "", "", 4],
-    ["rifiuti", "Ven \xB7 Vetro", "", "", 5],
-    ["rifiuti", "Sab \xB7 Indifferenziato", "", "", 6],
-    ["orari", "Silenzio pomeridiano", "Dalle 14:00 alle 17:00 \u2014 riposo per tutti.", "", 1],
-    ["orari", "Silenzio notturno", "Dopo le 23:30 \u2014 si abbassano voci e musica.", "", 2]
-  ];
-  const insBus = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)");
-  for (const b of BUSSOLA) await insBus.run(...b);
-  const insContest = db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,vincitore,punti_scala,esito_assegnato,attivo) VALUES (?,?,?,?,?,?,?,?,1)");
-  await insContest.run(
-    "Apertura di stagione \u2014 Sfilata dei Clan",
-    "sfilata",
-    "apertura stagione",
-    "Dopo l'unico turno di cena delle 20:00, le otto casate si presentano in sfilata. Chi dimostra di aver agito come vero clan \u2014 abbigliamento coordinato, un motto, un grido di battaglia, un rito propiziatorio \u2014 prende subito punti. Ai pi\xF9 simpatici, geniali, divertenti e fantasiosi vanno 10 punti. Il voto lo esprimono gli altri clan.",
-    "annunciato",
-    null,
-    JSON.stringify([10, 0, 0, 0, 0, 0, 0, 0]),
-    0
-  );
-  await insContest.run(
-    "Il mio nome \xE8 Bond, James Bond",
-    "cocktail",
-    "25\u201331 agosto",
-    "Dati 3 liquori, un'acqua tonica e un selz, ogni casata crea il proprio cocktail. Banco bar e attrezzatura a disposizione; presentate nome e ricetta. I primi 3 finalisti saranno in vendita nel weekend; a fine settimana la graduatoria della giuria + il bonus vendite (4/2/1 pezzi venduti) assegna i punti Coppa.",
-    "annunciato",
-    null,
-    null,
-    0
-  );
-  const insSerata = db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,ordine) VALUES (?,?,?,?,?,?,?,?,?)");
-  await insSerata.run(
-    "apertura",
-    "Apertura di stagione",
-    "2026-05-30",
-    "Sab 30 maggio \xB7 unico turno 20:00",
-    "Presentazione e sfilata dei Clan",
-    "Cena unica alle 20:00, poi presentazione e sfilata delle otto casate. I clan che si presentano come tali (abbigliamento coordinato, motto, grido, rito) prendono subito punti: 10 al migliore, votato dagli altri clan.",
-    25,
-    120,
-    1
-  );
-  await insSerata.run(
-    "tema_luglio",
-    "Serata a tema \xB7 fine luglio",
-    "2026-07-25",
-    "Sab 25 luglio \xB7 20:00",
-    "Tema da annunciare",
-    "La serata a tema di fine luglio: il tema viene svelato dal CdA. Cena a numero chiuso con prenotazione.",
-    30,
-    100,
-    2
-  );
-  await insSerata.run(
-    "ferragosto",
-    "Cena di Ferragosto",
-    "2026-08-15",
-    "Sab 15 agosto \xB7 20:00",
-    "Gran serata",
-    "La serata clou dell\u2019estate: cena speciale di Ferragosto con musica dal vivo. Posti limitati, prenotazione consigliata.",
-    40,
-    140,
-    3
-  );
-  await insSerata.run(
-    "fine_stagione",
-    "Chiusura di stagione",
-    "2026-09-12",
-    "Sab 12 settembre \xB7 20:00",
-    "Premiazione Coppa delle Casate",
-    "L\u2019ultima grande serata: cena, premiazione della Coppa delle Casate e Albo d\u2019Oro. Si saluta l\u2019estate insieme.",
-    30,
-    120,
-    4
-  );
-  const insLuogo = db.prepare("INSERT INTO luoghi (chiave,nome,lat,lng,ordine) VALUES (?,?,?,?,?)");
-  await insLuogo.run("chiosco", "Chiosco La Bussola", 36.967766, 15.221669, 1);
-  await insLuogo.run("isola", "Isola ecologica", 36.967209, 15.221206, 2);
-  const insSocio = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,notifiche_push,valida_fino)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  await insSocio.run("BR-2026-0001", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
-  await insSocio.run("BR-2026-0002", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
-  const genitoreId = (await insSocio.run("BR-2026-0003", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01")).lastInsertRowid;
-  await insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
-  await insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
-  await db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='BR-2026-0005'").run();
-  const residenteId = Number((await insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30")).lastInsertRowid);
-  await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(residenteId);
-  const struttInfo = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(residenteId, encryptJSON({
-    nome: "Villa Aretusa",
-    cir: "CIR-19091-BEA-00123",
-    cin: "IT089017C2X9ABC123",
-    regole: "Check-out entro le 10:00. Silenzio dopo le 23. Rifiuti secondo il calendario del residence. Vietato fumare all'interno. Animali ammessi su richiesta.",
-    isolato: "B",
-    numero: "14",
-    check_out: "10:00",
-    lat: 37.0361,
-    lng: 15.2969
-  }));
-  await db.prepare("UPDATE soci SET struttura_id=? WHERE tessera_code='BR-2026-0005'").run(Number(struttInfo.lastInsertRowid));
-  const ort = casataId["Ortigia"];
-  const compagni = [["Anna", "B."], ["Paolo", "C."], ["Elena", "D."], ["Davide", "F."], ["Marta", "G."], ["Sara", "L."]];
-  for (let i = 0; i < compagni.length; i++) {
-    const n = compagni[i];
-    await insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
-  }
-  const insRifTipo = db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)");
-  const RIF_TIPI = [["Organico", "#6b4a2b", 1], ["Plastica e lattine", "#d99a00", 2], ["Carta e cartone", "#2E6DA4", 3], ["Vetro", "#3f7a4a", 4], ["Indifferenziato", "#6b6f73", 5]];
-  for (const t of RIF_TIPI) await insRifTipo.run(...t);
-  await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run("Estivo", "18:30", "21:30", "22:00", JSON.stringify({ lun: ["Organico"], mar: ["Plastica e lattine"], mer: ["Carta e cartone"], gio: ["Organico"], ven: ["Carta e cartone", "Vetro"], sab: ["Indifferenziato"], dom: [] }), 1);
-  const insReg = db.prepare("INSERT INTO regolamenti (chiave,titolo,testo,ordine) VALUES (?,?,?,?)");
-  await insReg.run("coppa", "Coppa delle Casate", "Le otto casate si sfidano nelle discipline sportive e nei giochi durante il periodo di svolgimento. Ogni vittoria e pareggio assegna punti alla graduatoria; le migliori accedono a semifinali e finale. La classifica generale determina la Coppa della stagione.", 1);
-  await insReg.run("contest", "Serata dei Clan", "Il CdA lancia la sfida (cocktail, karaoke, recitazione\u2026) la settimana prima. La giuria stila una graduatoria (punti per posizione) a cui si somma il bonus vendite 4/2/1 alle prime tre casate per pezzi venduti. I punti finali si versano una sola volta in Coppa.", 2);
-  await insReg.run("proposte", "Vinile & Open Mic", "Le proposte musicali (vinile) e le esibizioni all'Open Mic raccolte durante la settimana diventano la scaletta di quella successiva. Linguaggio e contenuti moderati; ogni proposta \xE8 valutata dallo staff.", 3);
-  await db.prepare("INSERT OR REPLACE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,?,?,?)").run(120, 50, 100);
-  const insGioco = db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,ordine) VALUES (?,?,?,?,?)");
-  const GIOCHI_INV = [
-    ["Mazzi di carte francesi", "carte", 4, "ok"],
-    ["Mazzi di carte italiane", "carte", 2, "ok"],
-    ["Cluedo", "gioco_tavolo", 1, "ok"],
-    ["Monopoli", "gioco_tavolo", 1, "ok"],
-    ["Risiko", "gioco_tavolo", 1, "ok"],
-    ["Indovina Chi", "gioco_tavolo", 1, "ok"],
-    ["Scacchiere", "scacchi", 2, "ok"],
-    ["Set di pedine e scacchi", "scacchi", 2, "ok"]
-  ];
-  for (let i = 0; i < GIOCHI_INV.length; i++) {
-    const g = GIOCHI_INV[i];
-    await insGioco.run(g[0], g[1], g[2], g[3], i);
-  }
-  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  const insArt = db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?)");
-  const MAG = [
-    // nome, area, unità, giacenza, punto_riordino, soglia_preavviso
-    // (il caffè NON è qui: lo gestisce l'upsert sotto, per non duplicare l'articolo creato dalla migrazione)
-    ["Bicchieri di carta", "chiosco", "pz", 300, 100, 150],
-    ["Acqua naturale 0,5L", "chiosco", "pz", 48, 24, 36],
-    ["Birra media", "chiosco", "pz", 60, 24, 40],
-    ["Patatine (buste)", "chiosco", "pz", 40, 20, 30],
-    ["Ghiaccio (sacchi)", "chiosco", "sacchi", 6, 4, 8],
-    ["Piatti biodegradabili", "serata_clan", "pz", 200, 80, 120],
-    ["Tovaglioli", "serate_tema", "conf", 10, 4, 6]
-  ];
-  for (let i = 0; i < MAG.length; i++) {
-    const a = MAG[i];
-    await insArt.run(a[0], a[1], a[2], a[3], a[4], a[5], i + 1, nowIso);
-  }
-  const exCaffe = await db.prepare("SELECT id FROM magazzino_articoli WHERE area='casa_di_carta' AND nome='Capsule caff\xE8'").get();
-  if (exCaffe) await db.prepare("UPDATE magazzino_articoli SET unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run("capsule", 120, 50, 80, nowIso, exCaffe.id);
-  else await insArt.run("Capsule caff\xE8", "casa_di_carta", "capsule", 120, 50, 80, 0, nowIso);
-  const birra = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Birra media'").get();
-  const acqua = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Acqua naturale 0,5L'").get();
-  const patatine = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Patatine (buste)'").get();
-  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,1,?)");
-  const MENU = [
-    // nome, prezzo, stazione, punto(zona), categoria, magazzino_id
-    ["Panino salsiccia", 4.5, "cucina", "garden", "panini", null],
-    ["Panino vegetariano", 4, "cucina", "garden", "panini", null],
-    ["Hamburger", 5.5, "cucina", "garden", "panini", null],
-    ["Patatine fritte", 3, "cucina", "garden", "snack", null],
-    ["Patatine in busta", 1.5, "bar", "bar", "snack", patatine ? patatine.id : null],
-    ["Birra media", 4, "bar", "bar", "birre", birra ? birra.id : null],
-    ["Acqua 0,5L", 1, "bar", "comune", "bibite", acqua ? acqua.id : null],
-    ["Bibita in lattina", 2, "bar", "comune", "bibite", null],
-    ["Caff\xE8", 1, "bar", "bar", "caldi", null]
-  ];
-  for (let i = 0; i < MENU.length; i++) {
-    const m = MENU[i];
-    await insMenu.run(m[0], m[1], m[2], m[3], m[4], m[5], i + 1);
-  }
-  const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
-  const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
-  await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
-  await insAdmin.run("manager", hashPassword(process.env.MANAGER_PASSWORD || "manager2026"), "manager", null);
-  const staffCaps = JSON.stringify(["utenti", "utenti_ins", "casate", "cdc", "discipline", "tabellone", "contest", "serate", "proposte", "eventi", "magazzino", "comande"]);
-  await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff", staffCaps);
-  await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura", null);
-  audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
-  if (verbose) console.log("Seed completato: 8 casate, 7 eventi, 10 discipline, guida Bussola, 3 soci demo, 1 utente back office.");
-}
-if (import.meta.url === `file://${process.argv[1]}`) {
-  seed({ verbose: true }).catch((e) => {
-    console.error("Seed fallito:", e);
-    process.exit(1);
-  });
-}
-
-// server/routes/public.js
-init_db();
-import { Router } from "express";
-
-// server/asyncroute.js
-function asyncify(router) {
-  for (const m of ["get", "post", "put", "delete", "patch"]) {
-    const orig = router[m].bind(router);
-    router[m] = (path, ...handlers) => orig(path, ...handlers.map((h) => typeof h === "function" && h.length < 4 ? (req, res, next) => Promise.resolve(h(req, res, next)).catch(next) : h));
-  }
-  return router;
-}
-
-// server/selforder.js
-init_db();
-var STAFF_BOOST_MS = 3 * 60 * 1e3;
-var STARVE_MS = 10 * 60 * 1e3;
-var ETA_MAX_MIN = 45;
-var RATE_WINDOW_MIN = 20;
-function tsEffettivo(c, nowMs) {
-  const base = Date.parse(c.created_at || "") || 0;
-  let eff = base - (c.canale === "staff" ? STAFF_BOOST_MS : 0);
-  if (c.canale !== "staff") {
-    const wait = nowMs - base;
-    if (wait > STARVE_MS) eff -= wait - STARVE_MS;
-  }
-  return eff;
-}
-function ordinaCoda(rows) {
-  const now = Date.now();
-  return rows.slice().sort((a, b) => tsEffettivo(a, now) - tsEffettivo(b, now) || a.id - b.id);
-}
-async function getConfig() {
-  const g = async (k, d) => await getSetting(k, d);
-  return {
-    aperto: await g("self_order_aperto", "1") !== "0",
-    // interruttore manuale (master)
-    eta_modo: await g("so_eta_modo", "statico"),
-    // statico | tempo
-    eta_base: Number(await g("so_eta_base", "3")) || 3,
-    // minuti base (modalità statica)
-    eta_per_item: Number(await g("so_eta_per_item", "2")) || 2,
-    // minuti per articolo (modalità statica)
-    press_modo: await g("so_press_modo", "statico"),
-    // statico | tempo
-    press_max_comande: Number(await g("so_press_max_comande", "6")) || 6,
-    // soglia (modalità statica): comande da smaltire
-    press_max_minuti: Number(await g("so_press_max_minuti", "10")) || 10,
-    // soglia (modalità tempo): attesa massima ammessa
-    press_auto: await g("so_press_auto", "0") === "1",
-    // se on: sotto pressione sospende in automatico; se off: solo avviso
-    // Mappa tavoli (Bussola Garden): numero di tavoli e soglie di colore (minuti di attesa) per box.
-    garden_tavoli: Math.max(1, Number(await g("garden_tavoli", "12")) || 12),
-    map_giallo_min: Number(await g("map_giallo_min", "5")) || 5,
-    // oltre → giallo
-    map_rosso_min: Number(await g("map_rosso_min", "10")) || 10
-    // oltre → rosso
-  };
-}
-async function setConfig(patch) {
-  const map = {
-    eta_modo: "so_eta_modo",
-    eta_base: "so_eta_base",
-    eta_per_item: "so_eta_per_item",
-    press_modo: "so_press_modo",
-    press_max_comande: "so_press_max_comande",
-    press_max_minuti: "so_press_max_minuti",
-    press_auto: "so_press_auto",
-    garden_tavoli: "garden_tavoli",
-    map_giallo_min: "map_giallo_min",
-    map_rosso_min: "map_rosso_min"
-  };
-  for (const [k, key] of Object.entries(map)) {
-    if (patch[k] === void 0) continue;
-    let v = patch[k];
-    if (k === "press_auto") v = v ? "1" : "0";
-    await setSetting(key, String(v));
-  }
-}
-async function pendingItems() {
-  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.stato IN ('aperta','in_preparazione') AND cr.stato='in_coda'").get();
-  return Number(r.n || 0);
-}
-async function activeOrders() {
-  const r = await db.prepare("SELECT COUNT(*) n FROM comande WHERE stato IN ('aperta','in_preparazione')").get();
-  return Number(r.n || 0);
-}
-async function serviceRatePerMin() {
-  const since = new Date(Date.now() - RATE_WINDOW_MIN * 60 * 1e3).toISOString();
-  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.pronta_at IS NOT NULL AND c.pronta_at >= ?").get(since);
-  const done = Number(r.n || 0);
-  return done > 0 ? done / RATE_WINDOW_MIN : 0;
-}
-async function etaMin(cfg) {
-  cfg = cfg || await getConfig();
-  const pending = await pendingItems();
-  if (cfg.eta_modo === "tempo") {
-    const rate = await serviceRatePerMin();
-    if (rate > 0) return Math.max(1, Math.min(ETA_MAX_MIN, Math.ceil(pending / rate)));
-  }
-  return Math.min(ETA_MAX_MIN, cfg.eta_base + pending * cfg.eta_per_item);
-}
-async function pressione(cfg) {
-  cfg = cfg || await getConfig();
-  if (cfg.press_modo === "tempo") return await etaMin(cfg) > cfg.press_max_minuti;
-  return await activeOrders() >= cfg.press_max_comande;
-}
-async function statoCompleto() {
-  const cfg = await getConfig();
-  const eta = await etaMin(cfg);
-  const press = await pressione(cfg);
-  const attive = await activeOrders();
-  const sospeso_pressione = cfg.aperto && cfg.press_auto && press;
-  const ordinabile = cfg.aperto && !sospeso_pressione;
-  return {
-    aperto: cfg.aperto,
-    ordinabile,
-    sospeso_pressione,
-    pressione: press,
-    eta_min: eta,
-    attive,
-    config: cfg
-  };
-}
-async function setSelfOrderAperto(v) {
-  await setSetting("self_order_aperto", v ? "1" : "0");
-}
-
-// server/routes/public.js
-var publicRouter = asyncify(Router());
-publicRouter.get("/self-order/stato", async (req, res) => {
-  const s = await statoCompleto();
-  res.json({ aperto: s.aperto, ordinabile: s.ordinabile, sospeso_pressione: s.sospeso_pressione, pressione: s.pressione, eta_min: s.eta_min });
-});
-publicRouter.get("/casate", async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
-  res.json(rows);
-});
-publicRouter.get("/menu", async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni FROM menu_articoli WHERE attivo=1 ORDER BY ordine,id").all();
-  res.json(rows);
-});
-publicRouter.post("/self-order", async (req, res) => {
-  const b = req.body || {};
-  const st = await statoCompleto();
-  if (!st.ordinabile) return res.status(423).json({
-    error: st.sospeso_pressione ? "La cucina \xE8 molto impegnata: ordini dal telefono sospesi per pochi minuti. Rivolgiti allo staff o riprova a breve." : "Gli ordini self sono momentaneamente sospesi. Rivolgiti allo staff.",
-    sospeso_pressione: st.sospeso_pressione
-  });
-  const righeIn = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
-  if (!righeIn.length) return res.status(400).json({ error: "Aggiungi almeno un prodotto" });
-  const punto = String(b.punto || "").trim() || "Chiosco";
-  const tavolo = b.tavolo ? String(b.tavolo).trim() : null;
-  const chi = b.tessera_code ? String(b.tessera_code).trim().toUpperCase() : null;
-  const socio = chi ? await db.prepare("SELECT id FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(chi) : null;
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "garden", "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
-  const cid = Number(info.lastInsertRowid);
-  let totale = 0;
-  for (const r of righeIn) {
-    const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=? AND attivo=1").get(r.menu_id);
-    if (!m) continue;
-    const qta = Math.max(1, Math.round(Number(r.qta)));
-    totale += Number(m.prezzo) * qta;
-    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
-  }
-  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
-  audit(chi || "self", "self_order", "comande", cid, `${punto}${tavolo ? " \xB7 tav " + tavolo : ""} \xB7 \u20AC${totale}`);
-  res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo, eta_min: await etaMin(), push: !!socio });
-});
-publicRouter.get("/push/pubkey", async (req, res) => {
-  const { pushEnabled: pushEnabled2, publicKey: publicKey2 } = await Promise.resolve().then(() => (init_push(), push_exports));
-  res.json({ enabled: pushEnabled2(), key: publicKey2() });
-});
-publicRouter.get("/eventi", async (req, res) => {
-  const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ora_inizio,tipologia,artista,prezzo,serata_id FROM eventi WHERE attivo=1 ORDER BY ordine").all();
-  const out = [];
-  for (const e of rows) {
-    let costo = Number(e.prezzo || 0);
-    if (e.serata_id) {
-      const s = await db.prepare("SELECT quota FROM serate WHERE id=?").get(e.serata_id);
-      if (s && Number(s.quota) > 0) costo = Number(s.quota);
-    }
-    out.push({ ...e, costo });
-  }
-  res.json(out);
-});
-publicRouter.get("/risorse", async (req, res) => {
-  const rows = (await db.prepare("SELECT chiave,nome,tipo,sottotitolo,slots,nota FROM risorse WHERE attivo=1").all()).map((r) => ({ ...r, slots: r.slots ? JSON.parse(r.slots) : [] }));
-  res.json(rows);
-});
-publicRouter.get("/bussola", async (req, res) => {
-  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza FROM bussola ORDER BY sezione,ordine").all();
-  const out = {};
-  for (const r of rows) (out[r.sezione] ??= []).push(r);
-  res.json(out);
-});
-publicRouter.get("/contest/corrente", async (req, res) => {
-  const c = await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest WHERE attivo=1 ORDER BY id DESC LIMIT 1").get();
-  res.json(c || null);
-});
-publicRouter.get("/contest", async (req, res) => {
-  res.json(await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest ORDER BY id DESC").all());
-});
-publicRouter.get("/luoghi", async (req, res) => {
-  res.json(await db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
-});
-publicRouter.get("/regolamenti", async (req, res) => {
-  const generali = await db.prepare("SELECT chiave,titolo,testo FROM regolamenti ORDER BY ordine,id").all();
-  const discipline = await db.prepare(`SELECT chiave,nome,dominio,regolamento,data_inizio,data_fine,stato
-    FROM discipline WHERE attivo=1 AND regolamento IS NOT NULL AND regolamento<>'' ORDER BY dominio,ordine`).all();
-  res.json({ generali, discipline });
-});
-publicRouter.get("/albo", async (req, res) => {
-  res.json(await db.prepare("SELECT disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni ORDER BY id DESC LIMIT 100").all());
-});
-publicRouter.get("/rifiuti", async (req, res) => {
-  const tipi = await db.prepare("SELECT id,nome,colore FROM rifiuti_tipi ORDER BY ordine,id").all();
-  const cal = (await db.prepare("SELECT periodo,inizio_conf,fine_conf,ora_ritiro,giorni FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
-  res.json({ tipi, calendari: cal });
-});
-var COWO_MAX = 8;
-var TAVOLO_MAX_COPERTI = 40;
-function periodiDi(turno) {
-  const t = (turno || "").toLowerCase();
-  if (t.startsWith("giorn")) return ["mattina", "pomeriggio"];
-  if (t.startsWith("pomerig")) return ["pomeriggio"];
-  return ["mattina"];
-}
-async function cowoUsati(giorno) {
-  const rows = await db.prepare(`SELECT p.turno FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
-    WHERE r.tipo='coworking' AND p.stato='confermata' AND p.giorno=?`).all(giorno || "");
-  let mattina = 0, pomeriggio = 0;
-  for (const r of rows) {
-    const ps = periodiDi(r.turno);
-    if (ps.includes("mattina")) mattina++;
-    if (ps.includes("pomeriggio")) pomeriggio++;
-  }
-  return { mattina, pomeriggio };
-}
-publicRouter.get("/coworking/disponibilita", async (req, res) => {
-  const u = await cowoUsati(req.query.giorno);
-  res.json({
-    giorno: req.query.giorno || null,
-    max: COWO_MAX,
-    mattina: { usati: u.mattina, liberi: Math.max(0, COWO_MAX - u.mattina) },
-    pomeriggio: { usati: u.pomeriggio, liberi: Math.max(0, COWO_MAX - u.pomeriggio) }
-  });
-});
-async function seratePostiUsati(serataId) {
-  return (await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").get(serataId)).n;
-}
-publicRouter.get("/serate", async (req, res) => {
-  const rows = await db.prepare("SELECT id,chiave,titolo,data,quando,tema,descrizione,quota,capienza FROM serate WHERE attivo=1 ORDER BY ordine,data").all();
-  const out = [];
-  for (const s of rows) {
-    const usati = await seratePostiUsati(s.id);
-    out.push({ ...s, posti_liberi: Math.max(0, s.capienza - usati) });
-  }
-  res.json(out);
-});
-publicRouter.post("/serate/:id/prenota", async (req, res) => {
-  const s = await db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
-  if (!s) return res.status(404).json({ error: "Serata non trovata" });
-  const persone = Math.max(1, Number(req.body?.persone) || 1);
-  const usati = await seratePostiUsati(s.id);
-  if (usati + persone > s.capienza) return res.status(409).json({ ok: false, error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.`, posti_liberi: Math.max(0, s.capienza - usati) });
-  const tessera = req.body?.tessera_code || null;
-  const socio = tessera ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(tessera) : null;
-  const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
-  const importo = Math.round(s.quota * persone * 100) / 100;
-  const info = await db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato) VALUES (?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare");
-  audit(tessera || "ospite", "prenota_serata", "serate", s.id, `${persone}p \xB7 \u20AC${importo}`);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid, importo, persone, stato: "da_saldare", titolo: s.titolo });
-});
-publicRouter.get("/discipline/:dominio", async (req, res) => {
-  const dominio = req.params.dominio === "giochi" ? "giochi" : "sport";
-  const discs = await db.prepare("SELECT id,chiave,nome,min_giocatori,max_giocatori FROM discipline WHERE dominio=? AND attivo=1 ORDER BY ordine").all(dominio);
-  const out = [];
-  for (const d of discs) {
-    const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(d.id);
-    const gironi = [];
-    for (const g of gironiRows) {
-      gironi.push({
-        nome: g.nome,
-        rows: await db.prepare(`SELECT c.nome AS t, c.colore AS c, cl.pg, cl.v, cl.pt
-                        FROM classifica cl JOIN casate c ON c.id=cl.casata_id
-                        WHERE cl.girone_id=? ORDER BY cl.pt DESC, (cl.gf-cl.gs) DESC, cl.gf DESC, c.nome`).all(g.id)
-      });
-    }
-    const next = await db.prepare("SELECT casa_a a,casa_b b,('G'||giornata) wh,luogo court FROM partite WHERE disciplina_id=? AND stato='da_giocare' ORDER BY giornata,id LIMIT 6").all(d.id);
-    const results = await db.prepare("SELECT casa_a a,casa_b b,punteggio s FROM partite WHERE disciplina_id=? AND stato='giocata' ORDER BY id DESC LIMIT 6").all(d.id);
-    out.push({ chiave: d.chiave, name: d.nome, min: d.min_giocatori, max: d.max_giocatori, gironi, next, results });
-  }
-  res.json(out);
-});
-publicRouter.get("/tessera/:code", async (req, res) => {
-  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,c.nome AS casata,c.colore
-                        FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
-                        WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
-  if (!s) return res.status(404).json({ error: "Tessera non trovata" });
-  s.is_host = s.host ? 1 : 0;
-  s.ha_casa = s.struttura_id ? 1 : 0;
-  delete s.struttura_id;
-  res.json(s);
-});
-publicRouter.get("/convocazioni/:code", async (req, res) => {
-  const socio = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.params.code);
-  if (!socio) return res.json([]);
-  const rows = await db.prepare(`SELECT cv.id,cv.match_label,cv.quando,cv.luogo,cv.stato,d.nome disciplina,d.dominio
-                           FROM convocazioni cv JOIN discipline d ON d.id=cv.disciplina_id
-                           WHERE cv.socio_id=? ORDER BY cv.created_at DESC`).all(socio.id);
-  res.json(rows);
-});
-publicRouter.post("/prenotazioni", async (req, res) => {
-  const { tessera_code, risorsa, giorno, turno, ospiti } = req.body || {};
-  const socio = tessera_code ? await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
-  const ris = risorsa ? await db.prepare("SELECT id,nome,tipo FROM risorse WHERE chiave=?").get(risorsa) : null;
-  if (ris?.tipo === "coworking") {
-    const u = await cowoUsati(giorno);
-    const richiesti = periodiDi(turno);
-    const pieno = richiesti.filter((p) => (u[p] || 0) >= COWO_MAX);
-    if (pieno.length) {
-      return res.status(409).json({
-        ok: false,
-        error: `Coworking al completo (${pieno.join(" e ")}): max ${COWO_MAX} posti per turno.`,
-        disponibilita: { mattina: Math.max(0, COWO_MAX - u.mattina), pomeriggio: Math.max(0, COWO_MAX - u.pomeriggio) }
-      });
-    }
-  }
-  if (ris?.tipo === "tavolo") {
-    const persone = Math.max(1, Number(req.body?.persone || ospiti) || 1);
-    const usati = (await db.prepare(`SELECT COALESCE(SUM(CASE WHEN ospiti>0 THEN ospiti ELSE 1 END),0) n FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
-      WHERE r.tipo='tavolo' AND p.stato='confermata' AND p.giorno=? AND p.turno=?`).get(giorno || "", turno || "")).n;
-    if (usati + persone > TAVOLO_MAX_COPERTI) {
-      return res.status(409).json({ ok: false, error: `Turno ${turno || ""} al completo: restano ${Math.max(0, TAVOLO_MAX_COPERTI - usati)} coperti.`, posti_liberi: Math.max(0, TAVOLO_MAX_COPERTI - usati) });
-    }
-  }
-  const coperti = ris?.tipo === "tavolo" ? Math.max(1, Number(req.body?.persone || ospiti) || 1) : Number(ospiti) || 0;
-  const info = await db.prepare(`INSERT INTO prenotazioni (socio_id,risorsa_id,risorsa_nome,giorno,turno,ospiti)
-                           VALUES (?,?,?,?,?,?)`).run(socio?.id ?? null, ris?.id ?? null, ris?.nome ?? risorsa ?? "Evento", giorno ?? null, turno ?? null, coperti);
-  audit(tessera_code || "ospite", "prenotazione", "prenotazioni", info.lastInsertRowid, ris?.nome || "");
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-publicRouter.post("/convocazioni/:id/risposta", async (req, res) => {
-  const { stato } = req.body || {};
-  const val = stato === "disponibile" ? "disponibile" : "non_disponibile";
-  const cv = await db.prepare("SELECT socio_id FROM convocazioni WHERE id=?").get(req.params.id);
-  await db.prepare("UPDATE convocazioni SET stato=? WHERE id=?").run(val, req.params.id);
-  let dinieghi = 0, obbligatoria = false;
-  if (cv?.socio_id) {
-    const so = await db.prepare("SELECT tipo_profilo,dinieghi FROM soci WHERE id=?").get(cv.socio_id);
-    if (so) {
-      if (val === "non_disponibile" && so.tipo_profilo !== "ospite_temporaneo") {
-        dinieghi = so.dinieghi + 1;
-        await db.prepare("UPDATE soci SET dinieghi=? WHERE id=?").run(dinieghi, cv.socio_id);
-      } else dinieghi = so.dinieghi;
-      obbligatoria = so.tipo_profilo !== "ospite_temporaneo" && dinieghi >= 3;
-    }
-  }
-  audit("socio", "risposta_convocazione", "convocazioni", req.params.id, val);
-  res.json({ ok: true, stato: val, dinieghi, obbligatoria });
-});
-publicRouter.post("/proposte", async (req, res) => {
-  const { tessera_code, tipo, titolo, dettaglio } = req.body || {};
-  const socio = tessera_code ? await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
-  const info = await db.prepare("INSERT INTO proposte (socio_id,tipo,titolo,dettaglio) VALUES (?,?,?,?)").run(socio?.id ?? null, tipo === "openmic" ? "openmic" : "vinile", titolo ?? "", dettaglio ?? "");
-  audit(tessera_code || "ospite", "proposta", "proposte", info.lastInsertRowid, tipo || "");
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-function slotDiCampo(campo) {
-  const toMin = (t) => {
-    const [h, m] = String(t || "0:0").split(":").map(Number);
-    return h * 60 + (m || 0);
-  };
-  const toHHMM = (x) => String(Math.floor(x / 60)).padStart(2, "0") + ":" + String(x % 60).padStart(2, "0");
-  const start = Math.max(toMin(campo.apertura), campo.ora_min ? toMin(campo.ora_min) : 0);
-  const end = toMin(campo.chiusura);
-  const step = Math.max(15, Number(campo.durata_slot) || 60);
-  const out = [];
-  for (let t = start; t + step <= end + 1e-4; t += step) out.push(toHHMM(t));
-  return out;
-}
-var socioByTessera = async (t) => t ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(t) : null;
-publicRouter.get("/campi", async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default FROM campi WHERE attivo=1 ORDER BY ordine,id").all();
-  res.json(rows);
-});
-publicRouter.get("/campi/:id/disponibilita", async (req, res) => {
-  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
-  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
-  const data = String(req.query.data || "").slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida (YYYY-MM-DD)" });
-  const occ = await db.prepare("SELECT * FROM prenotazioni_campo WHERE campo_id=? AND data=? AND stato='prenotato'").all(campo.id, data);
-  const partite = await db.prepare("SELECT * FROM partite_aperte WHERE campo_id=? AND data=? AND stato IN ('aperta','completa')").all(campo.id, data);
-  const iscrittiCount = {};
-  for (const p of partite) iscrittiCount[p.id] = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
-  const slots = slotDiCampo(campo).map((slot) => {
-    const o = occ.find((x) => x.slot === slot);
-    if (!o) return { slot, stato: "libero" };
-    if (o.tipo === "partita" && o.partita_id) {
-      const p = partite.find((x) => x.id === o.partita_id);
-      if (p) return { slot, stato: "partita", partita_id: p.id, posti_totali: p.posti_totali, iscritti: iscrittiCount[p.id] || 0, livello: p.livello || "", creatore: p.creatore_nome || "", completa: p.stato === "completa" };
-    }
-    return { slot, stato: "privata", nome: o.nome || "Prenotato" };
-  });
-  res.json({ campo: { id: campo.id, nome: campo.nome, sport: campo.sport, durata_slot: campo.durata_slot }, data, slots });
-});
-async function slotLiberoValido(campo, data, slot) {
-  if (!slotDiCampo(campo).includes(slot)) return "Orario non valido per questo campo" + (campo.ora_min ? ` (dalle ${campo.ora_min})` : "");
-  const ex = await db.prepare("SELECT id FROM prenotazioni_campo WHERE campo_id=? AND data=? AND slot=? AND stato='prenotato'").get(campo.id, data, slot);
-  if (ex) return "Slot gi\xE0 occupato";
-  return null;
-}
-publicRouter.post("/campi/:id/prenota", async (req, res) => {
-  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
-  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
-  const { tessera_code, data, slot } = req.body || {};
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || ""))) return res.status(400).json({ error: "Data non valida" });
-  const err = await slotLiberoValido(campo, data, slot);
-  if (err) return res.status(409).json({ error: err });
-  const socio = await socioByTessera(tessera_code);
-  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : req.body?.nome || "Ospite";
-  const info = await db.prepare("INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato) VALUES (?,?,?,?,?,?,?,?)").run(campo.id, data, slot, "privata", socio?.id ?? null, tessera_code || null, nome, "prenotato");
-  audit(tessera_code || "ospite", "prenota_campo", "campi", campo.id, `${data} ${slot}`);
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
-});
-publicRouter.post("/prenotazioni-campo/:id/annulla", async (req, res) => {
-  const p = await db.prepare("SELECT * FROM prenotazioni_campo WHERE id=?").get(req.params.id);
-  if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Prenotazione non trovata" });
-  if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue prenotazioni" });
-  if (p.tipo === "partita" && p.partita_id) {
-    await db.prepare("UPDATE partite_aperte SET stato='annullata' WHERE id=?").run(p.partita_id);
-  }
-  await db.prepare("UPDATE prenotazioni_campo SET stato='annullato' WHERE id=?").run(p.id);
-  audit(req.body?.tessera_code || "socio", "annulla_campo", "campi", p.campo_id, `${p.data} ${p.slot}`);
-  res.json({ ok: true });
-});
-async function notifyMancaUno(partitaId) {
-  try {
-    const p = await db.prepare("SELECT pa.*, c.nome AS campo_nome, c.sport FROM partite_aperte pa JOIN campi c ON c.id=pa.campo_id WHERE pa.id=?").get(partitaId);
-    if (!p || p.stato !== "aperta") return;
-    const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
-    if (p.posti_totali - n !== 1) return;
-    const iscritti = new Set((await db.prepare("SELECT socio_id FROM partita_iscritti WHERE partita_id=? AND socio_id IS NOT NULL").all(p.id)).map((x) => x.socio_id));
-    const soci = await db.prepare("SELECT id FROM soci WHERE attivo=1 AND notifiche_push=1").all();
-    const titolo = "Manca 1 giocatore \u{1F3BE}";
-    const corpo = `${p.campo_nome} \xB7 ${p.data} ${p.slot}${p.livello ? " \xB7 " + p.livello : ""} \u2014 unisciti alla partita!`;
-    const ins = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
-    let cnt = 0;
-    for (const s of soci) {
-      if (iscritti.has(s.id)) continue;
-      await ins.run(s.id, "push", "campi", titolo, corpo);
-      if (++cnt >= 100) break;
-    }
-    audit("sistema", "manca_uno", "campi", p.campo_id, `${cnt} avvisati`);
-  } catch (_) {
-  }
-}
-publicRouter.post("/campi/:id/partita", async (req, res) => {
-  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
-  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
-  const { tessera_code, data, slot, livello, note } = req.body || {};
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || ""))) return res.status(400).json({ error: "Data non valida" });
-  const err = await slotLiberoValido(campo, data, slot);
-  if (err) return res.status(409).json({ error: err });
-  const posti = Math.max(2, Math.min(30, Number(req.body?.posti_totali) || campo.posti_default || 4));
-  const socio = await socioByTessera(tessera_code);
-  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : req.body?.nome || "Ospite";
-  const pi = await db.prepare("INSERT INTO partite_aperte (campo_id,data,slot,posti_totali,livello,note,stato,creatore_tessera,creatore_nome) VALUES (?,?,?,?,?,?,?,?,?)").run(campo.id, data, slot, posti, livello || null, note || null, "aperta", tessera_code || null, nome);
-  const partitaId = Number(pi.lastInsertRowid);
-  await db.prepare("INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato,partita_id) VALUES (?,?,?,?,?,?,?,?,?)").run(campo.id, data, slot, "partita", socio?.id ?? null, tessera_code || null, nome, "prenotato", partitaId);
-  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(partitaId, socio?.id ?? null, tessera_code || null, nome);
-  audit(tessera_code || "ospite", "apre_partita", "campi", campo.id, `${data} ${slot} \xB7 ${posti} posti`);
-  await notifyMancaUno(partitaId);
-  res.status(201).json({ ok: true, partita_id: partitaId });
-});
-publicRouter.get("/campi/partite-aperte", async (req, res) => {
-  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
-  const q = data ? await db.prepare("SELECT p.*, c.nome AS campo_nome, c.sport FROM partite_aperte p JOIN campi c ON c.id=p.campo_id WHERE p.stato='aperta' AND p.data=? ORDER BY p.data,p.slot").all(data) : await db.prepare("SELECT p.*, c.nome AS campo_nome, c.sport FROM partite_aperte p JOIN campi c ON c.id=p.campo_id WHERE p.stato='aperta' ORDER BY p.data,p.slot").all();
-  const out = [];
-  for (const p of q) {
-    const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
-    out.push({ id: p.id, campo_id: p.campo_id, campo_nome: p.campo_nome, sport: p.sport, data: p.data, slot: p.slot, posti_totali: p.posti_totali, iscritti: n, mancano: Math.max(0, p.posti_totali - n), livello: p.livello || "", note: p.note || "", creatore: p.creatore_nome || "" });
-  }
-  res.json(out);
-});
-publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
-  const p = await db.prepare("SELECT * FROM partite_aperte WHERE id=?").get(req.params.id);
-  if (!p || p.stato !== "aperta") return res.status(409).json({ error: "Partita non disponibile" });
-  const { tessera_code } = req.body || {};
-  const socio = await socioByTessera(tessera_code);
-  if (tessera_code) {
-    const gia = await db.prepare("SELECT id FROM partita_iscritti WHERE partita_id=? AND tessera_code=?").get(p.id, tessera_code);
-    if (gia) return res.status(409).json({ error: "Sei gi\xE0 iscritto a questa partita" });
-  }
-  const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
-  if (n >= p.posti_totali) return res.status(409).json({ error: "Partita gi\xE0 al completo" });
-  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : req.body?.nome || "Ospite";
-  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(p.id, socio?.id ?? null, tessera_code || null, nome);
-  const nuovi = n + 1;
-  const completa = nuovi >= p.posti_totali;
-  if (completa) await db.prepare("UPDATE partite_aperte SET stato='completa' WHERE id=?").run(p.id);
-  audit(tessera_code || "ospite", "unisce_partita", "campi", p.campo_id, `${p.data} ${p.slot}`);
-  if (!completa) await notifyMancaUno(p.id);
-  res.json({ ok: true, iscritti: nuovi, posti_totali: p.posti_totali, completa });
 });
 
-// server/routes/admin.js
-init_db();
-import { Router as Router2 } from "express";
-import { readFileSync, unlinkSync, statSync } from "node:fs";
-
-// server/contest.js
-init_db();
-var SCALA_DEFAULT = [10, 6, 4, 3, 2, 1, 1, 1];
-var SCALA_SFILATA = [10, 0, 0, 0, 0, 0, 0, 0];
-var BONUS_VENDITE = [4, 2, 1];
-function scalaDi(contest) {
-  if (contest?.punti_scala) {
-    try {
-      const a = JSON.parse(contest.punti_scala);
-      if (Array.isArray(a)) return a;
-    } catch (_) {
-    }
-  }
-  return contest?.tipo === "sfilata" ? SCALA_SFILATA : SCALA_DEFAULT;
-}
-async function salvaEsito(contestId, righe, scalaOverride) {
-  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
-  if (!contest) throw new Error("Contest non trovato");
-  if (contest.esito_assegnato) throw new Error("Esito gi\xE0 assegnato alla Coppa: non modificabile");
-  const scala = Array.isArray(scalaOverride) ? scalaOverride : scalaDi(contest);
-  const venditori = righe.filter((r) => Number(r.pezzi_venduti) > 0).sort((a, b) => Number(b.pezzi_venduti) - Number(a.pezzi_venduti) || Number(a.casata_id) - Number(b.casata_id));
-  const bonusPer = /* @__PURE__ */ new Map();
-  venditori.slice(0, 3).forEach((r, i) => bonusPer.set(Number(r.casata_id), BONUS_VENDITE[i]));
-  const up = db.prepare(`INSERT INTO contest_esiti (contest_id,casata_id,posizione,pezzi_venduti,punti)
-                         VALUES (?,?,?,?,?)
-                         ON CONFLICT(contest_id,casata_id) DO UPDATE SET
-                           posizione=excluded.posizione, pezzi_venduti=excluded.pezzi_venduti, punti=excluded.punti`);
-  const out = [];
-  for (const r of righe) {
-    const pos = Number(r.posizione) || null;
-    const pezzi = Number(r.pezzi_venduti) || 0;
-    const placement = pos && pos >= 1 && scala[pos - 1] != null ? scala[pos - 1] : 0;
-    const bonus = bonusPer.get(Number(r.casata_id)) || 0;
-    const punti = placement + bonus;
-    await up.run(contestId, r.casata_id, pos, pezzi, punti);
-    out.push({ casata_id: Number(r.casata_id), posizione: pos, pezzi_venduti: pezzi, placement, bonus, punti });
-  }
-  if (Array.isArray(scalaOverride)) {
-    await db.prepare("UPDATE contest SET punti_scala=? WHERE id=?").run(JSON.stringify(scalaOverride), contestId);
-  }
-  await db.prepare("UPDATE contest SET stato='in_corso' WHERE id=? AND stato='annunciato'").run(contestId);
-  audit("staff", "esito_contest", "contest", contestId, `${out.length} casate`);
-  return out;
-}
-async function assegnaCoppa(contestId) {
-  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
-  if (!contest) throw new Error("Contest non trovato");
-  if (contest.esito_assegnato) throw new Error("Punti gi\xE0 assegnati");
-  const esiti = await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId);
-  if (!esiti.length) throw new Error("Nessun esito salvato: registra prima la graduatoria");
-  const addPunti = db.prepare("UPDATE casate SET punti = punti + ? WHERE id=?");
-  let totale = 0;
-  for (const e of esiti) {
-    if (e.punti) {
-      await addPunti.run(e.punti, e.casata_id);
-      totale += e.punti;
-    }
-  }
-  const primo = esiti.filter((e) => e.posizione === 1)[0];
-  const vincitore = primo ? (await db.prepare("SELECT nome FROM casate WHERE id=?").get(primo.casata_id))?.nome : null;
-  await db.prepare("UPDATE contest SET stato='concluso', esito_assegnato=1, vincitore=? WHERE id=?").run(vincitore || null, contestId);
-  audit("staff", "assegna_coppa", "contest", contestId, `${totale} punti \xB7 vince ${vincitore || "\u2014"}`);
-  return { totale, vincitore, casate: esiti.length };
-}
-async function esitoCorrente(contestId) {
-  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
-  if (!contest) return null;
-  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
-  const esiti = new Map((await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId)).map((e) => [e.casata_id, e]));
-  return {
-    contest,
-    scala: scalaDi(contest),
-    assegnato: !!contest.esito_assegnato,
-    righe: casate.map((c) => {
-      const e = esiti.get(c.id);
-      return {
-        casata_id: c.id,
-        casata: c.nome,
-        colore: c.colore,
-        posizione: e?.posizione ?? null,
-        pezzi_venduti: e?.pezzi_venduti ?? 0,
-        punti: e?.punti ?? 0
-      };
-    })
-  };
-}
-
-// server/permessi.js
-var CAPS_DELEGABILI = [
-  "utenti",
-  // consulta/modifica anagrafiche
-  "utenti_ins",
-  // registra nuovi soci/ospiti
-  "casate",
-  // punti Coppa
-  "cdc",
-  // Casa di Carta (caffè, giochi, prelievi, check)
-  "discipline",
-  // attiva/parametri discipline
-  "tabellone",
-  // inserisci risultati / archivia / periodo
-  "contest",
-  // Contest Serata dei Clan
-  "serate",
-  // Serate & cena
-  "proposte",
-  // Proposte vinile/openmic
-  "eventi",
-  // Cartellone
-  "magazzino",
-  // Magazzino unificato (aree + alert)
-  "comande",
-  // Chiosco: comande + KDS (cassa/cameriere/stazioni)
-  "campi"
-  // Prenotazione campi (config campi + regole + prospetto prenotazioni)
-];
-var CAPS_GESTORE_ONLY = [
-  "utenti_del",
-  // cancellazione GDPR
-  "discipline_del",
-  // elimina disciplina
-  "tabellone_reset",
-  // rigenera/azzera calendario
-  "guida",
-  // Guida / Rifiuti
-  "luoghi",
-  // Luoghi "Siamo qui"
-  "registro",
-  // Registro attività
-  "db",
-  // Database & backup
-  "operatori"
-  // gestione account staff e permessi
-];
-var GO = new Set(CAPS_GESTORE_ONLY);
-var MANAGER_CAPS = /* @__PURE__ */ new Set([
-  "utenti",
-  "casate",
-  "cdc",
-  "discipline",
-  "tabellone",
-  "contest",
-  "serate",
-  "proposte",
-  "eventi",
-  "magazzino",
-  "comande",
-  "campi"
-]);
-function parsePermessi(p) {
-  if (Array.isArray(p)) return p;
-  if (typeof p === "string" && p) {
-    try {
-      const a = JSON.parse(p);
-      return Array.isArray(a) ? a : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-function hasCap(user, cap) {
-  if (!user) return false;
-  if (user.ruolo === "gestore") return true;
-  if (GO.has(cap)) return false;
-  if (user.ruolo === "manager") return MANAGER_CAPS.has(cap);
-  if (user.ruolo === "staff") return parsePermessi(user.permessi).includes(cap);
-  return false;
-}
-function requireCap(cap) {
-  return (req, res, next) => hasCap(req.adminUser, cap) ? next() : res.status(403).json({ error: "Permesso insufficiente per il tuo ruolo" });
-}
-function capsInfo(user) {
-  const tutte = [...CAPS_DELEGABILI, ...CAPS_GESTORE_ONLY];
-  return {
-    ruolo: user.ruolo,
-    gestore: user.ruolo === "gestore",
-    caps: user.ruolo === "gestore" ? tutte : tutte.filter((c) => hasCap(user, c))
-  };
-}
-
-// server/routes/admin.js
-import * as XLSX from "xlsx";
-
-// server/vendor/qrcode-generator.mjs
-var qrcode = function(typeNumber, errorCorrectionLevel) {
-  const PAD0 = 236;
-  const PAD1 = 17;
-  let _typeNumber = typeNumber;
-  const _errorCorrectionLevel = QRErrorCorrectionLevel[errorCorrectionLevel];
-  let _modules = null;
-  let _moduleCount = 0;
-  let _dataCache = null;
-  const _dataList = [];
-  const _this = {};
-  const makeImpl = function(test, maskPattern) {
-    _moduleCount = _typeNumber * 4 + 17;
-    _modules = (function(moduleCount) {
-      const modules = new Array(moduleCount);
-      for (let row = 0; row < moduleCount; row += 1) {
-        modules[row] = new Array(moduleCount);
-        for (let col = 0; col < moduleCount; col += 1) {
-          modules[row][col] = null;
-        }
-      }
-      return modules;
-    })(_moduleCount);
-    setupPositionProbePattern(0, 0);
-    setupPositionProbePattern(_moduleCount - 7, 0);
-    setupPositionProbePattern(0, _moduleCount - 7);
-    setupPositionAdjustPattern();
-    setupTimingPattern();
-    setupTypeInfo(test, maskPattern);
-    if (_typeNumber >= 7) {
-      setupTypeNumber(test);
-    }
-    if (_dataCache == null) {
-      _dataCache = createData(_typeNumber, _errorCorrectionLevel, _dataList);
-    }
-    mapData(_dataCache, maskPattern);
-  };
-  const setupPositionProbePattern = function(row, col) {
-    for (let r = -1; r <= 7; r += 1) {
-      if (row + r <= -1 || _moduleCount <= row + r) continue;
-      for (let c = -1; c <= 7; c += 1) {
-        if (col + c <= -1 || _moduleCount <= col + c) continue;
-        if (0 <= r && r <= 6 && (c == 0 || c == 6) || 0 <= c && c <= 6 && (r == 0 || r == 6) || 2 <= r && r <= 4 && 2 <= c && c <= 4) {
-          _modules[row + r][col + c] = true;
-        } else {
-          _modules[row + r][col + c] = false;
-        }
-      }
-    }
-  };
-  const getBestMaskPattern = function() {
-    let minLostPoint = 0;
-    let pattern = 0;
-    for (let i = 0; i < 8; i += 1) {
-      makeImpl(true, i);
-      const lostPoint = QRUtil.getLostPoint(_this);
-      if (i == 0 || minLostPoint > lostPoint) {
-        minLostPoint = lostPoint;
-        pattern = i;
-      }
-    }
-    return pattern;
-  };
-  const setupTimingPattern = function() {
-    for (let r = 8; r < _moduleCount - 8; r += 1) {
-      if (_modules[r][6] != null) {
-        continue;
-      }
-      _modules[r][6] = r % 2 == 0;
-    }
-    for (let c = 8; c < _moduleCount - 8; c += 1) {
-      if (_modules[6][c] != null) {
-        continue;
-      }
-      _modules[6][c] = c % 2 == 0;
-    }
-  };
-  const setupPositionAdjustPattern = function() {
-    const pos = QRUtil.getPatternPosition(_typeNumber);
-    for (let i = 0; i < pos.length; i += 1) {
-      for (let j = 0; j < pos.length; j += 1) {
-        const row = pos[i];
-        const col = pos[j];
-        if (_modules[row][col] != null) {
-          continue;
-        }
-        for (let r = -2; r <= 2; r += 1) {
-          for (let c = -2; c <= 2; c += 1) {
-            if (r == -2 || r == 2 || c == -2 || c == 2 || r == 0 && c == 0) {
-              _modules[row + r][col + c] = true;
-            } else {
-              _modules[row + r][col + c] = false;
-            }
-          }
-        }
-      }
-    }
-  };
-  const setupTypeNumber = function(test) {
-    const bits = QRUtil.getBCHTypeNumber(_typeNumber);
-    for (let i = 0; i < 18; i += 1) {
-      const mod = !test && (bits >> i & 1) == 1;
-      _modules[Math.floor(i / 3)][i % 3 + _moduleCount - 8 - 3] = mod;
-    }
-    for (let i = 0; i < 18; i += 1) {
-      const mod = !test && (bits >> i & 1) == 1;
-      _modules[i % 3 + _moduleCount - 8 - 3][Math.floor(i / 3)] = mod;
-    }
-  };
-  const setupTypeInfo = function(test, maskPattern) {
-    const data = _errorCorrectionLevel << 3 | maskPattern;
-    const bits = QRUtil.getBCHTypeInfo(data);
-    for (let i = 0; i < 15; i += 1) {
-      const mod = !test && (bits >> i & 1) == 1;
-      if (i < 6) {
-        _modules[i][8] = mod;
-      } else if (i < 8) {
-        _modules[i + 1][8] = mod;
-      } else {
-        _modules[_moduleCount - 15 + i][8] = mod;
-      }
-    }
-    for (let i = 0; i < 15; i += 1) {
-      const mod = !test && (bits >> i & 1) == 1;
-      if (i < 8) {
-        _modules[8][_moduleCount - i - 1] = mod;
-      } else if (i < 9) {
-        _modules[8][15 - i - 1 + 1] = mod;
-      } else {
-        _modules[8][15 - i - 1] = mod;
-      }
-    }
-    _modules[_moduleCount - 8][8] = !test;
-  };
-  const mapData = function(data, maskPattern) {
-    let inc = -1;
-    let row = _moduleCount - 1;
-    let bitIndex = 7;
-    let byteIndex = 0;
-    const maskFunc = QRUtil.getMaskFunction(maskPattern);
-    for (let col = _moduleCount - 1; col > 0; col -= 2) {
-      if (col == 6) col -= 1;
-      while (true) {
-        for (let c = 0; c < 2; c += 1) {
-          if (_modules[row][col - c] == null) {
-            let dark = false;
-            if (byteIndex < data.length) {
-              dark = (data[byteIndex] >>> bitIndex & 1) == 1;
-            }
-            const mask = maskFunc(row, col - c);
-            if (mask) {
-              dark = !dark;
-            }
-            _modules[row][col - c] = dark;
-            bitIndex -= 1;
-            if (bitIndex == -1) {
-              byteIndex += 1;
-              bitIndex = 7;
-            }
-          }
-        }
-        row += inc;
-        if (row < 0 || _moduleCount <= row) {
-          row -= inc;
-          inc = -inc;
-          break;
-        }
-      }
-    }
-  };
-  const createBytes = function(buffer, rsBlocks) {
-    let offset = 0;
-    let maxDcCount = 0;
-    let maxEcCount = 0;
-    const dcdata = new Array(rsBlocks.length);
-    const ecdata = new Array(rsBlocks.length);
-    for (let r = 0; r < rsBlocks.length; r += 1) {
-      const dcCount = rsBlocks[r].dataCount;
-      const ecCount = rsBlocks[r].totalCount - dcCount;
-      maxDcCount = Math.max(maxDcCount, dcCount);
-      maxEcCount = Math.max(maxEcCount, ecCount);
-      dcdata[r] = new Array(dcCount);
-      for (let i = 0; i < dcdata[r].length; i += 1) {
-        dcdata[r][i] = 255 & buffer.getBuffer()[i + offset];
-      }
-      offset += dcCount;
-      const rsPoly = QRUtil.getErrorCorrectPolynomial(ecCount);
-      const rawPoly = qrPolynomial(dcdata[r], rsPoly.getLength() - 1);
-      const modPoly = rawPoly.mod(rsPoly);
-      ecdata[r] = new Array(rsPoly.getLength() - 1);
-      for (let i = 0; i < ecdata[r].length; i += 1) {
-        const modIndex = i + modPoly.getLength() - ecdata[r].length;
-        ecdata[r][i] = modIndex >= 0 ? modPoly.getAt(modIndex) : 0;
-      }
-    }
-    let totalCodeCount = 0;
-    for (let i = 0; i < rsBlocks.length; i += 1) {
-      totalCodeCount += rsBlocks[i].totalCount;
-    }
-    const data = new Array(totalCodeCount);
-    let index = 0;
-    for (let i = 0; i < maxDcCount; i += 1) {
-      for (let r = 0; r < rsBlocks.length; r += 1) {
-        if (i < dcdata[r].length) {
-          data[index] = dcdata[r][i];
-          index += 1;
-        }
-      }
-    }
-    for (let i = 0; i < maxEcCount; i += 1) {
-      for (let r = 0; r < rsBlocks.length; r += 1) {
-        if (i < ecdata[r].length) {
-          data[index] = ecdata[r][i];
-          index += 1;
-        }
-      }
-    }
-    return data;
-  };
-  const createData = function(typeNumber2, errorCorrectionLevel2, dataList) {
-    const rsBlocks = QRRSBlock.getRSBlocks(typeNumber2, errorCorrectionLevel2);
-    const buffer = qrBitBuffer();
-    for (let i = 0; i < dataList.length; i += 1) {
-      const data = dataList[i];
-      buffer.put(data.getMode(), 4);
-      buffer.put(data.getLength(), QRUtil.getLengthInBits(data.getMode(), typeNumber2));
-      data.write(buffer);
-    }
-    let totalDataCount = 0;
-    for (let i = 0; i < rsBlocks.length; i += 1) {
-      totalDataCount += rsBlocks[i].dataCount;
-    }
-    if (buffer.getLengthInBits() > totalDataCount * 8) {
-      throw "code length overflow. (" + buffer.getLengthInBits() + ">" + totalDataCount * 8 + ")";
-    }
-    if (buffer.getLengthInBits() + 4 <= totalDataCount * 8) {
-      buffer.put(0, 4);
-    }
-    while (buffer.getLengthInBits() % 8 != 0) {
-      buffer.putBit(false);
-    }
-    while (true) {
-      if (buffer.getLengthInBits() >= totalDataCount * 8) {
-        break;
-      }
-      buffer.put(PAD0, 8);
-      if (buffer.getLengthInBits() >= totalDataCount * 8) {
-        break;
-      }
-      buffer.put(PAD1, 8);
-    }
-    return createBytes(buffer, rsBlocks);
-  };
-  _this.addData = function(data, mode) {
-    mode = mode || "Byte";
-    let newData = null;
-    switch (mode) {
-      case "Numeric":
-        newData = qrNumber(data);
-        break;
-      case "Alphanumeric":
-        newData = qrAlphaNum(data);
-        break;
-      case "Byte":
-        newData = qr8BitByte(data);
-        break;
-      case "Kanji":
-        newData = qrKanji(data);
-        break;
-      default:
-        throw "mode:" + mode;
-    }
-    _dataList.push(newData);
-    _dataCache = null;
-  };
-  _this.isDark = function(row, col) {
-    if (row < 0 || _moduleCount <= row || col < 0 || _moduleCount <= col) {
-      throw row + "," + col;
-    }
-    return _modules[row][col];
-  };
-  _this.getModuleCount = function() {
-    return _moduleCount;
-  };
-  _this.make = function() {
-    if (_typeNumber < 1) {
-      let typeNumber2 = 1;
-      for (; typeNumber2 < 40; typeNumber2++) {
-        const rsBlocks = QRRSBlock.getRSBlocks(typeNumber2, _errorCorrectionLevel);
-        const buffer = qrBitBuffer();
-        for (let i = 0; i < _dataList.length; i++) {
-          const data = _dataList[i];
-          buffer.put(data.getMode(), 4);
-          buffer.put(data.getLength(), QRUtil.getLengthInBits(data.getMode(), typeNumber2));
-          data.write(buffer);
-        }
-        let totalDataCount = 0;
-        for (let i = 0; i < rsBlocks.length; i++) {
-          totalDataCount += rsBlocks[i].dataCount;
-        }
-        if (buffer.getLengthInBits() <= totalDataCount * 8) {
-          break;
-        }
-      }
-      _typeNumber = typeNumber2;
-    }
-    makeImpl(false, getBestMaskPattern());
-  };
-  _this.createTableTag = function(cellSize, margin) {
-    cellSize = cellSize || 2;
-    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
-    let qrHtml = "";
-    qrHtml += '<table style="';
-    qrHtml += " border-width: 0px; border-style: none;";
-    qrHtml += " border-collapse: collapse;";
-    qrHtml += " padding: 0px; margin: " + margin + "px;";
-    qrHtml += '">';
-    qrHtml += "<tbody>";
-    for (let r = 0; r < _this.getModuleCount(); r += 1) {
-      qrHtml += "<tr>";
-      for (let c = 0; c < _this.getModuleCount(); c += 1) {
-        qrHtml += '<td style="';
-        qrHtml += " border-width: 0px; border-style: none;";
-        qrHtml += " border-collapse: collapse;";
-        qrHtml += " padding: 0px; margin: 0px;";
-        qrHtml += " width: " + cellSize + "px;";
-        qrHtml += " height: " + cellSize + "px;";
-        qrHtml += " background-color: ";
-        qrHtml += _this.isDark(r, c) ? "#000000" : "#ffffff";
-        qrHtml += ";";
-        qrHtml += '"/>';
-      }
-      qrHtml += "</tr>";
-    }
-    qrHtml += "</tbody>";
-    qrHtml += "</table>";
-    return qrHtml;
-  };
-  _this.createSvgTag = function(cellSize, margin, alt, title) {
-    let opts = {};
-    if (typeof arguments[0] == "object") {
-      opts = arguments[0];
-      cellSize = opts.cellSize;
-      margin = opts.margin;
-      alt = opts.alt;
-      title = opts.title;
-    }
-    cellSize = cellSize || 2;
-    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
-    alt = typeof alt === "string" ? { text: alt } : alt || {};
-    alt.text = alt.text || null;
-    alt.id = alt.text ? alt.id || "qrcode-description" : null;
-    title = typeof title === "string" ? { text: title } : title || {};
-    title.text = title.text || null;
-    title.id = title.text ? title.id || "qrcode-title" : null;
-    const size = _this.getModuleCount() * cellSize + margin * 2;
-    let c, mc, r, mr, qrSvg2 = "", rect;
-    rect = "l" + cellSize + ",0 0," + cellSize + " -" + cellSize + ",0 0,-" + cellSize + "z ";
-    qrSvg2 += '<svg version="1.1" xmlns="http://www.w3.org/2000/svg"';
-    qrSvg2 += !opts.scalable ? ' width="' + size + 'px" height="' + size + 'px"' : "";
-    qrSvg2 += ' viewBox="0 0 ' + size + " " + size + '" ';
-    qrSvg2 += ' preserveAspectRatio="xMinYMin meet"';
-    qrSvg2 += title.text || alt.text ? ' role="img" aria-labelledby="' + escapeXml([title.id, alt.id].join(" ").trim()) + '"' : "";
-    qrSvg2 += ">";
-    qrSvg2 += title.text ? '<title id="' + escapeXml(title.id) + '">' + escapeXml(title.text) + "</title>" : "";
-    qrSvg2 += alt.text ? '<description id="' + escapeXml(alt.id) + '">' + escapeXml(alt.text) + "</description>" : "";
-    qrSvg2 += '<rect width="100%" height="100%" fill="white" cx="0" cy="0"/>';
-    qrSvg2 += '<path d="';
-    for (r = 0; r < _this.getModuleCount(); r += 1) {
-      mr = r * cellSize + margin;
-      for (c = 0; c < _this.getModuleCount(); c += 1) {
-        if (_this.isDark(r, c)) {
-          mc = c * cellSize + margin;
-          qrSvg2 += "M" + mc + "," + mr + rect;
-        }
-      }
-    }
-    qrSvg2 += '" stroke="transparent" fill="black"/>';
-    qrSvg2 += "</svg>";
-    return qrSvg2;
-  };
-  _this.createDataURL = function(cellSize, margin) {
-    cellSize = cellSize || 2;
-    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
-    const size = _this.getModuleCount() * cellSize + margin * 2;
-    const min = margin;
-    const max = size - margin;
-    return createDataURL(size, size, function(x, y) {
-      if (min <= x && x < max && min <= y && y < max) {
-        const c = Math.floor((x - min) / cellSize);
-        const r = Math.floor((y - min) / cellSize);
-        return _this.isDark(r, c) ? 0 : 1;
-      } else {
-        return 1;
-      }
-    });
-  };
-  _this.createImgTag = function(cellSize, margin, alt) {
-    cellSize = cellSize || 2;
-    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
-    const size = _this.getModuleCount() * cellSize + margin * 2;
-    let img = "";
-    img += "<img";
-    img += ' src="';
-    img += _this.createDataURL(cellSize, margin);
-    img += '"';
-    img += ' width="';
-    img += size;
-    img += '"';
-    img += ' height="';
-    img += size;
-    img += '"';
-    if (alt) {
-      img += ' alt="';
-      img += escapeXml(alt);
-      img += '"';
-    }
-    img += "/>";
-    return img;
-  };
-  const escapeXml = function(s) {
-    let escaped = "";
-    for (let i = 0; i < s.length; i += 1) {
-      const c = s.charAt(i);
-      switch (c) {
-        case "<":
-          escaped += "&lt;";
-          break;
-        case ">":
-          escaped += "&gt;";
-          break;
-        case "&":
-          escaped += "&amp;";
-          break;
-        case '"':
-          escaped += "&quot;";
-          break;
-        default:
-          escaped += c;
-          break;
-      }
-    }
-    return escaped;
-  };
-  const _createHalfASCII = function(margin) {
-    const cellSize = 1;
-    margin = typeof margin == "undefined" ? cellSize * 2 : margin;
-    const size = _this.getModuleCount() * cellSize + margin * 2;
-    const min = margin;
-    const max = size - margin;
-    let y, x, r1, r2, p;
-    const blocks = {
-      "\u2588\u2588": "\u2588",
-      "\u2588 ": "\u2580",
-      " \u2588": "\u2584",
-      "  ": " "
-    };
-    const blocksLastLineNoMargin = {
-      "\u2588\u2588": "\u2580",
-      "\u2588 ": "\u2580",
-      " \u2588": " ",
-      "  ": " "
-    };
-    let ascii = "";
-    for (y = 0; y < size; y += 2) {
-      r1 = Math.floor((y - min) / cellSize);
-      r2 = Math.floor((y + 1 - min) / cellSize);
-      for (x = 0; x < size; x += 1) {
-        p = "\u2588";
-        if (min <= x && x < max && min <= y && y < max && _this.isDark(r1, Math.floor((x - min) / cellSize))) {
-          p = " ";
-        }
-        if (min <= x && x < max && min <= y + 1 && y + 1 < max && _this.isDark(r2, Math.floor((x - min) / cellSize))) {
-          p += " ";
-        } else {
-          p += "\u2588";
-        }
-        ascii += margin < 1 && y + 1 >= max ? blocksLastLineNoMargin[p] : blocks[p];
-      }
-      ascii += "\n";
-    }
-    if (size % 2 && margin > 0) {
-      return ascii.substring(0, ascii.length - size - 1) + Array(size + 1).join("\u2580");
-    }
-    return ascii.substring(0, ascii.length - 1);
-  };
-  _this.createASCII = function(cellSize, margin) {
-    cellSize = cellSize || 1;
-    if (cellSize < 2) {
-      return _createHalfASCII(margin);
-    }
-    cellSize -= 1;
-    margin = typeof margin == "undefined" ? cellSize * 2 : margin;
-    const size = _this.getModuleCount() * cellSize + margin * 2;
-    const min = margin;
-    const max = size - margin;
-    let y, x, r, p;
-    const white = Array(cellSize + 1).join("\u2588\u2588");
-    const black = Array(cellSize + 1).join("  ");
-    let ascii = "";
-    let line = "";
-    for (y = 0; y < size; y += 1) {
-      r = Math.floor((y - min) / cellSize);
-      line = "";
-      for (x = 0; x < size; x += 1) {
-        p = 1;
-        if (min <= x && x < max && min <= y && y < max && _this.isDark(r, Math.floor((x - min) / cellSize))) {
-          p = 0;
-        }
-        line += p ? white : black;
-      }
-      for (r = 0; r < cellSize; r += 1) {
-        ascii += line + "\n";
-      }
-    }
-    return ascii.substring(0, ascii.length - 1);
-  };
-  _this.renderTo2dContext = function(context, cellSize) {
-    cellSize = cellSize || 2;
-    const length = _this.getModuleCount();
-    for (let row = 0; row < length; row++) {
-      for (let col = 0; col < length; col++) {
-        context.fillStyle = _this.isDark(row, col) ? "black" : "white";
-        context.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
-      }
-    }
-  };
-  return _this;
-};
-qrcode.stringToBytes = function(s) {
-  const bytes = [];
-  for (let i = 0; i < s.length; i += 1) {
-    const c = s.charCodeAt(i);
-    bytes.push(c & 255);
-  }
-  return bytes;
-};
-qrcode.createStringToBytes = function(unicodeData, numChars) {
-  const unicodeMap = (function() {
-    const bin = base64DecodeInputStream(unicodeData);
-    const read2 = function() {
-      const b = bin.read();
-      if (b == -1) throw "eof";
-      return b;
-    };
-    let count = 0;
-    const unicodeMap2 = {};
-    while (true) {
-      const b0 = bin.read();
-      if (b0 == -1) break;
-      const b1 = read2();
-      const b2 = read2();
-      const b3 = read2();
-      const k = String.fromCharCode(b0 << 8 | b1);
-      const v = b2 << 8 | b3;
-      unicodeMap2[k] = v;
-      count += 1;
-    }
-    if (count != numChars) {
-      throw count + " != " + numChars;
-    }
-    return unicodeMap2;
-  })();
-  const unknownChar = "?".charCodeAt(0);
-  return function(s) {
-    const bytes = [];
-    for (let i = 0; i < s.length; i += 1) {
-      const c = s.charCodeAt(i);
-      if (c < 128) {
-        bytes.push(c);
-      } else {
-        const b = unicodeMap[s.charAt(i)];
-        if (typeof b == "number") {
-          if ((b & 255) == b) {
-            bytes.push(b);
-          } else {
-            bytes.push(b >>> 8);
-            bytes.push(b & 255);
-          }
-        } else {
-          bytes.push(unknownChar);
-        }
-      }
-    }
-    return bytes;
-  };
-};
-var QRMode = {
-  MODE_NUMBER: 1 << 0,
-  MODE_ALPHA_NUM: 1 << 1,
-  MODE_8BIT_BYTE: 1 << 2,
-  MODE_KANJI: 1 << 3
-};
-var QRErrorCorrectionLevel = {
-  L: 1,
-  M: 0,
-  Q: 3,
-  H: 2
-};
-var QRMaskPattern = {
-  PATTERN000: 0,
-  PATTERN001: 1,
-  PATTERN010: 2,
-  PATTERN011: 3,
-  PATTERN100: 4,
-  PATTERN101: 5,
-  PATTERN110: 6,
-  PATTERN111: 7
-};
-var QRUtil = (function() {
-  const PATTERN_POSITION_TABLE = [
-    [],
-    [6, 18],
-    [6, 22],
-    [6, 26],
-    [6, 30],
-    [6, 34],
-    [6, 22, 38],
-    [6, 24, 42],
-    [6, 26, 46],
-    [6, 28, 50],
-    [6, 30, 54],
-    [6, 32, 58],
-    [6, 34, 62],
-    [6, 26, 46, 66],
-    [6, 26, 48, 70],
-    [6, 26, 50, 74],
-    [6, 30, 54, 78],
-    [6, 30, 56, 82],
-    [6, 30, 58, 86],
-    [6, 34, 62, 90],
-    [6, 28, 50, 72, 94],
-    [6, 26, 50, 74, 98],
-    [6, 30, 54, 78, 102],
-    [6, 28, 54, 80, 106],
-    [6, 32, 58, 84, 110],
-    [6, 30, 58, 86, 114],
-    [6, 34, 62, 90, 118],
-    [6, 26, 50, 74, 98, 122],
-    [6, 30, 54, 78, 102, 126],
-    [6, 26, 52, 78, 104, 130],
-    [6, 30, 56, 82, 108, 134],
-    [6, 34, 60, 86, 112, 138],
-    [6, 30, 58, 86, 114, 142],
-    [6, 34, 62, 90, 118, 146],
-    [6, 30, 54, 78, 102, 126, 150],
-    [6, 24, 50, 76, 102, 128, 154],
-    [6, 28, 54, 80, 106, 132, 158],
-    [6, 32, 58, 84, 110, 136, 162],
-    [6, 26, 54, 82, 110, 138, 166],
-    [6, 30, 58, 86, 114, 142, 170]
-  ];
-  const G15 = 1 << 10 | 1 << 8 | 1 << 5 | 1 << 4 | 1 << 2 | 1 << 1 | 1 << 0;
-  const G18 = 1 << 12 | 1 << 11 | 1 << 10 | 1 << 9 | 1 << 8 | 1 << 5 | 1 << 2 | 1 << 0;
-  const G15_MASK = 1 << 14 | 1 << 12 | 1 << 10 | 1 << 4 | 1 << 1;
-  const _this = {};
-  const getBCHDigit = function(data) {
-    let digit = 0;
-    while (data != 0) {
-      digit += 1;
-      data >>>= 1;
-    }
-    return digit;
-  };
-  _this.getBCHTypeInfo = function(data) {
-    let d = data << 10;
-    while (getBCHDigit(d) - getBCHDigit(G15) >= 0) {
-      d ^= G15 << getBCHDigit(d) - getBCHDigit(G15);
-    }
-    return (data << 10 | d) ^ G15_MASK;
-  };
-  _this.getBCHTypeNumber = function(data) {
-    let d = data << 12;
-    while (getBCHDigit(d) - getBCHDigit(G18) >= 0) {
-      d ^= G18 << getBCHDigit(d) - getBCHDigit(G18);
-    }
-    return data << 12 | d;
-  };
-  _this.getPatternPosition = function(typeNumber) {
-    return PATTERN_POSITION_TABLE[typeNumber - 1];
-  };
-  _this.getMaskFunction = function(maskPattern) {
-    switch (maskPattern) {
-      case QRMaskPattern.PATTERN000:
-        return function(i, j) {
-          return (i + j) % 2 == 0;
-        };
-      case QRMaskPattern.PATTERN001:
-        return function(i, j) {
-          return i % 2 == 0;
-        };
-      case QRMaskPattern.PATTERN010:
-        return function(i, j) {
-          return j % 3 == 0;
-        };
-      case QRMaskPattern.PATTERN011:
-        return function(i, j) {
-          return (i + j) % 3 == 0;
-        };
-      case QRMaskPattern.PATTERN100:
-        return function(i, j) {
-          return (Math.floor(i / 2) + Math.floor(j / 3)) % 2 == 0;
-        };
-      case QRMaskPattern.PATTERN101:
-        return function(i, j) {
-          return i * j % 2 + i * j % 3 == 0;
-        };
-      case QRMaskPattern.PATTERN110:
-        return function(i, j) {
-          return (i * j % 2 + i * j % 3) % 2 == 0;
-        };
-      case QRMaskPattern.PATTERN111:
-        return function(i, j) {
-          return (i * j % 3 + (i + j) % 2) % 2 == 0;
-        };
-      default:
-        throw "bad maskPattern:" + maskPattern;
-    }
-  };
-  _this.getErrorCorrectPolynomial = function(errorCorrectLength) {
-    let a = qrPolynomial([1], 0);
-    for (let i = 0; i < errorCorrectLength; i += 1) {
-      a = a.multiply(qrPolynomial([1, QRMath.gexp(i)], 0));
-    }
-    return a;
-  };
-  _this.getLengthInBits = function(mode, type) {
-    if (1 <= type && type < 10) {
-      switch (mode) {
-        case QRMode.MODE_NUMBER:
-          return 10;
-        case QRMode.MODE_ALPHA_NUM:
-          return 9;
-        case QRMode.MODE_8BIT_BYTE:
-          return 8;
-        case QRMode.MODE_KANJI:
-          return 8;
-        default:
-          throw "mode:" + mode;
-      }
-    } else if (type < 27) {
-      switch (mode) {
-        case QRMode.MODE_NUMBER:
-          return 12;
-        case QRMode.MODE_ALPHA_NUM:
-          return 11;
-        case QRMode.MODE_8BIT_BYTE:
-          return 16;
-        case QRMode.MODE_KANJI:
-          return 10;
-        default:
-          throw "mode:" + mode;
-      }
-    } else if (type < 41) {
-      switch (mode) {
-        case QRMode.MODE_NUMBER:
-          return 14;
-        case QRMode.MODE_ALPHA_NUM:
-          return 13;
-        case QRMode.MODE_8BIT_BYTE:
-          return 16;
-        case QRMode.MODE_KANJI:
-          return 12;
-        default:
-          throw "mode:" + mode;
-      }
-    } else {
-      throw "type:" + type;
-    }
-  };
-  _this.getLostPoint = function(qrcode2) {
-    const moduleCount = qrcode2.getModuleCount();
-    let lostPoint = 0;
-    for (let row = 0; row < moduleCount; row += 1) {
-      for (let col = 0; col < moduleCount; col += 1) {
-        let sameCount = 0;
-        const dark = qrcode2.isDark(row, col);
-        for (let r = -1; r <= 1; r += 1) {
-          if (row + r < 0 || moduleCount <= row + r) {
-            continue;
-          }
-          for (let c = -1; c <= 1; c += 1) {
-            if (col + c < 0 || moduleCount <= col + c) {
-              continue;
-            }
-            if (r == 0 && c == 0) {
-              continue;
-            }
-            if (dark == qrcode2.isDark(row + r, col + c)) {
-              sameCount += 1;
-            }
-          }
-        }
-        if (sameCount > 5) {
-          lostPoint += 3 + sameCount - 5;
-        }
-      }
-    }
-    ;
-    for (let row = 0; row < moduleCount - 1; row += 1) {
-      for (let col = 0; col < moduleCount - 1; col += 1) {
-        let count = 0;
-        if (qrcode2.isDark(row, col)) count += 1;
-        if (qrcode2.isDark(row + 1, col)) count += 1;
-        if (qrcode2.isDark(row, col + 1)) count += 1;
-        if (qrcode2.isDark(row + 1, col + 1)) count += 1;
-        if (count == 0 || count == 4) {
-          lostPoint += 3;
-        }
-      }
-    }
-    for (let row = 0; row < moduleCount; row += 1) {
-      for (let col = 0; col < moduleCount - 6; col += 1) {
-        if (qrcode2.isDark(row, col) && !qrcode2.isDark(row, col + 1) && qrcode2.isDark(row, col + 2) && qrcode2.isDark(row, col + 3) && qrcode2.isDark(row, col + 4) && !qrcode2.isDark(row, col + 5) && qrcode2.isDark(row, col + 6)) {
-          lostPoint += 40;
-        }
-      }
-    }
-    for (let col = 0; col < moduleCount; col += 1) {
-      for (let row = 0; row < moduleCount - 6; row += 1) {
-        if (qrcode2.isDark(row, col) && !qrcode2.isDark(row + 1, col) && qrcode2.isDark(row + 2, col) && qrcode2.isDark(row + 3, col) && qrcode2.isDark(row + 4, col) && !qrcode2.isDark(row + 5, col) && qrcode2.isDark(row + 6, col)) {
-          lostPoint += 40;
-        }
-      }
-    }
-    let darkCount = 0;
-    for (let col = 0; col < moduleCount; col += 1) {
-      for (let row = 0; row < moduleCount; row += 1) {
-        if (qrcode2.isDark(row, col)) {
-          darkCount += 1;
-        }
-      }
-    }
-    const ratio = Math.abs(100 * darkCount / moduleCount / moduleCount - 50) / 5;
-    lostPoint += ratio * 10;
-    return lostPoint;
-  };
-  return _this;
-})();
-var QRMath = (function() {
-  const EXP_TABLE = new Array(256);
-  const LOG_TABLE = new Array(256);
-  for (let i = 0; i < 8; i += 1) {
-    EXP_TABLE[i] = 1 << i;
-  }
-  for (let i = 8; i < 256; i += 1) {
-    EXP_TABLE[i] = EXP_TABLE[i - 4] ^ EXP_TABLE[i - 5] ^ EXP_TABLE[i - 6] ^ EXP_TABLE[i - 8];
-  }
-  for (let i = 0; i < 255; i += 1) {
-    LOG_TABLE[EXP_TABLE[i]] = i;
-  }
-  const _this = {};
-  _this.glog = function(n) {
-    if (n < 1) {
-      throw "glog(" + n + ")";
-    }
-    return LOG_TABLE[n];
-  };
-  _this.gexp = function(n) {
-    while (n < 0) {
-      n += 255;
-    }
-    while (n >= 256) {
-      n -= 255;
-    }
-    return EXP_TABLE[n];
-  };
-  return _this;
-})();
-var qrPolynomial = function(num, shift) {
-  if (typeof num.length == "undefined") {
-    throw num.length + "/" + shift;
-  }
-  const _num = (function() {
-    let offset = 0;
-    while (offset < num.length && num[offset] == 0) {
-      offset += 1;
-    }
-    const _num2 = new Array(num.length - offset + shift);
-    for (let i = 0; i < num.length - offset; i += 1) {
-      _num2[i] = num[i + offset];
-    }
-    return _num2;
-  })();
-  const _this = {};
-  _this.getAt = function(index) {
-    return _num[index];
-  };
-  _this.getLength = function() {
-    return _num.length;
-  };
-  _this.multiply = function(e) {
-    const num2 = new Array(_this.getLength() + e.getLength() - 1);
-    for (let i = 0; i < _this.getLength(); i += 1) {
-      for (let j = 0; j < e.getLength(); j += 1) {
-        num2[i + j] ^= QRMath.gexp(QRMath.glog(_this.getAt(i)) + QRMath.glog(e.getAt(j)));
-      }
-    }
-    return qrPolynomial(num2, 0);
-  };
-  _this.mod = function(e) {
-    if (_this.getLength() - e.getLength() < 0) {
-      return _this;
-    }
-    const ratio = QRMath.glog(_this.getAt(0)) - QRMath.glog(e.getAt(0));
-    const num2 = new Array(_this.getLength());
-    for (let i = 0; i < _this.getLength(); i += 1) {
-      num2[i] = _this.getAt(i);
-    }
-    for (let i = 0; i < e.getLength(); i += 1) {
-      num2[i] ^= QRMath.gexp(QRMath.glog(e.getAt(i)) + ratio);
-    }
-    return qrPolynomial(num2, 0).mod(e);
-  };
-  return _this;
-};
-var QRRSBlock = (function() {
-  const RS_BLOCK_TABLE = [
-    // L
-    // M
-    // Q
-    // H
-    // 1
-    [1, 26, 19],
-    [1, 26, 16],
-    [1, 26, 13],
-    [1, 26, 9],
-    // 2
-    [1, 44, 34],
-    [1, 44, 28],
-    [1, 44, 22],
-    [1, 44, 16],
-    // 3
-    [1, 70, 55],
-    [1, 70, 44],
-    [2, 35, 17],
-    [2, 35, 13],
-    // 4
-    [1, 100, 80],
-    [2, 50, 32],
-    [2, 50, 24],
-    [4, 25, 9],
-    // 5
-    [1, 134, 108],
-    [2, 67, 43],
-    [2, 33, 15, 2, 34, 16],
-    [2, 33, 11, 2, 34, 12],
-    // 6
-    [2, 86, 68],
-    [4, 43, 27],
-    [4, 43, 19],
-    [4, 43, 15],
-    // 7
-    [2, 98, 78],
-    [4, 49, 31],
-    [2, 32, 14, 4, 33, 15],
-    [4, 39, 13, 1, 40, 14],
-    // 8
-    [2, 121, 97],
-    [2, 60, 38, 2, 61, 39],
-    [4, 40, 18, 2, 41, 19],
-    [4, 40, 14, 2, 41, 15],
-    // 9
-    [2, 146, 116],
-    [3, 58, 36, 2, 59, 37],
-    [4, 36, 16, 4, 37, 17],
-    [4, 36, 12, 4, 37, 13],
-    // 10
-    [2, 86, 68, 2, 87, 69],
-    [4, 69, 43, 1, 70, 44],
-    [6, 43, 19, 2, 44, 20],
-    [6, 43, 15, 2, 44, 16],
-    // 11
-    [4, 101, 81],
-    [1, 80, 50, 4, 81, 51],
-    [4, 50, 22, 4, 51, 23],
-    [3, 36, 12, 8, 37, 13],
-    // 12
-    [2, 116, 92, 2, 117, 93],
-    [6, 58, 36, 2, 59, 37],
-    [4, 46, 20, 6, 47, 21],
-    [7, 42, 14, 4, 43, 15],
-    // 13
-    [4, 133, 107],
-    [8, 59, 37, 1, 60, 38],
-    [8, 44, 20, 4, 45, 21],
-    [12, 33, 11, 4, 34, 12],
-    // 14
-    [3, 145, 115, 1, 146, 116],
-    [4, 64, 40, 5, 65, 41],
-    [11, 36, 16, 5, 37, 17],
-    [11, 36, 12, 5, 37, 13],
-    // 15
-    [5, 109, 87, 1, 110, 88],
-    [5, 65, 41, 5, 66, 42],
-    [5, 54, 24, 7, 55, 25],
-    [11, 36, 12, 7, 37, 13],
-    // 16
-    [5, 122, 98, 1, 123, 99],
-    [7, 73, 45, 3, 74, 46],
-    [15, 43, 19, 2, 44, 20],
-    [3, 45, 15, 13, 46, 16],
-    // 17
-    [1, 135, 107, 5, 136, 108],
-    [10, 74, 46, 1, 75, 47],
-    [1, 50, 22, 15, 51, 23],
-    [2, 42, 14, 17, 43, 15],
-    // 18
-    [5, 150, 120, 1, 151, 121],
-    [9, 69, 43, 4, 70, 44],
-    [17, 50, 22, 1, 51, 23],
-    [2, 42, 14, 19, 43, 15],
-    // 19
-    [3, 141, 113, 4, 142, 114],
-    [3, 70, 44, 11, 71, 45],
-    [17, 47, 21, 4, 48, 22],
-    [9, 39, 13, 16, 40, 14],
-    // 20
-    [3, 135, 107, 5, 136, 108],
-    [3, 67, 41, 13, 68, 42],
-    [15, 54, 24, 5, 55, 25],
-    [15, 43, 15, 10, 44, 16],
-    // 21
-    [4, 144, 116, 4, 145, 117],
-    [17, 68, 42],
-    [17, 50, 22, 6, 51, 23],
-    [19, 46, 16, 6, 47, 17],
-    // 22
-    [2, 139, 111, 7, 140, 112],
-    [17, 74, 46],
-    [7, 54, 24, 16, 55, 25],
-    [34, 37, 13],
-    // 23
-    [4, 151, 121, 5, 152, 122],
-    [4, 75, 47, 14, 76, 48],
-    [11, 54, 24, 14, 55, 25],
-    [16, 45, 15, 14, 46, 16],
-    // 24
-    [6, 147, 117, 4, 148, 118],
-    [6, 73, 45, 14, 74, 46],
-    [11, 54, 24, 16, 55, 25],
-    [30, 46, 16, 2, 47, 17],
-    // 25
-    [8, 132, 106, 4, 133, 107],
-    [8, 75, 47, 13, 76, 48],
-    [7, 54, 24, 22, 55, 25],
-    [22, 45, 15, 13, 46, 16],
-    // 26
-    [10, 142, 114, 2, 143, 115],
-    [19, 74, 46, 4, 75, 47],
-    [28, 50, 22, 6, 51, 23],
-    [33, 46, 16, 4, 47, 17],
-    // 27
-    [8, 152, 122, 4, 153, 123],
-    [22, 73, 45, 3, 74, 46],
-    [8, 53, 23, 26, 54, 24],
-    [12, 45, 15, 28, 46, 16],
-    // 28
-    [3, 147, 117, 10, 148, 118],
-    [3, 73, 45, 23, 74, 46],
-    [4, 54, 24, 31, 55, 25],
-    [11, 45, 15, 31, 46, 16],
-    // 29
-    [7, 146, 116, 7, 147, 117],
-    [21, 73, 45, 7, 74, 46],
-    [1, 53, 23, 37, 54, 24],
-    [19, 45, 15, 26, 46, 16],
-    // 30
-    [5, 145, 115, 10, 146, 116],
-    [19, 75, 47, 10, 76, 48],
-    [15, 54, 24, 25, 55, 25],
-    [23, 45, 15, 25, 46, 16],
-    // 31
-    [13, 145, 115, 3, 146, 116],
-    [2, 74, 46, 29, 75, 47],
-    [42, 54, 24, 1, 55, 25],
-    [23, 45, 15, 28, 46, 16],
-    // 32
-    [17, 145, 115],
-    [10, 74, 46, 23, 75, 47],
-    [10, 54, 24, 35, 55, 25],
-    [19, 45, 15, 35, 46, 16],
-    // 33
-    [17, 145, 115, 1, 146, 116],
-    [14, 74, 46, 21, 75, 47],
-    [29, 54, 24, 19, 55, 25],
-    [11, 45, 15, 46, 46, 16],
-    // 34
-    [13, 145, 115, 6, 146, 116],
-    [14, 74, 46, 23, 75, 47],
-    [44, 54, 24, 7, 55, 25],
-    [59, 46, 16, 1, 47, 17],
-    // 35
-    [12, 151, 121, 7, 152, 122],
-    [12, 75, 47, 26, 76, 48],
-    [39, 54, 24, 14, 55, 25],
-    [22, 45, 15, 41, 46, 16],
-    // 36
-    [6, 151, 121, 14, 152, 122],
-    [6, 75, 47, 34, 76, 48],
-    [46, 54, 24, 10, 55, 25],
-    [2, 45, 15, 64, 46, 16],
-    // 37
-    [17, 152, 122, 4, 153, 123],
-    [29, 74, 46, 14, 75, 47],
-    [49, 54, 24, 10, 55, 25],
-    [24, 45, 15, 46, 46, 16],
-    // 38
-    [4, 152, 122, 18, 153, 123],
-    [13, 74, 46, 32, 75, 47],
-    [48, 54, 24, 14, 55, 25],
-    [42, 45, 15, 32, 46, 16],
-    // 39
-    [20, 147, 117, 4, 148, 118],
-    [40, 75, 47, 7, 76, 48],
-    [43, 54, 24, 22, 55, 25],
-    [10, 45, 15, 67, 46, 16],
-    // 40
-    [19, 148, 118, 6, 149, 119],
-    [18, 75, 47, 31, 76, 48],
-    [34, 54, 24, 34, 55, 25],
-    [20, 45, 15, 61, 46, 16]
-  ];
-  const qrRSBlock = function(totalCount, dataCount) {
-    const _this2 = {};
-    _this2.totalCount = totalCount;
-    _this2.dataCount = dataCount;
-    return _this2;
-  };
-  const _this = {};
-  const getRsBlockTable = function(typeNumber, errorCorrectionLevel) {
-    switch (errorCorrectionLevel) {
-      case QRErrorCorrectionLevel.L:
-        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 0];
-      case QRErrorCorrectionLevel.M:
-        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 1];
-      case QRErrorCorrectionLevel.Q:
-        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 2];
-      case QRErrorCorrectionLevel.H:
-        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 3];
-      default:
-        return void 0;
-    }
-  };
-  _this.getRSBlocks = function(typeNumber, errorCorrectionLevel) {
-    const rsBlock = getRsBlockTable(typeNumber, errorCorrectionLevel);
-    if (typeof rsBlock == "undefined") {
-      throw "bad rs block @ typeNumber:" + typeNumber + "/errorCorrectionLevel:" + errorCorrectionLevel;
-    }
-    const length = rsBlock.length / 3;
-    const list = [];
-    for (let i = 0; i < length; i += 1) {
-      const count = rsBlock[i * 3 + 0];
-      const totalCount = rsBlock[i * 3 + 1];
-      const dataCount = rsBlock[i * 3 + 2];
-      for (let j = 0; j < count; j += 1) {
-        list.push(qrRSBlock(totalCount, dataCount));
-      }
-    }
-    return list;
-  };
-  return _this;
-})();
-var qrBitBuffer = function() {
-  const _buffer = [];
-  let _length = 0;
-  const _this = {};
-  _this.getBuffer = function() {
-    return _buffer;
-  };
-  _this.getAt = function(index) {
-    const bufIndex = Math.floor(index / 8);
-    return (_buffer[bufIndex] >>> 7 - index % 8 & 1) == 1;
-  };
-  _this.put = function(num, length) {
-    for (let i = 0; i < length; i += 1) {
-      _this.putBit((num >>> length - i - 1 & 1) == 1);
-    }
-  };
-  _this.getLengthInBits = function() {
-    return _length;
-  };
-  _this.putBit = function(bit) {
-    const bufIndex = Math.floor(_length / 8);
-    if (_buffer.length <= bufIndex) {
-      _buffer.push(0);
-    }
-    if (bit) {
-      _buffer[bufIndex] |= 128 >>> _length % 8;
-    }
-    _length += 1;
-  };
-  return _this;
-};
-var qrNumber = function(data) {
-  const _mode = QRMode.MODE_NUMBER;
-  const _data = data;
-  const _this = {};
-  _this.getMode = function() {
-    return _mode;
-  };
-  _this.getLength = function(buffer) {
-    return _data.length;
-  };
-  _this.write = function(buffer) {
-    const data2 = _data;
-    let i = 0;
-    while (i + 2 < data2.length) {
-      buffer.put(strToNum(data2.substring(i, i + 3)), 10);
-      i += 3;
-    }
-    if (i < data2.length) {
-      if (data2.length - i == 1) {
-        buffer.put(strToNum(data2.substring(i, i + 1)), 4);
-      } else if (data2.length - i == 2) {
-        buffer.put(strToNum(data2.substring(i, i + 2)), 7);
-      }
-    }
-  };
-  const strToNum = function(s) {
-    let num = 0;
-    for (let i = 0; i < s.length; i += 1) {
-      num = num * 10 + chatToNum(s.charAt(i));
-    }
-    return num;
-  };
-  const chatToNum = function(c) {
-    if ("0" <= c && c <= "9") {
-      return c.charCodeAt(0) - "0".charCodeAt(0);
-    }
-    throw "illegal char :" + c;
-  };
-  return _this;
-};
-var qrAlphaNum = function(data) {
-  const _mode = QRMode.MODE_ALPHA_NUM;
-  const _data = data;
-  const _this = {};
-  _this.getMode = function() {
-    return _mode;
-  };
-  _this.getLength = function(buffer) {
-    return _data.length;
-  };
-  _this.write = function(buffer) {
-    const s = _data;
-    let i = 0;
-    while (i + 1 < s.length) {
-      buffer.put(
-        getCode(s.charAt(i)) * 45 + getCode(s.charAt(i + 1)),
-        11
-      );
-      i += 2;
-    }
-    if (i < s.length) {
-      buffer.put(getCode(s.charAt(i)), 6);
-    }
-  };
-  const getCode = function(c) {
-    if ("0" <= c && c <= "9") {
-      return c.charCodeAt(0) - "0".charCodeAt(0);
-    } else if ("A" <= c && c <= "Z") {
-      return c.charCodeAt(0) - "A".charCodeAt(0) + 10;
-    } else {
-      switch (c) {
-        case " ":
-          return 36;
-        case "$":
-          return 37;
-        case "%":
-          return 38;
-        case "*":
-          return 39;
-        case "+":
-          return 40;
-        case "-":
-          return 41;
-        case ".":
-          return 42;
-        case "/":
-          return 43;
-        case ":":
-          return 44;
-        default:
-          throw "illegal char :" + c;
-      }
-    }
-  };
-  return _this;
-};
-var qr8BitByte = function(data) {
-  const _mode = QRMode.MODE_8BIT_BYTE;
-  const _data = data;
-  const _bytes = qrcode.stringToBytes(data);
-  const _this = {};
-  _this.getMode = function() {
-    return _mode;
-  };
-  _this.getLength = function(buffer) {
-    return _bytes.length;
-  };
-  _this.write = function(buffer) {
-    for (let i = 0; i < _bytes.length; i += 1) {
-      buffer.put(_bytes[i], 8);
-    }
-  };
-  return _this;
-};
-var qrKanji = function(data) {
-  const _mode = QRMode.MODE_KANJI;
-  const _data = data;
-  const stringToBytes2 = qrcode.stringToBytes;
-  !(function(c, code) {
-    const test = stringToBytes2(c);
-    if (test.length != 2 || (test[0] << 8 | test[1]) != code) {
-      throw "sjis not supported.";
-    }
-  })("\u53CB", 38726);
-  const _bytes = stringToBytes2(data);
-  const _this = {};
-  _this.getMode = function() {
-    return _mode;
-  };
-  _this.getLength = function(buffer) {
-    return ~~(_bytes.length / 2);
-  };
-  _this.write = function(buffer) {
-    const data2 = _bytes;
-    let i = 0;
-    while (i + 1 < data2.length) {
-      let c = (255 & data2[i]) << 8 | 255 & data2[i + 1];
-      if (33088 <= c && c <= 40956) {
-        c -= 33088;
-      } else if (57408 <= c && c <= 60351) {
-        c -= 49472;
-      } else {
-        throw "illegal char at " + (i + 1) + "/" + c;
-      }
-      c = (c >>> 8 & 255) * 192 + (c & 255);
-      buffer.put(c, 13);
-      i += 2;
-    }
-    if (i < data2.length) {
-      throw "illegal char at " + (i + 1);
-    }
-  };
-  return _this;
-};
-var byteArrayOutputStream = function() {
-  const _bytes = [];
-  const _this = {};
-  _this.writeByte = function(b) {
-    _bytes.push(b & 255);
-  };
-  _this.writeShort = function(i) {
-    _this.writeByte(i);
-    _this.writeByte(i >>> 8);
-  };
-  _this.writeBytes = function(b, off, len) {
-    off = off || 0;
-    len = len || b.length;
-    for (let i = 0; i < len; i += 1) {
-      _this.writeByte(b[i + off]);
-    }
-  };
-  _this.writeString = function(s) {
-    for (let i = 0; i < s.length; i += 1) {
-      _this.writeByte(s.charCodeAt(i));
-    }
-  };
-  _this.toByteArray = function() {
-    return _bytes;
-  };
-  _this.toString = function() {
-    let s = "";
-    s += "[";
-    for (let i = 0; i < _bytes.length; i += 1) {
-      if (i > 0) {
-        s += ",";
-      }
-      s += _bytes[i];
-    }
-    s += "]";
-    return s;
-  };
-  return _this;
-};
-var base64EncodeOutputStream = function() {
-  let _buffer = 0;
-  let _buflen = 0;
-  let _length = 0;
-  let _base64 = "";
-  const _this = {};
-  const writeEncoded = function(b) {
-    _base64 += String.fromCharCode(encode(b & 63));
-  };
-  const encode = function(n) {
-    if (n < 0) {
-      throw "n:" + n;
-    } else if (n < 26) {
-      return 65 + n;
-    } else if (n < 52) {
-      return 97 + (n - 26);
-    } else if (n < 62) {
-      return 48 + (n - 52);
-    } else if (n == 62) {
-      return 43;
-    } else if (n == 63) {
-      return 47;
-    } else {
-      throw "n:" + n;
-    }
-  };
-  _this.writeByte = function(n) {
-    _buffer = _buffer << 8 | n & 255;
-    _buflen += 8;
-    _length += 1;
-    while (_buflen >= 6) {
-      writeEncoded(_buffer >>> _buflen - 6);
-      _buflen -= 6;
-    }
-  };
-  _this.flush = function() {
-    if (_buflen > 0) {
-      writeEncoded(_buffer << 6 - _buflen);
-      _buffer = 0;
-      _buflen = 0;
-    }
-    if (_length % 3 != 0) {
-      const padlen = 3 - _length % 3;
-      for (let i = 0; i < padlen; i += 1) {
-        _base64 += "=";
-      }
-    }
-  };
-  _this.toString = function() {
-    return _base64;
-  };
-  return _this;
-};
-var base64DecodeInputStream = function(str) {
-  const _str = str;
-  let _pos = 0;
-  let _buffer = 0;
-  let _buflen = 0;
-  const _this = {};
-  _this.read = function() {
-    while (_buflen < 8) {
-      if (_pos >= _str.length) {
-        if (_buflen == 0) {
-          return -1;
-        }
-        throw "unexpected end of file./" + _buflen;
-      }
-      const c = _str.charAt(_pos);
-      _pos += 1;
-      if (c == "=") {
-        _buflen = 0;
-        return -1;
-      } else if (c.match(/^\s$/)) {
-        continue;
-      }
-      _buffer = _buffer << 6 | decode(c.charCodeAt(0));
-      _buflen += 6;
-    }
-    const n = _buffer >>> _buflen - 8 & 255;
-    _buflen -= 8;
-    return n;
-  };
-  const decode = function(c) {
-    if (65 <= c && c <= 90) {
-      return c - 65;
-    } else if (97 <= c && c <= 122) {
-      return c - 97 + 26;
-    } else if (48 <= c && c <= 57) {
-      return c - 48 + 52;
-    } else if (c == 43) {
-      return 62;
-    } else if (c == 47) {
-      return 63;
-    } else {
-      throw "c:" + c;
-    }
-  };
-  return _this;
-};
-var gifImage = function(width, height) {
-  const _width = width;
-  const _height = height;
-  const _data = new Array(width * height);
-  const _this = {};
-  _this.setPixel = function(x, y, pixel) {
-    _data[y * _width + x] = pixel;
-  };
-  _this.write = function(out) {
-    out.writeString("GIF87a");
-    out.writeShort(_width);
-    out.writeShort(_height);
-    out.writeByte(128);
-    out.writeByte(0);
-    out.writeByte(0);
-    out.writeByte(0);
-    out.writeByte(0);
-    out.writeByte(0);
-    out.writeByte(255);
-    out.writeByte(255);
-    out.writeByte(255);
-    out.writeString(",");
-    out.writeShort(0);
-    out.writeShort(0);
-    out.writeShort(_width);
-    out.writeShort(_height);
-    out.writeByte(0);
-    const lzwMinCodeSize = 2;
-    const raster = getLZWRaster(lzwMinCodeSize);
-    out.writeByte(lzwMinCodeSize);
-    let offset = 0;
-    while (raster.length - offset > 255) {
-      out.writeByte(255);
-      out.writeBytes(raster, offset, 255);
-      offset += 255;
-    }
-    out.writeByte(raster.length - offset);
-    out.writeBytes(raster, offset, raster.length - offset);
-    out.writeByte(0);
-    out.writeString(";");
-  };
-  const bitOutputStream = function(out) {
-    const _out = out;
-    let _bitLength = 0;
-    let _bitBuffer = 0;
-    const _this2 = {};
-    _this2.write = function(data, length) {
-      if (data >>> length != 0) {
-        throw "length over";
-      }
-      while (_bitLength + length >= 8) {
-        _out.writeByte(255 & (data << _bitLength | _bitBuffer));
-        length -= 8 - _bitLength;
-        data >>>= 8 - _bitLength;
-        _bitBuffer = 0;
-        _bitLength = 0;
-      }
-      _bitBuffer = data << _bitLength | _bitBuffer;
-      _bitLength = _bitLength + length;
-    };
-    _this2.flush = function() {
-      if (_bitLength > 0) {
-        _out.writeByte(_bitBuffer);
-      }
-    };
-    return _this2;
-  };
-  const getLZWRaster = function(lzwMinCodeSize) {
-    const clearCode = 1 << lzwMinCodeSize;
-    const endCode = (1 << lzwMinCodeSize) + 1;
-    let bitLength = lzwMinCodeSize + 1;
-    const table = lzwTable();
-    for (let i = 0; i < clearCode; i += 1) {
-      table.add(String.fromCharCode(i));
-    }
-    table.add(String.fromCharCode(clearCode));
-    table.add(String.fromCharCode(endCode));
-    const byteOut = byteArrayOutputStream();
-    const bitOut = bitOutputStream(byteOut);
-    bitOut.write(clearCode, bitLength);
-    let dataIndex = 0;
-    let s = String.fromCharCode(_data[dataIndex]);
-    dataIndex += 1;
-    while (dataIndex < _data.length) {
-      const c = String.fromCharCode(_data[dataIndex]);
-      dataIndex += 1;
-      if (table.contains(s + c)) {
-        s = s + c;
-      } else {
-        bitOut.write(table.indexOf(s), bitLength);
-        if (table.size() < 4095) {
-          if (table.size() == 1 << bitLength) {
-            bitLength += 1;
-          }
-          table.add(s + c);
-        }
-        s = c;
-      }
-    }
-    bitOut.write(table.indexOf(s), bitLength);
-    bitOut.write(endCode, bitLength);
-    bitOut.flush();
-    return byteOut.toByteArray();
-  };
-  const lzwTable = function() {
-    const _map = {};
-    let _size = 0;
-    const _this2 = {};
-    _this2.add = function(key) {
-      if (_this2.contains(key)) {
-        throw "dup key:" + key;
-      }
-      _map[key] = _size;
-      _size += 1;
-    };
-    _this2.size = function() {
-      return _size;
-    };
-    _this2.indexOf = function(key) {
-      return _map[key];
-    };
-    _this2.contains = function(key) {
-      return typeof _map[key] != "undefined";
-    };
-    return _this2;
-  };
-  return _this;
-};
-var createDataURL = function(width, height, getPixel) {
-  const gif = gifImage(width, height);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      gif.setPixel(x, y, getPixel(x, y));
-    }
-  }
-  const b = byteArrayOutputStream();
-  gif.write(b);
-  const base64 = base64EncodeOutputStream();
-  const bytes = b.toByteArray();
-  for (let i = 0; i < bytes.length; i += 1) {
-    base64.writeByte(bytes[i]);
-  }
-  base64.flush();
-  return "data:image/gif;base64," + base64;
-};
-var qrcode_generator_default = qrcode;
-var stringToBytes = qrcode.stringToBytes;
-
-// server/qrcode.js
-function qrSvg(text, { cellSize = 5, margin = 2, ecc = "M" } = {}) {
-  const qr = qrcode_generator_default(0, ecc);
-  qr.addData(String(text || ""));
-  qr.make();
-  return qr.createSvgTag({ cellSize, margin, scalable: true });
-}
-
-// server/routes/admin.js
-init_menucat();
-init_push();
-function menuZona(v) {
-  const s = String(v || "").trim().toLowerCase();
-  return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
-}
-async function segnaPronta(comandaId) {
-  await db.prepare("UPDATE comande SET pronta_at=? WHERE id=? AND pronta_at IS NULL").run((/* @__PURE__ */ new Date()).toISOString(), comandaId);
-}
-async function avvisaProntoSeSelf(comandaId, prev) {
-  if (prev === "pronta") return;
-  const c = await db.prepare("SELECT id,numero,canale,socio_id,punto FROM comande WHERE id=? AND stato=?").get(comandaId, "pronta");
-  if (!c || c.canale !== "self" || !c.socio_id) return;
-  const titolo = "Il tuo ordine \xE8 pronto \u{1F6CE}";
-  const corpo = `Ordine #${c.numero}${c.punto ? " \xB7 " + c.punto : ""}: ritira e paga in cassa.`;
-  try {
-    await db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(c.socio_id, "push", "sistema", titolo, corpo);
-  } catch (_) {
-  }
-  try {
-    await sendToSocio(c.socio_id, { title: titolo, body: corpo, url: "/", tag: "ordine-pronto" });
-  } catch (_) {
-  }
-}
-var adminRouter = asyncify(Router2());
-adminRouter.post("/login", async (req, res) => {
-  const { username, password } = req.body || {};
-  const u = await db.prepare("SELECT * FROM utenti_admin WHERE username=?").get(username || "");
-  if (!u || !verifyPassword(password || "", u.password_hash)) {
-    audit(username || "?", "login_fallito", "utenti_admin", u?.id ?? "");
-    return res.status(401).json({ error: "Credenziali non valide" });
-  }
-  const token = await createSession(u);
-  audit(u.username, "login", "utenti_admin", u.id);
-  res.json({ token, user: { username: u.username, ruolo: u.ruolo } });
-});
-adminRouter.post("/logout", requireAdmin, async (req, res) => {
-  const token = (req.headers.authorization || "").slice(7);
-  await destroySession(token);
-  res.json({ ok: true });
-});
-adminRouter.use(requireAdmin);
-adminRouter.use((req, res, next) => {
-  if (req.adminUser.ruolo === "sola_lettura" && !["GET", "HEAD"].includes(req.method) && req.path !== "/logout")
-    return res.status(403).json({ error: "Account in sola lettura" });
-  next();
-});
-adminRouter.get("/me", (req, res) => res.json({ user: { username: req.adminUser.username, ruolo: req.adminUser.ruolo }, ...capsInfo(req.adminUser) }));
-adminRouter.get("/operatori", requireCap("operatori"), async (req, res) => {
-  const rows = await db.prepare("SELECT id,username,ruolo,permessi,created_at FROM utenti_admin ORDER BY id").all();
-  res.json({ operatori: rows.map((r) => ({ ...r, permessi: parsePermessi(r.permessi) })), caps_delegabili: CAPS_DELEGABILI });
-});
-adminRouter.post("/operatori", requireCap("operatori"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.username || !b.password) return res.status(400).json({ error: "Username e password obbligatori" });
-  const ruolo = ["manager", "staff", "sola_lettura"].includes(b.ruolo) ? b.ruolo : "staff";
-  const permessi = ruolo === "staff" ? JSON.stringify((Array.isArray(b.permessi) ? b.permessi : []).filter((c) => CAPS_DELEGABILI.includes(c))) : null;
-  try {
-    const info = await db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)").run(b.username, hashPassword(b.password), ruolo, permessi);
-    audit(req.adminUser.username, "crea", "operatori", info.lastInsertRowid, `${b.username} \xB7 ${ruolo}`);
-    res.status(201).json({ ok: true, id: info.lastInsertRowid });
-  } catch (e) {
-    res.status(400).json({ error: "Username gi\xE0 esistente" });
-  }
-});
-adminRouter.put("/operatori/:id", requireCap("operatori"), async (req, res) => {
-  const b = req.body || {};
-  const u = await db.prepare("SELECT username,ruolo FROM utenti_admin WHERE id=?").get(req.params.id);
-  if (!u) return res.status(404).json({ error: "Operatore non trovato" });
-  if (u.ruolo === "gestore") return res.status(400).json({ error: "Il gestore non \xE8 modificabile da qui (password via ADMIN_PASSWORD)" });
-  const ruolo = ["manager", "staff", "sola_lettura"].includes(b.ruolo) ? b.ruolo : u.ruolo;
-  const permessi = ruolo === "staff" ? JSON.stringify((Array.isArray(b.permessi) ? b.permessi : []).filter((c) => CAPS_DELEGABILI.includes(c))) : null;
-  await db.prepare("UPDATE utenti_admin SET ruolo=?,permessi=? WHERE id=?").run(ruolo, permessi, req.params.id);
-  if (b.password) await db.prepare("UPDATE utenti_admin SET password_hash=? WHERE id=?").run(hashPassword(b.password), req.params.id);
-  audit(req.adminUser.username, "modifica", "operatori", req.params.id, ruolo);
-  res.json({ ok: true });
-});
-adminRouter.delete("/operatori/:id", requireCap("operatori"), async (req, res) => {
-  const u = await db.prepare("SELECT username,ruolo FROM utenti_admin WHERE id=?").get(req.params.id);
-  if (!u) return res.status(404).json({ error: "Operatore non trovato" });
-  if (u.ruolo === "gestore") return res.status(400).json({ error: "Il gestore non \xE8 eliminabile" });
-  await db.prepare("DELETE FROM utenti_admin WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "operatori", req.params.id, u.username);
-  res.json({ ok: true });
-});
-adminRouter.get("/stats", async (req, res) => {
-  const one = async (q) => (await db.prepare(q).get()).n;
-  res.json({
-    soci: await one("SELECT count(*) n FROM soci WHERE attivo=1"),
-    soci_marketing: await one("SELECT count(*) n FROM soci WHERE consenso_marketing=1"),
-    prenotazioni: await one("SELECT count(*) n FROM prenotazioni"),
-    prenotazioni_oggi: await one("SELECT count(*) n FROM prenotazioni WHERE date(created_at)=date('now')"),
-    proposte: await one("SELECT count(*) n FROM proposte WHERE stato='ricevuta'"),
-    convocazioni_aperte: await one("SELECT count(*) n FROM convocazioni WHERE stato='aperta'"),
-    per_casata: await db.prepare(`SELECT c.nome,c.colore,c.punti,count(s.id) soci
-                            FROM casate c LEFT JOIN soci s ON s.casata_id=c.id AND s.attivo=1
-                            GROUP BY c.id ORDER BY c.punti DESC`).all()
-  });
-});
-adminRouter.get("/soci", async (req, res) => {
-  const q = `%${(req.query.q || "").toString()}%`;
-  const rows = await db.prepare(`SELECT s.*, c.nome AS casata_nome FROM soci s LEFT JOIN casate c ON c.id=s.casata_id
-    WHERE s.nome LIKE ? OR s.cognome LIKE ? OR s.email LIKE ? OR s.tessera_code LIKE ?
-    ORDER BY s.created_at DESC`).all(q, q, q, q);
-  res.json(rows);
-});
-adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
-  const tipo = b.tipo_profilo ?? "socio";
-  const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
-  const cols = ["tessera_code", "nome", "cognome", "email", "telefono", "data_nascita", "casata_id", "ruolo", "tipo_profilo", "tutore_id", "lingua", "consenso_privacy", "consenso_marketing", "consenso_foto", "notifiche_push", "valida_fino", "soggiorno_dal", "soggiorno_al"];
-  const vals = [
-    b.tessera_code || "",
-    b.nome,
-    b.cognome,
-    b.email ?? null,
-    b.telefono ?? null,
-    b.data_nascita ?? null,
-    b.casata_id ?? null,
-    ruolo,
-    tipo,
-    b.tutore_id ?? null,
-    b.lingua ?? "it",
-    b.consenso_privacy ? 1 : 0,
-    b.consenso_marketing ? 1 : 0,
-    b.consenso_foto ? 1 : 0,
-    b.notifiche_push ? 1 : 0,
-    b.valida_fino ?? null,
-    b.soggiorno_dal ?? null,
-    b.soggiorno_al ?? null
-  ];
-  try {
-    let code, info;
-    if (b.tessera_code) {
-      info = await db.prepare(`INSERT INTO soci (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...vals);
-      code = b.tessera_code;
-    } else {
-      const r = await insertSocioUnique(cols, vals);
-      code = r.tessera_code;
-      info = { lastInsertRowid: r.id };
-    }
-    audit(req.adminUser.username, "crea", "soci", info.lastInsertRowid, code);
-    res.status(201).json({ ok: true, id: info.lastInsertRowid, tessera_code: code });
-  } catch (e) {
-    res.status(400).json({ error: "Tessera duplicata o dati non validi" });
-  }
-});
-adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
-  const b = req.body || {};
-  const exists = await db.prepare("SELECT id FROM soci WHERE id=?").get(req.params.id);
-  if (!exists) return res.status(404).json({ error: "Socio non trovato" });
-  const tipo = b.tipo_profilo ?? "socio";
-  const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
-  await db.prepare(`UPDATE soci SET nome=?,cognome=?,email=?,telefono=?,data_nascita=?,casata_id=?,ruolo=?,tipo_profilo=?,tutore_id=?,lingua=?,
-    consenso_privacy=?,consenso_marketing=?,consenso_foto=?,notifiche_push=?,attivo=?,valida_fino=?,soggiorno_dal=?,soggiorno_al=? WHERE id=?`).run(
-    b.nome,
-    b.cognome,
-    b.email ?? null,
-    b.telefono ?? null,
-    b.data_nascita ?? null,
-    b.casata_id ?? null,
-    ruolo,
-    tipo,
-    b.tutore_id ?? null,
-    b.lingua ?? "it",
-    b.consenso_privacy ? 1 : 0,
-    b.consenso_marketing ? 1 : 0,
-    b.consenso_foto ? 1 : 0,
-    b.notifiche_push ? 1 : 0,
-    b.attivo ? 1 : 0,
-    b.valida_fino ?? null,
-    b.soggiorno_dal ?? null,
-    b.soggiorno_al ?? null,
-    req.params.id
-  );
-  if (!["residente", "socio_residente"].includes(tipo)) await db.prepare("UPDATE soci SET host=0, host_ko=0 WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "modifica", "soci", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/soci/:id/export", requireCap("utenti"), async (req, res) => {
-  const s = await db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
-  if (!s) return res.status(404).json({ error: "Socio non trovato" });
-  const prenotazioni = await db.prepare("SELECT * FROM prenotazioni WHERE socio_id=?").all(req.params.id);
-  const convocazioni = await db.prepare("SELECT * FROM convocazioni WHERE socio_id=?").all(req.params.id);
-  const proposte = await db.prepare("SELECT * FROM proposte WHERE socio_id=?").all(req.params.id);
-  audit(req.adminUser.username, "export_gdpr", "soci", req.params.id);
-  res.json({ socio: s, prenotazioni, convocazioni, proposte });
-});
-adminRouter.delete("/soci/:id", requireCap("utenti_del"), async (req, res) => {
-  const id = req.params.id;
-  const s = await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(id);
-  if (!s) return res.status(404).json({ error: "Socio non trovato" });
-  await db.prepare("DELETE FROM convocazioni WHERE socio_id=?").run(id);
-  await db.prepare("DELETE FROM prenotazioni WHERE socio_id=?").run(id);
-  await db.prepare("DELETE FROM notifiche WHERE socio_id=?").run(id);
-  await db.prepare("UPDATE proposte SET socio_id=NULL WHERE socio_id=?").run(id);
-  await db.prepare("UPDATE serate_prenotazioni SET socio_id=NULL WHERE socio_id=?").run(id);
-  await db.prepare("DELETE FROM soci WHERE tutore_id=?").run(id);
-  await db.prepare("DELETE FROM soci WHERE id=?").run(id);
-  audit(req.adminUser.username, "cancella_gdpr", "soci", id, s.tessera_code);
-  res.json({ ok: true });
-});
-adminRouter.put("/casate/:id/punti", requireCap("casate"), async (req, res) => {
-  const { punti } = req.body || {};
-  await db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
-  audit(req.adminUser.username, "punti", "casate", req.params.id, String(punti));
-  res.json({ ok: true });
-});
-adminRouter.get("/eventi", async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
-});
-adminRouter.put("/eventi/:id", requireCap("eventi"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,serata_id=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.attivo ? 1 : 0, req.params.id);
-  audit(req.adminUser.username, "modifica", "eventi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.post("/eventi", requireCap("eventi"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM eventi").get()).n;
-  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,serata_id,tipo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.tipo ?? "serata", ord);
-  audit(req.adminUser.username, "crea", "eventi", info.lastInsertRowid, b.titolo);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.delete("/eventi/:id", requireCap("eventi"), async (req, res) => {
-  await db.prepare("DELETE FROM eventi WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "elimina", "eventi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/push/stato", async (req, res) => {
-  const n = (await db.prepare("SELECT COUNT(DISTINCT socio_id) n FROM push_sub").get()).n;
-  const consenzienti = (await db.prepare("SELECT COUNT(*) n FROM soci WHERE notifiche_push=1 AND attivo=1").get()).n;
-  res.json({ enabled: pushEnabled(), dispositivi: n, consenzienti });
-});
-adminRouter.post("/push/broadcast", requireCap("eventi"), async (req, res) => {
-  const b = req.body || {};
-  const titolo = String(b.titolo || "").trim();
-  const corpo = String(b.corpo || "").trim();
-  if (!titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
-  const dove = b.casata_id ? "AND casata_id=?" : "";
-  const args = b.casata_id ? [Number(b.casata_id)] : [];
-  const soci = await db.prepare(`SELECT id FROM soci WHERE notifiche_push=1 AND attivo=1 ${dove}`).all(...args);
-  const ids = soci.map((s) => s.id);
-  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
-  for (const id of ids) {
-    await insN.run(id, "push", "sistema", titolo, corpo || null);
-  }
-  let inviati = 0;
-  try {
-    inviati = await sendToSoci(ids, { title: titolo, body: corpo, url: "/", tag: "avviso" });
-  } catch (_) {
-  }
-  audit(req.adminUser.username, "push_broadcast", "soci", b.casata_id || "tutti", `${ids.length} destinatari, ${inviati} push`);
-  res.json({ ok: true, destinatari: ids.length, inviati, enabled: pushEnabled() });
-});
-adminRouter.get("/prenotazioni", async (req, res) => {
-  res.json(await db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
-    LEFT JOIN soci s ON s.id=p.socio_id ORDER BY p.created_at DESC LIMIT 200`).all());
-});
-adminRouter.post("/convocazioni", requireCap("tabellone"), async (req, res) => {
-  const { disciplina_chiave, dominio, casata_id, match_label, quando, luogo } = req.body || {};
-  const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio || "sport");
-  if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
-  const soci = await db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(casata_id);
-  const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
-  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
-  let notificati = 0;
-  for (const s of soci) {
-    await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
-    if (s.notifiche_push) {
-      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
-      notificati++;
-    }
-  }
-  audit(req.adminUser.username, "convoca", "convocazioni", casata_id, `${soci.length} soci \xB7 ${notificati} notificati`);
-  res.status(201).json({ ok: true, convocati: soci.length, notificati });
-});
-adminRouter.get("/proposte", async (req, res) => {
-  res.json(await db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
-    LEFT JOIN soci s ON s.id=pr.socio_id ORDER BY pr.created_at DESC`).all());
-});
-adminRouter.put("/proposte/:id", requireCap("proposte"), async (req, res) => {
-  const { stato } = req.body || {};
-  await db.prepare("UPDATE proposte SET stato=? WHERE id=?").run(stato || "ricevuta", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/bussola", requireCap("guida"), async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM bussola ORDER BY sezione,ordine").all());
-});
-adminRouter.post("/bussola", requireCap("guida"), async (req, res) => {
-  const b = req.body || {};
-  const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
-  audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.delete("/bussola/:id", requireCap("guida"), async (req, res) => {
-  await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "bussola", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/luoghi", requireCap("luoghi"), async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM luoghi ORDER BY ordine").all());
-});
-adminRouter.put("/luoghi/:id", requireCap("luoghi"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
-  audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
-  res.json({ ok: true });
-});
-adminRouter.get("/rifiuti", requireCap("guida"), async (req, res) => {
-  const tipi = await db.prepare("SELECT id,nome,colore,ordine FROM rifiuti_tipi ORDER BY ordine,id").all();
-  const calendari = (await db.prepare("SELECT id,periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
-  res.json({ tipi, calendari });
-});
-adminRouter.post("/rifiuti/tipo", requireCap("guida"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_tipi").get()).n;
-  const info = await db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)").run(b.nome, b.colore || "#7A8790", ord);
-  audit(req.adminUser.username, "crea", "rifiuti_tipi", info.lastInsertRowid, b.nome);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/rifiuti/tipo/:id", requireCap("guida"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE rifiuti_tipi SET nome=?,colore=? WHERE id=?").run(b.nome, b.colore || "#7A8790", req.params.id);
-  audit(req.adminUser.username, "modifica", "rifiuti_tipi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/rifiuti/tipo/:id", requireCap("guida"), async (req, res) => {
-  await db.prepare("DELETE FROM rifiuti_tipi WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "rifiuti_tipi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.put("/rifiuti/calendario/:periodo", requireCap("guida"), async (req, res) => {
-  const b = req.body || {};
-  const per = req.params.periodo;
-  const giorni = JSON.stringify(b.giorni || {});
-  const ex = await db.prepare("SELECT id FROM rifiuti_calendario WHERE periodo=?").get(per);
-  if (ex) await db.prepare("UPDATE rifiuti_calendario SET inizio_conf=?,fine_conf=?,ora_ritiro=?,giorni=? WHERE periodo=?").run(b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, per);
-  else {
-    const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_calendario").get()).n;
-    await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run(per, b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, ord);
-  }
-  audit(req.adminUser.username, "modifica", "rifiuti_calendario", per);
-  res.json({ ok: true });
-});
-adminRouter.delete("/rifiuti/calendario/:periodo", requireCap("guida"), async (req, res) => {
-  await db.prepare("DELETE FROM rifiuti_calendario WHERE periodo=?").run(req.params.periodo);
-  audit(req.adminUser.username, "cancella", "rifiuti_calendario", req.params.periodo);
-  res.json({ ok: true });
-});
-function magStato(a) {
-  const g = Number(a.giacenza), pr = Number(a.punto_riordino), pre = Number(a.soglia_preavviso);
-  if (g <= pr) return "da_riordinare";
-  if (pre > 0 && g <= pre) return "in_esaurimento";
-  return "ok";
-}
-adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
-  const area = req.query.area;
-  const zona = req.query.zona;
-  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
-  const conds = [];
-  const args = [];
-  if (area) {
-    conds.push("area=?");
-    args.push(area);
-  }
-  if (zonaWhere) {
-    conds.push(zonaWhere);
-    if (zona && !["bar", "garden", "comune"].includes(zona)) args.push(zona);
-  }
-  const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
-  const rows = await db.prepare(`SELECT * FROM magazzino_articoli ${where} ORDER BY area,ordine,id`).all(...args);
-  const imp = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE stato='impegnata' GROUP BY articolo_id").all();
-  const impMap = {};
-  imp.forEach((r) => {
-    impMap[r.articolo_id] = Number(r.q);
-  });
-  const ord = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_ordini WHERE stato='confermato' GROUP BY articolo_id").all();
-  const ordMap = {};
-  ord.forEach((r) => {
-    ordMap[r.articolo_id] = Number(r.q);
-  });
-  const articoli = rows.map((a) => {
-    const impegno = impMap[a.id] || 0;
-    const eff = Number(a.giacenza) - impegno;
-    return { ...a, impegno, giacenza_effettiva: eff, in_arrivo: ordMap[a.id] || 0, stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso }) };
-  });
-  const riepilogo = {
-    da_riordinare: articoli.filter((a) => a.stato === "da_riordinare").length,
-    in_esaurimento: articoli.filter((a) => a.stato === "in_esaurimento").length,
-    totale: articoli.length
-  };
-  const aree = [...new Set(rows.map((a) => a.area))];
-  res.json({ articoli, riepilogo, aree });
-});
-adminRouter.post("/magazzino", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString());
-  audit(req.adminUser.username, "crea", "magazzino_articoli", info.lastInsertRowid, b.nome);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,zona=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=? WHERE id=?").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-  audit(req.adminUser.username, "modifica", "magazzino_articoli", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
-  await db.prepare("DELETE FROM magazzino_movimenti WHERE articolo_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM magazzino_articoli WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "magazzino_articoli", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.post("/magazzino/:id/movimento", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
-  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
-  const q = Math.abs(Number(b.quantita || 0));
-  const tipo = ["carico", "scarico", "rettifica"].includes(b.tipo) ? b.tipo : "carico";
-  let nuova = Number(art.giacenza);
-  if (tipo === "carico") nuova += q;
-  else if (tipo === "scarico") nuova = Math.max(0, nuova - q);
-  else nuova = q;
-  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore) VALUES (?,?,?,?,?)").run(req.params.id, tipo, q, b.causale || null, req.adminUser.username);
-  audit(req.adminUser.username, tipo, "magazzino_articoli", req.params.id, String(q));
-  const aggiornato = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
-  res.json({ ok: true, giacenza: nuova, stato: magStato(aggiornato) });
-});
-async function impegnoTot(articoloId) {
-  const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND stato='impegnata'").get(articoloId);
-  return Number(r.q);
-}
-async function impegnoZona(articoloId, zona) {
-  const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata'").get(articoloId, zona);
-  return Number(r.q);
-}
-adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, res) => {
-  const zona = req.params.zona === "bar" ? "bar" : "garden";
-  const arts = await db.prepare("SELECT * FROM magazzino_articoli WHERE zona=? OR zona='comune' ORDER BY nome").all(zona);
-  const out = [];
-  for (const a of arts) {
-    const impTot = await impegnoTot(a.id);
-    const impZona = await impegnoZona(a.id, zona);
-    const eff = Number(a.giacenza) - impTot;
-    out.push({
-      articolo_id: a.id,
-      nome: a.nome,
-      unita: a.unita,
-      zona_art: a.zona,
-      giacenza_centrale: Number(a.giacenza),
-      impegno_tot: impTot,
-      impegno_zona: impZona,
-      giacenza: eff,
-      // disponibile = giacenza effettiva (ciò che la zona può ancora usare)
-      punto_riordino: Number(a.punto_riordino),
-      soglia_preavviso: Number(a.soglia_preavviso),
-      stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso })
-    });
-  }
-  const riepilogo = { da_riordinare: out.filter((a) => a.stato === "da_riordinare").length, in_esaurimento: out.filter((a) => a.stato === "in_esaurimento").length, totale: out.length };
-  res.json({ articoli: out, riepilogo });
-});
-adminRouter.post("/magazzino/zona/:zona/scarico", requireCap("magazzino"), async (req, res) => {
-  const zona = req.params.zona === "bar" ? "bar" : "garden";
-  const b = req.body || {};
-  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
-  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
-  const q = Math.abs(Number(b.quantita || 0));
-  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
-  const nuova = Math.max(0, Number(art.giacenza) - q);
-  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id);
-  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "consumo fine giornata " + zona, req.adminUser.username, zona);
-  let resto = q;
-  const aperte = await db.prepare("SELECT * FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata' ORDER BY created_at").all(art.id, zona);
-  for (const r of aperte) {
-    if (resto <= 0) break;
-    const usa = Math.min(resto, Number(r.quantita));
-    const residuo = Number(r.quantita) - usa;
-    if (residuo > 0) await db.prepare("UPDATE magazzino_richieste SET quantita=?,updated_at=? WHERE id=?").run(residuo, (/* @__PURE__ */ new Date()).toISOString(), r.id);
-    else await db.prepare("UPDATE magazzino_richieste SET stato='consumata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
-    resto -= usa;
-  }
-  audit(req.adminUser.username, "scarico_zona", "magazzino_articoli", art.id, `${zona} -${q}`);
-  const eff = nuova - await impegnoTot(art.id);
-  res.json({ ok: true, giacenza: eff, giacenza_centrale: nuova, stato: magStato({ giacenza: eff, punto_riordino: art.punto_riordino, soglia_preavviso: art.soglia_preavviso }) });
-});
-adminRouter.post("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  const zona = b.zona === "bar" ? "bar" : "garden";
-  const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
-  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
-  const q = Math.abs(Number(b.quantita || 0));
-  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
-  const info = await db.prepare("INSERT INTO magazzino_richieste (articolo_id,zona,quantita,stato,note) VALUES (?,?,?,?,?)").run(art.id, zona, q, "impegnata", b.note || null);
-  audit(req.adminUser.username, "impegno", "magazzino_richieste", info.lastInsertRowid, `${zona} ${q}`);
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
-});
-adminRouter.get("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
-  const conds = [], args = [];
-  if (req.query.zona) {
-    conds.push("r.zona=?");
-    args.push(req.query.zona);
-  }
-  if (req.query.stato) {
-    conds.push("r.stato=?");
-    args.push(req.query.stato);
-  } else conds.push("r.stato='impegnata'");
-  const where = "WHERE " + conds.join(" AND ");
-  const rows = await db.prepare(`SELECT r.*, a.nome, a.unita FROM magazzino_richieste r JOIN magazzino_articoli a ON a.id=r.articolo_id ${where} ORDER BY r.created_at DESC LIMIT 200`).all(...args);
-  res.json(rows);
-});
-adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), async (req, res) => {
-  await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='impegnata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-  res.json({ ok: true });
-});
-async function magFinestra() {
-  return Math.max(1, Number(await getSetting("mag_finestra_giorni", "14")) || 14);
-}
-async function magLead() {
-  return Math.max(0, Number(await getSetting("mag_lead_time_giorni", "3")) || 0);
-}
-function addGiorni(base, n) {
-  const d = base ? /* @__PURE__ */ new Date(base + "T00:00:00Z") : /* @__PURE__ */ new Date();
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-adminRouter.get("/magazzino/config", requireCap("magazzino"), async (req, res) => {
-  res.json({ finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
-});
-adminRouter.post("/magazzino/config", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  if (b.finestra_giorni != null) await setSetting("mag_finestra_giorni", Math.max(1, Math.round(Number(b.finestra_giorni) || 14)));
-  if (b.lead_time_giorni != null) await setSetting("mag_lead_time_giorni", Math.max(0, Math.round(Number(b.lead_time_giorni) || 0)));
-  audit(req.adminUser.username, "magazzino_config", "impostazioni", "magazzino", JSON.stringify(b));
-  res.json({ ok: true, finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
-});
-adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, res) => {
-  const N = await magFinestra();
-  const LEAD = await magLead();
-  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
-  const consumi = await db.prepare(`SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_movimenti WHERE tipo='scarico' AND created_at >= datetime('now', ?) GROUP BY articolo_id`).all("-" + N + " days");
-  const cMap = {};
-  consumi.forEach((r) => {
-    cMap[r.articolo_id] = Number(r.q);
-  });
-  const imp = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE stato='impegnata' GROUP BY articolo_id").all();
-  const iMap = {};
-  imp.forEach((r) => {
-    iMap[r.articolo_id] = Number(r.q);
-  });
-  const ord = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_ordini WHERE stato='confermato' GROUP BY articolo_id").all();
-  const oMap = {};
-  ord.forEach((r) => {
-    oMap[r.articolo_id] = Number(r.q);
-  });
-  const out = arts.map((a) => {
-    const consumo = cMap[a.id] || 0;
-    const rate = consumo / N;
-    const eff = Number(a.giacenza) - (iMap[a.id] || 0);
-    const inArrivo = oMap[a.id] || 0;
-    const pr = Number(a.punto_riordino);
-    const giorni = rate > 0 ? (eff - pr) / rate : null;
-    let dataRiordino = null;
-    if (giorni != null) {
-      const d = /* @__PURE__ */ new Date();
-      d.setDate(d.getDate() + Math.max(0, Math.floor(giorni)));
-      dataRiordino = d.toISOString().slice(0, 10);
-    }
-    const fabbisogno = Math.ceil(rate * N);
-    const suggerito = Math.max(0, fabbisogno - eff - inArrivo);
-    const urgente = eff <= pr || giorni != null && giorni <= N;
-    let dataInvio = null;
-    if (dataRiordino != null) dataInvio = addGiorni(dataRiordino, -LEAD);
-    const daInviareOra = suggerito > 0 && (dataInvio == null ? urgente : dataInvio <= oggi2);
-    return {
-      articolo_id: a.id,
-      nome: a.nome,
-      area: a.area,
-      zona: a.zona,
-      unita: a.unita,
-      giacenza: Number(a.giacenza),
-      giacenza_effettiva: eff,
-      in_arrivo: inArrivo,
-      punto_riordino: pr,
-      consumo_finestra: consumo,
-      rate: Math.round(rate * 100) / 100,
-      giorni_residui: giorni != null ? Math.max(0, Math.floor(giorni)) : null,
-      data_riordino: dataRiordino,
-      data_invio_consigliata: dataInvio,
-      da_inviare_ora: daInviareOra,
-      suggerito,
-      urgente,
-      senza_storico: consumo === 0
-    };
-  });
-  out.sort((a, b) => Number(b.da_inviare_ora) - Number(a.da_inviare_ora) || Number(b.urgente && b.suggerito > 0) - Number(a.urgente && a.suggerito > 0) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
-  res.json({ finestra_giorni: N, lead_time_giorni: LEAD, oggi: oggi2, articoli: out });
-});
-adminRouter.post("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
-  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
-  const q = Math.abs(Number(b.quantita || 0));
-  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
-  const lead = await magLead();
-  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const dataPrevista = b.data_prevista || addGiorni(oggi2, lead);
-  const info = await db.prepare("INSERT INTO magazzino_ordini (articolo_id,quantita,stato,data_invio,data_prevista,lead_time,note) VALUES (?,?,?,?,?,?,?)").run(art.id, q, "confermato", oggi2, dataPrevista, lead, b.note || null);
-  audit(req.adminUser.username, "ordine_fornitore", "magazzino_ordini", info.lastInsertRowid, String(q));
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), data_prevista: dataPrevista });
-});
-adminRouter.get("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
-  const stato = req.query.stato || "confermato";
-  const rows = await db.prepare("SELECT o.*, a.nome, a.unita FROM magazzino_ordini o JOIN magazzino_articoli a ON a.id=o.articolo_id WHERE o.stato=? ORDER BY o.data_prevista IS NULL, o.data_prevista, o.created_at DESC LIMIT 200").all(stato);
-  res.json(rows);
-});
-adminRouter.post("/magazzino/ordini/:id/ricevi", requireCap("magazzino"), async (req, res) => {
-  const o = await db.prepare("SELECT * FROM magazzino_ordini WHERE id=?").get(req.params.id);
-  if (!o || o.stato !== "confermato") return res.status(400).json({ error: "Ordine non ricevibile" });
-  const q = Number(o.quantita);
-  const art = await db.prepare("SELECT giacenza FROM magazzino_articoli WHERE id=?").get(o.articolo_id);
-  const nuova = Number(art.giacenza) + q;
-  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), o.articolo_id);
-  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(o.articolo_id, "carico", q, "ricezione ordine fornitore", req.adminUser.username, null);
-  await db.prepare("UPDATE magazzino_ordini SET stato='ricevuto',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), o.id);
-  audit(req.adminUser.username, "ricevi_ordine", "magazzino_ordini", o.id, String(q));
-  res.json({ ok: true, giacenza: nuova });
-});
-adminRouter.post("/magazzino/ordini/:id/annulla", requireCap("magazzino"), async (req, res) => {
-  await db.prepare("UPDATE magazzino_ordini SET stato='annullato',updated_at=? WHERE id=? AND stato='confermato'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-  res.json({ ok: true });
-});
-function meseCorrente() {
-  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
-}
-function mesePrecedente(mese) {
-  const [y, m] = mese.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1, 1));
-  d.setUTCMonth(d.getUTCMonth() - 1);
-  return d.toISOString().slice(0, 7);
-}
-async function flussiMese(mese) {
-  const rows = await db.prepare(`SELECT articolo_id,
-      COALESCE(SUM(CASE WHEN tipo='carico' THEN quantita END),0) carico,
-      COALESCE(SUM(CASE WHEN tipo='scarico' THEN quantita END),0) scarico,
-      COALESCE(SUM(CASE WHEN tipo='scarico' AND zona='bar' THEN quantita END),0) scarico_bar,
-      COALESCE(SUM(CASE WHEN tipo='scarico' AND zona='garden' THEN quantita END),0) scarico_garden,
-      COALESCE(SUM(CASE WHEN tipo='scarico' AND (zona IS NULL OR zona NOT IN ('bar','garden')) THEN quantita END),0) scarico_centrale
-    FROM magazzino_movimenti WHERE strftime('%Y-%m', created_at)=? GROUP BY articolo_id`).all(mese);
-  const map = {};
-  rows.forEach((r) => {
-    map[r.articolo_id] = r;
-  });
-  return map;
-}
-async function chiudiMese(mese) {
-  const prev = mesePrecedente(mese);
-  const flussi = await flussiMese(mese);
-  const prevClose = {};
-  (await db.prepare("SELECT articolo_id, giacenza_finale FROM magazzino_quadrature WHERE mese=?").all(prev)).forEach((r) => {
-    prevClose[r.articolo_id] = Number(r.giacenza_finale);
-  });
-  const arts = await db.prepare("SELECT id, giacenza FROM magazzino_articoli").all();
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  for (const a of arts) {
-    const f = flussi[a.id] || { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scarico_centrale: 0 };
-    const iniziale = a.id in prevClose ? prevClose[a.id] : null;
-    await db.prepare("INSERT OR REPLACE INTO magazzino_quadrature (mese,articolo_id,giacenza_iniziale,giacenza_finale,carico,scarico,scarico_bar,scarico_garden,scarico_centrale,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(mese, a.id, iniziale, Number(a.giacenza), Number(f.carico), Number(f.scarico), Number(f.scarico_bar), Number(f.scarico_garden), Number(f.scarico_centrale), now);
-  }
-  return arts.length;
-}
-async function magAutoChiusura() {
-  try {
-    const oggi2 = /* @__PURE__ */ new Date();
-    const prev = mesePrecedente(meseCorrente());
-    const marker = await getSetting("mag_ultima_chiusura_auto", "");
-    if (marker === prev) return;
-    if (oggi2.getUTCDate() > 4) return;
-    const has = await db.prepare("SELECT 1 FROM magazzino_movimenti WHERE strftime('%Y-%m',created_at)=? LIMIT 1").get(prev);
-    if (!has) return;
-    const closed = await db.prepare("SELECT 1 FROM magazzino_quadrature WHERE mese=? LIMIT 1").get(prev);
-    if (closed) {
-      await setSetting("mag_ultima_chiusura_auto", prev);
-      return;
-    }
-    await chiudiMese(prev);
-    await setSetting("mag_ultima_chiusura_auto", prev);
-  } catch (_) {
-  }
-}
-adminRouter.get("/magazzino/quadratura", requireCap("magazzino"), async (req, res) => {
-  await magAutoChiusura();
-  const mese = /^\d{4}-\d{2}$/.test(req.query.mese || "") ? req.query.mese : meseCorrente();
-  const chiuso = await db.prepare("SELECT * FROM magazzino_quadrature WHERE mese=?").all(mese);
-  const chiusaMap = {};
-  chiuso.forEach((r) => {
-    chiusaMap[r.articolo_id] = r;
-  });
-  const prevClose = {};
-  (await db.prepare("SELECT articolo_id, giacenza_finale FROM magazzino_quadrature WHERE mese=?").all(mesePrecedente(mese))).forEach((r) => {
-    prevClose[r.articolo_id] = Number(r.giacenza_finale);
-  });
-  const flussi = await flussiMese(mese);
-  const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
-  const out = [];
-  for (const a of arts) {
-    const c = chiusaMap[a.id];
-    const f = flussi[a.id] || { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scarico_centrale: 0 };
-    const carico = c ? Number(c.carico) : Number(f.carico);
-    const scarico = c ? Number(c.scarico) : Number(f.scarico);
-    const scarico_bar = c ? Number(c.scarico_bar) : Number(f.scarico_bar);
-    const scarico_garden = c ? Number(c.scarico_garden) : Number(f.scarico_garden);
-    const scarico_centrale = c ? Number(c.scarico_centrale) : Number(f.scarico_centrale);
-    const iniziale = c ? c.giacenza_iniziale != null ? Number(c.giacenza_iniziale) : null : a.id in prevClose ? prevClose[a.id] : null;
-    const finale = c ? Number(c.giacenza_finale) : Number(a.giacenza);
-    if (!carico && !scarico && !Number(a.giacenza) && iniziale == null) continue;
-    const atteso = iniziale != null ? iniziale + carico - scarico : null;
-    const scostamento = atteso != null ? Math.round((finale - atteso) * 100) / 100 : null;
-    out.push({ articolo_id: a.id, nome: a.nome, zona: a.zona, unita: a.unita, giacenza_iniziale: iniziale, carico, scarico, scarico_bar, scarico_garden, scarico_centrale, giacenza_finale: finale, atteso, scostamento });
-  }
-  const tot = out.reduce((t, r) => ({ carico: t.carico + r.carico, scarico: t.scarico + r.scarico, scarico_bar: t.scarico_bar + r.scarico_bar, scarico_garden: t.scarico_garden + r.scarico_garden, scostamenti: t.scostamenti + (r.scostamento ? 1 : 0) }), { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scostamenti: 0 });
-  const mesiMov = (await db.prepare("SELECT DISTINCT strftime('%Y-%m', created_at) m FROM magazzino_movimenti ORDER BY m DESC").all()).map((r) => r.m).filter(Boolean);
-  const mesiChiusi = (await db.prepare("SELECT DISTINCT mese m FROM magazzino_quadrature ORDER BY m DESC").all()).map((r) => r.m);
-  const mesi = [.../* @__PURE__ */ new Set([meseCorrente(), ...mesiMov, ...mesiChiusi])].sort().reverse();
-  res.json({ mese, chiusa: chiuso.length > 0, articoli: out, totali: tot, mesi });
-});
-adminRouter.post("/magazzino/quadratura/chiudi", requireCap("magazzino"), async (req, res) => {
-  const mese = /^\d{4}-\d{2}$/.test((req.body || {}).mese || "") ? req.body.mese : meseCorrente();
-  const n = await chiudiMese(mese);
-  audit(req.adminUser.username, "chiudi_mese", "magazzino_quadrature", mese, String(n));
-  res.json({ ok: true, mese, articoli: n });
-});
-adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
-  const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
-  res.json(rows);
-});
-function magNormArea(v) {
-  const s = String(v || "").trim().toLowerCase();
-  if (!s) return "chiosco";
-  const map = { "casa di carta": "casa_di_carta", "serata clan": "serata_clan", "serate a tema": "serate_tema", "serate tema": "serate_tema" };
-  return map[s] || s.replace(/\s+/g, "_");
-}
-function magNormZona(v) {
-  const s = String(v || "").trim().toLowerCase();
-  if (s.startsWith("bar")) return "bar";
-  if (s.startsWith("gard") || s.startsWith("giard")) return "garden";
-  return "comune";
-}
-function toNum(v) {
-  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-  let s = String(v ?? "").trim();
-  if (!s) return 0;
-  s = s.replace(/[^\d,.\-]/g, "");
-  const lc = s.lastIndexOf(","), ld = s.lastIndexOf(".");
-  if (lc > -1 && ld > -1) s = lc > ld ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
-  else if (lc > -1) s = s.replace(",", ".");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
-function pickDelim(text) {
-  const line = text.split(/\r?\n/)[0] || "";
-  const c = (line.match(/,/g) || []).length, s = (line.match(/;/g) || []).length, t = (line.match(/\t/g) || []).length;
-  if (s >= c && s >= t) return ";";
-  if (t > c && t >= s) return "	";
-  return ",";
-}
-function sheetRows(fileB64) {
-  const buf = Buffer.from(String(fileB64 || "").replace(/^data:[^,]*,/, ""), "base64");
-  const isZip = buf[0] === 80 && buf[1] === 75;
-  const isOle = buf[0] === 208 && buf[1] === 207;
-  let wb;
-  if (isZip || isOle) {
-    wb = XLSX.read(buf, { type: "buffer" });
-  } else {
-    const text = buf.toString("utf8").replace(/^﻿/, "");
-    wb = XLSX.read(text, { type: "string", FS: pickDelim(text), raw: true });
-  }
-  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: true });
-}
-function parseMagFile(fileB64) {
-  const json = sheetRows(fileB64);
-  const norm = (s) => String(s || "").trim().toLowerCase();
-  const alias = { nome: ["nome", "articolo", "prodotto", "name"], area: ["area", "reparto"], zona: ["zona", "zone", "ambiente"], unita: ["unita", "unit\xE0", "um", "unit"], giacenza: ["giacenza", "quantita", "quantit\xE0", "qta", "stock"], punto_riordino: ["punto_riordino", "riordino", "minimo", "min", "reorder"], soglia_preavviso: ["soglia_preavviso", "preavviso", "avviso", "soglia", "warning"] };
-  return json.map((r) => {
-    const keys = Object.keys(r);
-    const pick = (al) => {
-      const k = keys.find((k2) => al.includes(norm(k2)));
-      return k != null ? r[k] : "";
-    };
-    return { nome: pick(alias.nome), area: pick(alias.area), zona: pick(alias.zona), unita: pick(alias.unita), giacenza: pick(alias.giacenza), punto_riordino: pick(alias.punto_riordino), soglia_preavviso: pick(alias.soglia_preavviso) };
-  }).filter((r) => String(r.nome).trim());
-}
-adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) => {
-  const b = req.body || {};
-  let righe;
-  try {
-    righe = parseMagFile(b.fileB64);
-  } catch (e) {
-    return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
-  }
-  if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
-  const num = toNum;
-  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area), zona: magNormZona(r.zona), giacenza: num(r.giacenza), punto_riordino: num(r.punto_riordino), soglia_preavviso: num(r.soglia_preavviso) })) });
-  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  let creati = 0, aggiornati = 0;
-  if (b.mode === "replace") {
-    await db.exec("DELETE FROM magazzino_movimenti; DELETE FROM magazzino_articoli;");
-  }
-  for (const r of righe) {
-    const nome = clean(r.nome);
-    if (!nome) continue;
-    const area = magNormArea(r.area);
-    const zona = magNormZona(r.zona);
-    const hasZona = r.zona != null && String(r.zona).trim() !== "";
-    const ex = await db.prepare("SELECT * FROM magazzino_articoli WHERE nome=? AND area=?").get(nome, area);
-    const hasG = r.giacenza != null && String(r.giacenza).trim() !== "";
-    if (ex) {
-      await db.prepare("UPDATE magazzino_articoli SET zona=?,unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run(hasZona ? zona : ex.zona, clean(r.unita) ?? ex.unita, hasG ? num(r.giacenza) : ex.giacenza, r.punto_riordino !== "" ? num(r.punto_riordino) : ex.punto_riordino, r.soglia_preavviso !== "" ? num(r.soglia_preavviso) : ex.soglia_preavviso, now, ex.id);
-      aggiornati++;
-    } else {
-      const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
-      await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run(nome, area, zona, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
-      creati++;
-    }
-  }
-  audit(req.adminUser.username, "import", "magazzino_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
-  res.json({ ok: true, creati, aggiornati });
-});
-function xlsxB64(rows, sheet) {
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, sheet);
-  return XLSX.write(wb, { type: "base64", bookType: "xlsx" });
-}
-var XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) => {
-  const arts = await db.prepare("SELECT nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso FROM magazzino_articoli ORDER BY area,nome").all();
-  const rows = arts.map((a) => ({ nome: a.nome, area: a.area, zona: a.zona, unita: a.unita, giacenza: Number(a.giacenza), riordino: Number(a.punto_riordino), preavviso: Number(a.soglia_preavviso) }));
-  res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
-});
-adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
-  const m = await db.prepare("SELECT nome,prezzo,stazione,zona,categoria,descrizione,allergeni FROM menu_articoli ORDER BY ordine,id").all();
-  const rows = m.map((x) => ({ nome: x.nome, prezzo: Number(x.prezzo), stazione: x.stazione, punto: x.zona || "bar", categoria: x.categoria || "", descrizione: x.descrizione || "", allergeni: x.allergeni || "" }));
-  res.json({ filename: "menu.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Menu") });
-});
-adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
-  const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
-  res.json(rows);
-});
-adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
-  audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
-  audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
-  res.json({ ok: true });
-});
-function parseMenuFile(fileB64) {
-  const json = sheetRows(fileB64);
-  const norm = (s) => String(s || "").trim().toLowerCase();
-  const alias = { nome: ["nome", "prodotto", "articolo", "name"], prezzo: ["prezzo", "price", "costo"], stazione: ["stazione", "station", "reparto"], punto: ["punto", "zona", "zone", "point"], categoria: ["categoria", "category"], descrizione: ["descrizione", "description", "desc"], allergeni: ["allergeni", "allergen", "allergens"] };
-  return json.map((r) => {
-    const keys = Object.keys(r);
-    const pick = (al) => {
-      const k = keys.find((k2) => al.includes(norm(k2)));
-      return k != null ? r[k] : "";
-    };
-    return { nome: pick(alias.nome), prezzo: pick(alias.prezzo), stazione: pick(alias.stazione), punto: pick(alias.punto), categoria: pick(alias.categoria), descrizione: pick(alias.descrizione), allergeni: pick(alias.allergeni) };
-  }).filter((r) => String(r.nome).trim());
-}
-adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
-  const b = req.body || {};
-  let righe;
-  try {
-    righe = parseMenuFile(b.fileB64);
-  } catch (e) {
-    return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
-  }
-  if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
-  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
-  const catImport = (r, staz, ex) => clean(r.categoria) || ex && ex.categoria || inferCategoria(r.nome) || (staz === "cucina" ? "Cucina" : "Bar");
-  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => {
-    const staz = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
-    return { ...r, prezzo: toNum(r.prezzo), categoria: catImport(r, staz, null) };
-  }) });
-  let creati = 0, aggiornati = 0;
-  if (b.mode === "replace") {
-    await db.exec("DELETE FROM menu_articoli;");
-  }
-  for (const r of righe) {
-    const nome = clean(r.nome);
-    if (!nome) continue;
-    const hasPrezzo = r.prezzo != null && String(r.prezzo).trim() !== "";
-    const prezzo = toNum(r.prezzo);
-    const stazione = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
-    const descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
-    const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
-    const categoria = catImport(r, r.stazione ? stazione : ex ? ex.stazione : stazione, ex);
-    const hasPunto = r.punto != null && String(r.punto).trim() !== "";
-    const zonaNew = hasPunto ? menuZona(r.punto) : stazione === "cucina" ? "garden" : inferPunto(nome, categoria);
-    const puntoSignal = hasPunto || !!clean(r.categoria) || !!(r.stazione && String(r.stazione).trim());
-    if (ex) {
-      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, puntoSignal ? zonaNew : ex.zona || zonaNew, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
-      aggiornati++;
-    } else {
-      const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-      await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,attivo,ordine) VALUES (?,?,?,?,?,?,?,1,?)").run(nome, prezzo, stazione, zonaNew, categoria, descrizione, allergeni, ord);
-      creati++;
-    }
-  }
-  audit(req.adminUser.username, "import", "menu_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
-  res.json({ ok: true, creati, aggiornati });
-});
-adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,stazione FROM menu_articoli WHERE categoria IS NULL OR trim(categoria)=''").all();
-  let n = 0;
-  for (const m of rows) {
-    const cat = inferCategoria(m.nome) || (m.stazione === "cucina" ? "Cucina" : "Bar");
-    await db.prepare("UPDATE menu_articoli SET categoria=? WHERE id=?").run(cat, m.id);
-    n++;
-  }
-  audit(req.adminUser.username, "ricategorizza", "menu_articoli", null, `categorizzati ${n}`);
-  res.json({ ok: true, categorizzati: n });
-});
-adminRouter.post("/menu/deduci-punto", requireCap("comande"), async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
-  let garden = 0, bar = 0;
-  for (const m of rows) {
-    const z = m.stazione === "cucina" ? "garden" : inferPunto(m.nome, m.categoria);
-    await db.prepare("UPDATE menu_articoli SET zona=? WHERE id=?").run(z, m.id);
-    if (z === "garden") garden++;
-    else bar++;
-  }
-  audit(req.adminUser.username, "deduci_punto", "menu_articoli", null, `garden ${garden}, bar ${bar}`);
-  res.json({ ok: true, garden, bar });
-});
-adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
-  await db.prepare("DELETE FROM menu_articoli WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
-  res.json({ ok: true });
-});
-async function comandaConRighe(id) {
-  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id);
-  if (!c) return null;
-  c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(id);
-  return c;
-}
-adminRouter.get("/comande", requireCap("comande"), async (req, res) => {
-  const stato = req.query.stato;
-  let rows;
-  if (stato === "tutte") rows = await db.prepare("SELECT * FROM comande ORDER BY id DESC LIMIT 100").all();
-  else if (stato) rows = await db.prepare("SELECT * FROM comande WHERE stato=? ORDER BY id DESC LIMIT 100").all(stato);
-  else rows = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato NOT IN ('chiusa','annullata') ORDER BY id").all());
-  for (const c of rows) c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(c.id);
-  res.json(rows);
-});
-adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
-  const b = req.body || {};
-  const righe = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
-  if (!righe.length) return res.status(400).json({ error: "Aggiungi almeno un articolo" });
-  const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const zona = b.zona === "bar" ? "bar" : "garden";
-  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,zona,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco", "bar"].includes(b.origine) ? b.origine : zona === "bar" ? "bar" : "tavolo", b.riferimento || null, zona, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
-  const cid = Number(info.lastInsertRowid);
-  let totale = 0;
-  for (const r of righe) {
-    const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.menu_id);
-    if (!m) continue;
-    const qta = Math.max(1, Math.round(Number(r.qta)));
-    totale += Number(m.prezzo) * qta;
-    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
-  }
-  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
-  audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
-  res.status(201).json(await comandaConRighe(cid));
-});
-adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) => {
-  const stato = req.body && req.body.stato;
-  if (!["aperta", "in_preparazione", "pronta", "consegnata", "chiusa", "annullata"].includes(stato)) return res.status(400).json({ error: "Stato non valido" });
-  const prev = (await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id) || {}).stato;
-  await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(stato, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-  if (stato === "pronta") {
-    await segnaPronta(req.params.id);
-    await avvisaProntoSeSelf(req.params.id, prev);
-  }
-  audit(req.adminUser.username, "stato:" + stato, "comande", req.params.id);
-  res.json(await comandaConRighe(req.params.id));
-});
-adminRouter.put("/comande/:id/riga/:rid/stato", requireCap("comande"), async (req, res) => {
-  const stato = req.body && req.body.stato;
-  if (!["in_coda", "pronta", "consegnata"].includes(stato)) return res.status(400).json({ error: "Stato riga non valido" });
-  await db.prepare("UPDATE comanda_righe SET stato=? WHERE id=? AND comanda_id=?").run(stato, req.params.rid, req.params.id);
-  const righe = await db.prepare("SELECT stato FROM comanda_righe WHERE comanda_id=?").all(req.params.id);
-  const cur = await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id);
-  if (cur && !["chiusa", "annullata"].includes(cur.stato) && righe.length) {
-    let nuovo = cur.stato;
-    if (righe.every((r) => r.stato === "consegnata")) nuovo = "consegnata";
-    else if (righe.every((r) => r.stato === "pronta" || r.stato === "consegnata")) nuovo = "pronta";
-    else if (righe.some((r) => r.stato !== "in_coda")) nuovo = "in_preparazione";
-    else nuovo = "aperta";
-    if (nuovo !== cur.stato) {
-      await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
-      if (nuovo === "pronta") {
-        await segnaPronta(req.params.id);
-        await avvisaProntoSeSelf(req.params.id, cur.stato);
-      }
-    }
-  }
-  res.json(await comandaConRighe(req.params.id));
-});
-adminRouter.get("/self-order/stato", requireCap("comande"), async (req, res) => {
-  res.json(await statoCompleto());
-});
-adminRouter.post("/self-order/pausa", requireCap("comande"), async (req, res) => {
-  const aperto = !!(req.body && req.body.aperto);
-  await setSelfOrderAperto(aperto);
-  audit(req.adminUser.username, aperto ? "self_order_apri" : "self_order_chiudi", "impostazioni", "self_order_aperto");
-  res.json({ ok: true, aperto });
-});
-adminRouter.get("/self-order/config", requireCap("comande"), async (req, res) => {
-  res.json(await getConfig());
-});
-adminRouter.post("/self-order/config", requireCap("comande"), async (req, res) => {
-  await setConfig(req.body || {});
-  audit(req.adminUser.username, "self_order_config", "impostazioni", "", JSON.stringify(req.body || {}));
-  res.json({ ok: true, config: await getConfig() });
-});
-adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) => {
-  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
-  if (!c) return res.status(404).json({ error: "Comanda non trovata" });
-  if (c.stato === "chiusa") return res.json(await comandaConRighe(req.params.id));
-  const metodi = ["contanti", "carta", "satispay", "buoni", "altro"];
-  const metodo = metodi.includes(req.body?.metodo) ? req.body.metodo : "contanti";
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  await db.prepare("UPDATE comande SET stato=?,metodo_pagamento=?,pagata_at=?,updated_at=? WHERE id=?").run("chiusa", metodo, now, now, c.id);
-  audit(req.adminUser.username, "chiudi", "comande", c.id, `tot ${c.totale} \xB7 ${metodo}`);
-  res.json(await comandaConRighe(c.id));
-});
-adminRouter.delete("/comande/:id", requireCap("comande"), async (req, res) => {
-  await db.prepare("DELETE FROM comanda_righe WHERE comanda_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM comande WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "comande", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
-  const staz = req.query.stazione;
-  const comande = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') ORDER BY id").all());
-  const out = [];
-  for (const c of comande) {
-    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato!='consegnata' ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
-    if (righe.length) out.push({ ...c, righe });
-  }
-  res.json(out);
-});
-adminRouter.get("/pwa-qr", async (req, res) => {
-  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
-  const host = req.headers["x-forwarded-host"] || req.get("host");
-  const base = `${proto}://${host}`;
-  const items = [
-    { scope: "soci", label: "App Soci", path: "/" },
-    { scope: "chiosco", label: "App Chiosco", path: "/chiosco/" },
-    { scope: "admin", label: "Back Office", path: "/admin/" }
-  ].map((it) => {
-    const url2 = base + it.path;
-    return { ...it, url: url2, svg: qrSvg(url2, { cellSize: 6, margin: 2 }) };
-  });
-  res.json({ base, items });
-});
-adminRouter.get("/qr-ordina", async (req, res) => {
-  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
-  const host = req.headers["x-forwarded-host"] || req.get("host");
-  const punto = String(req.query.punto || "Chiosco").trim();
-  const tavolo = String(req.query.tavolo || "").trim();
-  const url2 = `${proto}://${host}/ordina?p=${encodeURIComponent(punto)}${tavolo ? "&t=" + encodeURIComponent(tavolo) : ""}`;
-  res.json({ url: url2, punto, tavolo, svg: qrSvg(url2, { cellSize: 6, margin: 2 }) });
-});
-var HOST_FIELDS = ["nome", "cir", "cin", "regole", "isolato", "numero", "check_out", "lat", "lng"];
-function pickStruttura(b) {
-  const o = {};
-  for (const k of HOST_FIELDS) o[k] = b[k] ?? "";
-  if (o.lat !== "") o.lat = Number(o.lat);
-  if (o.lng !== "") o.lng = Number(o.lng);
-  return o;
-}
-adminRouter.get("/soci/:id/host", requireCap("utenti"), async (req, res) => {
-  const s = await db.prepare("SELECT id,host,host_ko,struttura_id,tipo_profilo FROM soci WHERE id=?").get(req.params.id);
-  if (!s) return res.status(404).json({ error: "Utente non trovato" });
-  const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(s.id);
-  let ko = false;
-  const strutture = rows.map((r) => {
-    const d = tryDecryptJSON(r.dati_cifrati);
-    if (!d) {
-      ko = true;
-      return { id: r.id, ko: true, attivo: r.attivo };
-    }
-    return { id: r.id, attivo: r.attivo, ...d };
-  });
-  if (ko) {
-    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(s.id);
-    audit(req.adminUser.username, "host_KO", "strutture", s.id, "integrit\xE0 non verificabile");
-  }
-  res.json({ host: s.host, host_ko: ko ? 1 : s.host_ko, struttura_id: s.struttura_id, tipo_profilo: s.tipo_profilo, strutture });
-});
-adminRouter.put("/soci/:id/host", requireCap("utenti"), async (req, res) => {
-  const s = await db.prepare("SELECT id,tipo_profilo FROM soci WHERE id=?").get(req.params.id);
-  if (!s) return res.status(404).json({ error: "Utente non trovato" });
-  const on = req.body?.host ? 1 : 0;
-  if (on && !["residente", "socio_residente"].includes(s.tipo_profilo)) return res.status(409).json({ error: "Il profilo host \xE8 riservato ai Residenti (e Soci-residenti)" });
-  await db.prepare("UPDATE soci SET host=? WHERE id=?").run(on, req.params.id);
-  audit(req.adminUser.username, on ? "abilita_host" : "disabilita_host", "soci", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.post("/soci/:id/strutture", requireCap("utenti"), async (req, res) => {
-  const s = await db.prepare("SELECT id,host FROM soci WHERE id=?").get(req.params.id);
-  if (!s) return res.status(404).json({ error: "Utente non trovato" });
-  if (!s.host) return res.status(409).json({ error: "Abilita prima il flag host" });
-  const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(s.id)).n;
-  if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
-  const b = req.body || {};
-  if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Nome struttura obbligatorio" });
-  const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(s.id, encryptJSON(pickStruttura(b)));
-  audit(req.adminUser.username, "crea_struttura", "strutture", info.lastInsertRowid);
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
-});
-adminRouter.put("/strutture/:id", requireCap("utenti"), async (req, res) => {
-  const st = await db.prepare("SELECT id FROM strutture WHERE id=?").get(req.params.id);
-  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
-  const b = req.body || {};
-  await db.prepare("UPDATE strutture SET dati_cifrati=?,attivo=? WHERE id=?").run(encryptJSON(pickStruttura(b)), b.attivo === false ? 0 : 1, req.params.id);
-  audit(req.adminUser.username, "modifica_struttura", "strutture", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/strutture/:id", requireCap("utenti"), async (req, res) => {
-  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM strutture WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "elimina_struttura", "strutture", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.put("/soci/:id/collega-struttura", requireCap("utenti"), async (req, res) => {
-  const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : null;
-  if (sid) {
-    const st = await db.prepare("SELECT id FROM strutture WHERE id=?").get(sid);
-    if (!st) return res.status(404).json({ error: "Struttura inesistente" });
-  }
-  await db.prepare("UPDATE soci SET struttura_id=? WHERE id=?").run(sid, req.params.id);
-  audit(req.adminUser.username, "collega_struttura", "soci", req.params.id, sid ? "struttura " + sid : "scollegato");
-  res.json({ ok: true });
-});
-adminRouter.get("/strutture-collegabili", requireCap("utenti"), async (req, res) => {
-  const rows = await db.prepare("SELECT st.id, st.dati_cifrati, s.nome AS host_nome, s.cognome AS host_cognome FROM strutture st JOIN soci s ON s.id=st.socio_id WHERE st.attivo=1 ORDER BY st.id").all();
-  const out = rows.map((r) => {
-    const d = tryDecryptJSON(r.dati_cifrati);
-    return { id: r.id, nome: d ? d.nome : "(dati non leggibili)", host: (r.host_nome || "") + " " + (r.host_cognome || "") };
-  });
-  res.json(out);
-});
-adminRouter.get("/campi", requireCap("campi"), async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM campi ORDER BY ordine,id").all());
-});
-adminRouter.post("/campi", requireCap("campi"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM campi").get()).n;
-  const info = await db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.nome, b.sport || "pickleball", b.apertura || "09:00", b.chiusura || "22:00", Number(b.durata_slot) || 60, b.ora_min || null, Number(b.posti_default) || 4, b.attivo === false ? 0 : 1, ord);
-  audit(req.adminUser.username, "crea", "campi", info.lastInsertRowid, b.nome);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/campi/:id", requireCap("campi"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE campi SET nome=?,sport=?,apertura=?,chiusura=?,durata_slot=?,ora_min=?,posti_default=?,attivo=? WHERE id=?").run(b.nome, b.sport || "pickleball", b.apertura || "09:00", b.chiusura || "22:00", Number(b.durata_slot) || 60, b.ora_min || null, Number(b.posti_default) || 4, b.attivo === false ? 0 : 1, req.params.id);
-  audit(req.adminUser.username, "modifica", "campi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/campi/:id", requireCap("campi"), async (req, res) => {
-  await db.prepare("DELETE FROM partita_iscritti WHERE partita_id IN (SELECT id FROM partite_aperte WHERE campo_id=?)").run(req.params.id);
-  await db.prepare("DELETE FROM partite_aperte WHERE campo_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM prenotazioni_campo WHERE campo_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM campi WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "campi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/campi/prenotazioni", requireCap("campi"), async (req, res) => {
-  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
-  const rows = data ? await db.prepare("SELECT p.*, c.nome AS campo_nome FROM prenotazioni_campo p JOIN campi c ON c.id=p.campo_id WHERE p.stato='prenotato' AND p.data=? ORDER BY p.slot,c.ordine").all(data) : await db.prepare("SELECT p.*, c.nome AS campo_nome FROM prenotazioni_campo p JOIN campi c ON c.id=p.campo_id WHERE p.stato='prenotato' ORDER BY p.data DESC,p.slot LIMIT 100").all();
-  res.json(rows);
-});
-adminRouter.get("/discipline", async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
-});
-adminRouter.get("/coppa/cartellone", requireCap("casate"), async (req, res) => {
-  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
-  const discipline = await db.prepare("SELECT id,nome,dominio,stato FROM discipline WHERE attivo=1 ORDER BY dominio,ordine,id").all();
-  const celle = {};
-  const totali = {};
-  casate.forEach((c) => {
-    totali[c.id] = 0;
-  });
-  for (const d of discipline) {
-    const grad = await graduatoriaFinale(d.id).catch(() => null);
-    celle[d.id] = {};
-    if (grad) for (const r of grad) {
-      celle[d.id][r.id] = r.punti;
-      totali[r.id] = (totali[r.id] || 0) + r.punti;
-    }
-  }
-  res.json({ casate, discipline, celle, totali });
-});
-adminRouter.post("/discipline", requireCap("discipline"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome || !b.chiave || !b.dominio) return res.status(400).json({ error: "Dominio, chiave e nome obbligatori" });
-  try {
-    const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM discipline WHERE dominio=?").get(b.dominio)).n || 0;
-    const info = await db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,punti_vitt,punti_par,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.dominio === "giochi" ? "giochi" : "sport", b.chiave, b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, ord);
-    audit(req.adminUser.username, "crea", "discipline", info.lastInsertRowid, b.nome);
-    res.status(201).json({ ok: true, id: info.lastInsertRowid });
-  } catch (e) {
-    res.status(400).json({ error: "Chiave gi\xE0 esistente per questo dominio" });
-  }
-});
-adminRouter.put("/discipline/:id", requireCap("discipline"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE discipline SET nome=?,attivo=?,min_giocatori=?,max_giocatori=?,punti_vitt=?,punti_par=? WHERE id=?").run(b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, req.params.id);
-  audit(req.adminUser.username, "modifica", "discipline", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/discipline/:id", requireCap("discipline_del"), async (req, res) => {
-  const id = req.params.id;
-  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id);
-  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id);
-  for (const g of gironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
-  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(id);
-  await db.prepare("DELETE FROM convocazioni WHERE disciplina_id=?").run(id);
-  await db.prepare("DELETE FROM discipline WHERE id=?").run(id);
-  audit(req.adminUser.username, "cancella", "discipline", id);
-  res.json({ ok: true });
-});
-adminRouter.get("/tabellone/:disciplinaId", requireCap("tabellone"), async (req, res) => {
-  res.json(await getTabellone(Number(req.params.disciplinaId)));
-});
-adminRouter.post("/tabellone/:disciplinaId/genera", requireCap("tabellone_reset"), async (req, res) => {
-  try {
-    const t = await generaCalendario(Number(req.params.disciplinaId));
-    audit(req.adminUser.username, "genera_calendario", "discipline", req.params.disciplinaId);
-    res.json({ ok: true, tabellone: t });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-adminRouter.put("/partite/:id", requireCap("tabellone"), async (req, res) => {
-  const a = Number(req.body?.gol_a), b = Number(req.body?.gol_b);
-  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return res.status(400).json({ error: "Punteggi non validi" });
-  try {
-    await registraRisultato(Number(req.params.id), a, b);
-    audit(req.adminUser.username, "risultato", "partite", req.params.id, `${a}-${b}`);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-adminRouter.put("/tabellone/:id/impostazioni", requireCap("tabellone"), async (req, res) => {
-  const b = req.body || {};
-  const stato = ["preparazione", "in_corso", "archiviato"].includes(b.stato) ? b.stato : "preparazione";
-  await db.prepare("UPDATE discipline SET data_inizio=?,data_fine=?,stato=?,regolamento=? WHERE id=?").run(b.data_inizio || null, b.data_fine || null, stato, b.regolamento ?? null, req.params.id);
-  audit(req.adminUser.username, "impostazioni_tabellone", "discipline", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.post("/tabellone/:id/archivia", requireCap("tabellone"), async (req, res) => {
-  try {
-    const r = await archiviaEdizione(Number(req.params.id));
-    audit(req.adminUser.username, "archivia_edizione", "discipline", req.params.id, `vince ${r.vincitore || "\u2014"}`);
-    res.json({ ok: true, ...r });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-adminRouter.get("/tabellone/:id/edizioni", requireCap("tabellone"), async (req, res) => {
-  const rows = await db.prepare("SELECT id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni WHERE disciplina_id=? ORDER BY id DESC").all(req.params.id);
-  res.json(rows);
-});
-adminRouter.get("/regolamenti", requireCap("tabellone"), async (req, res) => {
-  res.json(await db.prepare("SELECT id,chiave,titolo,testo,ordine FROM regolamenti ORDER BY ordine,id").all());
-});
-adminRouter.put("/regolamenti/:chiave", requireCap("tabellone"), async (req, res) => {
-  const b = req.body || {};
-  const ex = await db.prepare("SELECT id FROM regolamenti WHERE chiave=?").get(req.params.chiave);
-  if (ex) await db.prepare("UPDATE regolamenti SET titolo=?,testo=? WHERE chiave=?").run(b.titolo || req.params.chiave, b.testo ?? "", req.params.chiave);
-  else await db.prepare("INSERT INTO regolamenti (chiave,titolo,testo) VALUES (?,?,?)").run(req.params.chiave, b.titolo || req.params.chiave, b.testo ?? "");
-  audit(req.adminUser.username, "modifica", "regolamenti", req.params.chiave);
-  res.json({ ok: true });
-});
-adminRouter.get("/contest", async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM contest ORDER BY id DESC").all());
-});
-adminRouter.post("/contest", requireCap("contest"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
-  const info = await db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,attivo) VALUES (?,?,?,?,?,?)").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.attivo === false ? 0 : 1);
-  audit(req.adminUser.username, "crea", "contest", info.lastInsertRowid, b.titolo);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/contest/:id", requireCap("contest"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE contest SET titolo=?,tipo=?,settimana=?,brief=?,stato=?,vincitore=?,attivo=? WHERE id=?").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.vincitore ?? null, b.attivo ? 1 : 0, req.params.id);
-  audit(req.adminUser.username, "modifica", "contest", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/contest/:id", requireCap("contest"), async (req, res) => {
-  await db.prepare("DELETE FROM contest_esiti WHERE contest_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM contest WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "contest", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/contest/:id/esito", requireCap("contest"), async (req, res) => {
-  const e = await esitoCorrente(Number(req.params.id));
-  if (!e) return res.status(404).json({ error: "Contest non trovato" });
-  res.json(e);
-});
-adminRouter.post("/contest/:id/esito", requireCap("contest"), async (req, res) => {
-  try {
-    const righe = Array.isArray(req.body?.righe) ? req.body.righe : [];
-    const scala = Array.isArray(req.body?.punti_scala) ? req.body.punti_scala.map((n) => Number(n) || 0) : void 0;
-    const out = await salvaEsito(Number(req.params.id), righe, scala);
-    res.json({ ok: true, righe: out });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-adminRouter.post("/contest/:id/assegna", requireCap("contest"), async (req, res) => {
-  try {
-    res.json({ ok: true, ...await assegnaCoppa(Number(req.params.id)) });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-adminRouter.get("/serate", async (req, res) => {
-  const rows = await db.prepare("SELECT * FROM serate ORDER BY ordine,data").all();
-  const out = [];
-  for (const s of rows) {
-    const p = await db.prepare("SELECT COALESCE(SUM(CASE WHEN stato!='annullata' THEN persone ELSE 0 END),0) coperti, COALESCE(SUM(CASE WHEN stato='da_saldare' THEN importo ELSE 0 END),0) da_incassare FROM serate_prenotazioni WHERE serata_id=?").get(s.id);
-    out.push({ ...s, coperti_prenotati: p.coperti, da_incassare: p.da_incassare });
-  }
-  res.json(out);
-});
-adminRouter.post("/serate", requireCap("serate"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM serate").get()).n;
-  const info = await db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.chiave || null, b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo === false ? 0 : 1, ord);
-  audit(req.adminUser.username, "crea", "serate", info.lastInsertRowid, b.titolo);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/serate/:id", requireCap("serate"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo ? 1 : 0, req.params.id);
-  audit(req.adminUser.username, "modifica", "serate", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.delete("/serate/:id", requireCap("serate"), async (req, res) => {
-  await db.prepare("DELETE FROM serate_prenotazioni WHERE serata_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM serate WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "serate", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/serate/:id/prenotazioni", async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? ORDER BY created_at DESC").all(req.params.id));
-});
-adminRouter.put("/serate-prenotazioni/:id", requireCap("serate"), async (req, res) => {
-  const stato = ["da_saldare", "saldata", "annullata"].includes(req.body?.stato) ? req.body.stato : "da_saldare";
-  await db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
-  audit(req.adminUser.username, "stato_prenotazione_serata", "serate_prenotazioni", req.params.id, stato);
-  res.json({ ok: true });
-});
-var oggi = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-adminRouter.get("/cdc/coworking", async (req, res) => {
-  const rows = await db.prepare(`SELECT p.giorno, p.turno FROM prenotazioni p LEFT JOIN risorse r ON r.id=p.risorsa_id
-    WHERE p.stato='confermata' AND (r.tipo='coworking' OR p.risorsa_nome LIKE '%oworking%')`).all();
-  const periodi = (t) => {
-    t = String(t || "").toLowerCase();
-    if (t.startsWith("giorn")) return ["mattina", "pomeriggio"];
-    if (t.startsWith("pomerig")) return ["pomeriggio"];
-    return ["mattina"];
-  };
-  const per = {};
-  for (const r of rows) {
-    const g = r.giorno || "\u2014";
-    per[g] ??= { mattina: 0, pomeriggio: 0 };
-    periodi(r.turno).forEach((k) => per[g][k]++);
-  }
-  res.json({ max: 8, giorni: Object.keys(per).map((g) => ({ giorno: g, ...per[g] })) });
-});
-adminRouter.get("/cdc/caffe", async (req, res) => {
-  const cfg = await db.prepare("SELECT * FROM cdc_caffe WHERE id=1").get() || { giacenza: 0, punto_riordino: 40, confezione: 100 };
-  const conte = await db.prepare("SELECT * FROM cdc_caffe_conte ORDER BY id DESC LIMIT 30").all();
-  const daRiordinare = cfg.giacenza <= cfg.punto_riordino;
-  const suggerito = daRiordinare ? Math.max(cfg.confezione, Math.ceil((cfg.punto_riordino * 2 - cfg.giacenza) / Math.max(1, cfg.confezione)) * cfg.confezione) : 0;
-  res.json({ config: cfg, conte, da_riordinare: daRiordinare, ordine_suggerito: suggerito });
-});
-adminRouter.put("/cdc/caffe", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE cdc_caffe SET punto_riordino=?,confezione=? WHERE id=1").run(Number(b.punto_riordino) || 0, Number(b.confezione) || 1);
-  audit(req.adminUser.username, "modifica", "cdc_caffe", 1, `riordino ${b.punto_riordino}`);
-  res.json({ ok: true });
-});
-adminRouter.post("/cdc/caffe/conta", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  const g = Math.max(0, Number(b.giacenza) || 0);
-  const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
-  const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
-  await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), b.ora || "16:00", g, consumo, req.adminUser.username, b.note || "");
-  await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
-  audit(req.adminUser.username, "conta_caffe", "cdc_caffe", 1, `giacenza ${g}`);
-  res.json({ ok: true, giacenza: g, consumo });
-});
-adminRouter.get("/cdc/giochi", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_giochi ORDER BY ordine,id").all()));
-adminRouter.post("/cdc/giochi", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
-  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM cdc_giochi").get()).n;
-  const info = await db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,note,ordine) VALUES (?,?,?,?,?,?)").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", ord);
-  audit(req.adminUser.username, "crea", "cdc_giochi", info.lastInsertRowid, b.nome);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE cdc_giochi SET nome=?,categoria=?,quantita=?,stato=?,note=? WHERE id=?").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", req.params.id);
-  audit(req.adminUser.username, "modifica", "cdc_giochi", req.params.id, b.stato || "");
-  res.json({ ok: true });
-});
-adminRouter.delete("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
-  await db.prepare("DELETE FROM cdc_giochi WHERE id=?").run(req.params.id);
-  audit(req.adminUser.username, "cancella", "cdc_giochi", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/cdc/prestiti", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_prestiti ORDER BY id DESC LIMIT 100").all()));
-adminRouter.post("/cdc/prestiti", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  const info = await db.prepare("INSERT INTO cdc_prestiti (gioco_id,gioco_nome,giocatore,data,ora_inizio,ora_fine,note) VALUES (?,?,?,?,?,?,?)").run(b.gioco_id || null, b.gioco_nome || "", b.giocatore || "", b.data || oggi(), b.ora_inizio || "", b.ora_fine || "", b.note || "");
-  audit(req.adminUser.username, "prestito", "cdc_prestiti", info.lastInsertRowid, b.gioco_nome || "");
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.put("/cdc/prestiti/:id", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  await db.prepare("UPDATE cdc_prestiti SET ora_fine=?,note=? WHERE id=?").run(b.ora_fine || "", b.note || "", req.params.id);
-  audit(req.adminUser.username, "riconsegna", "cdc_prestiti", req.params.id);
-  res.json({ ok: true });
-});
-adminRouter.get("/cdc/check", async (req, res) => res.json(await db.prepare("SELECT id,data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,(foto IS NOT NULL AND foto<>'') AS has_foto,created_at FROM cdc_check ORDER BY id DESC LIMIT 60").all()));
-adminRouter.get("/cdc/check/:id/foto", async (req, res) => {
-  const r = await db.prepare("SELECT foto FROM cdc_check WHERE id=?").get(req.params.id);
-  if (!r || !r.foto) return res.status(404).json({ error: "Nessuna foto" });
-  res.json({ foto: r.foto });
-});
-adminRouter.post("/cdc/check", requireCap("cdc"), async (req, res) => {
-  const b = req.body || {};
-  const info = await db.prepare("INSERT INTO cdc_check (data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,foto) VALUES (?,?,?,?,?,?,?)").run(b.data || oggi(), req.adminUser.username, b.caffe_giacenza != null && b.caffe_giacenza !== "" ? Number(b.caffe_giacenza) : null, b.strumenti_note || "", b.arredi_note || "", b.esito || "ok", b.foto || null);
-  if (b.caffe_giacenza != null && b.caffe_giacenza !== "") {
-    const g = Math.max(0, Number(b.caffe_giacenza) || 0);
-    const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
-    const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
-    await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), "16:00", g, consumo, req.adminUser.username, "da check");
-    await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
-  }
-  audit(req.adminUser.username, "check", "cdc_check", info.lastInsertRowid, b.esito || "ok");
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.get("/allegati", async (req, res) => {
-  res.json(await db.prepare("SELECT id,entita,entita_id,nota,autore,created_at FROM allegati WHERE entita=? AND entita_id=? ORDER BY id DESC").all(req.query.entita || "", String(req.query.entita_id || "")));
-});
-adminRouter.get("/allegati/:id/foto", async (req, res) => {
-  const r = await db.prepare("SELECT immagine FROM allegati WHERE id=?").get(req.params.id);
-  if (!r) return res.status(404).json({ error: "Non trovato" });
-  res.json({ foto: r.immagine });
-});
-adminRouter.post("/allegati", (req, res, next) => {
-  const cap = (req.body || {}).entita === "partita" ? "tabellone" : "cdc";
-  return requireCap(cap)(req, res, next);
-}, async (req, res) => {
-  const b = req.body || {};
-  if (!b.immagine) return res.status(400).json({ error: "Immagine mancante" });
-  const info = await db.prepare("INSERT INTO allegati (entita,entita_id,immagine,nota,autore) VALUES (?,?,?,?,?)").run(b.entita || "generico", String(b.entita_id || ""), b.immagine, b.nota || "", req.adminUser.username);
-  audit(req.adminUser.username, "foto", b.entita || "allegati", b.entita_id || info.lastInsertRowid);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid });
-});
-adminRouter.get("/db/info", requireCap("db"), async (req, res) => {
-  let size = 0;
-  try {
-    size = statSync(DB_PATH).size;
-  } catch (_) {
-  }
-  const persistente = IS_REMOTE || /^\/var\/data\b|^\/data\b/.test(DB_PATH) || process.env.KOINE_PERSISTENT === "1";
-  res.json({
-    path: DB_PATH,
-    tipo: IS_REMOTE ? "gestito (Turso/libSQL)" : DB_PATH === ":memory:" ? "memoria" : "file locale",
-    size_kb: Math.round(size / 1024),
-    persistente,
-    soci: (await db.prepare("SELECT count(*) n FROM soci").get()).n
-  });
-});
-adminRouter.get("/db/backup", requireCap("db"), async (req, res) => {
-  if (DB_PATH === ":memory:") return res.status(400).json({ error: "Database in memoria: nessun backup su file" });
-  if (IS_REMOTE) return res.status(400).json({ error: "Database gestito (Turso): i backup/point-in-time sono gestiti dal provider. Per un estratto usa l\u2019export dei soci." });
-  const tmp = `/tmp/koine-backup-${Date.now()}.db`;
-  try {
-    await db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
-    const buf = readFileSync(tmp);
-    try {
-      unlinkSync(tmp);
-    } catch (_) {
-    }
-    const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Disposition", `attachment; filename="koine-backup-${stamp}.db"`);
-    audit(req.adminUser.username, "backup_db", "database", 0, `${buf.length} byte`);
-    res.send(buf);
-  } catch (e) {
-    res.status(500).json({ error: "Backup non riuscito: " + e.message });
-  }
-});
-adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
-  res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
-});
-
-// server/routes/authuser.js
-init_db();
-import { Router as Router3 } from "express";
-init_push();
-var authUserRouter = asyncify(Router3());
-var DEV = (process.env.KOINE_ENV || "dev") !== "prod";
-async function requireUser(req, res, next) {
-  const token = (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
-  const u = await getUserSession(token);
-  if (!u) return res.status(401).json({ error: "Accesso richiesto" });
-  req.user = u;
-  next();
-}
-authUserRouter.post("/request-otp", async (req, res) => {
-  const email = String(req.body?.email || "").trim().toLowerCase();
-  if (!email || !email.includes("@")) return res.status(400).json({ error: "E-mail non valida" });
-  const socio = await db.prepare("SELECT id FROM soci WHERE lower(email)=? AND attivo=1").get(email);
-  const code = genOtp();
-  const exp = Date.now() + 10 * 60 * 1e3;
-  await db.prepare("INSERT INTO otp (email,code,exp) VALUES (?,?,?)").run(email, code, exp);
-  audit(email, "otp_richiesto", "otp", "", socio ? "utente noto" : "email sconosciuta");
-  res.json({ ok: true, ...DEV ? { dev_code: code, dev_note: "In produzione arriva via e-mail/SMS; qui \xE8 mostrato solo per test." } : {} });
-});
-authUserRouter.post("/login-tessera", async (req, res) => {
-  const code = String(req.body?.tessera_code || "").trim().toUpperCase();
-  if (!code) return res.status(400).json({ error: "Codice tessera mancante" });
-  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(code);
-  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
-  const token = await createUserSession(socio);
-  audit(socio.tessera_code, "login_tessera", "soci", socio.id);
-  const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
-  res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
-});
-authUserRouter.post("/verify-otp", async (req, res) => {
-  const email = String(req.body?.email || "").trim().toLowerCase();
-  const code = String(req.body?.code || "").trim();
-  const row = await db.prepare("SELECT * FROM otp WHERE email=? AND code=? AND used=0 ORDER BY id DESC").get(email, code);
-  if (!row || Date.now() > row.exp) return res.status(401).json({ error: "Codice non valido o scaduto" });
-  await db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
-  const socio = await db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
-  if (!socio) return res.status(404).json({ error: "Nessun profilo associato a questa e-mail" });
-  const token = await createUserSession(socio);
-  audit(socio.tessera_code, "login_utente", "soci", socio.id);
-  const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
-  res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
-});
-authUserRouter.post("/registrazione", async (req, res) => {
-  const b = req.body || {};
-  const tipiOk = ["socio", "residente", "socio_residente", "ospite_temporaneo"];
-  const tipo = tipiOk.includes(b.tipo_profilo) ? b.tipo_profilo : "socio";
-  const nome = String(b.nome || "").trim(), cognome = String(b.cognome || "").trim();
-  if (!nome || !cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
-  if (!b.consenso_privacy) return res.status(400).json({ error: "Il consenso privacy \xE8 necessario per registrarsi" });
-  const email = b.email ? String(b.email).trim().toLowerCase() : null;
-  if (email) {
-    const dup = await db.prepare("SELECT id FROM soci WHERE lower(email)=?").get(email);
-    if (dup) return res.status(409).json({ error: "Questa e-mail \xE8 gi\xE0 registrata: accedi con e-mail." });
-  }
-  const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : "socio";
-  const lingua = ["it", "en", "fr", "de", "es"].includes(b.lingua) ? b.lingua : "it";
-  try {
-    const cols = ["tessera_code", "nome", "cognome", "email", "ruolo", "tipo_profilo", "lingua", "consenso_privacy", "consenso_marketing", "soggiorno_dal", "soggiorno_al", "attivo"];
-    const vals = [
-      "",
-      nome,
-      cognome,
-      email,
-      ruolo,
-      tipo,
-      lingua,
-      1,
-      b.consenso_marketing ? 1 : 0,
-      tipo === "ospite_temporaneo" ? b.soggiorno_dal || null : null,
-      tipo === "ospite_temporaneo" ? b.soggiorno_al || null : null,
-      1
-    ];
-    const { id, tessera_code } = await insertSocioUnique(cols, vals);
-    const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id);
-    const token = await createUserSession(socio);
-    audit(tessera_code, "auto_registrazione", "soci", id, tipo);
-    res.status(201).json({ token, socio: { tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
-  } catch (e) {
-    console.error("registrazione:", e?.message || e);
-    res.status(400).json({ error: "Registrazione non riuscita" });
-  }
-});
-var CAP_SOCI_CASATA = 12;
-async function contaSoci(casataId) {
-  return (await db.prepare("SELECT COUNT(*) n FROM soci WHERE casata_id=? AND tipo_profilo!='ospite_temporaneo' AND attivo=1").get(casataId)).n;
-}
-authUserRouter.get("/casate", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY nome").all();
-  const casate = [];
-  for (const c of rows) {
-    const n = await contaSoci(c.id);
-    casate.push({ id: c.id, nome: c.nome, colore: c.colore, motto: c.motto, punti: c.punti, soci: n, capienza: CAP_SOCI_CASATA, pieno: n >= CAP_SOCI_CASATA, mia: !!(me && me.casata_id === c.id) });
-  }
-  res.json({ casate, mia: me ? me.casata_id : null, capienza: CAP_SOCI_CASATA });
-});
-authUserRouter.post("/scegli-casata", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
-  if (!["socio", "socio_residente"].includes(me.tipo_profilo)) return res.status(403).json({ error: "Solo i soci scelgono una casata" });
-  const cid = Number(req.body?.casata_id);
-  const c = await db.prepare("SELECT id,nome FROM casate WHERE id=?").get(cid);
-  if (!c) return res.status(404).json({ error: "Casata non trovata" });
-  if (me.casata_id !== cid) {
-    const n = await contaSoci(cid);
-    if (n >= CAP_SOCI_CASATA) return res.status(409).json({ error: `Casata ${c.nome} al completo (${CAP_SOCI_CASATA} soci): scegline un'altra.` });
-  }
-  await db.prepare("UPDATE soci SET casata_id=? WHERE id=?").run(cid, me.id);
-  audit(me.tessera_code, "scegli_casata", "soci", me.id, c.nome);
-  res.json({ ok: true, casata: c.nome });
-});
-authUserRouter.post("/notifiche/consenso", requireUser, async (req, res) => {
-  const on = req.body?.attivo ? 1 : 0;
-  await db.prepare("UPDATE soci SET notifiche_push=? WHERE tessera_code=?").run(on, req.user.tessera_code);
-  audit(req.user.tessera_code, "consenso_notifiche", "soci", "", on ? "attivo" : "disattivo");
-  res.json({ ok: true, attivo: !!on });
-});
-authUserRouter.post("/push/subscribe", requireUser, async (req, res) => {
-  const me = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
-  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
-  const ok = await saveSubscription(me.id, req.body?.subscription || req.body);
-  if (ok) await db.prepare("UPDATE soci SET notifiche_push=1 WHERE id=?").run(me.id);
-  res.json({ ok, enabled: pushEnabled() });
-});
-authUserRouter.post("/push/unsubscribe", requireUser, async (req, res) => {
-  await removeSubscription(req.body?.endpoint);
-  res.json({ ok: true });
-});
-authUserRouter.post("/convoca", requireUser, async (req, res) => {
-  const me = await db.prepare("SELECT id, casata_id, ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
-  if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
-  if (!me.casata_id) return res.status(400).json({ error: "Nessuna casata associata" });
-  const { dominio, disciplina_chiave, match_label, quando, luogo } = req.body || {};
-  const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio === "giochi" ? "giochi" : "sport");
-  if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
-  const soci = await db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(me.casata_id);
-  const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
-  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
-  let notificati = 0;
-  const pushIds = [];
-  const corpo = `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim();
-  for (const s of soci) {
-    await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
-    if (s.notifiche_push) {
-      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", corpo);
-      notificati++;
-      pushIds.push(s.id);
-    }
-  }
-  try {
-    await sendToSoci(pushIds, { title: "La tua casata ti convoca", body: corpo, url: "/", tag: "convocazione" });
-  } catch (_) {
-  }
-  audit(req.user.tessera_code, "convoca_capitano", "convocazioni", me.casata_id, `${soci.length} soci`);
-  res.status(201).json({ ok: true, convocati: soci.length, notificati });
-});
-authUserRouter.get("/capitano/partite", requireUser, async (req, res) => {
-  const me = await db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
-  if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
-  const cas = me.casata_id;
-  const partite = await db.prepare(`SELECT p.id, p.giornata, p.casata_a_id, p.casata_b_id, p.casa_a, p.casa_b,
-      d.id disc_id, d.nome disciplina, d.dominio, d.min_giocatori minimo, d.max_giocatori massimo
-    FROM partite p JOIN discipline d ON d.id=p.disciplina_id
-    WHERE p.stato='da_giocare' AND d.attivo=1 AND (p.casata_a_id=? OR p.casata_b_id=?)
-    ORDER BY d.dominio, d.ordine, p.giornata, p.id`).all(cas, cas);
-  const membri = await db.prepare("SELECT id,nome,cognome FROM soci WHERE casata_id=? AND attivo=1 ORDER BY nome").all(cas);
-  const out = [];
-  for (const p of partite) {
-    const conv = await db.prepare("SELECT socio_id,stato FROM convocazioni WHERE partita_id=? AND socio_id IN (SELECT id FROM soci WHERE casata_id=?)").all(p.id, cas);
-    const byS = {};
-    conv.forEach((c) => byS[c.socio_id] = c.stato);
-    out.push({
-      partita_id: p.id,
-      disciplina: p.disciplina,
-      dominio: p.dominio,
-      giornata: p.giornata,
-      avversario: p.casata_a_id === cas ? p.casa_b : p.casa_a,
-      minimo: p.minimo,
-      massimo: p.massimo,
-      disponibili: conv.filter((c) => c.stato === "disponibile").length,
-      convocati: conv.length,
-      membri: membri.map((m) => ({ id: m.id, nome: `${m.nome} ${m.cognome}`.trim(), stato: byS[m.id] || "non_convocato" }))
-    });
-  }
-  res.json(out);
-});
-authUserRouter.post("/capitano/convoca-mirata", requireUser, async (req, res) => {
-  const me = await db.prepare("SELECT id,casata_id,ruolo FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
-  if (!me || me.ruolo !== "capitano") return res.status(403).json({ error: "Riservato ai capitani" });
-  const { partita_id, socio_ids } = req.body || {};
-  const p = await db.prepare("SELECT p.*, d.nome disc, d.id disc_id FROM partite p JOIN discipline d ON d.id=p.disciplina_id WHERE p.id=?").get(partita_id);
-  if (!p) return res.status(400).json({ error: "Partita inesistente" });
-  if (p.casata_a_id !== me.casata_id && p.casata_b_id !== me.casata_id) return res.status(403).json({ error: "Partita non della tua casata" });
-  const label = `${p.casa_a} vs ${p.casa_b} \xB7 G${p.giornata}`;
-  const ids = (Array.isArray(socio_ids) ? socio_ids : []).map(Number);
-  const insC = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,partita_id,match_label,quando,luogo,stato) VALUES (?,?,?,?,?,?, 'aperta')");
-  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
-  let n = 0;
-  const pushIds = [];
-  for (const sid of ids) {
-    const s = await db.prepare("SELECT id,notifiche_push FROM soci WHERE id=? AND casata_id=? AND attivo=1").get(sid, me.casata_id);
-    if (!s) continue;
-    if (await db.prepare("SELECT id FROM convocazioni WHERE partita_id=? AND socio_id=?").get(partita_id, sid)) continue;
-    await insC.run(sid, p.disc_id, partita_id, label, "", "");
-    if (s.notifiche_push) {
-      await insN.run(sid, "push", "casata", "Convocazione \xB7 " + p.disc, label);
-      pushIds.push(sid);
-    }
-    n++;
-  }
-  try {
-    await sendToSoci(pushIds, { title: "Convocazione \xB7 " + p.disc, body: label, url: "/", tag: "convocazione" });
-  } catch (_) {
-  }
-  audit(req.user.tessera_code, "convoca_mirata", "partite", partita_id, `${n} convocati`);
-  res.status(201).json({ ok: true, convocati: n });
-});
-authUserRouter.get("/notifiche", requireUser, async (req, res) => {
-  const socio = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.user.tessera_code);
-  const rows = socio ? await db.prepare("SELECT id,tipo,titolo,corpo,letta,created_at FROM notifiche WHERE socio_id=? ORDER BY created_at DESC LIMIT 50").all(socio.id) : [];
-  res.json(rows);
-});
-var HOST_FIELDS2 = ["nome", "cir", "cin", "regole", "isolato", "numero", "check_out", "lat", "lng"];
-function pickStruttura2(b) {
-  const o = {};
-  for (const k of HOST_FIELDS2) o[k] = b[k] ?? "";
-  if (o.lat !== "") o.lat = Number(o.lat);
-  if (o.lng !== "") o.lng = Number(o.lng);
-  return o;
-}
-async function meSocio(req) {
-  return db.prepare("SELECT * FROM soci WHERE id=? AND attivo=1").get(req.user.id);
-}
-function canHost(me) {
-  return !!me && (me.host === 1 || ["residente", "socio_residente"].includes(me.tipo_profilo));
-}
-authUserRouter.get("/host/strutture", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(me.id);
-  let ko = false;
-  const strutture = rows.map((r) => {
-    const d = tryDecryptJSON(r.dati_cifrati);
-    if (!d) {
-      ko = true;
-      return { id: r.id, ko: true, attivo: r.attivo };
-    }
-    return { id: r.id, attivo: r.attivo, ...d };
-  });
-  if (ko) {
-    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
-    audit(me.tessera_code, "host_KO", "strutture", me.id, "integrit\xE0 non verificabile");
-  }
-  res.json({ host: me.host ? 1 : 0, max: 3, host_ko: ko ? 1 : me.host_ko, strutture });
-});
-authUserRouter.post("/host/strutture", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(me.id)).n;
-  if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
-  const b = req.body || {};
-  if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Il nome della struttura \xE8 obbligatorio" });
-  const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(me.id, encryptJSON(pickStruttura2(b)));
-  if (!me.host) await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(me.id);
-  audit(me.tessera_code, "host_crea_struttura", "strutture", info.lastInsertRowid);
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
-});
-authUserRouter.put("/host/strutture/:id", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
-  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
-  const b = req.body || {};
-  await db.prepare("UPDATE strutture SET dati_cifrati=?,attivo=? WHERE id=?").run(encryptJSON(pickStruttura2(b)), b.attivo === false ? 0 : 1, req.params.id);
-  audit(me.tessera_code, "host_modifica_struttura", "strutture", req.params.id);
-  res.json({ ok: true });
-});
-authUserRouter.delete("/host/strutture/:id", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const st = await db.prepare("SELECT id FROM strutture WHERE id=? AND socio_id=?").get(req.params.id, me.id);
-  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
-  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
-  await db.prepare("DELETE FROM strutture WHERE id=?").run(req.params.id);
-  audit(me.tessera_code, "host_elimina_struttura", "strutture", req.params.id);
-  res.json({ ok: true });
-});
-function oggiISO() {
-  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-}
-async function sganciaScaduti() {
-  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE tipo_profilo='ospite_temporaneo' AND struttura_id IS NOT NULL AND soggiorno_al IS NOT NULL AND soggiorno_al < ?").run(oggiISO());
-}
-authUserRouter.get("/casa-mia", requireUser, async (req, res) => {
-  await sganciaScaduti();
-  const me = await meSocio(req);
-  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
-  if (me.soggiorno_al && me.soggiorno_al < oggiISO()) return res.json({ collegato: false, terminato: true });
-  if (!me.struttura_id) return res.json({ collegato: false });
-  const st = await db.prepare("SELECT id,dati_cifrati FROM strutture WHERE id=? AND attivo=1").get(me.struttura_id);
-  if (!st) return res.json({ collegato: false });
-  const d = tryDecryptJSON(st.dati_cifrati);
-  if (!d) {
-    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(me.id);
-    audit(me.tessera_code, "host_KO_vista_ospite", "strutture", st.id, "integrit\xE0 non verificabile");
-    return res.status(423).json({ ko: true, error: "Dati della struttura non disponibili" });
-  }
-  res.json({ collegato: true, struttura: { nome: d.nome, cir: d.cir, cin: d.cin, regole: d.regole, isolato: d.isolato, numero: d.numero, check_out: d.check_out, lat: d.lat, lng: d.lng }, soggiorno: { dal: me.soggiorno_dal, al: me.soggiorno_al } });
-});
-async function myStruttureIds(meId) {
-  const rows = await db.prepare("SELECT id FROM strutture WHERE socio_id=? AND attivo=1 ORDER BY id").all(meId);
-  return rows.map((r) => r.id);
-}
-function notifica(socioId, titolo, corpo) {
-  return db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(socioId, "push", "sistema", titolo, corpo || null);
-}
-authUserRouter.get("/hosts-cerca", requireUser, async (req, res) => {
-  const q = "%" + String(req.query.q || "").trim().toLowerCase() + "%";
-  if (String(req.query.q || "").trim().length < 2) return res.json({ hosts: [] });
-  const rows = await db.prepare("SELECT id,nome,cognome FROM soci WHERE tipo_profilo IN ('residente','socio_residente') AND attivo=1 AND (lower(nome) LIKE ? OR lower(cognome) LIKE ? OR lower(nome||' '||cognome) LIKE ?) ORDER BY cognome,nome LIMIT 12").all(q, q, q);
-  res.json({ hosts: rows });
-});
-authUserRouter.post("/aggancio/richiesta", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
-  if (me.tipo_profilo !== "ospite_temporaneo") return res.status(403).json({ error: "Solo un visitatore pu\xF2 chiedere l'aggancio a una casa" });
-  const hostId = Number(req.body?.host_id);
-  const host = await db.prepare("SELECT id,nome,cognome FROM soci WHERE id=? AND tipo_profilo IN ('residente','socio_residente') AND attivo=1").get(hostId);
-  if (!host) return res.status(404).json({ error: "Host non trovato" });
-  const ex = await db.prepare("SELECT id FROM richieste_aggancio WHERE ospite_id=? AND stato='in_attesa'").get(me.id);
-  if (ex) return res.status(409).json({ error: "Hai gi\xE0 una richiesta in attesa" });
-  const info = await db.prepare("INSERT INTO richieste_aggancio (ospite_id,host_id,stato) VALUES (?,?,'in_attesa')").run(me.id, host.id);
-  notifica(host.id, "Nuovo ospite da confermare \u{1F464}", `${me.nome} ${me.cognome} dice di essere tuo ospite: confermi l'aggancio alla casa?`);
-  audit(me.tessera_code, "aggancio_richiesta", "richieste_aggancio", Number(info.lastInsertRowid), `host ${host.id}`);
-  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), host: { nome: host.nome, cognome: host.cognome } });
-});
-authUserRouter.get("/aggancio/stato", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!me) return res.status(404).json({ error: "Profilo non trovato" });
-  const r = await db.prepare("SELECT ra.id,ra.stato,ra.created_at,s.nome host_nome,s.cognome host_cognome FROM richieste_aggancio ra JOIN soci s ON s.id=ra.host_id WHERE ra.ospite_id=? ORDER BY ra.id DESC LIMIT 1").get(me.id);
-  res.json({ richiesta: r || null, collegato: !!me.struttura_id });
-});
-authUserRouter.get("/host/richieste", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const rows = await db.prepare("SELECT ra.id,ra.ospite_id,ra.created_at,s.nome,s.cognome,s.soggiorno_dal,s.soggiorno_al FROM richieste_aggancio ra JOIN soci s ON s.id=ra.ospite_id WHERE ra.host_id=? AND ra.stato='in_attesa' ORDER BY ra.id DESC").all(me.id);
-  res.json({ richieste: rows });
-});
-authUserRouter.post("/host/richieste/:id/approva", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
-  if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
-  const ids = await myStruttureIds(me.id);
-  if (!ids.length) return res.status(409).json({ error: `Aggiungi prima la tua casa in "Le mie case", poi conferma l'ospite.` });
-  const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : ids[0];
-  if (!ids.includes(sid)) return res.status(403).json({ error: "Struttura non tua" });
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  await db.prepare("UPDATE richieste_aggancio SET stato='approvata',struttura_id=?,updated_at=? WHERE id=?").run(sid, now, r.id);
-  await db.prepare("UPDATE soci SET struttura_id=? WHERE id=?").run(sid, r.ospite_id);
-  notifica(r.ospite_id, "Casa confermata \u{1F3E1}", `${me.nome} ${me.cognome} ha confermato: ora vedi "Casa mia".`);
-  audit(me.tessera_code, "aggancio_approva", "richieste_aggancio", r.id, `ospite ${r.ospite_id} \u2192 struttura ${sid}`);
-  res.json({ ok: true });
-});
-authUserRouter.post("/host/richieste/:id/rifiuta", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const r = await db.prepare("SELECT * FROM richieste_aggancio WHERE id=? AND host_id=? AND stato='in_attesa'").get(req.params.id, me.id);
-  if (!r) return res.status(404).json({ error: "Richiesta non trovata" });
-  await db.prepare("UPDATE richieste_aggancio SET stato='rifiutata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
-  audit(me.tessera_code, "aggancio_rifiuta", "richieste_aggancio", r.id, `ospite ${r.ospite_id}`);
-  res.json({ ok: true });
-});
-authUserRouter.get("/host/ospiti", requireUser, async (req, res) => {
-  await sganciaScaduti();
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const ids = await myStruttureIds(me.id);
-  if (!ids.length) return res.json({ ospiti: [] });
-  const ph = ids.map(() => "?").join(",");
-  const rows = await db.prepare(`SELECT id,nome,cognome,tessera_code,struttura_id,soggiorno_dal,soggiorno_al,attivo FROM soci WHERE tipo_profilo='ospite_temporaneo' AND struttura_id IN (${ph}) ORDER BY id DESC`).all(...ids);
-  res.json({ ospiti: rows });
-});
-authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) => {
-  const me = await meSocio(req);
-  if (!canHost(me)) return res.status(403).json({ error: "Profilo non abilitato come host" });
-  const ids = await myStruttureIds(me.id);
-  const g = await db.prepare("SELECT id,struttura_id FROM soci WHERE id=? AND tipo_profilo='ospite_temporaneo'").get(req.params.id);
-  if (!g || !ids.includes(g.struttura_id)) return res.status(404).json({ error: "Visitatore non trovato" });
-  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE id=?").run(g.id);
-  audit(me.tessera_code, "aggancio_scollega", "soci", g.id);
-  res.json({ ok: true });
-});
-
-// server/version.js
-var VERSION = "4.66";
+// build/entry.mjs
+import express from "express";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -6911,20 +2723,37 @@ async function openCampi(campoId) {
   if (!state._campoData || !days.some(d => d.iso === state._campoData)) state._campoData = days[0].iso;
   const data = state._campoData;
   let disp = { slots: [] };
-  try { disp = await api(\`/campi/\${sel.id}/disponibilita?data=\${data}\`); } catch { }
+  const qs = state.tessera ? \`&tessera_code=\${encodeURIComponent(state.tessera)}\` : '';
+  try { disp = await api(\`/campi/\${sel.id}/disponibilita?data=\${data}\${qs}\`); } catch { }
+  const campo = disp.campo || sel;
+  const posti = campo.posti_default || sel.posti_default || 4;
+  const maxFasce = campo.max_slot_prenotazione || sel.max_slot_prenotazione || 1;
+  if (!state._campoFasce || state._campoFasce > maxFasce) state._campoFasce = 1;
   const courtChips = campi.map(c => \`<button class="chip\${c.id === sel.id ? ' sel' : ''}" data-campo-pick="\${c.id}">\${sportIcon(c.sport)} \${esc(c.nome)}</button>\`).join('');
   const dayChips = days.map(d => \`<button class="chip\${d.iso === data ? ' sel' : ''}" data-campo-date="\${d.iso}">\${esc(d.label)}</button>\`).join('');
+  const fasceChips = maxFasce > 1
+    ? \`<div class="field"><label>\${T('Durata')}</label><div class="chips">\${Array.from({ length: maxFasce }, (_, i) => i + 1).map(n => \`<button class="chip\${n === state._campoFasce ? ' sel' : ''}" data-campo-fasce="\${n}">\${n}\xD7 \${campo.durata_slot || 60}\u2032</button>\`).join('')}</div></div>\`
+    : '';
+  const q = disp.quota;
+  const quotaHTML = q
+    ? \`<div class="note" style="margin-top:0">\${q.residue > 0
+        ? \`\${T('Ti restano')} <b>\${q.residue}</b> \${T(q.residue === 1 ? 'prenotazione questa settimana' : 'prenotazioni questa settimana')} \${T('su questo campo')} (\${q.usate}/\${q.massimo}).\`
+        : \`\${T('Hai esaurito le prenotazioni di questa settimana su questo campo')} (\${q.usate}/\${q.massimo}).\`}</div>\`
+    : '';
   const slotHTML = (disp.slots || []).map(s => {
-    if (s.stato === 'libero') return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\${T('Libero')}</div></div><div style="display:flex;gap:6px"><button class="btn gold sm" data-prenota="\${sel.id}|\${s.slot}">\${T('Prenota')}</button><button class="btn ghost sm" data-apri="\${sel.id}|\${s.slot}">\${T('Partita')}</button></div></div>\`;
-    if (s.stato === 'partita') { const pieno = s.iscritti >= s.posti_totali; return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F465} \${T('Partita aperta')} \xB7 \${s.iscritti}/\${s.posti_totali}\${s.livello ? ' \xB7 ' + esc(s.livello) : ''}\${s.creatore ? ' \xB7 ' + esc(s.creatore) : ''}</div></div>\${pieno ? \`<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\` : \`<button class="btn gold sm" data-unisci="\${s.partita_id}">\${T('Unisciti')}</button>\`}</div>\`; }
-    return \`<div class="matchrow" style="opacity:.6"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\${T('Occupato')} \xB7 \${esc(s.nome || T('prenotato'))}</div></div><span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('OCCUPATO')}</span></div>\`;
+    if (s.stato === 'libero') return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\${T('Libero')}</div></div><div style="display:flex;gap:6px"><button class="btn ghost sm" data-prenota="\${sel.id}|\${s.slot}">\${T('Solo io')}</button><button class="btn gold sm" data-apri="\${sel.id}|\${s.slot}">\${T('Apri ai soci')}</button></div></div>\`;
+    if (s.stato === 'bloccato') return \`<div class="matchrow" style="opacity:.6"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F6A7} \${T('Campo impegnato')}\${s.motivo ? ' \xB7 ' + esc(s.motivo) : ''}\${s.nota ? ' \xB7 ' + esc(s.nota) : ''}</div></div><span class="tag" style="background:#f4e6d8;color:#8a5a12;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('NON PRENOTABILE')}</span></div>\`;
+    if (s.stato === 'partita') { const pieno = s.iscritti >= s.posti_totali; return \`<div class="matchrow"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F465} \${T('Partita aperta')} \xB7 \${s.iscritti}/\${s.posti_totali}\${s.livello ? ' \xB7 ' + esc(s.livello) : ''}\${s.titolare ? ' \xB7 ' + esc(s.titolare) : ''}</div></div>\${pieno ? \`<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\` : \`<button class="btn gold sm" data-unisci="\${s.partita_id}">\${T('Unisciti')}</button>\`}</div>\`; }
+    return \`<div class="matchrow" style="opacity:.6"><div style="flex:1"><b style="font-size:.95rem">\${esc(s.slot)}</b><div class="ct">\u{1F512} \${T('Riservata')} \xB7 \${esc(s.titolare || s.nome || T('prenotato'))}</div></div><span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('OCCUPATO')}</span></div>\`;
   }).join('');
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Prenotazione campi')}</div><h2>\${sportIcon(sel.sport)} \${esc(sel.nome)}</h2>
     <div class="field"><label>\${T('Campo')}</label><div class="chips">\${courtChips}</div></div>
     <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    \${fasceChips}
     <div class="sect-title" style="margin-top:6px">\${T('Fasce orarie')}</div>
     <div class="card" style="padding:4px 14px">\${slotHTML || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessuno slot per questa data.')}</p>\`}</div>
-    <div class="note">\${T('\u201CPrenota\u201D blocca lo slot per te. \u201CPartita\u201D apre una <b>partita aperta</b>: altri soci possono unirsi finch\xE9 non \xE8 al completo.')}</div>
+    \${quotaHTML}
+    <div class="note">\${T('Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a')} <b>\${posti}</b> \${T('giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
@@ -6939,18 +2768,27 @@ async function openPartiteAperte() {
   showOv();
 }
 function dataBella(iso) { try { const [y, m, d] = iso.split('-'); return \`\${d}/\${m}\`; } catch { return iso; } }
-async function campoPrenota(v) {
+async function campoPrenota(v) { return campoCrea(v, false); }
+async function campoApri(v) { return campoCrea(v, true); }
+async function campoCrea(v, aperta) {
   const [id, slot] = v.split('|');
-  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; } } catch { okThen(T('Errore di rete'), false); return; }
-  okThen(\`\${T('Campo prenotato')} \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
-}
-async function campoApri(v) {
-  const [id, slot] = v.split('|');
+  if (!state.tessera) { okThen(T('Serve la tessera di un socio per prenotare'), false); return; }
+  const n = Math.max(1, Number(state._campoFasce) || 1);
   const campo = (state.data.campi || []).find(c => c.id == id);
   const posti = campo ? campo.posti_default : 4;
-  if (!confirm(\`\${T('Apri una partita alle')} \${slot} \${T('con')} \${posti} \${T('posti? Gli altri soci potranno unirsi.')}\`)) return;
-  try { const r = await fetch(API_BASE + '/api/campi/' + id + '/partita', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot, posti_totali: posti }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } } catch { okThen(T('Errore di rete'), false); return; }
-  okThen(\`\${T('Partita aperta')} \xB7 \${dataBella(state._campoData)} \${slot}\`); openCampi(id);
+  const quando = \`\${dataBella(state._campoData)} \${slot}\${n > 1 ? \` (\${n} \${T('fasce')})\` : ''}\`;
+  const domanda = aperta
+    ? \`\${T('Apri la partita di')} \${quando} \${T('con')} \${posti} \${T('posti? Gli altri soci potranno unirsi.')}\`
+    : \`\${T('Prenoti')} \${quando} \${T('solo per te? Nessun altro potr\xE0 unirsi.')}\`;
+  if (!confirm(domanda)) return;
+  const rotta = aperta ? '/partita' : '/prenota';
+  try {
+    const r = await fetch(API_BASE + '/api/campi/' + id + rotta, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._campoData, slot, n_slot: n }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; }
+    okThen(\`\${aperta ? T('Partita aperta') : T('Campo prenotato')} \xB7 \${quando}\`);
+  } catch { okThen(T('Errore di rete'), false); return; }
+  openCampi(id);
 }
 async function campoUnisci(pid) {
   try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } okThen(j.completa ? T('Partita al completo, ci vediamo in campo! \u{1F3BE}') : \`\${T('Iscritto!')} \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen(T('Errore di rete'), false); return; }
@@ -7915,7 +3753,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -7957,6 +3795,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.partite != null) return openPartiteAperte();
   if (t.dataset.campoPick) return openCampi(Number(t.dataset.campoPick));
   if (t.dataset.campoDate) { state._campoData = t.dataset.campoDate; return openCampi(state._campoSel); }
+  if (t.dataset.campoFasce) { state._campoFasce = Number(t.dataset.campoFasce) || 1; return openCampi(state._campoSel); }
   if (t.dataset.prenota) return campoPrenota(t.dataset.prenota);
   if (t.dataset.apri) return campoApri(t.dataset.apri);
   if (t.dataset.unisci) return campoUnisci(t.dataset.unisci);
@@ -8170,7 +4009,7 @@ var admin_default = `<!DOCTYPE html>
 
   <div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
 
-  <script>
+<script>
 /* Back office KOIN\xC8 Village \u2014 SPA minimale su fetch/API. */
 'use strict';
 let TOKEN = null, USER = null, CASATE = [], ME = { ruolo: '', gestore: false, caps: [] };
@@ -8698,34 +4537,72 @@ VIEWS.campi = async () => {
     <td><input id="cp_ch_\${c.id}" value="\${esc(c.chiusura)}" style="width:64px"></td>
     <td><input id="cp_du_\${c.id}" type="number" value="\${esc(String(c.durata_slot))}" style="width:64px"></td>
     <td><input id="cp_om_\${c.id}" value="\${esc(c.ora_min || '')}" placeholder="\u2014" style="width:64px" title="Regola oraria: prenotabile solo da quest'ora (es. 18:00)"></td>
-    <td><input id="cp_pd_\${c.id}" type="number" value="\${esc(String(c.posti_default))}" style="width:56px"></td>
+    <td><input id="cp_pd_\${c.id}" type="number" min="2" value="\${esc(String(c.posti_default))}" style="width:56px" title="Numero massimo di giocatori: vale per tutte le prenotazioni di questo campo"></td>
+    <td><input id="cp_ms_\${c.id}" type="number" min="1" value="\${esc(String(c.max_slot_prenotazione == null ? 2 : c.max_slot_prenotazione))}" style="width:56px" title="Durata massima: quante fasce consecutive pu\xF2 prenotare un socio"></td>
+    <td><input id="cp_mw_\${c.id}" type="number" min="1" value="\${esc(String(c.max_pren_settimana == null ? 3 : c.max_pren_settimana))}" style="width:56px" title="Quante prenotazioni a settimana pu\xF2 fare lo stesso socio su questo campo"></td>
     <td style="text-align:center"><input type="checkbox" id="cp_at_\${c.id}" \${c.attivo ? 'checked' : ''}></td>
     <td class="row"><button class="btn gold sm" data-cpsave="\${c.id}">Salva</button><button class="btn danger sm" data-cpdel="\${c.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
   const gestione = \`<div class="panel"><h3>\u{1F3BE} Campi</h3>
-    <p class="muted" style="font-size:.78rem;margin-bottom:8px">La colonna <b>Da (ora)</b> \xE8 la regola oraria: lasciala vuota per nessun vincolo, oppure metti es. <b>18:00</b> (il calcetto si prenota solo dopo le 18). Gli slot sono lunghi <b>Durata</b> minuti, da <b>Apre</b> a <b>Chiude</b>.</p>
-    <table><thead><tr><th>Nome</th><th>Sport</th><th>Apre</th><th>Chiude</th><th>Durata</th><th>Da (ora)</th><th>Posti part.</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun campo.</td></tr>'}</tbody></table>
+    <p class="muted" style="font-size:.78rem;margin-bottom:8px"><b>Da (ora)</b> \xE8 la regola oraria: vuota = nessun vincolo, oppure es. <b>18:00</b> (il calcetto si prenota solo dopo le 18). Gli slot durano <b>Durata</b> minuti, da <b>Apre</b> a <b>Chiude</b>.<br>
+    <b>Posti</b> \xE8 il numero di giocatori della prenotazione: lo decidi tu qui, il socio non lo cambia. <b>Max fasce</b> limita la durata di una singola prenotazione, <b>Max/sett.</b> quante prenotazioni pu\xF2 fare lo stesso socio in una settimana su questo campo: servono a evitare che siano sempre gli stessi a occupare il campo.</p>
+    <table><thead><tr><th>Nome</th><th>Sport</th><th>Apre</th><th>Chiude</th><th>Durata</th><th>Da (ora)</th><th>Posti</th><th>Max fasce</th><th>Max/sett.</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="11" class="muted">Nessun campo.</td></tr>'}</tbody></table>
     <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
       <input id="cp_new_n" placeholder="Nome (es. Campo Tennis)" style="min-width:180px"><select id="cp_new_sp">\${sportOpts('tennis')}</select>
       <input id="cp_new_ap" value="09:00" style="width:64px" title="Apertura"><input id="cp_new_ch" value="22:00" style="width:64px" title="Chiusura">
       <input id="cp_new_du" type="number" value="60" style="width:64px" title="Durata slot (min)"><input id="cp_new_om" placeholder="Da (ora)" style="width:80px">
-      <input id="cp_new_pd" type="number" value="4" style="width:64px" title="Posti partita"><button class="btn gold sm" id="cp_add">+ Aggiungi</button>
+      <input id="cp_new_pd" type="number" value="4" style="width:60px" title="Posti"><input id="cp_new_ms" type="number" value="2" style="width:60px" title="Max fasce consecutive">
+      <input id="cp_new_mw" type="number" value="3" style="width:60px" title="Max prenotazioni a settimana per socio"><button class="btn gold sm" id="cp_add">+ Aggiungi</button>
     </div></div>\`;
-  const prospetto = \`<div class="panel"><h3>\u{1F4C5} Prenotazioni del giorno <input type="date" id="cp_date" value="\${oggi}" style="margin-left:8px"></h3><div id="cp_pren"></div></div>\`;
-  $('#view').innerHTML = gestione + prospetto;
+  const campoOpts = campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('');
+  const blocchi = \`<div class="panel"><h3>\u{1F6A7} Campo impegnato (torneo, manutenzione, evento)</h3>
+    <p class="muted" style="font-size:.78rem;margin-bottom:8px">Le fasce dichiarate qui <b>non sono prenotabili</b> dai soci. \xC8 cos\xEC che si applica la regola del basket: quando il campo ospita il torneo, lo blocchi e resta libero solo il resto della giornata.</p>
+    <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
+      <select id="bl_campo">\${campoOpts}</select>
+      <input type="date" id="bl_data" value="\${oggi}">
+      <input id="bl_da" value="09:00" style="width:64px" title="Dalle"><span class="muted">\u2013</span><input id="bl_a" value="22:00" style="width:64px" title="Alle">
+      <select id="bl_motivo"><option value="torneo">torneo</option><option value="manutenzione">manutenzione</option><option value="evento">evento</option></select>
+      <input id="bl_nota" placeholder="Nota (facoltativa)" style="min-width:160px">
+      <button class="btn gold sm" id="bl_add">+ Blocca</button>
+    </div>
+    <div id="bl_list"></div></div>\`;
+  const prospetto = \`<div class="panel"><h3>\u{1F4C5} Prenotazioni del giorno <input type="date" id="cp_date" value="\${oggi}" style="margin-left:8px"></h3>
+    <p class="muted" style="font-size:.78rem;margin-bottom:8px">Ogni riga \xE8 una prenotazione: <b>titolare</b> (a lui si fa riferimento) e <b>chi si \xE8 unito</b>. I campi sono gratuiti: qui si governa solo l'uso, non un conto.</p>
+    <div id="cp_pren"></div></div>\`;
+  $('#view').innerHTML = gestione + blocchi + prospetto;
 
   const loadPren = async () => {
     const d = $('#cp_date').value || oggi;
     const list = await api('/campi/prenotazioni?data=' + d).catch(() => []);
     $('#cp_pren').innerHTML = list.length
-      ? \`<table><thead><tr><th>Ora</th><th>Campo</th><th>Tipo</th><th>Prenotato da</th></tr></thead><tbody>\${list.map(p => \`<tr><td><b>\${esc(p.slot)}</b></td><td>\${esc(p.campo_nome)}</td><td>\${p.tipo === 'partita' ? '\u{1F465} Partita aperta' : 'Privata'}</td><td>\${esc(p.nome || '\u2014')}</td></tr>\`).join('')}</tbody></table>\`
+      ? \`<table><thead><tr><th>Ora</th><th>Campo</th><th>Tipo</th><th>Titolare</th><th>Partecipanti</th></tr></thead><tbody>\${list.map(p => {
+          const ora = p.slot_da === p.slot_a ? esc(p.slot_da) : \`\${esc(p.slot_da)}\u2013\${esc(p.slot_a)}\`;
+          const tipo = p.aperta_ai_soci ? '\u{1F465} Aperta ai soci' : '\u{1F512} Riservata';
+          const occupati = p.partecipanti ? p.partecipanti.length : 0;
+          const cap = p.posti_totali ? \` <span class="muted">(\${occupati}/\${p.posti_totali})</span>\` : '';
+          const nomi = (p.partecipanti || []).map(x => esc(x.nome)).join(', ');
+          return \`<tr><td><b>\${ora}</b>\${p.fasce > 1 ? \` <span class="muted">\${p.fasce} fasce</span>\` : ''}</td><td>\${esc(p.campo_nome)}</td><td>\${tipo}\${cap}</td><td><b>\${esc(p.titolare || '\u2014')}</b></td><td>\${nomi || '<span class="muted">\u2014</span>'}</td></tr>\`;
+        }).join('')}</tbody></table>\`
       : '<p class="muted">Nessuna prenotazione per questa data.</p>';
   };
+  const loadBlocchi = async () => {
+    const list = await api('/campi/blocchi').catch(() => []);
+    $('#bl_list').innerHTML = list.length
+      ? \`<table><thead><tr><th>Data</th><th>Campo</th><th>Fascia</th><th>Motivo</th><th>Nota</th><th></th></tr></thead><tbody>\${list.map(b => \`<tr><td>\${esc(b.data)}</td><td>\${esc(b.campo_nome)}</td><td>\${esc(b.slot_da)}\u2013\${esc(b.slot_a)}</td><td>\${esc(b.motivo)}</td><td>\${esc(b.nota || '')}</td><td><button class="btn danger sm" data-bldel="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}</tbody></table>\`
+      : '<p class="muted">Nessun blocco attivo.</p>';
+    document.querySelectorAll('[data-bldel]').forEach(x => x.onclick = async () => { await api('/campi/blocchi/' + x.dataset.bldel, { method: 'DELETE' }); await loadBlocchi(); await loadPren(); });
+  };
   await loadPren();
+  await loadBlocchi();
   $('#cp_date').onchange = loadPren;
-  document.querySelectorAll('[data-cpsave]').forEach(b => b.onclick = async () => { const id = b.dataset.cpsave; await api('/campi/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#cp_n_' + id).value, sport: $('#cp_sp_' + id).value, apertura: $('#cp_ap_' + id).value, chiusura: $('#cp_ch_' + id).value, durata_slot: Number($('#cp_du_' + id).value), ora_min: $('#cp_om_' + id).value || null, posti_default: Number($('#cp_pd_' + id).value), attivo: $('#cp_at_' + id).checked }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 900); });
+  $('#bl_add').onclick = async () => {
+    await api('/campi/blocchi', { method: 'POST', body: JSON.stringify({ campo_id: Number($('#bl_campo').value), data: $('#bl_data').value, slot_da: $('#bl_da').value, slot_a: $('#bl_a').value, motivo: $('#bl_motivo').value, nota: $('#bl_nota').value || null }) });
+    $('#bl_nota').value = '';
+    await loadBlocchi();
+  };
+  document.querySelectorAll('[data-cpsave]').forEach(b => b.onclick = async () => { const id = b.dataset.cpsave; await api('/campi/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#cp_n_' + id).value, sport: $('#cp_sp_' + id).value, apertura: $('#cp_ap_' + id).value, chiusura: $('#cp_ch_' + id).value, durata_slot: Number($('#cp_du_' + id).value), ora_min: $('#cp_om_' + id).value || null, posti_default: Number($('#cp_pd_' + id).value), max_slot_prenotazione: Number($('#cp_ms_' + id).value), max_pren_settimana: Number($('#cp_mw_' + id).value), attivo: $('#cp_at_' + id).checked }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 900); });
   document.querySelectorAll('[data-cpdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il campo e le sue prenotazioni?')) return; await api('/campi/' + b.dataset.cpdel, { method: 'DELETE' }); show('campi'); });
-  $('#cp_add').onclick = async () => { if (!$('#cp_new_n').value) { alert('Nome?'); return; } await api('/campi', { method: 'POST', body: JSON.stringify({ nome: $('#cp_new_n').value, sport: $('#cp_new_sp').value, apertura: $('#cp_new_ap').value, chiusura: $('#cp_new_ch').value, durata_slot: Number($('#cp_new_du').value), ora_min: $('#cp_new_om').value || null, posti_default: Number($('#cp_new_pd').value) }) }); show('campi'); };
+  $('#cp_add').onclick = async () => { if (!$('#cp_new_n').value) { alert('Nome?'); return; } await api('/campi', { method: 'POST', body: JSON.stringify({ nome: $('#cp_new_n').value, sport: $('#cp_new_sp').value, apertura: $('#cp_new_ap').value, chiusura: $('#cp_new_ch').value, durata_slot: Number($('#cp_new_du').value), ora_min: $('#cp_new_om').value || null, posti_default: Number($('#cp_new_pd').value), max_slot_prenotazione: Number($('#cp_new_ms').value), max_pren_settimana: Number($('#cp_new_mw').value) }) }); show('campi'); };
 };
 
 // ---- Proposte ----
@@ -10790,10 +6667,24 @@ load();
 </html>
 `;
 
+// build/entry.mjs
+init_auth();
+init_db();
+
+// server/pwa.js
+init_auth();
+init_db();
+
 // server/pwa-icons.js
 var ICON_192 = "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";
 var ICON_512 = "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";
 var ICON_180 = "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";
+
+// server/pwa.js
+init_authuser();
+
+// server/version.js
+var VERSION = "4.67";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -10892,11 +6783,4411 @@ function mountPwa(app2) {
   app2.get("/chiosco/sw.js", (req, res) => send(res, "application/javascript", sw(APPS.chiosco), true));
 }
 
+// server/routes/admin.js
+init_asyncroute();
+init_auth();
+import { Router } from "express";
+import { readFileSync, unlinkSync, statSync } from "node:fs";
+import * as XLSX from "xlsx";
+
+// server/contest.js
+init_db();
+var SCALA_DEFAULT = [10, 6, 4, 3, 2, 1, 1, 1];
+var SCALA_SFILATA = [10, 0, 0, 0, 0, 0, 0, 0];
+var BONUS_VENDITE = [4, 2, 1];
+function scalaDi(contest) {
+  if (contest?.punti_scala) {
+    try {
+      const a = JSON.parse(contest.punti_scala);
+      if (Array.isArray(a)) return a;
+    } catch (_) {
+    }
+  }
+  return contest?.tipo === "sfilata" ? SCALA_SFILATA : SCALA_DEFAULT;
+}
+async function salvaEsito(contestId, righe, scalaOverride) {
+  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
+  if (!contest) throw new Error("Contest non trovato");
+  if (contest.esito_assegnato) throw new Error("Esito gi\xE0 assegnato alla Coppa: non modificabile");
+  const scala = Array.isArray(scalaOverride) ? scalaOverride : scalaDi(contest);
+  const venditori = righe.filter((r) => Number(r.pezzi_venduti) > 0).sort((a, b) => Number(b.pezzi_venduti) - Number(a.pezzi_venduti) || Number(a.casata_id) - Number(b.casata_id));
+  const bonusPer = /* @__PURE__ */ new Map();
+  venditori.slice(0, 3).forEach((r, i) => bonusPer.set(Number(r.casata_id), BONUS_VENDITE[i]));
+  const up = db.prepare(`INSERT INTO contest_esiti (contest_id,casata_id,posizione,pezzi_venduti,punti)
+                         VALUES (?,?,?,?,?)
+                         ON CONFLICT(contest_id,casata_id) DO UPDATE SET
+                           posizione=excluded.posizione, pezzi_venduti=excluded.pezzi_venduti, punti=excluded.punti`);
+  const out = [];
+  for (const r of righe) {
+    const pos = Number(r.posizione) || null;
+    const pezzi = Number(r.pezzi_venduti) || 0;
+    const placement = pos && pos >= 1 && scala[pos - 1] != null ? scala[pos - 1] : 0;
+    const bonus = bonusPer.get(Number(r.casata_id)) || 0;
+    const punti = placement + bonus;
+    await up.run(contestId, r.casata_id, pos, pezzi, punti);
+    out.push({ casata_id: Number(r.casata_id), posizione: pos, pezzi_venduti: pezzi, placement, bonus, punti });
+  }
+  if (Array.isArray(scalaOverride)) {
+    await db.prepare("UPDATE contest SET punti_scala=? WHERE id=?").run(JSON.stringify(scalaOverride), contestId);
+  }
+  await db.prepare("UPDATE contest SET stato='in_corso' WHERE id=? AND stato='annunciato'").run(contestId);
+  audit("staff", "esito_contest", "contest", contestId, `${out.length} casate`);
+  return out;
+}
+async function assegnaCoppa(contestId) {
+  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
+  if (!contest) throw new Error("Contest non trovato");
+  if (contest.esito_assegnato) throw new Error("Punti gi\xE0 assegnati");
+  const esiti = await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId);
+  if (!esiti.length) throw new Error("Nessun esito salvato: registra prima la graduatoria");
+  const addPunti = db.prepare("UPDATE casate SET punti = punti + ? WHERE id=?");
+  let totale = 0;
+  for (const e of esiti) {
+    if (e.punti) {
+      await addPunti.run(e.punti, e.casata_id);
+      totale += e.punti;
+    }
+  }
+  const primo = esiti.filter((e) => e.posizione === 1)[0];
+  const vincitore = primo ? (await db.prepare("SELECT nome FROM casate WHERE id=?").get(primo.casata_id))?.nome : null;
+  await db.prepare("UPDATE contest SET stato='concluso', esito_assegnato=1, vincitore=? WHERE id=?").run(vincitore || null, contestId);
+  audit("staff", "assegna_coppa", "contest", contestId, `${totale} punti \xB7 vince ${vincitore || "\u2014"}`);
+  return { totale, vincitore, casate: esiti.length };
+}
+async function esitoCorrente(contestId) {
+  const contest = await db.prepare("SELECT * FROM contest WHERE id=?").get(contestId);
+  if (!contest) return null;
+  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
+  const esiti = new Map((await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId)).map((e) => [e.casata_id, e]));
+  return {
+    contest,
+    scala: scalaDi(contest),
+    assegnato: !!contest.esito_assegnato,
+    righe: casate.map((c) => {
+      const e = esiti.get(c.id);
+      return {
+        casata_id: c.id,
+        casata: c.nome,
+        colore: c.colore,
+        posizione: e?.posizione ?? null,
+        pezzi_venduti: e?.pezzi_venduti ?? 0,
+        punti: e?.punti ?? 0
+      };
+    })
+  };
+}
+
+// server/routes/admin.js
+init_crypto();
+init_db();
+init_menucat();
+
+// server/permessi.js
+init_db();
+var CAPS_DELEGABILI = [
+  "utenti",
+  // consulta/modifica anagrafiche
+  "utenti_ins",
+  // registra nuovi soci/ospiti
+  "casate",
+  // punti Coppa
+  "cdc",
+  // Casa di Carta (caffè, giochi, prelievi, check)
+  "discipline",
+  // attiva/parametri discipline
+  "tabellone",
+  // inserisci risultati / archivia / periodo
+  "contest",
+  // Contest Serata dei Clan
+  "serate",
+  // Serate & cena
+  "proposte",
+  // Proposte vinile/openmic
+  "eventi",
+  // Cartellone
+  "magazzino",
+  // Magazzino unificato (aree + alert)
+  "comande",
+  // Chiosco: comande + KDS (cassa/cameriere/stazioni)
+  "campi"
+  // Prenotazione campi (config campi + regole + prospetto prenotazioni)
+];
+var CAPS_GESTORE_ONLY = [
+  "utenti_del",
+  // cancellazione GDPR
+  "discipline_del",
+  // elimina disciplina
+  "tabellone_reset",
+  // rigenera/azzera calendario
+  "guida",
+  // Guida / Rifiuti
+  "luoghi",
+  // Luoghi "Siamo qui"
+  "registro",
+  // Registro attività
+  "db",
+  // Database & backup
+  "operatori"
+  // gestione account staff e permessi
+];
+var GO = new Set(CAPS_GESTORE_ONLY);
+var MANAGER_CAPS = /* @__PURE__ */ new Set([
+  "utenti",
+  "casate",
+  "cdc",
+  "discipline",
+  "tabellone",
+  "contest",
+  "serate",
+  "proposte",
+  "eventi",
+  "magazzino",
+  "comande",
+  "campi"
+]);
+function parsePermessi(p) {
+  if (Array.isArray(p)) return p;
+  if (typeof p === "string" && p) {
+    try {
+      const a = JSON.parse(p);
+      return Array.isArray(a) ? a : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+function hasCap(user, cap) {
+  if (!user) return false;
+  if (user.ruolo === "gestore") return true;
+  if (GO.has(cap)) return false;
+  if (user.ruolo === "manager") return MANAGER_CAPS.has(cap);
+  if (user.ruolo === "staff") return parsePermessi(user.permessi).includes(cap);
+  return false;
+}
+function requireCap(cap) {
+  return (req, res, next) => hasCap(req.adminUser, cap) ? next() : res.status(403).json({ error: "Permesso insufficiente per il tuo ruolo" });
+}
+function capsInfo(user) {
+  const tutte = [...CAPS_DELEGABILI, ...CAPS_GESTORE_ONLY];
+  return {
+    ruolo: user.ruolo,
+    gestore: user.ruolo === "gestore",
+    caps: user.ruolo === "gestore" ? tutte : tutte.filter((c) => hasCap(user, c))
+  };
+}
+
+// server/routes/admin.js
+init_push();
+
+// server/vendor/qrcode-generator.mjs
+var qrcode = function(typeNumber, errorCorrectionLevel) {
+  const PAD0 = 236;
+  const PAD1 = 17;
+  let _typeNumber = typeNumber;
+  const _errorCorrectionLevel = QRErrorCorrectionLevel[errorCorrectionLevel];
+  let _modules = null;
+  let _moduleCount = 0;
+  let _dataCache = null;
+  const _dataList = [];
+  const _this = {};
+  const makeImpl = function(test, maskPattern) {
+    _moduleCount = _typeNumber * 4 + 17;
+    _modules = (function(moduleCount) {
+      const modules = new Array(moduleCount);
+      for (let row = 0; row < moduleCount; row += 1) {
+        modules[row] = new Array(moduleCount);
+        for (let col = 0; col < moduleCount; col += 1) {
+          modules[row][col] = null;
+        }
+      }
+      return modules;
+    })(_moduleCount);
+    setupPositionProbePattern(0, 0);
+    setupPositionProbePattern(_moduleCount - 7, 0);
+    setupPositionProbePattern(0, _moduleCount - 7);
+    setupPositionAdjustPattern();
+    setupTimingPattern();
+    setupTypeInfo(test, maskPattern);
+    if (_typeNumber >= 7) {
+      setupTypeNumber(test);
+    }
+    if (_dataCache == null) {
+      _dataCache = createData(_typeNumber, _errorCorrectionLevel, _dataList);
+    }
+    mapData(_dataCache, maskPattern);
+  };
+  const setupPositionProbePattern = function(row, col) {
+    for (let r = -1; r <= 7; r += 1) {
+      if (row + r <= -1 || _moduleCount <= row + r) continue;
+      for (let c = -1; c <= 7; c += 1) {
+        if (col + c <= -1 || _moduleCount <= col + c) continue;
+        if (0 <= r && r <= 6 && (c == 0 || c == 6) || 0 <= c && c <= 6 && (r == 0 || r == 6) || 2 <= r && r <= 4 && 2 <= c && c <= 4) {
+          _modules[row + r][col + c] = true;
+        } else {
+          _modules[row + r][col + c] = false;
+        }
+      }
+    }
+  };
+  const getBestMaskPattern = function() {
+    let minLostPoint = 0;
+    let pattern = 0;
+    for (let i = 0; i < 8; i += 1) {
+      makeImpl(true, i);
+      const lostPoint = QRUtil.getLostPoint(_this);
+      if (i == 0 || minLostPoint > lostPoint) {
+        minLostPoint = lostPoint;
+        pattern = i;
+      }
+    }
+    return pattern;
+  };
+  const setupTimingPattern = function() {
+    for (let r = 8; r < _moduleCount - 8; r += 1) {
+      if (_modules[r][6] != null) {
+        continue;
+      }
+      _modules[r][6] = r % 2 == 0;
+    }
+    for (let c = 8; c < _moduleCount - 8; c += 1) {
+      if (_modules[6][c] != null) {
+        continue;
+      }
+      _modules[6][c] = c % 2 == 0;
+    }
+  };
+  const setupPositionAdjustPattern = function() {
+    const pos = QRUtil.getPatternPosition(_typeNumber);
+    for (let i = 0; i < pos.length; i += 1) {
+      for (let j = 0; j < pos.length; j += 1) {
+        const row = pos[i];
+        const col = pos[j];
+        if (_modules[row][col] != null) {
+          continue;
+        }
+        for (let r = -2; r <= 2; r += 1) {
+          for (let c = -2; c <= 2; c += 1) {
+            if (r == -2 || r == 2 || c == -2 || c == 2 || r == 0 && c == 0) {
+              _modules[row + r][col + c] = true;
+            } else {
+              _modules[row + r][col + c] = false;
+            }
+          }
+        }
+      }
+    }
+  };
+  const setupTypeNumber = function(test) {
+    const bits = QRUtil.getBCHTypeNumber(_typeNumber);
+    for (let i = 0; i < 18; i += 1) {
+      const mod = !test && (bits >> i & 1) == 1;
+      _modules[Math.floor(i / 3)][i % 3 + _moduleCount - 8 - 3] = mod;
+    }
+    for (let i = 0; i < 18; i += 1) {
+      const mod = !test && (bits >> i & 1) == 1;
+      _modules[i % 3 + _moduleCount - 8 - 3][Math.floor(i / 3)] = mod;
+    }
+  };
+  const setupTypeInfo = function(test, maskPattern) {
+    const data = _errorCorrectionLevel << 3 | maskPattern;
+    const bits = QRUtil.getBCHTypeInfo(data);
+    for (let i = 0; i < 15; i += 1) {
+      const mod = !test && (bits >> i & 1) == 1;
+      if (i < 6) {
+        _modules[i][8] = mod;
+      } else if (i < 8) {
+        _modules[i + 1][8] = mod;
+      } else {
+        _modules[_moduleCount - 15 + i][8] = mod;
+      }
+    }
+    for (let i = 0; i < 15; i += 1) {
+      const mod = !test && (bits >> i & 1) == 1;
+      if (i < 8) {
+        _modules[8][_moduleCount - i - 1] = mod;
+      } else if (i < 9) {
+        _modules[8][15 - i - 1 + 1] = mod;
+      } else {
+        _modules[8][15 - i - 1] = mod;
+      }
+    }
+    _modules[_moduleCount - 8][8] = !test;
+  };
+  const mapData = function(data, maskPattern) {
+    let inc = -1;
+    let row = _moduleCount - 1;
+    let bitIndex = 7;
+    let byteIndex = 0;
+    const maskFunc = QRUtil.getMaskFunction(maskPattern);
+    for (let col = _moduleCount - 1; col > 0; col -= 2) {
+      if (col == 6) col -= 1;
+      while (true) {
+        for (let c = 0; c < 2; c += 1) {
+          if (_modules[row][col - c] == null) {
+            let dark = false;
+            if (byteIndex < data.length) {
+              dark = (data[byteIndex] >>> bitIndex & 1) == 1;
+            }
+            const mask = maskFunc(row, col - c);
+            if (mask) {
+              dark = !dark;
+            }
+            _modules[row][col - c] = dark;
+            bitIndex -= 1;
+            if (bitIndex == -1) {
+              byteIndex += 1;
+              bitIndex = 7;
+            }
+          }
+        }
+        row += inc;
+        if (row < 0 || _moduleCount <= row) {
+          row -= inc;
+          inc = -inc;
+          break;
+        }
+      }
+    }
+  };
+  const createBytes = function(buffer, rsBlocks) {
+    let offset = 0;
+    let maxDcCount = 0;
+    let maxEcCount = 0;
+    const dcdata = new Array(rsBlocks.length);
+    const ecdata = new Array(rsBlocks.length);
+    for (let r = 0; r < rsBlocks.length; r += 1) {
+      const dcCount = rsBlocks[r].dataCount;
+      const ecCount = rsBlocks[r].totalCount - dcCount;
+      maxDcCount = Math.max(maxDcCount, dcCount);
+      maxEcCount = Math.max(maxEcCount, ecCount);
+      dcdata[r] = new Array(dcCount);
+      for (let i = 0; i < dcdata[r].length; i += 1) {
+        dcdata[r][i] = 255 & buffer.getBuffer()[i + offset];
+      }
+      offset += dcCount;
+      const rsPoly = QRUtil.getErrorCorrectPolynomial(ecCount);
+      const rawPoly = qrPolynomial(dcdata[r], rsPoly.getLength() - 1);
+      const modPoly = rawPoly.mod(rsPoly);
+      ecdata[r] = new Array(rsPoly.getLength() - 1);
+      for (let i = 0; i < ecdata[r].length; i += 1) {
+        const modIndex = i + modPoly.getLength() - ecdata[r].length;
+        ecdata[r][i] = modIndex >= 0 ? modPoly.getAt(modIndex) : 0;
+      }
+    }
+    let totalCodeCount = 0;
+    for (let i = 0; i < rsBlocks.length; i += 1) {
+      totalCodeCount += rsBlocks[i].totalCount;
+    }
+    const data = new Array(totalCodeCount);
+    let index = 0;
+    for (let i = 0; i < maxDcCount; i += 1) {
+      for (let r = 0; r < rsBlocks.length; r += 1) {
+        if (i < dcdata[r].length) {
+          data[index] = dcdata[r][i];
+          index += 1;
+        }
+      }
+    }
+    for (let i = 0; i < maxEcCount; i += 1) {
+      for (let r = 0; r < rsBlocks.length; r += 1) {
+        if (i < ecdata[r].length) {
+          data[index] = ecdata[r][i];
+          index += 1;
+        }
+      }
+    }
+    return data;
+  };
+  const createData = function(typeNumber2, errorCorrectionLevel2, dataList) {
+    const rsBlocks = QRRSBlock.getRSBlocks(typeNumber2, errorCorrectionLevel2);
+    const buffer = qrBitBuffer();
+    for (let i = 0; i < dataList.length; i += 1) {
+      const data = dataList[i];
+      buffer.put(data.getMode(), 4);
+      buffer.put(data.getLength(), QRUtil.getLengthInBits(data.getMode(), typeNumber2));
+      data.write(buffer);
+    }
+    let totalDataCount = 0;
+    for (let i = 0; i < rsBlocks.length; i += 1) {
+      totalDataCount += rsBlocks[i].dataCount;
+    }
+    if (buffer.getLengthInBits() > totalDataCount * 8) {
+      throw "code length overflow. (" + buffer.getLengthInBits() + ">" + totalDataCount * 8 + ")";
+    }
+    if (buffer.getLengthInBits() + 4 <= totalDataCount * 8) {
+      buffer.put(0, 4);
+    }
+    while (buffer.getLengthInBits() % 8 != 0) {
+      buffer.putBit(false);
+    }
+    while (true) {
+      if (buffer.getLengthInBits() >= totalDataCount * 8) {
+        break;
+      }
+      buffer.put(PAD0, 8);
+      if (buffer.getLengthInBits() >= totalDataCount * 8) {
+        break;
+      }
+      buffer.put(PAD1, 8);
+    }
+    return createBytes(buffer, rsBlocks);
+  };
+  _this.addData = function(data, mode) {
+    mode = mode || "Byte";
+    let newData = null;
+    switch (mode) {
+      case "Numeric":
+        newData = qrNumber(data);
+        break;
+      case "Alphanumeric":
+        newData = qrAlphaNum(data);
+        break;
+      case "Byte":
+        newData = qr8BitByte(data);
+        break;
+      case "Kanji":
+        newData = qrKanji(data);
+        break;
+      default:
+        throw "mode:" + mode;
+    }
+    _dataList.push(newData);
+    _dataCache = null;
+  };
+  _this.isDark = function(row, col) {
+    if (row < 0 || _moduleCount <= row || col < 0 || _moduleCount <= col) {
+      throw row + "," + col;
+    }
+    return _modules[row][col];
+  };
+  _this.getModuleCount = function() {
+    return _moduleCount;
+  };
+  _this.make = function() {
+    if (_typeNumber < 1) {
+      let typeNumber2 = 1;
+      for (; typeNumber2 < 40; typeNumber2++) {
+        const rsBlocks = QRRSBlock.getRSBlocks(typeNumber2, _errorCorrectionLevel);
+        const buffer = qrBitBuffer();
+        for (let i = 0; i < _dataList.length; i++) {
+          const data = _dataList[i];
+          buffer.put(data.getMode(), 4);
+          buffer.put(data.getLength(), QRUtil.getLengthInBits(data.getMode(), typeNumber2));
+          data.write(buffer);
+        }
+        let totalDataCount = 0;
+        for (let i = 0; i < rsBlocks.length; i++) {
+          totalDataCount += rsBlocks[i].dataCount;
+        }
+        if (buffer.getLengthInBits() <= totalDataCount * 8) {
+          break;
+        }
+      }
+      _typeNumber = typeNumber2;
+    }
+    makeImpl(false, getBestMaskPattern());
+  };
+  _this.createTableTag = function(cellSize, margin) {
+    cellSize = cellSize || 2;
+    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
+    let qrHtml = "";
+    qrHtml += '<table style="';
+    qrHtml += " border-width: 0px; border-style: none;";
+    qrHtml += " border-collapse: collapse;";
+    qrHtml += " padding: 0px; margin: " + margin + "px;";
+    qrHtml += '">';
+    qrHtml += "<tbody>";
+    for (let r = 0; r < _this.getModuleCount(); r += 1) {
+      qrHtml += "<tr>";
+      for (let c = 0; c < _this.getModuleCount(); c += 1) {
+        qrHtml += '<td style="';
+        qrHtml += " border-width: 0px; border-style: none;";
+        qrHtml += " border-collapse: collapse;";
+        qrHtml += " padding: 0px; margin: 0px;";
+        qrHtml += " width: " + cellSize + "px;";
+        qrHtml += " height: " + cellSize + "px;";
+        qrHtml += " background-color: ";
+        qrHtml += _this.isDark(r, c) ? "#000000" : "#ffffff";
+        qrHtml += ";";
+        qrHtml += '"/>';
+      }
+      qrHtml += "</tr>";
+    }
+    qrHtml += "</tbody>";
+    qrHtml += "</table>";
+    return qrHtml;
+  };
+  _this.createSvgTag = function(cellSize, margin, alt, title) {
+    let opts = {};
+    if (typeof arguments[0] == "object") {
+      opts = arguments[0];
+      cellSize = opts.cellSize;
+      margin = opts.margin;
+      alt = opts.alt;
+      title = opts.title;
+    }
+    cellSize = cellSize || 2;
+    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
+    alt = typeof alt === "string" ? { text: alt } : alt || {};
+    alt.text = alt.text || null;
+    alt.id = alt.text ? alt.id || "qrcode-description" : null;
+    title = typeof title === "string" ? { text: title } : title || {};
+    title.text = title.text || null;
+    title.id = title.text ? title.id || "qrcode-title" : null;
+    const size = _this.getModuleCount() * cellSize + margin * 2;
+    let c, mc, r, mr, qrSvg2 = "", rect;
+    rect = "l" + cellSize + ",0 0," + cellSize + " -" + cellSize + ",0 0,-" + cellSize + "z ";
+    qrSvg2 += '<svg version="1.1" xmlns="http://www.w3.org/2000/svg"';
+    qrSvg2 += !opts.scalable ? ' width="' + size + 'px" height="' + size + 'px"' : "";
+    qrSvg2 += ' viewBox="0 0 ' + size + " " + size + '" ';
+    qrSvg2 += ' preserveAspectRatio="xMinYMin meet"';
+    qrSvg2 += title.text || alt.text ? ' role="img" aria-labelledby="' + escapeXml([title.id, alt.id].join(" ").trim()) + '"' : "";
+    qrSvg2 += ">";
+    qrSvg2 += title.text ? '<title id="' + escapeXml(title.id) + '">' + escapeXml(title.text) + "</title>" : "";
+    qrSvg2 += alt.text ? '<description id="' + escapeXml(alt.id) + '">' + escapeXml(alt.text) + "</description>" : "";
+    qrSvg2 += '<rect width="100%" height="100%" fill="white" cx="0" cy="0"/>';
+    qrSvg2 += '<path d="';
+    for (r = 0; r < _this.getModuleCount(); r += 1) {
+      mr = r * cellSize + margin;
+      for (c = 0; c < _this.getModuleCount(); c += 1) {
+        if (_this.isDark(r, c)) {
+          mc = c * cellSize + margin;
+          qrSvg2 += "M" + mc + "," + mr + rect;
+        }
+      }
+    }
+    qrSvg2 += '" stroke="transparent" fill="black"/>';
+    qrSvg2 += "</svg>";
+    return qrSvg2;
+  };
+  _this.createDataURL = function(cellSize, margin) {
+    cellSize = cellSize || 2;
+    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
+    const size = _this.getModuleCount() * cellSize + margin * 2;
+    const min = margin;
+    const max = size - margin;
+    return createDataURL(size, size, function(x, y) {
+      if (min <= x && x < max && min <= y && y < max) {
+        const c = Math.floor((x - min) / cellSize);
+        const r = Math.floor((y - min) / cellSize);
+        return _this.isDark(r, c) ? 0 : 1;
+      } else {
+        return 1;
+      }
+    });
+  };
+  _this.createImgTag = function(cellSize, margin, alt) {
+    cellSize = cellSize || 2;
+    margin = typeof margin == "undefined" ? cellSize * 4 : margin;
+    const size = _this.getModuleCount() * cellSize + margin * 2;
+    let img = "";
+    img += "<img";
+    img += ' src="';
+    img += _this.createDataURL(cellSize, margin);
+    img += '"';
+    img += ' width="';
+    img += size;
+    img += '"';
+    img += ' height="';
+    img += size;
+    img += '"';
+    if (alt) {
+      img += ' alt="';
+      img += escapeXml(alt);
+      img += '"';
+    }
+    img += "/>";
+    return img;
+  };
+  const escapeXml = function(s) {
+    let escaped = "";
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charAt(i);
+      switch (c) {
+        case "<":
+          escaped += "&lt;";
+          break;
+        case ">":
+          escaped += "&gt;";
+          break;
+        case "&":
+          escaped += "&amp;";
+          break;
+        case '"':
+          escaped += "&quot;";
+          break;
+        default:
+          escaped += c;
+          break;
+      }
+    }
+    return escaped;
+  };
+  const _createHalfASCII = function(margin) {
+    const cellSize = 1;
+    margin = typeof margin == "undefined" ? cellSize * 2 : margin;
+    const size = _this.getModuleCount() * cellSize + margin * 2;
+    const min = margin;
+    const max = size - margin;
+    let y, x, r1, r2, p;
+    const blocks = {
+      "\u2588\u2588": "\u2588",
+      "\u2588 ": "\u2580",
+      " \u2588": "\u2584",
+      "  ": " "
+    };
+    const blocksLastLineNoMargin = {
+      "\u2588\u2588": "\u2580",
+      "\u2588 ": "\u2580",
+      " \u2588": " ",
+      "  ": " "
+    };
+    let ascii = "";
+    for (y = 0; y < size; y += 2) {
+      r1 = Math.floor((y - min) / cellSize);
+      r2 = Math.floor((y + 1 - min) / cellSize);
+      for (x = 0; x < size; x += 1) {
+        p = "\u2588";
+        if (min <= x && x < max && min <= y && y < max && _this.isDark(r1, Math.floor((x - min) / cellSize))) {
+          p = " ";
+        }
+        if (min <= x && x < max && min <= y + 1 && y + 1 < max && _this.isDark(r2, Math.floor((x - min) / cellSize))) {
+          p += " ";
+        } else {
+          p += "\u2588";
+        }
+        ascii += margin < 1 && y + 1 >= max ? blocksLastLineNoMargin[p] : blocks[p];
+      }
+      ascii += "\n";
+    }
+    if (size % 2 && margin > 0) {
+      return ascii.substring(0, ascii.length - size - 1) + Array(size + 1).join("\u2580");
+    }
+    return ascii.substring(0, ascii.length - 1);
+  };
+  _this.createASCII = function(cellSize, margin) {
+    cellSize = cellSize || 1;
+    if (cellSize < 2) {
+      return _createHalfASCII(margin);
+    }
+    cellSize -= 1;
+    margin = typeof margin == "undefined" ? cellSize * 2 : margin;
+    const size = _this.getModuleCount() * cellSize + margin * 2;
+    const min = margin;
+    const max = size - margin;
+    let y, x, r, p;
+    const white = Array(cellSize + 1).join("\u2588\u2588");
+    const black = Array(cellSize + 1).join("  ");
+    let ascii = "";
+    let line = "";
+    for (y = 0; y < size; y += 1) {
+      r = Math.floor((y - min) / cellSize);
+      line = "";
+      for (x = 0; x < size; x += 1) {
+        p = 1;
+        if (min <= x && x < max && min <= y && y < max && _this.isDark(r, Math.floor((x - min) / cellSize))) {
+          p = 0;
+        }
+        line += p ? white : black;
+      }
+      for (r = 0; r < cellSize; r += 1) {
+        ascii += line + "\n";
+      }
+    }
+    return ascii.substring(0, ascii.length - 1);
+  };
+  _this.renderTo2dContext = function(context, cellSize) {
+    cellSize = cellSize || 2;
+    const length = _this.getModuleCount();
+    for (let row = 0; row < length; row++) {
+      for (let col = 0; col < length; col++) {
+        context.fillStyle = _this.isDark(row, col) ? "black" : "white";
+        context.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+      }
+    }
+  };
+  return _this;
+};
+qrcode.stringToBytes = function(s) {
+  const bytes = [];
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    bytes.push(c & 255);
+  }
+  return bytes;
+};
+qrcode.createStringToBytes = function(unicodeData, numChars) {
+  const unicodeMap = (function() {
+    const bin = base64DecodeInputStream(unicodeData);
+    const read2 = function() {
+      const b = bin.read();
+      if (b == -1) throw "eof";
+      return b;
+    };
+    let count = 0;
+    const unicodeMap2 = {};
+    while (true) {
+      const b0 = bin.read();
+      if (b0 == -1) break;
+      const b1 = read2();
+      const b2 = read2();
+      const b3 = read2();
+      const k = String.fromCharCode(b0 << 8 | b1);
+      const v = b2 << 8 | b3;
+      unicodeMap2[k] = v;
+      count += 1;
+    }
+    if (count != numChars) {
+      throw count + " != " + numChars;
+    }
+    return unicodeMap2;
+  })();
+  const unknownChar = "?".charCodeAt(0);
+  return function(s) {
+    const bytes = [];
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      if (c < 128) {
+        bytes.push(c);
+      } else {
+        const b = unicodeMap[s.charAt(i)];
+        if (typeof b == "number") {
+          if ((b & 255) == b) {
+            bytes.push(b);
+          } else {
+            bytes.push(b >>> 8);
+            bytes.push(b & 255);
+          }
+        } else {
+          bytes.push(unknownChar);
+        }
+      }
+    }
+    return bytes;
+  };
+};
+var QRMode = {
+  MODE_NUMBER: 1 << 0,
+  MODE_ALPHA_NUM: 1 << 1,
+  MODE_8BIT_BYTE: 1 << 2,
+  MODE_KANJI: 1 << 3
+};
+var QRErrorCorrectionLevel = {
+  L: 1,
+  M: 0,
+  Q: 3,
+  H: 2
+};
+var QRMaskPattern = {
+  PATTERN000: 0,
+  PATTERN001: 1,
+  PATTERN010: 2,
+  PATTERN011: 3,
+  PATTERN100: 4,
+  PATTERN101: 5,
+  PATTERN110: 6,
+  PATTERN111: 7
+};
+var QRUtil = (function() {
+  const PATTERN_POSITION_TABLE = [
+    [],
+    [6, 18],
+    [6, 22],
+    [6, 26],
+    [6, 30],
+    [6, 34],
+    [6, 22, 38],
+    [6, 24, 42],
+    [6, 26, 46],
+    [6, 28, 50],
+    [6, 30, 54],
+    [6, 32, 58],
+    [6, 34, 62],
+    [6, 26, 46, 66],
+    [6, 26, 48, 70],
+    [6, 26, 50, 74],
+    [6, 30, 54, 78],
+    [6, 30, 56, 82],
+    [6, 30, 58, 86],
+    [6, 34, 62, 90],
+    [6, 28, 50, 72, 94],
+    [6, 26, 50, 74, 98],
+    [6, 30, 54, 78, 102],
+    [6, 28, 54, 80, 106],
+    [6, 32, 58, 84, 110],
+    [6, 30, 58, 86, 114],
+    [6, 34, 62, 90, 118],
+    [6, 26, 50, 74, 98, 122],
+    [6, 30, 54, 78, 102, 126],
+    [6, 26, 52, 78, 104, 130],
+    [6, 30, 56, 82, 108, 134],
+    [6, 34, 60, 86, 112, 138],
+    [6, 30, 58, 86, 114, 142],
+    [6, 34, 62, 90, 118, 146],
+    [6, 30, 54, 78, 102, 126, 150],
+    [6, 24, 50, 76, 102, 128, 154],
+    [6, 28, 54, 80, 106, 132, 158],
+    [6, 32, 58, 84, 110, 136, 162],
+    [6, 26, 54, 82, 110, 138, 166],
+    [6, 30, 58, 86, 114, 142, 170]
+  ];
+  const G15 = 1 << 10 | 1 << 8 | 1 << 5 | 1 << 4 | 1 << 2 | 1 << 1 | 1 << 0;
+  const G18 = 1 << 12 | 1 << 11 | 1 << 10 | 1 << 9 | 1 << 8 | 1 << 5 | 1 << 2 | 1 << 0;
+  const G15_MASK = 1 << 14 | 1 << 12 | 1 << 10 | 1 << 4 | 1 << 1;
+  const _this = {};
+  const getBCHDigit = function(data) {
+    let digit = 0;
+    while (data != 0) {
+      digit += 1;
+      data >>>= 1;
+    }
+    return digit;
+  };
+  _this.getBCHTypeInfo = function(data) {
+    let d = data << 10;
+    while (getBCHDigit(d) - getBCHDigit(G15) >= 0) {
+      d ^= G15 << getBCHDigit(d) - getBCHDigit(G15);
+    }
+    return (data << 10 | d) ^ G15_MASK;
+  };
+  _this.getBCHTypeNumber = function(data) {
+    let d = data << 12;
+    while (getBCHDigit(d) - getBCHDigit(G18) >= 0) {
+      d ^= G18 << getBCHDigit(d) - getBCHDigit(G18);
+    }
+    return data << 12 | d;
+  };
+  _this.getPatternPosition = function(typeNumber) {
+    return PATTERN_POSITION_TABLE[typeNumber - 1];
+  };
+  _this.getMaskFunction = function(maskPattern) {
+    switch (maskPattern) {
+      case QRMaskPattern.PATTERN000:
+        return function(i, j) {
+          return (i + j) % 2 == 0;
+        };
+      case QRMaskPattern.PATTERN001:
+        return function(i, j) {
+          return i % 2 == 0;
+        };
+      case QRMaskPattern.PATTERN010:
+        return function(i, j) {
+          return j % 3 == 0;
+        };
+      case QRMaskPattern.PATTERN011:
+        return function(i, j) {
+          return (i + j) % 3 == 0;
+        };
+      case QRMaskPattern.PATTERN100:
+        return function(i, j) {
+          return (Math.floor(i / 2) + Math.floor(j / 3)) % 2 == 0;
+        };
+      case QRMaskPattern.PATTERN101:
+        return function(i, j) {
+          return i * j % 2 + i * j % 3 == 0;
+        };
+      case QRMaskPattern.PATTERN110:
+        return function(i, j) {
+          return (i * j % 2 + i * j % 3) % 2 == 0;
+        };
+      case QRMaskPattern.PATTERN111:
+        return function(i, j) {
+          return (i * j % 3 + (i + j) % 2) % 2 == 0;
+        };
+      default:
+        throw "bad maskPattern:" + maskPattern;
+    }
+  };
+  _this.getErrorCorrectPolynomial = function(errorCorrectLength) {
+    let a = qrPolynomial([1], 0);
+    for (let i = 0; i < errorCorrectLength; i += 1) {
+      a = a.multiply(qrPolynomial([1, QRMath.gexp(i)], 0));
+    }
+    return a;
+  };
+  _this.getLengthInBits = function(mode, type) {
+    if (1 <= type && type < 10) {
+      switch (mode) {
+        case QRMode.MODE_NUMBER:
+          return 10;
+        case QRMode.MODE_ALPHA_NUM:
+          return 9;
+        case QRMode.MODE_8BIT_BYTE:
+          return 8;
+        case QRMode.MODE_KANJI:
+          return 8;
+        default:
+          throw "mode:" + mode;
+      }
+    } else if (type < 27) {
+      switch (mode) {
+        case QRMode.MODE_NUMBER:
+          return 12;
+        case QRMode.MODE_ALPHA_NUM:
+          return 11;
+        case QRMode.MODE_8BIT_BYTE:
+          return 16;
+        case QRMode.MODE_KANJI:
+          return 10;
+        default:
+          throw "mode:" + mode;
+      }
+    } else if (type < 41) {
+      switch (mode) {
+        case QRMode.MODE_NUMBER:
+          return 14;
+        case QRMode.MODE_ALPHA_NUM:
+          return 13;
+        case QRMode.MODE_8BIT_BYTE:
+          return 16;
+        case QRMode.MODE_KANJI:
+          return 12;
+        default:
+          throw "mode:" + mode;
+      }
+    } else {
+      throw "type:" + type;
+    }
+  };
+  _this.getLostPoint = function(qrcode2) {
+    const moduleCount = qrcode2.getModuleCount();
+    let lostPoint = 0;
+    for (let row = 0; row < moduleCount; row += 1) {
+      for (let col = 0; col < moduleCount; col += 1) {
+        let sameCount = 0;
+        const dark = qrcode2.isDark(row, col);
+        for (let r = -1; r <= 1; r += 1) {
+          if (row + r < 0 || moduleCount <= row + r) {
+            continue;
+          }
+          for (let c = -1; c <= 1; c += 1) {
+            if (col + c < 0 || moduleCount <= col + c) {
+              continue;
+            }
+            if (r == 0 && c == 0) {
+              continue;
+            }
+            if (dark == qrcode2.isDark(row + r, col + c)) {
+              sameCount += 1;
+            }
+          }
+        }
+        if (sameCount > 5) {
+          lostPoint += 3 + sameCount - 5;
+        }
+      }
+    }
+    ;
+    for (let row = 0; row < moduleCount - 1; row += 1) {
+      for (let col = 0; col < moduleCount - 1; col += 1) {
+        let count = 0;
+        if (qrcode2.isDark(row, col)) count += 1;
+        if (qrcode2.isDark(row + 1, col)) count += 1;
+        if (qrcode2.isDark(row, col + 1)) count += 1;
+        if (qrcode2.isDark(row + 1, col + 1)) count += 1;
+        if (count == 0 || count == 4) {
+          lostPoint += 3;
+        }
+      }
+    }
+    for (let row = 0; row < moduleCount; row += 1) {
+      for (let col = 0; col < moduleCount - 6; col += 1) {
+        if (qrcode2.isDark(row, col) && !qrcode2.isDark(row, col + 1) && qrcode2.isDark(row, col + 2) && qrcode2.isDark(row, col + 3) && qrcode2.isDark(row, col + 4) && !qrcode2.isDark(row, col + 5) && qrcode2.isDark(row, col + 6)) {
+          lostPoint += 40;
+        }
+      }
+    }
+    for (let col = 0; col < moduleCount; col += 1) {
+      for (let row = 0; row < moduleCount - 6; row += 1) {
+        if (qrcode2.isDark(row, col) && !qrcode2.isDark(row + 1, col) && qrcode2.isDark(row + 2, col) && qrcode2.isDark(row + 3, col) && qrcode2.isDark(row + 4, col) && !qrcode2.isDark(row + 5, col) && qrcode2.isDark(row + 6, col)) {
+          lostPoint += 40;
+        }
+      }
+    }
+    let darkCount = 0;
+    for (let col = 0; col < moduleCount; col += 1) {
+      for (let row = 0; row < moduleCount; row += 1) {
+        if (qrcode2.isDark(row, col)) {
+          darkCount += 1;
+        }
+      }
+    }
+    const ratio = Math.abs(100 * darkCount / moduleCount / moduleCount - 50) / 5;
+    lostPoint += ratio * 10;
+    return lostPoint;
+  };
+  return _this;
+})();
+var QRMath = (function() {
+  const EXP_TABLE = new Array(256);
+  const LOG_TABLE = new Array(256);
+  for (let i = 0; i < 8; i += 1) {
+    EXP_TABLE[i] = 1 << i;
+  }
+  for (let i = 8; i < 256; i += 1) {
+    EXP_TABLE[i] = EXP_TABLE[i - 4] ^ EXP_TABLE[i - 5] ^ EXP_TABLE[i - 6] ^ EXP_TABLE[i - 8];
+  }
+  for (let i = 0; i < 255; i += 1) {
+    LOG_TABLE[EXP_TABLE[i]] = i;
+  }
+  const _this = {};
+  _this.glog = function(n) {
+    if (n < 1) {
+      throw "glog(" + n + ")";
+    }
+    return LOG_TABLE[n];
+  };
+  _this.gexp = function(n) {
+    while (n < 0) {
+      n += 255;
+    }
+    while (n >= 256) {
+      n -= 255;
+    }
+    return EXP_TABLE[n];
+  };
+  return _this;
+})();
+var qrPolynomial = function(num, shift) {
+  if (typeof num.length == "undefined") {
+    throw num.length + "/" + shift;
+  }
+  const _num = (function() {
+    let offset = 0;
+    while (offset < num.length && num[offset] == 0) {
+      offset += 1;
+    }
+    const _num2 = new Array(num.length - offset + shift);
+    for (let i = 0; i < num.length - offset; i += 1) {
+      _num2[i] = num[i + offset];
+    }
+    return _num2;
+  })();
+  const _this = {};
+  _this.getAt = function(index) {
+    return _num[index];
+  };
+  _this.getLength = function() {
+    return _num.length;
+  };
+  _this.multiply = function(e) {
+    const num2 = new Array(_this.getLength() + e.getLength() - 1);
+    for (let i = 0; i < _this.getLength(); i += 1) {
+      for (let j = 0; j < e.getLength(); j += 1) {
+        num2[i + j] ^= QRMath.gexp(QRMath.glog(_this.getAt(i)) + QRMath.glog(e.getAt(j)));
+      }
+    }
+    return qrPolynomial(num2, 0);
+  };
+  _this.mod = function(e) {
+    if (_this.getLength() - e.getLength() < 0) {
+      return _this;
+    }
+    const ratio = QRMath.glog(_this.getAt(0)) - QRMath.glog(e.getAt(0));
+    const num2 = new Array(_this.getLength());
+    for (let i = 0; i < _this.getLength(); i += 1) {
+      num2[i] = _this.getAt(i);
+    }
+    for (let i = 0; i < e.getLength(); i += 1) {
+      num2[i] ^= QRMath.gexp(QRMath.glog(e.getAt(i)) + ratio);
+    }
+    return qrPolynomial(num2, 0).mod(e);
+  };
+  return _this;
+};
+var QRRSBlock = (function() {
+  const RS_BLOCK_TABLE = [
+    // L
+    // M
+    // Q
+    // H
+    // 1
+    [1, 26, 19],
+    [1, 26, 16],
+    [1, 26, 13],
+    [1, 26, 9],
+    // 2
+    [1, 44, 34],
+    [1, 44, 28],
+    [1, 44, 22],
+    [1, 44, 16],
+    // 3
+    [1, 70, 55],
+    [1, 70, 44],
+    [2, 35, 17],
+    [2, 35, 13],
+    // 4
+    [1, 100, 80],
+    [2, 50, 32],
+    [2, 50, 24],
+    [4, 25, 9],
+    // 5
+    [1, 134, 108],
+    [2, 67, 43],
+    [2, 33, 15, 2, 34, 16],
+    [2, 33, 11, 2, 34, 12],
+    // 6
+    [2, 86, 68],
+    [4, 43, 27],
+    [4, 43, 19],
+    [4, 43, 15],
+    // 7
+    [2, 98, 78],
+    [4, 49, 31],
+    [2, 32, 14, 4, 33, 15],
+    [4, 39, 13, 1, 40, 14],
+    // 8
+    [2, 121, 97],
+    [2, 60, 38, 2, 61, 39],
+    [4, 40, 18, 2, 41, 19],
+    [4, 40, 14, 2, 41, 15],
+    // 9
+    [2, 146, 116],
+    [3, 58, 36, 2, 59, 37],
+    [4, 36, 16, 4, 37, 17],
+    [4, 36, 12, 4, 37, 13],
+    // 10
+    [2, 86, 68, 2, 87, 69],
+    [4, 69, 43, 1, 70, 44],
+    [6, 43, 19, 2, 44, 20],
+    [6, 43, 15, 2, 44, 16],
+    // 11
+    [4, 101, 81],
+    [1, 80, 50, 4, 81, 51],
+    [4, 50, 22, 4, 51, 23],
+    [3, 36, 12, 8, 37, 13],
+    // 12
+    [2, 116, 92, 2, 117, 93],
+    [6, 58, 36, 2, 59, 37],
+    [4, 46, 20, 6, 47, 21],
+    [7, 42, 14, 4, 43, 15],
+    // 13
+    [4, 133, 107],
+    [8, 59, 37, 1, 60, 38],
+    [8, 44, 20, 4, 45, 21],
+    [12, 33, 11, 4, 34, 12],
+    // 14
+    [3, 145, 115, 1, 146, 116],
+    [4, 64, 40, 5, 65, 41],
+    [11, 36, 16, 5, 37, 17],
+    [11, 36, 12, 5, 37, 13],
+    // 15
+    [5, 109, 87, 1, 110, 88],
+    [5, 65, 41, 5, 66, 42],
+    [5, 54, 24, 7, 55, 25],
+    [11, 36, 12, 7, 37, 13],
+    // 16
+    [5, 122, 98, 1, 123, 99],
+    [7, 73, 45, 3, 74, 46],
+    [15, 43, 19, 2, 44, 20],
+    [3, 45, 15, 13, 46, 16],
+    // 17
+    [1, 135, 107, 5, 136, 108],
+    [10, 74, 46, 1, 75, 47],
+    [1, 50, 22, 15, 51, 23],
+    [2, 42, 14, 17, 43, 15],
+    // 18
+    [5, 150, 120, 1, 151, 121],
+    [9, 69, 43, 4, 70, 44],
+    [17, 50, 22, 1, 51, 23],
+    [2, 42, 14, 19, 43, 15],
+    // 19
+    [3, 141, 113, 4, 142, 114],
+    [3, 70, 44, 11, 71, 45],
+    [17, 47, 21, 4, 48, 22],
+    [9, 39, 13, 16, 40, 14],
+    // 20
+    [3, 135, 107, 5, 136, 108],
+    [3, 67, 41, 13, 68, 42],
+    [15, 54, 24, 5, 55, 25],
+    [15, 43, 15, 10, 44, 16],
+    // 21
+    [4, 144, 116, 4, 145, 117],
+    [17, 68, 42],
+    [17, 50, 22, 6, 51, 23],
+    [19, 46, 16, 6, 47, 17],
+    // 22
+    [2, 139, 111, 7, 140, 112],
+    [17, 74, 46],
+    [7, 54, 24, 16, 55, 25],
+    [34, 37, 13],
+    // 23
+    [4, 151, 121, 5, 152, 122],
+    [4, 75, 47, 14, 76, 48],
+    [11, 54, 24, 14, 55, 25],
+    [16, 45, 15, 14, 46, 16],
+    // 24
+    [6, 147, 117, 4, 148, 118],
+    [6, 73, 45, 14, 74, 46],
+    [11, 54, 24, 16, 55, 25],
+    [30, 46, 16, 2, 47, 17],
+    // 25
+    [8, 132, 106, 4, 133, 107],
+    [8, 75, 47, 13, 76, 48],
+    [7, 54, 24, 22, 55, 25],
+    [22, 45, 15, 13, 46, 16],
+    // 26
+    [10, 142, 114, 2, 143, 115],
+    [19, 74, 46, 4, 75, 47],
+    [28, 50, 22, 6, 51, 23],
+    [33, 46, 16, 4, 47, 17],
+    // 27
+    [8, 152, 122, 4, 153, 123],
+    [22, 73, 45, 3, 74, 46],
+    [8, 53, 23, 26, 54, 24],
+    [12, 45, 15, 28, 46, 16],
+    // 28
+    [3, 147, 117, 10, 148, 118],
+    [3, 73, 45, 23, 74, 46],
+    [4, 54, 24, 31, 55, 25],
+    [11, 45, 15, 31, 46, 16],
+    // 29
+    [7, 146, 116, 7, 147, 117],
+    [21, 73, 45, 7, 74, 46],
+    [1, 53, 23, 37, 54, 24],
+    [19, 45, 15, 26, 46, 16],
+    // 30
+    [5, 145, 115, 10, 146, 116],
+    [19, 75, 47, 10, 76, 48],
+    [15, 54, 24, 25, 55, 25],
+    [23, 45, 15, 25, 46, 16],
+    // 31
+    [13, 145, 115, 3, 146, 116],
+    [2, 74, 46, 29, 75, 47],
+    [42, 54, 24, 1, 55, 25],
+    [23, 45, 15, 28, 46, 16],
+    // 32
+    [17, 145, 115],
+    [10, 74, 46, 23, 75, 47],
+    [10, 54, 24, 35, 55, 25],
+    [19, 45, 15, 35, 46, 16],
+    // 33
+    [17, 145, 115, 1, 146, 116],
+    [14, 74, 46, 21, 75, 47],
+    [29, 54, 24, 19, 55, 25],
+    [11, 45, 15, 46, 46, 16],
+    // 34
+    [13, 145, 115, 6, 146, 116],
+    [14, 74, 46, 23, 75, 47],
+    [44, 54, 24, 7, 55, 25],
+    [59, 46, 16, 1, 47, 17],
+    // 35
+    [12, 151, 121, 7, 152, 122],
+    [12, 75, 47, 26, 76, 48],
+    [39, 54, 24, 14, 55, 25],
+    [22, 45, 15, 41, 46, 16],
+    // 36
+    [6, 151, 121, 14, 152, 122],
+    [6, 75, 47, 34, 76, 48],
+    [46, 54, 24, 10, 55, 25],
+    [2, 45, 15, 64, 46, 16],
+    // 37
+    [17, 152, 122, 4, 153, 123],
+    [29, 74, 46, 14, 75, 47],
+    [49, 54, 24, 10, 55, 25],
+    [24, 45, 15, 46, 46, 16],
+    // 38
+    [4, 152, 122, 18, 153, 123],
+    [13, 74, 46, 32, 75, 47],
+    [48, 54, 24, 14, 55, 25],
+    [42, 45, 15, 32, 46, 16],
+    // 39
+    [20, 147, 117, 4, 148, 118],
+    [40, 75, 47, 7, 76, 48],
+    [43, 54, 24, 22, 55, 25],
+    [10, 45, 15, 67, 46, 16],
+    // 40
+    [19, 148, 118, 6, 149, 119],
+    [18, 75, 47, 31, 76, 48],
+    [34, 54, 24, 34, 55, 25],
+    [20, 45, 15, 61, 46, 16]
+  ];
+  const qrRSBlock = function(totalCount, dataCount) {
+    const _this2 = {};
+    _this2.totalCount = totalCount;
+    _this2.dataCount = dataCount;
+    return _this2;
+  };
+  const _this = {};
+  const getRsBlockTable = function(typeNumber, errorCorrectionLevel) {
+    switch (errorCorrectionLevel) {
+      case QRErrorCorrectionLevel.L:
+        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 0];
+      case QRErrorCorrectionLevel.M:
+        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 1];
+      case QRErrorCorrectionLevel.Q:
+        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 2];
+      case QRErrorCorrectionLevel.H:
+        return RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 3];
+      default:
+        return void 0;
+    }
+  };
+  _this.getRSBlocks = function(typeNumber, errorCorrectionLevel) {
+    const rsBlock = getRsBlockTable(typeNumber, errorCorrectionLevel);
+    if (typeof rsBlock == "undefined") {
+      throw "bad rs block @ typeNumber:" + typeNumber + "/errorCorrectionLevel:" + errorCorrectionLevel;
+    }
+    const length = rsBlock.length / 3;
+    const list = [];
+    for (let i = 0; i < length; i += 1) {
+      const count = rsBlock[i * 3 + 0];
+      const totalCount = rsBlock[i * 3 + 1];
+      const dataCount = rsBlock[i * 3 + 2];
+      for (let j = 0; j < count; j += 1) {
+        list.push(qrRSBlock(totalCount, dataCount));
+      }
+    }
+    return list;
+  };
+  return _this;
+})();
+var qrBitBuffer = function() {
+  const _buffer = [];
+  let _length = 0;
+  const _this = {};
+  _this.getBuffer = function() {
+    return _buffer;
+  };
+  _this.getAt = function(index) {
+    const bufIndex = Math.floor(index / 8);
+    return (_buffer[bufIndex] >>> 7 - index % 8 & 1) == 1;
+  };
+  _this.put = function(num, length) {
+    for (let i = 0; i < length; i += 1) {
+      _this.putBit((num >>> length - i - 1 & 1) == 1);
+    }
+  };
+  _this.getLengthInBits = function() {
+    return _length;
+  };
+  _this.putBit = function(bit) {
+    const bufIndex = Math.floor(_length / 8);
+    if (_buffer.length <= bufIndex) {
+      _buffer.push(0);
+    }
+    if (bit) {
+      _buffer[bufIndex] |= 128 >>> _length % 8;
+    }
+    _length += 1;
+  };
+  return _this;
+};
+var qrNumber = function(data) {
+  const _mode = QRMode.MODE_NUMBER;
+  const _data = data;
+  const _this = {};
+  _this.getMode = function() {
+    return _mode;
+  };
+  _this.getLength = function(buffer) {
+    return _data.length;
+  };
+  _this.write = function(buffer) {
+    const data2 = _data;
+    let i = 0;
+    while (i + 2 < data2.length) {
+      buffer.put(strToNum(data2.substring(i, i + 3)), 10);
+      i += 3;
+    }
+    if (i < data2.length) {
+      if (data2.length - i == 1) {
+        buffer.put(strToNum(data2.substring(i, i + 1)), 4);
+      } else if (data2.length - i == 2) {
+        buffer.put(strToNum(data2.substring(i, i + 2)), 7);
+      }
+    }
+  };
+  const strToNum = function(s) {
+    let num = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      num = num * 10 + chatToNum(s.charAt(i));
+    }
+    return num;
+  };
+  const chatToNum = function(c) {
+    if ("0" <= c && c <= "9") {
+      return c.charCodeAt(0) - "0".charCodeAt(0);
+    }
+    throw "illegal char :" + c;
+  };
+  return _this;
+};
+var qrAlphaNum = function(data) {
+  const _mode = QRMode.MODE_ALPHA_NUM;
+  const _data = data;
+  const _this = {};
+  _this.getMode = function() {
+    return _mode;
+  };
+  _this.getLength = function(buffer) {
+    return _data.length;
+  };
+  _this.write = function(buffer) {
+    const s = _data;
+    let i = 0;
+    while (i + 1 < s.length) {
+      buffer.put(
+        getCode(s.charAt(i)) * 45 + getCode(s.charAt(i + 1)),
+        11
+      );
+      i += 2;
+    }
+    if (i < s.length) {
+      buffer.put(getCode(s.charAt(i)), 6);
+    }
+  };
+  const getCode = function(c) {
+    if ("0" <= c && c <= "9") {
+      return c.charCodeAt(0) - "0".charCodeAt(0);
+    } else if ("A" <= c && c <= "Z") {
+      return c.charCodeAt(0) - "A".charCodeAt(0) + 10;
+    } else {
+      switch (c) {
+        case " ":
+          return 36;
+        case "$":
+          return 37;
+        case "%":
+          return 38;
+        case "*":
+          return 39;
+        case "+":
+          return 40;
+        case "-":
+          return 41;
+        case ".":
+          return 42;
+        case "/":
+          return 43;
+        case ":":
+          return 44;
+        default:
+          throw "illegal char :" + c;
+      }
+    }
+  };
+  return _this;
+};
+var qr8BitByte = function(data) {
+  const _mode = QRMode.MODE_8BIT_BYTE;
+  const _data = data;
+  const _bytes = qrcode.stringToBytes(data);
+  const _this = {};
+  _this.getMode = function() {
+    return _mode;
+  };
+  _this.getLength = function(buffer) {
+    return _bytes.length;
+  };
+  _this.write = function(buffer) {
+    for (let i = 0; i < _bytes.length; i += 1) {
+      buffer.put(_bytes[i], 8);
+    }
+  };
+  return _this;
+};
+var qrKanji = function(data) {
+  const _mode = QRMode.MODE_KANJI;
+  const _data = data;
+  const stringToBytes2 = qrcode.stringToBytes;
+  !(function(c, code) {
+    const test = stringToBytes2(c);
+    if (test.length != 2 || (test[0] << 8 | test[1]) != code) {
+      throw "sjis not supported.";
+    }
+  })("\u53CB", 38726);
+  const _bytes = stringToBytes2(data);
+  const _this = {};
+  _this.getMode = function() {
+    return _mode;
+  };
+  _this.getLength = function(buffer) {
+    return ~~(_bytes.length / 2);
+  };
+  _this.write = function(buffer) {
+    const data2 = _bytes;
+    let i = 0;
+    while (i + 1 < data2.length) {
+      let c = (255 & data2[i]) << 8 | 255 & data2[i + 1];
+      if (33088 <= c && c <= 40956) {
+        c -= 33088;
+      } else if (57408 <= c && c <= 60351) {
+        c -= 49472;
+      } else {
+        throw "illegal char at " + (i + 1) + "/" + c;
+      }
+      c = (c >>> 8 & 255) * 192 + (c & 255);
+      buffer.put(c, 13);
+      i += 2;
+    }
+    if (i < data2.length) {
+      throw "illegal char at " + (i + 1);
+    }
+  };
+  return _this;
+};
+var byteArrayOutputStream = function() {
+  const _bytes = [];
+  const _this = {};
+  _this.writeByte = function(b) {
+    _bytes.push(b & 255);
+  };
+  _this.writeShort = function(i) {
+    _this.writeByte(i);
+    _this.writeByte(i >>> 8);
+  };
+  _this.writeBytes = function(b, off, len) {
+    off = off || 0;
+    len = len || b.length;
+    for (let i = 0; i < len; i += 1) {
+      _this.writeByte(b[i + off]);
+    }
+  };
+  _this.writeString = function(s) {
+    for (let i = 0; i < s.length; i += 1) {
+      _this.writeByte(s.charCodeAt(i));
+    }
+  };
+  _this.toByteArray = function() {
+    return _bytes;
+  };
+  _this.toString = function() {
+    let s = "";
+    s += "[";
+    for (let i = 0; i < _bytes.length; i += 1) {
+      if (i > 0) {
+        s += ",";
+      }
+      s += _bytes[i];
+    }
+    s += "]";
+    return s;
+  };
+  return _this;
+};
+var base64EncodeOutputStream = function() {
+  let _buffer = 0;
+  let _buflen = 0;
+  let _length = 0;
+  let _base64 = "";
+  const _this = {};
+  const writeEncoded = function(b) {
+    _base64 += String.fromCharCode(encode(b & 63));
+  };
+  const encode = function(n) {
+    if (n < 0) {
+      throw "n:" + n;
+    } else if (n < 26) {
+      return 65 + n;
+    } else if (n < 52) {
+      return 97 + (n - 26);
+    } else if (n < 62) {
+      return 48 + (n - 52);
+    } else if (n == 62) {
+      return 43;
+    } else if (n == 63) {
+      return 47;
+    } else {
+      throw "n:" + n;
+    }
+  };
+  _this.writeByte = function(n) {
+    _buffer = _buffer << 8 | n & 255;
+    _buflen += 8;
+    _length += 1;
+    while (_buflen >= 6) {
+      writeEncoded(_buffer >>> _buflen - 6);
+      _buflen -= 6;
+    }
+  };
+  _this.flush = function() {
+    if (_buflen > 0) {
+      writeEncoded(_buffer << 6 - _buflen);
+      _buffer = 0;
+      _buflen = 0;
+    }
+    if (_length % 3 != 0) {
+      const padlen = 3 - _length % 3;
+      for (let i = 0; i < padlen; i += 1) {
+        _base64 += "=";
+      }
+    }
+  };
+  _this.toString = function() {
+    return _base64;
+  };
+  return _this;
+};
+var base64DecodeInputStream = function(str) {
+  const _str = str;
+  let _pos = 0;
+  let _buffer = 0;
+  let _buflen = 0;
+  const _this = {};
+  _this.read = function() {
+    while (_buflen < 8) {
+      if (_pos >= _str.length) {
+        if (_buflen == 0) {
+          return -1;
+        }
+        throw "unexpected end of file./" + _buflen;
+      }
+      const c = _str.charAt(_pos);
+      _pos += 1;
+      if (c == "=") {
+        _buflen = 0;
+        return -1;
+      } else if (c.match(/^\s$/)) {
+        continue;
+      }
+      _buffer = _buffer << 6 | decode(c.charCodeAt(0));
+      _buflen += 6;
+    }
+    const n = _buffer >>> _buflen - 8 & 255;
+    _buflen -= 8;
+    return n;
+  };
+  const decode = function(c) {
+    if (65 <= c && c <= 90) {
+      return c - 65;
+    } else if (97 <= c && c <= 122) {
+      return c - 97 + 26;
+    } else if (48 <= c && c <= 57) {
+      return c - 48 + 52;
+    } else if (c == 43) {
+      return 62;
+    } else if (c == 47) {
+      return 63;
+    } else {
+      throw "c:" + c;
+    }
+  };
+  return _this;
+};
+var gifImage = function(width, height) {
+  const _width = width;
+  const _height = height;
+  const _data = new Array(width * height);
+  const _this = {};
+  _this.setPixel = function(x, y, pixel) {
+    _data[y * _width + x] = pixel;
+  };
+  _this.write = function(out) {
+    out.writeString("GIF87a");
+    out.writeShort(_width);
+    out.writeShort(_height);
+    out.writeByte(128);
+    out.writeByte(0);
+    out.writeByte(0);
+    out.writeByte(0);
+    out.writeByte(0);
+    out.writeByte(0);
+    out.writeByte(255);
+    out.writeByte(255);
+    out.writeByte(255);
+    out.writeString(",");
+    out.writeShort(0);
+    out.writeShort(0);
+    out.writeShort(_width);
+    out.writeShort(_height);
+    out.writeByte(0);
+    const lzwMinCodeSize = 2;
+    const raster = getLZWRaster(lzwMinCodeSize);
+    out.writeByte(lzwMinCodeSize);
+    let offset = 0;
+    while (raster.length - offset > 255) {
+      out.writeByte(255);
+      out.writeBytes(raster, offset, 255);
+      offset += 255;
+    }
+    out.writeByte(raster.length - offset);
+    out.writeBytes(raster, offset, raster.length - offset);
+    out.writeByte(0);
+    out.writeString(";");
+  };
+  const bitOutputStream = function(out) {
+    const _out = out;
+    let _bitLength = 0;
+    let _bitBuffer = 0;
+    const _this2 = {};
+    _this2.write = function(data, length) {
+      if (data >>> length != 0) {
+        throw "length over";
+      }
+      while (_bitLength + length >= 8) {
+        _out.writeByte(255 & (data << _bitLength | _bitBuffer));
+        length -= 8 - _bitLength;
+        data >>>= 8 - _bitLength;
+        _bitBuffer = 0;
+        _bitLength = 0;
+      }
+      _bitBuffer = data << _bitLength | _bitBuffer;
+      _bitLength = _bitLength + length;
+    };
+    _this2.flush = function() {
+      if (_bitLength > 0) {
+        _out.writeByte(_bitBuffer);
+      }
+    };
+    return _this2;
+  };
+  const getLZWRaster = function(lzwMinCodeSize) {
+    const clearCode = 1 << lzwMinCodeSize;
+    const endCode = (1 << lzwMinCodeSize) + 1;
+    let bitLength = lzwMinCodeSize + 1;
+    const table = lzwTable();
+    for (let i = 0; i < clearCode; i += 1) {
+      table.add(String.fromCharCode(i));
+    }
+    table.add(String.fromCharCode(clearCode));
+    table.add(String.fromCharCode(endCode));
+    const byteOut = byteArrayOutputStream();
+    const bitOut = bitOutputStream(byteOut);
+    bitOut.write(clearCode, bitLength);
+    let dataIndex = 0;
+    let s = String.fromCharCode(_data[dataIndex]);
+    dataIndex += 1;
+    while (dataIndex < _data.length) {
+      const c = String.fromCharCode(_data[dataIndex]);
+      dataIndex += 1;
+      if (table.contains(s + c)) {
+        s = s + c;
+      } else {
+        bitOut.write(table.indexOf(s), bitLength);
+        if (table.size() < 4095) {
+          if (table.size() == 1 << bitLength) {
+            bitLength += 1;
+          }
+          table.add(s + c);
+        }
+        s = c;
+      }
+    }
+    bitOut.write(table.indexOf(s), bitLength);
+    bitOut.write(endCode, bitLength);
+    bitOut.flush();
+    return byteOut.toByteArray();
+  };
+  const lzwTable = function() {
+    const _map = {};
+    let _size = 0;
+    const _this2 = {};
+    _this2.add = function(key) {
+      if (_this2.contains(key)) {
+        throw "dup key:" + key;
+      }
+      _map[key] = _size;
+      _size += 1;
+    };
+    _this2.size = function() {
+      return _size;
+    };
+    _this2.indexOf = function(key) {
+      return _map[key];
+    };
+    _this2.contains = function(key) {
+      return typeof _map[key] != "undefined";
+    };
+    return _this2;
+  };
+  return _this;
+};
+var createDataURL = function(width, height, getPixel) {
+  const gif = gifImage(width, height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      gif.setPixel(x, y, getPixel(x, y));
+    }
+  }
+  const b = byteArrayOutputStream();
+  gif.write(b);
+  const base64 = base64EncodeOutputStream();
+  const bytes = b.toByteArray();
+  for (let i = 0; i < bytes.length; i += 1) {
+    base64.writeByte(bytes[i]);
+  }
+  base64.flush();
+  return "data:image/gif;base64," + base64;
+};
+var qrcode_generator_default = qrcode;
+var stringToBytes = qrcode.stringToBytes;
+
+// server/qrcode.js
+function qrSvg(text, { cellSize = 5, margin = 2, ecc = "M" } = {}) {
+  const qr = qrcode_generator_default(0, ecc);
+  qr.addData(String(text || ""));
+  qr.make();
+  return qr.createSvgTag({ cellSize, margin, scalable: true });
+}
+
+// server/selforder.js
+init_db();
+var STAFF_BOOST_MS = 3 * 60 * 1e3;
+var STARVE_MS = 10 * 60 * 1e3;
+var ETA_MAX_MIN = 45;
+var RATE_WINDOW_MIN = 20;
+function tsEffettivo(c, nowMs) {
+  const base = Date.parse(c.created_at || "") || 0;
+  let eff = base - (c.canale === "staff" ? STAFF_BOOST_MS : 0);
+  if (c.canale !== "staff") {
+    const wait = nowMs - base;
+    if (wait > STARVE_MS) eff -= wait - STARVE_MS;
+  }
+  return eff;
+}
+function ordinaCoda(rows) {
+  const now = Date.now();
+  return rows.slice().sort((a, b) => tsEffettivo(a, now) - tsEffettivo(b, now) || a.id - b.id);
+}
+async function getConfig() {
+  const g = async (k, d) => await getSetting(k, d);
+  return {
+    aperto: await g("self_order_aperto", "1") !== "0",
+    // interruttore manuale (master)
+    eta_modo: await g("so_eta_modo", "statico"),
+    // statico | tempo
+    eta_base: Number(await g("so_eta_base", "3")) || 3,
+    // minuti base (modalità statica)
+    eta_per_item: Number(await g("so_eta_per_item", "2")) || 2,
+    // minuti per articolo (modalità statica)
+    press_modo: await g("so_press_modo", "statico"),
+    // statico | tempo
+    press_max_comande: Number(await g("so_press_max_comande", "6")) || 6,
+    // soglia (modalità statica): comande da smaltire
+    press_max_minuti: Number(await g("so_press_max_minuti", "10")) || 10,
+    // soglia (modalità tempo): attesa massima ammessa
+    press_auto: await g("so_press_auto", "0") === "1",
+    // se on: sotto pressione sospende in automatico; se off: solo avviso
+    // Mappa tavoli (Bussola Garden): numero di tavoli e soglie di colore (minuti di attesa) per box.
+    garden_tavoli: Math.max(1, Number(await g("garden_tavoli", "12")) || 12),
+    map_giallo_min: Number(await g("map_giallo_min", "5")) || 5,
+    // oltre → giallo
+    map_rosso_min: Number(await g("map_rosso_min", "10")) || 10
+    // oltre → rosso
+  };
+}
+async function setConfig(patch) {
+  const map = {
+    eta_modo: "so_eta_modo",
+    eta_base: "so_eta_base",
+    eta_per_item: "so_eta_per_item",
+    press_modo: "so_press_modo",
+    press_max_comande: "so_press_max_comande",
+    press_max_minuti: "so_press_max_minuti",
+    press_auto: "so_press_auto",
+    garden_tavoli: "garden_tavoli",
+    map_giallo_min: "map_giallo_min",
+    map_rosso_min: "map_rosso_min"
+  };
+  for (const [k, key] of Object.entries(map)) {
+    if (patch[k] === void 0) continue;
+    let v = patch[k];
+    if (k === "press_auto") v = v ? "1" : "0";
+    await setSetting(key, String(v));
+  }
+}
+async function pendingItems() {
+  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.stato IN ('aperta','in_preparazione') AND cr.stato='in_coda'").get();
+  return Number(r.n || 0);
+}
+async function activeOrders() {
+  const r = await db.prepare("SELECT COUNT(*) n FROM comande WHERE stato IN ('aperta','in_preparazione')").get();
+  return Number(r.n || 0);
+}
+async function serviceRatePerMin() {
+  const since = new Date(Date.now() - RATE_WINDOW_MIN * 60 * 1e3).toISOString();
+  const r = await db.prepare("SELECT COALESCE(SUM(cr.qta),0) n FROM comanda_righe cr JOIN comande c ON c.id=cr.comanda_id WHERE c.pronta_at IS NOT NULL AND c.pronta_at >= ?").get(since);
+  const done = Number(r.n || 0);
+  return done > 0 ? done / RATE_WINDOW_MIN : 0;
+}
+async function etaMin(cfg) {
+  cfg = cfg || await getConfig();
+  const pending = await pendingItems();
+  if (cfg.eta_modo === "tempo") {
+    const rate = await serviceRatePerMin();
+    if (rate > 0) return Math.max(1, Math.min(ETA_MAX_MIN, Math.ceil(pending / rate)));
+  }
+  return Math.min(ETA_MAX_MIN, cfg.eta_base + pending * cfg.eta_per_item);
+}
+async function pressione(cfg) {
+  cfg = cfg || await getConfig();
+  if (cfg.press_modo === "tempo") return await etaMin(cfg) > cfg.press_max_minuti;
+  return await activeOrders() >= cfg.press_max_comande;
+}
+async function statoCompleto() {
+  const cfg = await getConfig();
+  const eta = await etaMin(cfg);
+  const press = await pressione(cfg);
+  const attive = await activeOrders();
+  const sospeso_pressione = cfg.aperto && cfg.press_auto && press;
+  const ordinabile = cfg.aperto && !sospeso_pressione;
+  return {
+    aperto: cfg.aperto,
+    ordinabile,
+    sospeso_pressione,
+    pressione: press,
+    eta_min: eta,
+    attive,
+    config: cfg
+  };
+}
+async function setSelfOrderAperto(v) {
+  await setSetting("self_order_aperto", v ? "1" : "0");
+}
+
+// server/routes/admin.js
+init_tournament();
+function menuZona(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
+}
+async function segnaPronta(comandaId) {
+  await db.prepare("UPDATE comande SET pronta_at=? WHERE id=? AND pronta_at IS NULL").run((/* @__PURE__ */ new Date()).toISOString(), comandaId);
+}
+async function avvisaProntoSeSelf(comandaId, prev) {
+  if (prev === "pronta") return;
+  const c = await db.prepare("SELECT id,numero,canale,socio_id,punto FROM comande WHERE id=? AND stato=?").get(comandaId, "pronta");
+  if (!c || c.canale !== "self" || !c.socio_id) return;
+  const titolo = "Il tuo ordine \xE8 pronto \u{1F6CE}";
+  const corpo = `Ordine #${c.numero}${c.punto ? " \xB7 " + c.punto : ""}: ritira e paga in cassa.`;
+  try {
+    await db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(c.socio_id, "push", "sistema", titolo, corpo);
+  } catch (_) {
+  }
+  try {
+    await sendToSocio(c.socio_id, { title: titolo, body: corpo, url: "/", tag: "ordine-pronto" });
+  } catch (_) {
+  }
+}
+var adminRouter = asyncify(Router());
+adminRouter.post("/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  const u = await db.prepare("SELECT * FROM utenti_admin WHERE username=?").get(username || "");
+  if (!u || !verifyPassword(password || "", u.password_hash)) {
+    audit(username || "?", "login_fallito", "utenti_admin", u?.id ?? "");
+    return res.status(401).json({ error: "Credenziali non valide" });
+  }
+  const token = await createSession(u);
+  audit(u.username, "login", "utenti_admin", u.id);
+  res.json({ token, user: { username: u.username, ruolo: u.ruolo } });
+});
+adminRouter.post("/logout", requireAdmin, async (req, res) => {
+  const token = (req.headers.authorization || "").slice(7);
+  await destroySession(token);
+  res.json({ ok: true });
+});
+adminRouter.use(requireAdmin);
+adminRouter.use((req, res, next) => {
+  if (req.adminUser.ruolo === "sola_lettura" && !["GET", "HEAD"].includes(req.method) && req.path !== "/logout")
+    return res.status(403).json({ error: "Account in sola lettura" });
+  next();
+});
+adminRouter.get("/me", (req, res) => res.json({ user: { username: req.adminUser.username, ruolo: req.adminUser.ruolo }, ...capsInfo(req.adminUser) }));
+adminRouter.get("/operatori", requireCap("operatori"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,username,ruolo,permessi,created_at FROM utenti_admin ORDER BY id").all();
+  res.json({ operatori: rows.map((r) => ({ ...r, permessi: parsePermessi(r.permessi) })), caps_delegabili: CAPS_DELEGABILI });
+});
+adminRouter.post("/operatori", requireCap("operatori"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.username || !b.password) return res.status(400).json({ error: "Username e password obbligatori" });
+  const ruolo = ["manager", "staff", "sola_lettura"].includes(b.ruolo) ? b.ruolo : "staff";
+  const permessi = ruolo === "staff" ? JSON.stringify((Array.isArray(b.permessi) ? b.permessi : []).filter((c) => CAPS_DELEGABILI.includes(c))) : null;
+  try {
+    const info = await db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)").run(b.username, hashPassword(b.password), ruolo, permessi);
+    audit(req.adminUser.username, "crea", "operatori", info.lastInsertRowid, `${b.username} \xB7 ${ruolo}`);
+    res.status(201).json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: "Username gi\xE0 esistente" });
+  }
+});
+adminRouter.put("/operatori/:id", requireCap("operatori"), async (req, res) => {
+  const b = req.body || {};
+  const u = await db.prepare("SELECT username,ruolo FROM utenti_admin WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ error: "Operatore non trovato" });
+  if (u.ruolo === "gestore") return res.status(400).json({ error: "Il gestore non \xE8 modificabile da qui (password via ADMIN_PASSWORD)" });
+  const ruolo = ["manager", "staff", "sola_lettura"].includes(b.ruolo) ? b.ruolo : u.ruolo;
+  const permessi = ruolo === "staff" ? JSON.stringify((Array.isArray(b.permessi) ? b.permessi : []).filter((c) => CAPS_DELEGABILI.includes(c))) : null;
+  await db.prepare("UPDATE utenti_admin SET ruolo=?,permessi=? WHERE id=?").run(ruolo, permessi, req.params.id);
+  if (b.password) await db.prepare("UPDATE utenti_admin SET password_hash=? WHERE id=?").run(hashPassword(b.password), req.params.id);
+  audit(req.adminUser.username, "modifica", "operatori", req.params.id, ruolo);
+  res.json({ ok: true });
+});
+adminRouter.delete("/operatori/:id", requireCap("operatori"), async (req, res) => {
+  const u = await db.prepare("SELECT username,ruolo FROM utenti_admin WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ error: "Operatore non trovato" });
+  if (u.ruolo === "gestore") return res.status(400).json({ error: "Il gestore non \xE8 eliminabile" });
+  await db.prepare("DELETE FROM utenti_admin WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "operatori", req.params.id, u.username);
+  res.json({ ok: true });
+});
+adminRouter.get("/stats", async (req, res) => {
+  const one = async (q) => (await db.prepare(q).get()).n;
+  res.json({
+    soci: await one("SELECT count(*) n FROM soci WHERE attivo=1"),
+    soci_marketing: await one("SELECT count(*) n FROM soci WHERE consenso_marketing=1"),
+    prenotazioni: await one("SELECT count(*) n FROM prenotazioni"),
+    prenotazioni_oggi: await one("SELECT count(*) n FROM prenotazioni WHERE date(created_at)=date('now')"),
+    proposte: await one("SELECT count(*) n FROM proposte WHERE stato='ricevuta'"),
+    convocazioni_aperte: await one("SELECT count(*) n FROM convocazioni WHERE stato='aperta'"),
+    per_casata: await db.prepare(`SELECT c.nome,c.colore,c.punti,count(s.id) soci
+                            FROM casate c LEFT JOIN soci s ON s.casata_id=c.id AND s.attivo=1
+                            GROUP BY c.id ORDER BY c.punti DESC`).all()
+  });
+});
+adminRouter.get("/soci", async (req, res) => {
+  const q = `%${(req.query.q || "").toString()}%`;
+  const rows = await db.prepare(`SELECT s.*, c.nome AS casata_nome FROM soci s LEFT JOIN casate c ON c.id=s.casata_id
+    WHERE s.nome LIKE ? OR s.cognome LIKE ? OR s.email LIKE ? OR s.tessera_code LIKE ?
+    ORDER BY s.created_at DESC`).all(q, q, q, q);
+  res.json(rows);
+});
+adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
+  const tipo = b.tipo_profilo ?? "socio";
+  const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
+  const cols = ["tessera_code", "nome", "cognome", "email", "telefono", "data_nascita", "casata_id", "ruolo", "tipo_profilo", "tutore_id", "lingua", "consenso_privacy", "consenso_marketing", "consenso_foto", "notifiche_push", "valida_fino", "soggiorno_dal", "soggiorno_al"];
+  const vals = [
+    b.tessera_code || "",
+    b.nome,
+    b.cognome,
+    b.email ?? null,
+    b.telefono ?? null,
+    b.data_nascita ?? null,
+    b.casata_id ?? null,
+    ruolo,
+    tipo,
+    b.tutore_id ?? null,
+    b.lingua ?? "it",
+    b.consenso_privacy ? 1 : 0,
+    b.consenso_marketing ? 1 : 0,
+    b.consenso_foto ? 1 : 0,
+    b.notifiche_push ? 1 : 0,
+    b.valida_fino ?? null,
+    b.soggiorno_dal ?? null,
+    b.soggiorno_al ?? null
+  ];
+  try {
+    let code, info;
+    if (b.tessera_code) {
+      info = await db.prepare(`INSERT INTO soci (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...vals);
+      code = b.tessera_code;
+    } else {
+      const r = await insertSocioUnique(cols, vals);
+      code = r.tessera_code;
+      info = { lastInsertRowid: r.id };
+    }
+    audit(req.adminUser.username, "crea", "soci", info.lastInsertRowid, code);
+    res.status(201).json({ ok: true, id: info.lastInsertRowid, tessera_code: code });
+  } catch (e) {
+    res.status(400).json({ error: "Tessera duplicata o dati non validi" });
+  }
+});
+adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
+  const b = req.body || {};
+  const exists = await db.prepare("SELECT id FROM soci WHERE id=?").get(req.params.id);
+  if (!exists) return res.status(404).json({ error: "Socio non trovato" });
+  const tipo = b.tipo_profilo ?? "socio";
+  const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
+  await db.prepare(`UPDATE soci SET nome=?,cognome=?,email=?,telefono=?,data_nascita=?,casata_id=?,ruolo=?,tipo_profilo=?,tutore_id=?,lingua=?,
+    consenso_privacy=?,consenso_marketing=?,consenso_foto=?,notifiche_push=?,attivo=?,valida_fino=?,soggiorno_dal=?,soggiorno_al=? WHERE id=?`).run(
+    b.nome,
+    b.cognome,
+    b.email ?? null,
+    b.telefono ?? null,
+    b.data_nascita ?? null,
+    b.casata_id ?? null,
+    ruolo,
+    tipo,
+    b.tutore_id ?? null,
+    b.lingua ?? "it",
+    b.consenso_privacy ? 1 : 0,
+    b.consenso_marketing ? 1 : 0,
+    b.consenso_foto ? 1 : 0,
+    b.notifiche_push ? 1 : 0,
+    b.attivo ? 1 : 0,
+    b.valida_fino ?? null,
+    b.soggiorno_dal ?? null,
+    b.soggiorno_al ?? null,
+    req.params.id
+  );
+  if (!["residente", "socio_residente"].includes(tipo)) await db.prepare("UPDATE soci SET host=0, host_ko=0 WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "modifica", "soci", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/soci/:id/export", requireCap("utenti"), async (req, res) => {
+  const s = await db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Socio non trovato" });
+  const prenotazioni = await db.prepare("SELECT * FROM prenotazioni WHERE socio_id=?").all(req.params.id);
+  const convocazioni = await db.prepare("SELECT * FROM convocazioni WHERE socio_id=?").all(req.params.id);
+  const proposte = await db.prepare("SELECT * FROM proposte WHERE socio_id=?").all(req.params.id);
+  audit(req.adminUser.username, "export_gdpr", "soci", req.params.id);
+  res.json({ socio: s, prenotazioni, convocazioni, proposte });
+});
+adminRouter.delete("/soci/:id", requireCap("utenti_del"), async (req, res) => {
+  const id = req.params.id;
+  const s = await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(id);
+  if (!s) return res.status(404).json({ error: "Socio non trovato" });
+  await db.prepare("DELETE FROM convocazioni WHERE socio_id=?").run(id);
+  await db.prepare("DELETE FROM prenotazioni WHERE socio_id=?").run(id);
+  await db.prepare("DELETE FROM notifiche WHERE socio_id=?").run(id);
+  await db.prepare("UPDATE proposte SET socio_id=NULL WHERE socio_id=?").run(id);
+  await db.prepare("UPDATE serate_prenotazioni SET socio_id=NULL WHERE socio_id=?").run(id);
+  await db.prepare("DELETE FROM soci WHERE tutore_id=?").run(id);
+  await db.prepare("DELETE FROM soci WHERE id=?").run(id);
+  audit(req.adminUser.username, "cancella_gdpr", "soci", id, s.tessera_code);
+  res.json({ ok: true });
+});
+adminRouter.put("/casate/:id/punti", requireCap("casate"), async (req, res) => {
+  const { punti } = req.body || {};
+  await db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
+  audit(req.adminUser.username, "punti", "casate", req.params.id, String(punti));
+  res.json({ ok: true });
+});
+adminRouter.get("/eventi", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
+});
+adminRouter.put("/eventi/:id", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,serata_id=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.attivo ? 1 : 0, req.params.id);
+  audit(req.adminUser.username, "modifica", "eventi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/eventi", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM eventi").get()).n;
+  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,serata_id,tipo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.tipo ?? "serata", ord);
+  audit(req.adminUser.username, "crea", "eventi", info.lastInsertRowid, b.titolo);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.delete("/eventi/:id", requireCap("eventi"), async (req, res) => {
+  await db.prepare("DELETE FROM eventi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "elimina", "eventi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/push/stato", async (req, res) => {
+  const n = (await db.prepare("SELECT COUNT(DISTINCT socio_id) n FROM push_sub").get()).n;
+  const consenzienti = (await db.prepare("SELECT COUNT(*) n FROM soci WHERE notifiche_push=1 AND attivo=1").get()).n;
+  res.json({ enabled: pushEnabled(), dispositivi: n, consenzienti });
+});
+adminRouter.post("/push/broadcast", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  const titolo = String(b.titolo || "").trim();
+  const corpo = String(b.corpo || "").trim();
+  if (!titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const dove = b.casata_id ? "AND casata_id=?" : "";
+  const args = b.casata_id ? [Number(b.casata_id)] : [];
+  const soci = await db.prepare(`SELECT id FROM soci WHERE notifiche_push=1 AND attivo=1 ${dove}`).all(...args);
+  const ids = soci.map((s) => s.id);
+  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+  for (const id of ids) {
+    await insN.run(id, "push", "sistema", titolo, corpo || null);
+  }
+  let inviati = 0;
+  try {
+    inviati = await sendToSoci(ids, { title: titolo, body: corpo, url: "/", tag: "avviso" });
+  } catch (_) {
+  }
+  audit(req.adminUser.username, "push_broadcast", "soci", b.casata_id || "tutti", `${ids.length} destinatari, ${inviati} push`);
+  res.json({ ok: true, destinatari: ids.length, inviati, enabled: pushEnabled() });
+});
+adminRouter.get("/prenotazioni", async (req, res) => {
+  res.json(await db.prepare(`SELECT p.*, s.nome, s.cognome, s.tessera_code FROM prenotazioni p
+    LEFT JOIN soci s ON s.id=p.socio_id ORDER BY p.created_at DESC LIMIT 200`).all());
+});
+adminRouter.post("/convocazioni", requireCap("tabellone"), async (req, res) => {
+  const { disciplina_chiave, dominio, casata_id, match_label, quando, luogo } = req.body || {};
+  const disc = await db.prepare("SELECT id FROM discipline WHERE chiave=? AND dominio=?").get(disciplina_chiave, dominio || "sport");
+  if (!disc) return res.status(400).json({ error: "Disciplina non trovata" });
+  const soci = await db.prepare("SELECT id,notifiche_push FROM soci WHERE casata_id=? AND attivo=1").all(casata_id);
+  const ins = db.prepare("INSERT INTO convocazioni (socio_id,disciplina_id,match_label,quando,luogo) VALUES (?,?,?,?,?)");
+  const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+  let notificati = 0;
+  for (const s of soci) {
+    await ins.run(s.id, disc.id, match_label ?? "", quando ?? "", luogo ?? "");
+    if (s.notifiche_push) {
+      await insN.run(s.id, "push", "casata", "La tua casata ti convoca", `${match_label || ""} \xB7 ${quando || ""} ${luogo || ""}`.trim());
+      notificati++;
+    }
+  }
+  audit(req.adminUser.username, "convoca", "convocazioni", casata_id, `${soci.length} soci \xB7 ${notificati} notificati`);
+  res.status(201).json({ ok: true, convocati: soci.length, notificati });
+});
+adminRouter.get("/proposte", async (req, res) => {
+  res.json(await db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
+    LEFT JOIN soci s ON s.id=pr.socio_id ORDER BY pr.created_at DESC`).all());
+});
+adminRouter.put("/proposte/:id", requireCap("proposte"), async (req, res) => {
+  const { stato } = req.body || {};
+  await db.prepare("UPDATE proposte SET stato=? WHERE id=?").run(stato || "ricevuta", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/bussola", requireCap("guida"), async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM bussola ORDER BY sezione,ordine").all());
+});
+adminRouter.post("/bussola", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
+  audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.delete("/bussola/:id", requireCap("guida"), async (req, res) => {
+  await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "bussola", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/luoghi", requireCap("luoghi"), async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM luoghi ORDER BY ordine").all());
+});
+adminRouter.put("/luoghi/:id", requireCap("luoghi"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
+  audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
+  res.json({ ok: true });
+});
+adminRouter.get("/rifiuti", requireCap("guida"), async (req, res) => {
+  const tipi = await db.prepare("SELECT id,nome,colore,ordine FROM rifiuti_tipi ORDER BY ordine,id").all();
+  const calendari = (await db.prepare("SELECT id,periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
+  res.json({ tipi, calendari });
+});
+adminRouter.post("/rifiuti/tipo", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_tipi").get()).n;
+  const info = await db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)").run(b.nome, b.colore || "#7A8790", ord);
+  audit(req.adminUser.username, "crea", "rifiuti_tipi", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/rifiuti/tipo/:id", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE rifiuti_tipi SET nome=?,colore=? WHERE id=?").run(b.nome, b.colore || "#7A8790", req.params.id);
+  audit(req.adminUser.username, "modifica", "rifiuti_tipi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/rifiuti/tipo/:id", requireCap("guida"), async (req, res) => {
+  await db.prepare("DELETE FROM rifiuti_tipi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "rifiuti_tipi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.put("/rifiuti/calendario/:periodo", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  const per = req.params.periodo;
+  const giorni = JSON.stringify(b.giorni || {});
+  const ex = await db.prepare("SELECT id FROM rifiuti_calendario WHERE periodo=?").get(per);
+  if (ex) await db.prepare("UPDATE rifiuti_calendario SET inizio_conf=?,fine_conf=?,ora_ritiro=?,giorni=? WHERE periodo=?").run(b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, per);
+  else {
+    const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_calendario").get()).n;
+    await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run(per, b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, ord);
+  }
+  audit(req.adminUser.username, "modifica", "rifiuti_calendario", per);
+  res.json({ ok: true });
+});
+adminRouter.delete("/rifiuti/calendario/:periodo", requireCap("guida"), async (req, res) => {
+  await db.prepare("DELETE FROM rifiuti_calendario WHERE periodo=?").run(req.params.periodo);
+  audit(req.adminUser.username, "cancella", "rifiuti_calendario", req.params.periodo);
+  res.json({ ok: true });
+});
+function magStato(a) {
+  const g = Number(a.giacenza), pr = Number(a.punto_riordino), pre = Number(a.soglia_preavviso);
+  if (g <= pr) return "da_riordinare";
+  if (pre > 0 && g <= pre) return "in_esaurimento";
+  return "ok";
+}
+adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
+  const area = req.query.area;
+  const zona = req.query.zona;
+  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
+  const conds = [];
+  const args = [];
+  if (area) {
+    conds.push("area=?");
+    args.push(area);
+  }
+  if (zonaWhere) {
+    conds.push(zonaWhere);
+    if (zona && !["bar", "garden", "comune"].includes(zona)) args.push(zona);
+  }
+  const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
+  const rows = await db.prepare(`SELECT * FROM magazzino_articoli ${where} ORDER BY area,ordine,id`).all(...args);
+  const imp = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE stato='impegnata' GROUP BY articolo_id").all();
+  const impMap = {};
+  imp.forEach((r) => {
+    impMap[r.articolo_id] = Number(r.q);
+  });
+  const ord = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_ordini WHERE stato='confermato' GROUP BY articolo_id").all();
+  const ordMap = {};
+  ord.forEach((r) => {
+    ordMap[r.articolo_id] = Number(r.q);
+  });
+  const articoli = rows.map((a) => {
+    const impegno = impMap[a.id] || 0;
+    const eff = Number(a.giacenza) - impegno;
+    return { ...a, impegno, giacenza_effettiva: eff, in_arrivo: ordMap[a.id] || 0, stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso }) };
+  });
+  const riepilogo = {
+    da_riordinare: articoli.filter((a) => a.stato === "da_riordinare").length,
+    in_esaurimento: articoli.filter((a) => a.stato === "in_esaurimento").length,
+    totale: articoli.length
+  };
+  const aree = [...new Set(rows.map((a) => a.area))];
+  res.json({ articoli, riepilogo, aree });
+});
+adminRouter.post("/magazzino", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
+  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString());
+  audit(req.adminUser.username, "crea", "magazzino_articoli", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,zona=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=? WHERE id=?").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  audit(req.adminUser.username, "modifica", "magazzino_articoli", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
+  await db.prepare("DELETE FROM magazzino_movimenti WHERE articolo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM magazzino_articoli WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "magazzino_articoli", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/magazzino/:id/movimento", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  const tipo = ["carico", "scarico", "rettifica"].includes(b.tipo) ? b.tipo : "carico";
+  let nuova = Number(art.giacenza);
+  if (tipo === "carico") nuova += q;
+  else if (tipo === "scarico") nuova = Math.max(0, nuova - q);
+  else nuova = q;
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore) VALUES (?,?,?,?,?)").run(req.params.id, tipo, q, b.causale || null, req.adminUser.username);
+  audit(req.adminUser.username, tipo, "magazzino_articoli", req.params.id, String(q));
+  const aggiornato = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(req.params.id);
+  res.json({ ok: true, giacenza: nuova, stato: magStato(aggiornato) });
+});
+async function impegnoTot(articoloId) {
+  const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND stato='impegnata'").get(articoloId);
+  return Number(r.q);
+}
+async function impegnoZona(articoloId, zona) {
+  const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata'").get(articoloId, zona);
+  return Number(r.q);
+}
+adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, res) => {
+  const zona = req.params.zona === "bar" ? "bar" : "garden";
+  const arts = await db.prepare("SELECT * FROM magazzino_articoli WHERE zona=? OR zona='comune' ORDER BY nome").all(zona);
+  const out = [];
+  for (const a of arts) {
+    const impTot = await impegnoTot(a.id);
+    const impZona = await impegnoZona(a.id, zona);
+    const eff = Number(a.giacenza) - impTot;
+    out.push({
+      articolo_id: a.id,
+      nome: a.nome,
+      unita: a.unita,
+      zona_art: a.zona,
+      giacenza_centrale: Number(a.giacenza),
+      impegno_tot: impTot,
+      impegno_zona: impZona,
+      giacenza: eff,
+      // disponibile = giacenza effettiva (ciò che la zona può ancora usare)
+      punto_riordino: Number(a.punto_riordino),
+      soglia_preavviso: Number(a.soglia_preavviso),
+      stato: magStato({ giacenza: eff, punto_riordino: a.punto_riordino, soglia_preavviso: a.soglia_preavviso })
+    });
+  }
+  const riepilogo = { da_riordinare: out.filter((a) => a.stato === "da_riordinare").length, in_esaurimento: out.filter((a) => a.stato === "in_esaurimento").length, totale: out.length };
+  res.json({ articoli: out, riepilogo });
+});
+adminRouter.post("/magazzino/zona/:zona/scarico", requireCap("magazzino"), async (req, res) => {
+  const zona = req.params.zona === "bar" ? "bar" : "garden";
+  const b = req.body || {};
+  const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
+  const nuova = Math.max(0, Number(art.giacenza) - q);
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "consumo fine giornata " + zona, req.adminUser.username, zona);
+  let resto = q;
+  const aperte = await db.prepare("SELECT * FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata' ORDER BY created_at").all(art.id, zona);
+  for (const r of aperte) {
+    if (resto <= 0) break;
+    const usa = Math.min(resto, Number(r.quantita));
+    const residuo = Number(r.quantita) - usa;
+    if (residuo > 0) await db.prepare("UPDATE magazzino_richieste SET quantita=?,updated_at=? WHERE id=?").run(residuo, (/* @__PURE__ */ new Date()).toISOString(), r.id);
+    else await db.prepare("UPDATE magazzino_richieste SET stato='consumata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), r.id);
+    resto -= usa;
+  }
+  audit(req.adminUser.username, "scarico_zona", "magazzino_articoli", art.id, `${zona} -${q}`);
+  const eff = nuova - await impegnoTot(art.id);
+  res.json({ ok: true, giacenza: eff, giacenza_centrale: nuova, stato: magStato({ giacenza: eff, punto_riordino: art.punto_riordino, soglia_preavviso: art.soglia_preavviso }) });
+});
+adminRouter.post("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  const zona = b.zona === "bar" ? "bar" : "garden";
+  const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
+  const info = await db.prepare("INSERT INTO magazzino_richieste (articolo_id,zona,quantita,stato,note) VALUES (?,?,?,?,?)").run(art.id, zona, q, "impegnata", b.note || null);
+  audit(req.adminUser.username, "impegno", "magazzino_richieste", info.lastInsertRowid, `${zona} ${q}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.get("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
+  const conds = [], args = [];
+  if (req.query.zona) {
+    conds.push("r.zona=?");
+    args.push(req.query.zona);
+  }
+  if (req.query.stato) {
+    conds.push("r.stato=?");
+    args.push(req.query.stato);
+  } else conds.push("r.stato='impegnata'");
+  const where = "WHERE " + conds.join(" AND ");
+  const rows = await db.prepare(`SELECT r.*, a.nome, a.unita FROM magazzino_richieste r JOIN magazzino_articoli a ON a.id=r.articolo_id ${where} ORDER BY r.created_at DESC LIMIT 200`).all(...args);
+  res.json(rows);
+});
+adminRouter.post("/magazzino/richieste/:id/annulla", requireCap("magazzino"), async (req, res) => {
+  await db.prepare("UPDATE magazzino_richieste SET stato='annullata',updated_at=? WHERE id=? AND stato='impegnata'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  res.json({ ok: true });
+});
+async function magFinestra() {
+  return Math.max(1, Number(await getSetting("mag_finestra_giorni", "14")) || 14);
+}
+async function magLead() {
+  return Math.max(0, Number(await getSetting("mag_lead_time_giorni", "3")) || 0);
+}
+function addGiorni(base, n) {
+  const d = base ? /* @__PURE__ */ new Date(base + "T00:00:00Z") : /* @__PURE__ */ new Date();
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+adminRouter.get("/magazzino/config", requireCap("magazzino"), async (req, res) => {
+  res.json({ finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
+});
+adminRouter.post("/magazzino/config", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  if (b.finestra_giorni != null) await setSetting("mag_finestra_giorni", Math.max(1, Math.round(Number(b.finestra_giorni) || 14)));
+  if (b.lead_time_giorni != null) await setSetting("mag_lead_time_giorni", Math.max(0, Math.round(Number(b.lead_time_giorni) || 0)));
+  audit(req.adminUser.username, "magazzino_config", "impostazioni", "magazzino", JSON.stringify(b));
+  res.json({ ok: true, finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
+});
+adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, res) => {
+  const N = await magFinestra();
+  const LEAD = await magLead();
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const consumi = await db.prepare(`SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_movimenti WHERE tipo='scarico' AND created_at >= datetime('now', ?) GROUP BY articolo_id`).all("-" + N + " days");
+  const cMap = {};
+  consumi.forEach((r) => {
+    cMap[r.articolo_id] = Number(r.q);
+  });
+  const imp = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE stato='impegnata' GROUP BY articolo_id").all();
+  const iMap = {};
+  imp.forEach((r) => {
+    iMap[r.articolo_id] = Number(r.q);
+  });
+  const ord = await db.prepare("SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_ordini WHERE stato='confermato' GROUP BY articolo_id").all();
+  const oMap = {};
+  ord.forEach((r) => {
+    oMap[r.articolo_id] = Number(r.q);
+  });
+  const out = arts.map((a) => {
+    const consumo = cMap[a.id] || 0;
+    const rate = consumo / N;
+    const eff = Number(a.giacenza) - (iMap[a.id] || 0);
+    const inArrivo = oMap[a.id] || 0;
+    const pr = Number(a.punto_riordino);
+    const giorni = rate > 0 ? (eff - pr) / rate : null;
+    let dataRiordino = null;
+    if (giorni != null) {
+      const d = /* @__PURE__ */ new Date();
+      d.setDate(d.getDate() + Math.max(0, Math.floor(giorni)));
+      dataRiordino = d.toISOString().slice(0, 10);
+    }
+    const fabbisogno = Math.ceil(rate * N);
+    const suggerito = Math.max(0, fabbisogno - eff - inArrivo);
+    const urgente = eff <= pr || giorni != null && giorni <= N;
+    let dataInvio = null;
+    if (dataRiordino != null) dataInvio = addGiorni(dataRiordino, -LEAD);
+    const daInviareOra = suggerito > 0 && (dataInvio == null ? urgente : dataInvio <= oggi2);
+    return {
+      articolo_id: a.id,
+      nome: a.nome,
+      area: a.area,
+      zona: a.zona,
+      unita: a.unita,
+      giacenza: Number(a.giacenza),
+      giacenza_effettiva: eff,
+      in_arrivo: inArrivo,
+      punto_riordino: pr,
+      consumo_finestra: consumo,
+      rate: Math.round(rate * 100) / 100,
+      giorni_residui: giorni != null ? Math.max(0, Math.floor(giorni)) : null,
+      data_riordino: dataRiordino,
+      data_invio_consigliata: dataInvio,
+      da_inviare_ora: daInviareOra,
+      suggerito,
+      urgente,
+      senza_storico: consumo === 0
+    };
+  });
+  out.sort((a, b) => Number(b.da_inviare_ora) - Number(a.da_inviare_ora) || Number(b.urgente && b.suggerito > 0) - Number(a.urgente && a.suggerito > 0) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
+  res.json({ finestra_giorni: N, lead_time_giorni: LEAD, oggi: oggi2, articoli: out });
+});
+adminRouter.post("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
+  if (!art) return res.status(404).json({ error: "Articolo non trovato" });
+  const q = Math.abs(Number(b.quantita || 0));
+  if (!q) return res.status(400).json({ error: "Quantit\xE0 mancante" });
+  const lead = await magLead();
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const dataPrevista = b.data_prevista || addGiorni(oggi2, lead);
+  const info = await db.prepare("INSERT INTO magazzino_ordini (articolo_id,quantita,stato,data_invio,data_prevista,lead_time,note) VALUES (?,?,?,?,?,?,?)").run(art.id, q, "confermato", oggi2, dataPrevista, lead, b.note || null);
+  audit(req.adminUser.username, "ordine_fornitore", "magazzino_ordini", info.lastInsertRowid, String(q));
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid), data_prevista: dataPrevista });
+});
+adminRouter.get("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
+  const stato = req.query.stato || "confermato";
+  const rows = await db.prepare("SELECT o.*, a.nome, a.unita FROM magazzino_ordini o JOIN magazzino_articoli a ON a.id=o.articolo_id WHERE o.stato=? ORDER BY o.data_prevista IS NULL, o.data_prevista, o.created_at DESC LIMIT 200").all(stato);
+  res.json(rows);
+});
+adminRouter.post("/magazzino/ordini/:id/ricevi", requireCap("magazzino"), async (req, res) => {
+  const o = await db.prepare("SELECT * FROM magazzino_ordini WHERE id=?").get(req.params.id);
+  if (!o || o.stato !== "confermato") return res.status(400).json({ error: "Ordine non ricevibile" });
+  const q = Number(o.quantita);
+  const art = await db.prepare("SELECT giacenza FROM magazzino_articoli WHERE id=?").get(o.articolo_id);
+  const nuova = Number(art.giacenza) + q;
+  await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), o.articolo_id);
+  await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(o.articolo_id, "carico", q, "ricezione ordine fornitore", req.adminUser.username, null);
+  await db.prepare("UPDATE magazzino_ordini SET stato='ricevuto',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), o.id);
+  audit(req.adminUser.username, "ricevi_ordine", "magazzino_ordini", o.id, String(q));
+  res.json({ ok: true, giacenza: nuova });
+});
+adminRouter.post("/magazzino/ordini/:id/annulla", requireCap("magazzino"), async (req, res) => {
+  await db.prepare("UPDATE magazzino_ordini SET stato='annullato',updated_at=? WHERE id=? AND stato='confermato'").run((/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  res.json({ ok: true });
+});
+function meseCorrente() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 7);
+}
+function mesePrecedente(mese) {
+  const [y, m] = mese.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return d.toISOString().slice(0, 7);
+}
+async function flussiMese(mese) {
+  const rows = await db.prepare(`SELECT articolo_id,
+      COALESCE(SUM(CASE WHEN tipo='carico' THEN quantita END),0) carico,
+      COALESCE(SUM(CASE WHEN tipo='scarico' THEN quantita END),0) scarico,
+      COALESCE(SUM(CASE WHEN tipo='scarico' AND zona='bar' THEN quantita END),0) scarico_bar,
+      COALESCE(SUM(CASE WHEN tipo='scarico' AND zona='garden' THEN quantita END),0) scarico_garden,
+      COALESCE(SUM(CASE WHEN tipo='scarico' AND (zona IS NULL OR zona NOT IN ('bar','garden')) THEN quantita END),0) scarico_centrale
+    FROM magazzino_movimenti WHERE strftime('%Y-%m', created_at)=? GROUP BY articolo_id`).all(mese);
+  const map = {};
+  rows.forEach((r) => {
+    map[r.articolo_id] = r;
+  });
+  return map;
+}
+async function chiudiMese(mese) {
+  const prev = mesePrecedente(mese);
+  const flussi = await flussiMese(mese);
+  const prevClose = {};
+  (await db.prepare("SELECT articolo_id, giacenza_finale FROM magazzino_quadrature WHERE mese=?").all(prev)).forEach((r) => {
+    prevClose[r.articolo_id] = Number(r.giacenza_finale);
+  });
+  const arts = await db.prepare("SELECT id, giacenza FROM magazzino_articoli").all();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  for (const a of arts) {
+    const f = flussi[a.id] || { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scarico_centrale: 0 };
+    const iniziale = a.id in prevClose ? prevClose[a.id] : null;
+    await db.prepare("INSERT OR REPLACE INTO magazzino_quadrature (mese,articolo_id,giacenza_iniziale,giacenza_finale,carico,scarico,scarico_bar,scarico_garden,scarico_centrale,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(mese, a.id, iniziale, Number(a.giacenza), Number(f.carico), Number(f.scarico), Number(f.scarico_bar), Number(f.scarico_garden), Number(f.scarico_centrale), now);
+  }
+  return arts.length;
+}
+async function magAutoChiusura() {
+  try {
+    const oggi2 = /* @__PURE__ */ new Date();
+    const prev = mesePrecedente(meseCorrente());
+    const marker = await getSetting("mag_ultima_chiusura_auto", "");
+    if (marker === prev) return;
+    if (oggi2.getUTCDate() > 4) return;
+    const has = await db.prepare("SELECT 1 FROM magazzino_movimenti WHERE strftime('%Y-%m',created_at)=? LIMIT 1").get(prev);
+    if (!has) return;
+    const closed = await db.prepare("SELECT 1 FROM magazzino_quadrature WHERE mese=? LIMIT 1").get(prev);
+    if (closed) {
+      await setSetting("mag_ultima_chiusura_auto", prev);
+      return;
+    }
+    await chiudiMese(prev);
+    await setSetting("mag_ultima_chiusura_auto", prev);
+  } catch (_) {
+  }
+}
+adminRouter.get("/magazzino/quadratura", requireCap("magazzino"), async (req, res) => {
+  await magAutoChiusura();
+  const mese = /^\d{4}-\d{2}$/.test(req.query.mese || "") ? req.query.mese : meseCorrente();
+  const chiuso = await db.prepare("SELECT * FROM magazzino_quadrature WHERE mese=?").all(mese);
+  const chiusaMap = {};
+  chiuso.forEach((r) => {
+    chiusaMap[r.articolo_id] = r;
+  });
+  const prevClose = {};
+  (await db.prepare("SELECT articolo_id, giacenza_finale FROM magazzino_quadrature WHERE mese=?").all(mesePrecedente(mese))).forEach((r) => {
+    prevClose[r.articolo_id] = Number(r.giacenza_finale);
+  });
+  const flussi = await flussiMese(mese);
+  const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const out = [];
+  for (const a of arts) {
+    const c = chiusaMap[a.id];
+    const f = flussi[a.id] || { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scarico_centrale: 0 };
+    const carico = c ? Number(c.carico) : Number(f.carico);
+    const scarico = c ? Number(c.scarico) : Number(f.scarico);
+    const scarico_bar = c ? Number(c.scarico_bar) : Number(f.scarico_bar);
+    const scarico_garden = c ? Number(c.scarico_garden) : Number(f.scarico_garden);
+    const scarico_centrale = c ? Number(c.scarico_centrale) : Number(f.scarico_centrale);
+    const iniziale = c ? c.giacenza_iniziale != null ? Number(c.giacenza_iniziale) : null : a.id in prevClose ? prevClose[a.id] : null;
+    const finale = c ? Number(c.giacenza_finale) : Number(a.giacenza);
+    if (!carico && !scarico && !Number(a.giacenza) && iniziale == null) continue;
+    const atteso = iniziale != null ? iniziale + carico - scarico : null;
+    const scostamento = atteso != null ? Math.round((finale - atteso) * 100) / 100 : null;
+    out.push({ articolo_id: a.id, nome: a.nome, zona: a.zona, unita: a.unita, giacenza_iniziale: iniziale, carico, scarico, scarico_bar, scarico_garden, scarico_centrale, giacenza_finale: finale, atteso, scostamento });
+  }
+  const tot = out.reduce((t, r) => ({ carico: t.carico + r.carico, scarico: t.scarico + r.scarico, scarico_bar: t.scarico_bar + r.scarico_bar, scarico_garden: t.scarico_garden + r.scarico_garden, scostamenti: t.scostamenti + (r.scostamento ? 1 : 0) }), { carico: 0, scarico: 0, scarico_bar: 0, scarico_garden: 0, scostamenti: 0 });
+  const mesiMov = (await db.prepare("SELECT DISTINCT strftime('%Y-%m', created_at) m FROM magazzino_movimenti ORDER BY m DESC").all()).map((r) => r.m).filter(Boolean);
+  const mesiChiusi = (await db.prepare("SELECT DISTINCT mese m FROM magazzino_quadrature ORDER BY m DESC").all()).map((r) => r.m);
+  const mesi = [.../* @__PURE__ */ new Set([meseCorrente(), ...mesiMov, ...mesiChiusi])].sort().reverse();
+  res.json({ mese, chiusa: chiuso.length > 0, articoli: out, totali: tot, mesi });
+});
+adminRouter.post("/magazzino/quadratura/chiudi", requireCap("magazzino"), async (req, res) => {
+  const mese = /^\d{4}-\d{2}$/.test((req.body || {}).mese || "") ? req.body.mese : meseCorrente();
+  const n = await chiudiMese(mese);
+  audit(req.adminUser.username, "chiudi_mese", "magazzino_quadrature", mese, String(n));
+  res.json({ ok: true, mese, articoli: n });
+});
+adminRouter.get("/magazzino/:id/movimenti", requireCap("magazzino"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,tipo,quantita,causale,operatore,created_at FROM magazzino_movimenti WHERE articolo_id=? ORDER BY id DESC LIMIT 50").all(req.params.id);
+  res.json(rows);
+});
+function magNormArea(v) {
+  const s = String(v || "").trim().toLowerCase();
+  if (!s) return "chiosco";
+  const map = { "casa di carta": "casa_di_carta", "serata clan": "serata_clan", "serate a tema": "serate_tema", "serate tema": "serate_tema" };
+  return map[s] || s.replace(/\s+/g, "_");
+}
+function magNormZona(v) {
+  const s = String(v || "").trim().toLowerCase();
+  if (s.startsWith("bar")) return "bar";
+  if (s.startsWith("gard") || s.startsWith("giard")) return "garden";
+  return "comune";
+}
+function toNum(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  let s = String(v ?? "").trim();
+  if (!s) return 0;
+  s = s.replace(/[^\d,.\-]/g, "");
+  const lc = s.lastIndexOf(","), ld = s.lastIndexOf(".");
+  if (lc > -1 && ld > -1) s = lc > ld ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  else if (lc > -1) s = s.replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+function pickDelim(text) {
+  const line = text.split(/\r?\n/)[0] || "";
+  const c = (line.match(/,/g) || []).length, s = (line.match(/;/g) || []).length, t = (line.match(/\t/g) || []).length;
+  if (s >= c && s >= t) return ";";
+  if (t > c && t >= s) return "	";
+  return ",";
+}
+function sheetRows(fileB64) {
+  const buf = Buffer.from(String(fileB64 || "").replace(/^data:[^,]*,/, ""), "base64");
+  const isZip = buf[0] === 80 && buf[1] === 75;
+  const isOle = buf[0] === 208 && buf[1] === 207;
+  let wb;
+  if (isZip || isOle) {
+    wb = XLSX.read(buf, { type: "buffer" });
+  } else {
+    const text = buf.toString("utf8").replace(/^﻿/, "");
+    wb = XLSX.read(text, { type: "string", FS: pickDelim(text), raw: true });
+  }
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: true });
+}
+function parseMagFile(fileB64) {
+  const json = sheetRows(fileB64);
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  const alias = { nome: ["nome", "articolo", "prodotto", "name"], area: ["area", "reparto"], zona: ["zona", "zone", "ambiente"], unita: ["unita", "unit\xE0", "um", "unit"], giacenza: ["giacenza", "quantita", "quantit\xE0", "qta", "stock"], punto_riordino: ["punto_riordino", "riordino", "minimo", "min", "reorder"], soglia_preavviso: ["soglia_preavviso", "preavviso", "avviso", "soglia", "warning"] };
+  return json.map((r) => {
+    const keys = Object.keys(r);
+    const pick = (al) => {
+      const k = keys.find((k2) => al.includes(norm(k2)));
+      return k != null ? r[k] : "";
+    };
+    return { nome: pick(alias.nome), area: pick(alias.area), zona: pick(alias.zona), unita: pick(alias.unita), giacenza: pick(alias.giacenza), punto_riordino: pick(alias.punto_riordino), soglia_preavviso: pick(alias.soglia_preavviso) };
+  }).filter((r) => String(r.nome).trim());
+}
+adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) => {
+  const b = req.body || {};
+  let righe;
+  try {
+    righe = parseMagFile(b.fileB64);
+  } catch (e) {
+    return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
+  }
+  if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
+  const num = toNum;
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area), zona: magNormZona(r.zona), giacenza: num(r.giacenza), punto_riordino: num(r.punto_riordino), soglia_preavviso: num(r.soglia_preavviso) })) });
+  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  let creati = 0, aggiornati = 0;
+  if (b.mode === "replace") {
+    await db.exec("DELETE FROM magazzino_movimenti; DELETE FROM magazzino_articoli;");
+  }
+  for (const r of righe) {
+    const nome = clean(r.nome);
+    if (!nome) continue;
+    const area = magNormArea(r.area);
+    const zona = magNormZona(r.zona);
+    const hasZona = r.zona != null && String(r.zona).trim() !== "";
+    const ex = await db.prepare("SELECT * FROM magazzino_articoli WHERE nome=? AND area=?").get(nome, area);
+    const hasG = r.giacenza != null && String(r.giacenza).trim() !== "";
+    if (ex) {
+      await db.prepare("UPDATE magazzino_articoli SET zona=?,unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run(hasZona ? zona : ex.zona, clean(r.unita) ?? ex.unita, hasG ? num(r.giacenza) : ex.giacenza, r.punto_riordino !== "" ? num(r.punto_riordino) : ex.punto_riordino, r.soglia_preavviso !== "" ? num(r.soglia_preavviso) : ex.soglia_preavviso, now, ex.id);
+      aggiornati++;
+    } else {
+      const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
+      await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run(nome, area, zona, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
+      creati++;
+    }
+  }
+  audit(req.adminUser.username, "import", "magazzino_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
+  res.json({ ok: true, creati, aggiornati });
+});
+function xlsxB64(rows, sheet) {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheet);
+  return XLSX.write(wb, { type: "base64", bookType: "xlsx" });
+}
+var XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) => {
+  const arts = await db.prepare("SELECT nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso FROM magazzino_articoli ORDER BY area,nome").all();
+  const rows = arts.map((a) => ({ nome: a.nome, area: a.area, zona: a.zona, unita: a.unita, giacenza: Number(a.giacenza), riordino: Number(a.punto_riordino), preavviso: Number(a.soglia_preavviso) }));
+  res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
+});
+adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
+  const m = await db.prepare("SELECT nome,prezzo,stazione,zona,categoria,descrizione,allergeni FROM menu_articoli ORDER BY ordine,id").all();
+  const rows = m.map((x) => ({ nome: x.nome, prezzo: Number(x.prezzo), stazione: x.stazione, punto: x.zona || "bar", categoria: x.categoria || "", descrizione: x.descrizione || "", allergeni: x.allergeni || "" }));
+  res.json({ filename: "menu.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Menu") });
+});
+adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
+  res.json(rows);
+});
+adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
+  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
+  audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
+  audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
+  res.json({ ok: true });
+});
+function parseMenuFile(fileB64) {
+  const json = sheetRows(fileB64);
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  const alias = { nome: ["nome", "prodotto", "articolo", "name"], prezzo: ["prezzo", "price", "costo"], stazione: ["stazione", "station", "reparto"], punto: ["punto", "zona", "zone", "point"], categoria: ["categoria", "category"], descrizione: ["descrizione", "description", "desc"], allergeni: ["allergeni", "allergen", "allergens"] };
+  return json.map((r) => {
+    const keys = Object.keys(r);
+    const pick = (al) => {
+      const k = keys.find((k2) => al.includes(norm(k2)));
+      return k != null ? r[k] : "";
+    };
+    return { nome: pick(alias.nome), prezzo: pick(alias.prezzo), stazione: pick(alias.stazione), punto: pick(alias.punto), categoria: pick(alias.categoria), descrizione: pick(alias.descrizione), allergeni: pick(alias.allergeni) };
+  }).filter((r) => String(r.nome).trim());
+}
+adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  let righe;
+  try {
+    righe = parseMenuFile(b.fileB64);
+  } catch (e) {
+    return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
+  }
+  if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
+  const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
+  const catImport = (r, staz, ex) => clean(r.categoria) || ex && ex.categoria || inferCategoria(r.nome) || (staz === "cucina" ? "Cucina" : "Bar");
+  if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => {
+    const staz = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
+    return { ...r, prezzo: toNum(r.prezzo), categoria: catImport(r, staz, null) };
+  }) });
+  let creati = 0, aggiornati = 0;
+  if (b.mode === "replace") {
+    await db.exec("DELETE FROM menu_articoli;");
+  }
+  for (const r of righe) {
+    const nome = clean(r.nome);
+    if (!nome) continue;
+    const hasPrezzo = r.prezzo != null && String(r.prezzo).trim() !== "";
+    const prezzo = toNum(r.prezzo);
+    const stazione = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
+    const descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
+    const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
+    const categoria = catImport(r, r.stazione ? stazione : ex ? ex.stazione : stazione, ex);
+    const hasPunto = r.punto != null && String(r.punto).trim() !== "";
+    const zonaNew = hasPunto ? menuZona(r.punto) : stazione === "cucina" ? "garden" : inferPunto(nome, categoria);
+    const puntoSignal = hasPunto || !!clean(r.categoria) || !!(r.stazione && String(r.stazione).trim());
+    if (ex) {
+      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, puntoSignal ? zonaNew : ex.zona || zonaNew, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
+      aggiornati++;
+    } else {
+      const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
+      await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,attivo,ordine) VALUES (?,?,?,?,?,?,?,1,?)").run(nome, prezzo, stazione, zonaNew, categoria, descrizione, allergeni, ord);
+      creati++;
+    }
+  }
+  audit(req.adminUser.username, "import", "menu_articoli", null, `creati ${creati}, aggiornati ${aggiornati}`);
+  res.json({ ok: true, creati, aggiornati });
+});
+adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,stazione FROM menu_articoli WHERE categoria IS NULL OR trim(categoria)=''").all();
+  let n = 0;
+  for (const m of rows) {
+    const cat = inferCategoria(m.nome) || (m.stazione === "cucina" ? "Cucina" : "Bar");
+    await db.prepare("UPDATE menu_articoli SET categoria=? WHERE id=?").run(cat, m.id);
+    n++;
+  }
+  audit(req.adminUser.username, "ricategorizza", "menu_articoli", null, `categorizzati ${n}`);
+  res.json({ ok: true, categorizzati: n });
+});
+adminRouter.post("/menu/deduci-punto", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
+  let garden = 0, bar = 0;
+  for (const m of rows) {
+    const z = m.stazione === "cucina" ? "garden" : inferPunto(m.nome, m.categoria);
+    await db.prepare("UPDATE menu_articoli SET zona=? WHERE id=?").run(z, m.id);
+    if (z === "garden") garden++;
+    else bar++;
+  }
+  audit(req.adminUser.username, "deduci_punto", "menu_articoli", null, `garden ${garden}, bar ${bar}`);
+  res.json({ ok: true, garden, bar });
+});
+adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
+  await db.prepare("DELETE FROM menu_articoli WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
+  res.json({ ok: true });
+});
+async function comandaConRighe(id) {
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id);
+  if (!c) return null;
+  c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(id);
+  return c;
+}
+adminRouter.get("/comande", requireCap("comande"), async (req, res) => {
+  const stato = req.query.stato;
+  let rows;
+  if (stato === "tutte") rows = await db.prepare("SELECT * FROM comande ORDER BY id DESC LIMIT 100").all();
+  else if (stato) rows = await db.prepare("SELECT * FROM comande WHERE stato=? ORDER BY id DESC LIMIT 100").all(stato);
+  else rows = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato NOT IN ('chiusa','annullata') ORDER BY id").all());
+  for (const c of rows) c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(c.id);
+  res.json(rows);
+});
+adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  const righe = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
+  if (!righe.length) return res.status(400).json({ error: "Aggiungi almeno un articolo" });
+  const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
+  const zona = b.zona === "bar" ? "bar" : "garden";
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,zona,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco", "bar"].includes(b.origine) ? b.origine : zona === "bar" ? "bar" : "tavolo", b.riferimento || null, zona, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
+  const cid = Number(info.lastInsertRowid);
+  let totale = 0;
+  for (const r of righe) {
+    const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.menu_id);
+    if (!m) continue;
+    const qta = Math.max(1, Math.round(Number(r.qta)));
+    totale += Number(m.prezzo) * qta;
+    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
+  }
+  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
+  audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
+  res.status(201).json(await comandaConRighe(cid));
+});
+adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) => {
+  const stato = req.body && req.body.stato;
+  if (!["aperta", "in_preparazione", "pronta", "consegnata", "chiusa", "annullata"].includes(stato)) return res.status(400).json({ error: "Stato non valido" });
+  const prev = (await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id) || {}).stato;
+  await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(stato, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  if (stato === "pronta") {
+    await segnaPronta(req.params.id);
+    await avvisaProntoSeSelf(req.params.id, prev);
+  }
+  audit(req.adminUser.username, "stato:" + stato, "comande", req.params.id);
+  res.json(await comandaConRighe(req.params.id));
+});
+adminRouter.put("/comande/:id/riga/:rid/stato", requireCap("comande"), async (req, res) => {
+  const stato = req.body && req.body.stato;
+  if (!["in_coda", "pronta", "consegnata"].includes(stato)) return res.status(400).json({ error: "Stato riga non valido" });
+  await db.prepare("UPDATE comanda_righe SET stato=? WHERE id=? AND comanda_id=?").run(stato, req.params.rid, req.params.id);
+  const righe = await db.prepare("SELECT stato FROM comanda_righe WHERE comanda_id=?").all(req.params.id);
+  const cur = await db.prepare("SELECT stato FROM comande WHERE id=?").get(req.params.id);
+  if (cur && !["chiusa", "annullata"].includes(cur.stato) && righe.length) {
+    let nuovo = cur.stato;
+    if (righe.every((r) => r.stato === "consegnata")) nuovo = "consegnata";
+    else if (righe.every((r) => r.stato === "pronta" || r.stato === "consegnata")) nuovo = "pronta";
+    else if (righe.some((r) => r.stato !== "in_coda")) nuovo = "in_preparazione";
+    else nuovo = "aperta";
+    if (nuovo !== cur.stato) {
+      await db.prepare("UPDATE comande SET stato=?,updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+      if (nuovo === "pronta") {
+        await segnaPronta(req.params.id);
+        await avvisaProntoSeSelf(req.params.id, cur.stato);
+      }
+    }
+  }
+  res.json(await comandaConRighe(req.params.id));
+});
+adminRouter.get("/self-order/stato", requireCap("comande"), async (req, res) => {
+  res.json(await statoCompleto());
+});
+adminRouter.post("/self-order/pausa", requireCap("comande"), async (req, res) => {
+  const aperto = !!(req.body && req.body.aperto);
+  await setSelfOrderAperto(aperto);
+  audit(req.adminUser.username, aperto ? "self_order_apri" : "self_order_chiudi", "impostazioni", "self_order_aperto");
+  res.json({ ok: true, aperto });
+});
+adminRouter.get("/self-order/config", requireCap("comande"), async (req, res) => {
+  res.json(await getConfig());
+});
+adminRouter.post("/self-order/config", requireCap("comande"), async (req, res) => {
+  await setConfig(req.body || {});
+  audit(req.adminUser.username, "self_order_config", "impostazioni", "", JSON.stringify(req.body || {}));
+  res.json({ ok: true, config: await getConfig() });
+});
+adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
+  if (!c) return res.status(404).json({ error: "Comanda non trovata" });
+  if (c.stato === "chiusa") return res.json(await comandaConRighe(req.params.id));
+  const metodi = ["contanti", "carta", "satispay", "buoni", "altro"];
+  const metodo = metodi.includes(req.body?.metodo) ? req.body.metodo : "contanti";
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await db.prepare("UPDATE comande SET stato=?,metodo_pagamento=?,pagata_at=?,updated_at=? WHERE id=?").run("chiusa", metodo, now, now, c.id);
+  audit(req.adminUser.username, "chiudi", "comande", c.id, `tot ${c.totale} \xB7 ${metodo}`);
+  res.json(await comandaConRighe(c.id));
+});
+adminRouter.delete("/comande/:id", requireCap("comande"), async (req, res) => {
+  await db.prepare("DELETE FROM comanda_righe WHERE comanda_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM comande WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "comande", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
+  const staz = req.query.stazione;
+  const comande = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') ORDER BY id").all());
+  const out = [];
+  for (const c of comande) {
+    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato!='consegnata' ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
+    if (righe.length) out.push({ ...c, righe });
+  }
+  res.json(out);
+});
+adminRouter.get("/pwa-qr", async (req, res) => {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
+  const host = req.headers["x-forwarded-host"] || req.get("host");
+  const base = `${proto}://${host}`;
+  const items = [
+    { scope: "soci", label: "App Soci", path: "/" },
+    { scope: "chiosco", label: "App Chiosco", path: "/chiosco/" },
+    { scope: "admin", label: "Back Office", path: "/admin/" }
+  ].map((it) => {
+    const url2 = base + it.path;
+    return { ...it, url: url2, svg: qrSvg(url2, { cellSize: 6, margin: 2 }) };
+  });
+  res.json({ base, items });
+});
+adminRouter.get("/qr-ordina", async (req, res) => {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
+  const host = req.headers["x-forwarded-host"] || req.get("host");
+  const punto = String(req.query.punto || "Chiosco").trim();
+  const tavolo = String(req.query.tavolo || "").trim();
+  const url2 = `${proto}://${host}/ordina?p=${encodeURIComponent(punto)}${tavolo ? "&t=" + encodeURIComponent(tavolo) : ""}`;
+  res.json({ url: url2, punto, tavolo, svg: qrSvg(url2, { cellSize: 6, margin: 2 }) });
+});
+var HOST_FIELDS = ["nome", "cir", "cin", "regole", "isolato", "numero", "check_out", "lat", "lng"];
+function pickStruttura(b) {
+  const o = {};
+  for (const k of HOST_FIELDS) o[k] = b[k] ?? "";
+  if (o.lat !== "") o.lat = Number(o.lat);
+  if (o.lng !== "") o.lng = Number(o.lng);
+  return o;
+}
+adminRouter.get("/soci/:id/host", requireCap("utenti"), async (req, res) => {
+  const s = await db.prepare("SELECT id,host,host_ko,struttura_id,tipo_profilo FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Utente non trovato" });
+  const rows = await db.prepare("SELECT id,dati_cifrati,attivo FROM strutture WHERE socio_id=? ORDER BY id").all(s.id);
+  let ko = false;
+  const strutture = rows.map((r) => {
+    const d = tryDecryptJSON(r.dati_cifrati);
+    if (!d) {
+      ko = true;
+      return { id: r.id, ko: true, attivo: r.attivo };
+    }
+    return { id: r.id, attivo: r.attivo, ...d };
+  });
+  if (ko) {
+    await db.prepare("UPDATE soci SET host_ko=1 WHERE id=?").run(s.id);
+    audit(req.adminUser.username, "host_KO", "strutture", s.id, "integrit\xE0 non verificabile");
+  }
+  res.json({ host: s.host, host_ko: ko ? 1 : s.host_ko, struttura_id: s.struttura_id, tipo_profilo: s.tipo_profilo, strutture });
+});
+adminRouter.put("/soci/:id/host", requireCap("utenti"), async (req, res) => {
+  const s = await db.prepare("SELECT id,tipo_profilo FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Utente non trovato" });
+  const on = req.body?.host ? 1 : 0;
+  if (on && !["residente", "socio_residente"].includes(s.tipo_profilo)) return res.status(409).json({ error: "Il profilo host \xE8 riservato ai Residenti (e Soci-residenti)" });
+  await db.prepare("UPDATE soci SET host=? WHERE id=?").run(on, req.params.id);
+  audit(req.adminUser.username, on ? "abilita_host" : "disabilita_host", "soci", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/soci/:id/strutture", requireCap("utenti"), async (req, res) => {
+  const s = await db.prepare("SELECT id,host FROM soci WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Utente non trovato" });
+  if (!s.host) return res.status(409).json({ error: "Abilita prima il flag host" });
+  const n = (await db.prepare("SELECT COUNT(*) n FROM strutture WHERE socio_id=?").get(s.id)).n;
+  if (n >= 3) return res.status(409).json({ error: "Massimo 3 strutture per host" });
+  const b = req.body || {};
+  if (!String(b.nome || "").trim()) return res.status(400).json({ error: "Nome struttura obbligatorio" });
+  const info = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(s.id, encryptJSON(pickStruttura(b)));
+  audit(req.adminUser.username, "crea_struttura", "strutture", info.lastInsertRowid);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.put("/strutture/:id", requireCap("utenti"), async (req, res) => {
+  const st = await db.prepare("SELECT id FROM strutture WHERE id=?").get(req.params.id);
+  if (!st) return res.status(404).json({ error: "Struttura non trovata" });
+  const b = req.body || {};
+  await db.prepare("UPDATE strutture SET dati_cifrati=?,attivo=? WHERE id=?").run(encryptJSON(pickStruttura(b)), b.attivo === false ? 0 : 1, req.params.id);
+  audit(req.adminUser.username, "modifica_struttura", "strutture", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/strutture/:id", requireCap("utenti"), async (req, res) => {
+  await db.prepare("UPDATE soci SET struttura_id=NULL WHERE struttura_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM strutture WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "elimina_struttura", "strutture", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.put("/soci/:id/collega-struttura", requireCap("utenti"), async (req, res) => {
+  const sid = req.body?.struttura_id ? Number(req.body.struttura_id) : null;
+  if (sid) {
+    const st = await db.prepare("SELECT id FROM strutture WHERE id=?").get(sid);
+    if (!st) return res.status(404).json({ error: "Struttura inesistente" });
+  }
+  await db.prepare("UPDATE soci SET struttura_id=? WHERE id=?").run(sid, req.params.id);
+  audit(req.adminUser.username, "collega_struttura", "soci", req.params.id, sid ? "struttura " + sid : "scollegato");
+  res.json({ ok: true });
+});
+adminRouter.get("/strutture-collegabili", requireCap("utenti"), async (req, res) => {
+  const rows = await db.prepare("SELECT st.id, st.dati_cifrati, s.nome AS host_nome, s.cognome AS host_cognome FROM strutture st JOIN soci s ON s.id=st.socio_id WHERE st.attivo=1 ORDER BY st.id").all();
+  const out = rows.map((r) => {
+    const d = tryDecryptJSON(r.dati_cifrati);
+    return { id: r.id, nome: d ? d.nome : "(dati non leggibili)", host: (r.host_nome || "") + " " + (r.host_cognome || "") };
+  });
+  res.json(out);
+});
+adminRouter.get("/campi", requireCap("campi"), async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM campi ORDER BY ordine,id").all());
+});
+adminRouter.post("/campi", requireCap("campi"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM campi").get()).n;
+  const info = await db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,attivo,ordine,max_slot_prenotazione,max_pren_settimana) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(b.nome, b.sport || "pickleball", b.apertura || "09:00", b.chiusura || "22:00", Number(b.durata_slot) || 60, b.ora_min || null, Number(b.posti_default) || 4, b.attivo === false ? 0 : 1, ord, Math.max(1, Number(b.max_slot_prenotazione) || 2), Math.max(1, Number(b.max_pren_settimana) || 3));
+  audit(req.adminUser.username, "crea", "campi", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/campi/:id", requireCap("campi"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE campi SET nome=?,sport=?,apertura=?,chiusura=?,durata_slot=?,ora_min=?,posti_default=?,attivo=?,max_slot_prenotazione=?,max_pren_settimana=? WHERE id=?").run(b.nome, b.sport || "pickleball", b.apertura || "09:00", b.chiusura || "22:00", Number(b.durata_slot) || 60, b.ora_min || null, Number(b.posti_default) || 4, b.attivo === false ? 0 : 1, Math.max(1, Number(b.max_slot_prenotazione) || 2), Math.max(1, Number(b.max_pren_settimana) || 3), req.params.id);
+  audit(req.adminUser.username, "modifica", "campi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/campi/:id", requireCap("campi"), async (req, res) => {
+  await db.prepare("DELETE FROM partita_iscritti WHERE partita_id IN (SELECT id FROM partite_aperte WHERE campo_id=?)").run(req.params.id);
+  await db.prepare("DELETE FROM partite_aperte WHERE campo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM prenotazioni_campo WHERE campo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM campi_blocchi WHERE campo_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM campi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "campi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/campi/prenotazioni", requireCap("campi"), async (req, res) => {
+  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
+  const sel = "SELECT p.*, c.nome AS campo_nome, c.ordine AS campo_ordine FROM prenotazioni_campo p JOIN campi c ON c.id=p.campo_id WHERE p.stato='prenotato'";
+  const rows = data ? await db.prepare(sel + " AND p.data=? ORDER BY p.slot,c.ordine").all(data) : await db.prepare(sel + " ORDER BY p.data DESC,p.slot LIMIT 200").all();
+  const gruppi = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const k = r.partita_id ? "p" + r.partita_id : "r" + r.id;
+    const g = gruppi.get(k);
+    if (g) {
+      g.slot_da = g.slot_da < r.slot ? g.slot_da : r.slot;
+      g.slot_a = g.slot_a > r.slot ? g.slot_a : r.slot;
+      g.fasce++;
+    } else {
+      gruppi.set(k, {
+        id: r.id,
+        partita_id: r.partita_id || null,
+        campo_id: r.campo_id,
+        campo_nome: r.campo_nome,
+        campo_ordine: r.campo_ordine,
+        data: r.data,
+        slot: r.slot,
+        slot_da: r.slot,
+        slot_a: r.slot,
+        fasce: 1,
+        tipo: r.tipo,
+        titolare: r.nome || "",
+        titolare_socio_id: r.titolare_socio_id || r.socio_id || null,
+        tessera_code: r.tessera_code || "",
+        partecipanti: [],
+        posti_totali: null,
+        aperta_ai_soci: r.tipo !== "privata"
+      });
+    }
+  }
+  const out = [...gruppi.values()];
+  for (const g of out) {
+    if (!g.partita_id) continue;
+    const pa = await db.prepare("SELECT posti_totali,aperta_ai_soci,stato FROM partite_aperte WHERE id=?").get(g.partita_id);
+    if (pa) {
+      g.posti_totali = pa.posti_totali;
+      g.aperta_ai_soci = pa.aperta_ai_soci !== 0;
+      g.stato_partita = pa.stato;
+    }
+    const isc = await db.prepare("SELECT nome,tessera_code FROM partita_iscritti WHERE partita_id=? ORDER BY id").all(g.partita_id);
+    g.partecipanti = isc.map((x) => ({ nome: x.nome || "", tessera_code: x.tessera_code || "" }));
+    g.posti_liberi = g.posti_totali == null ? null : Math.max(0, g.posti_totali - isc.length);
+  }
+  out.sort((a, b) => String(a.data + a.slot_da).localeCompare(String(b.data + b.slot_da)) || a.campo_ordine - b.campo_ordine);
+  res.json(out);
+});
+adminRouter.get("/campi/blocchi", requireCap("campi"), async (req, res) => {
+  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
+  const sel = "SELECT b.*, c.nome AS campo_nome FROM campi_blocchi b JOIN campi c ON c.id=b.campo_id";
+  res.json(data ? await db.prepare(sel + " WHERE b.data=? ORDER BY b.data,b.slot_da").all(data) : await db.prepare(sel + " WHERE b.data>=date('now','-1 day') ORDER BY b.data,b.slot_da LIMIT 200").all());
+});
+adminRouter.post("/campi/blocchi", requireCap("campi"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.campo_id) return res.status(400).json({ error: "Campo obbligatorio" });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
+  const info = await db.prepare("INSERT INTO campi_blocchi (campo_id,data,slot_da,slot_a,motivo,nota) VALUES (?,?,?,?,?,?)").run(Number(b.campo_id), b.data, b.slot_da || "00:00", b.slot_a || "23:59", b.motivo || "torneo", b.nota || null);
+  audit(req.adminUser.username, "blocca_campo", "campi", Number(b.campo_id), `${b.data} ${b.slot_da || "00:00"}-${b.slot_a || "23:59"}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.delete("/campi/blocchi/:id", requireCap("campi"), async (req, res) => {
+  await db.prepare("DELETE FROM campi_blocchi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "sblocca_campo", "campi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/discipline", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
+});
+adminRouter.get("/coppa/cartellone", requireCap("casate"), async (req, res) => {
+  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
+  const discipline = await db.prepare("SELECT id,nome,dominio,stato FROM discipline WHERE attivo=1 ORDER BY dominio,ordine,id").all();
+  const celle = {};
+  const totali = {};
+  casate.forEach((c) => {
+    totali[c.id] = 0;
+  });
+  for (const d of discipline) {
+    const grad = await graduatoriaFinale(d.id).catch(() => null);
+    celle[d.id] = {};
+    if (grad) for (const r of grad) {
+      celle[d.id][r.id] = r.punti;
+      totali[r.id] = (totali[r.id] || 0) + r.punti;
+    }
+  }
+  res.json({ casate, discipline, celle, totali });
+});
+adminRouter.post("/discipline", requireCap("discipline"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome || !b.chiave || !b.dominio) return res.status(400).json({ error: "Dominio, chiave e nome obbligatori" });
+  try {
+    const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM discipline WHERE dominio=?").get(b.dominio)).n || 0;
+    const info = await db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,punti_vitt,punti_par,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.dominio === "giochi" ? "giochi" : "sport", b.chiave, b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, ord);
+    audit(req.adminUser.username, "crea", "discipline", info.lastInsertRowid, b.nome);
+    res.status(201).json({ ok: true, id: info.lastInsertRowid });
+  } catch (e) {
+    res.status(400).json({ error: "Chiave gi\xE0 esistente per questo dominio" });
+  }
+});
+adminRouter.put("/discipline/:id", requireCap("discipline"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE discipline SET nome=?,attivo=?,min_giocatori=?,max_giocatori=?,punti_vitt=?,punti_par=? WHERE id=?").run(b.nome, b.attivo ? 1 : 0, Number(b.min_giocatori) || 1, Number(b.max_giocatori) || 1, Number(b.punti_vitt) || 3, Number(b.punti_par) || 1, req.params.id);
+  audit(req.adminUser.username, "modifica", "discipline", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/discipline/:id", requireCap("discipline_del"), async (req, res) => {
+  const id = req.params.id;
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id);
+  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id);
+  for (const g of gironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(id);
+  await db.prepare("DELETE FROM convocazioni WHERE disciplina_id=?").run(id);
+  await db.prepare("DELETE FROM discipline WHERE id=?").run(id);
+  audit(req.adminUser.username, "cancella", "discipline", id);
+  res.json({ ok: true });
+});
+adminRouter.get("/tabellone/:disciplinaId", requireCap("tabellone"), async (req, res) => {
+  res.json(await getTabellone(Number(req.params.disciplinaId)));
+});
+adminRouter.post("/tabellone/:disciplinaId/genera", requireCap("tabellone_reset"), async (req, res) => {
+  try {
+    const t = await generaCalendario(Number(req.params.disciplinaId));
+    audit(req.adminUser.username, "genera_calendario", "discipline", req.params.disciplinaId);
+    res.json({ ok: true, tabellone: t });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.put("/partite/:id", requireCap("tabellone"), async (req, res) => {
+  const a = Number(req.body?.gol_a), b = Number(req.body?.gol_b);
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return res.status(400).json({ error: "Punteggi non validi" });
+  try {
+    await registraRisultato(Number(req.params.id), a, b);
+    audit(req.adminUser.username, "risultato", "partite", req.params.id, `${a}-${b}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.put("/tabellone/:id/impostazioni", requireCap("tabellone"), async (req, res) => {
+  const b = req.body || {};
+  const stato = ["preparazione", "in_corso", "archiviato"].includes(b.stato) ? b.stato : "preparazione";
+  await db.prepare("UPDATE discipline SET data_inizio=?,data_fine=?,stato=?,regolamento=? WHERE id=?").run(b.data_inizio || null, b.data_fine || null, stato, b.regolamento ?? null, req.params.id);
+  audit(req.adminUser.username, "impostazioni_tabellone", "discipline", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/tabellone/:id/archivia", requireCap("tabellone"), async (req, res) => {
+  try {
+    const r = await archiviaEdizione(Number(req.params.id));
+    audit(req.adminUser.username, "archivia_edizione", "discipline", req.params.id, `vince ${r.vincitore || "\u2014"}`);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.get("/tabellone/:id/edizioni", requireCap("tabellone"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni WHERE disciplina_id=? ORDER BY id DESC").all(req.params.id);
+  res.json(rows);
+});
+adminRouter.get("/regolamenti", requireCap("tabellone"), async (req, res) => {
+  res.json(await db.prepare("SELECT id,chiave,titolo,testo,ordine FROM regolamenti ORDER BY ordine,id").all());
+});
+adminRouter.put("/regolamenti/:chiave", requireCap("tabellone"), async (req, res) => {
+  const b = req.body || {};
+  const ex = await db.prepare("SELECT id FROM regolamenti WHERE chiave=?").get(req.params.chiave);
+  if (ex) await db.prepare("UPDATE regolamenti SET titolo=?,testo=? WHERE chiave=?").run(b.titolo || req.params.chiave, b.testo ?? "", req.params.chiave);
+  else await db.prepare("INSERT INTO regolamenti (chiave,titolo,testo) VALUES (?,?,?)").run(req.params.chiave, b.titolo || req.params.chiave, b.testo ?? "");
+  audit(req.adminUser.username, "modifica", "regolamenti", req.params.chiave);
+  res.json({ ok: true });
+});
+adminRouter.get("/contest", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM contest ORDER BY id DESC").all());
+});
+adminRouter.post("/contest", requireCap("contest"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const info = await db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,attivo) VALUES (?,?,?,?,?,?)").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.attivo === false ? 0 : 1);
+  audit(req.adminUser.username, "crea", "contest", info.lastInsertRowid, b.titolo);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/contest/:id", requireCap("contest"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE contest SET titolo=?,tipo=?,settimana=?,brief=?,stato=?,vincitore=?,attivo=? WHERE id=?").run(b.titolo, b.tipo ?? "altro", b.settimana ?? "", b.brief ?? "", b.stato ?? "annunciato", b.vincitore ?? null, b.attivo ? 1 : 0, req.params.id);
+  audit(req.adminUser.username, "modifica", "contest", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/contest/:id", requireCap("contest"), async (req, res) => {
+  await db.prepare("DELETE FROM contest_esiti WHERE contest_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM contest WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "contest", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/contest/:id/esito", requireCap("contest"), async (req, res) => {
+  const e = await esitoCorrente(Number(req.params.id));
+  if (!e) return res.status(404).json({ error: "Contest non trovato" });
+  res.json(e);
+});
+adminRouter.post("/contest/:id/esito", requireCap("contest"), async (req, res) => {
+  try {
+    const righe = Array.isArray(req.body?.righe) ? req.body.righe : [];
+    const scala = Array.isArray(req.body?.punti_scala) ? req.body.punti_scala.map((n) => Number(n) || 0) : void 0;
+    const out = await salvaEsito(Number(req.params.id), righe, scala);
+    res.json({ ok: true, righe: out });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.post("/contest/:id/assegna", requireCap("contest"), async (req, res) => {
+  try {
+    res.json({ ok: true, ...await assegnaCoppa(Number(req.params.id)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+adminRouter.get("/serate", async (req, res) => {
+  const rows = await db.prepare("SELECT * FROM serate ORDER BY ordine,data").all();
+  const out = [];
+  for (const s of rows) {
+    const p = await db.prepare("SELECT COALESCE(SUM(CASE WHEN stato!='annullata' THEN persone ELSE 0 END),0) coperti, COALESCE(SUM(CASE WHEN stato='da_saldare' THEN importo ELSE 0 END),0) da_incassare FROM serate_prenotazioni WHERE serata_id=?").get(s.id);
+    out.push({ ...s, coperti_prenotati: p.coperti, da_incassare: p.da_incassare });
+  }
+  res.json(out);
+});
+adminRouter.post("/serate", requireCap("serate"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM serate").get()).n;
+  const info = await db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.chiave || null, b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo === false ? 0 : 1, ord);
+  audit(req.adminUser.username, "crea", "serate", info.lastInsertRowid, b.titolo);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/serate/:id", requireCap("serate"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo ? 1 : 0, req.params.id);
+  audit(req.adminUser.username, "modifica", "serate", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/serate/:id", requireCap("serate"), async (req, res) => {
+  await db.prepare("DELETE FROM serate_prenotazioni WHERE serata_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM serate WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "serate", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/serate/:id/prenotazioni", async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? ORDER BY created_at DESC").all(req.params.id));
+});
+adminRouter.put("/serate-prenotazioni/:id", requireCap("serate"), async (req, res) => {
+  const stato = ["da_saldare", "saldata", "annullata"].includes(req.body?.stato) ? req.body.stato : "da_saldare";
+  await db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
+  audit(req.adminUser.username, "stato_prenotazione_serata", "serate_prenotazioni", req.params.id, stato);
+  res.json({ ok: true });
+});
+var oggi = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+adminRouter.get("/cdc/coworking", async (req, res) => {
+  const rows = await db.prepare(`SELECT p.giorno, p.turno FROM prenotazioni p LEFT JOIN risorse r ON r.id=p.risorsa_id
+    WHERE p.stato='confermata' AND (r.tipo='coworking' OR p.risorsa_nome LIKE '%oworking%')`).all();
+  const periodi = (t) => {
+    t = String(t || "").toLowerCase();
+    if (t.startsWith("giorn")) return ["mattina", "pomeriggio"];
+    if (t.startsWith("pomerig")) return ["pomeriggio"];
+    return ["mattina"];
+  };
+  const per = {};
+  for (const r of rows) {
+    const g = r.giorno || "\u2014";
+    per[g] ??= { mattina: 0, pomeriggio: 0 };
+    periodi(r.turno).forEach((k) => per[g][k]++);
+  }
+  res.json({ max: 8, giorni: Object.keys(per).map((g) => ({ giorno: g, ...per[g] })) });
+});
+adminRouter.get("/cdc/caffe", async (req, res) => {
+  const cfg = await db.prepare("SELECT * FROM cdc_caffe WHERE id=1").get() || { giacenza: 0, punto_riordino: 40, confezione: 100 };
+  const conte = await db.prepare("SELECT * FROM cdc_caffe_conte ORDER BY id DESC LIMIT 30").all();
+  const daRiordinare = cfg.giacenza <= cfg.punto_riordino;
+  const suggerito = daRiordinare ? Math.max(cfg.confezione, Math.ceil((cfg.punto_riordino * 2 - cfg.giacenza) / Math.max(1, cfg.confezione)) * cfg.confezione) : 0;
+  res.json({ config: cfg, conte, da_riordinare: daRiordinare, ordine_suggerito: suggerito });
+});
+adminRouter.put("/cdc/caffe", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE cdc_caffe SET punto_riordino=?,confezione=? WHERE id=1").run(Number(b.punto_riordino) || 0, Number(b.confezione) || 1);
+  audit(req.adminUser.username, "modifica", "cdc_caffe", 1, `riordino ${b.punto_riordino}`);
+  res.json({ ok: true });
+});
+adminRouter.post("/cdc/caffe/conta", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  const g = Math.max(0, Number(b.giacenza) || 0);
+  const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
+  const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
+  await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), b.ora || "16:00", g, consumo, req.adminUser.username, b.note || "");
+  await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
+  audit(req.adminUser.username, "conta_caffe", "cdc_caffe", 1, `giacenza ${g}`);
+  res.json({ ok: true, giacenza: g, consumo });
+});
+adminRouter.get("/cdc/giochi", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_giochi ORDER BY ordine,id").all()));
+adminRouter.post("/cdc/giochi", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM cdc_giochi").get()).n;
+  const info = await db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,note,ordine) VALUES (?,?,?,?,?,?)").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", ord);
+  audit(req.adminUser.username, "crea", "cdc_giochi", info.lastInsertRowid, b.nome);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE cdc_giochi SET nome=?,categoria=?,quantita=?,stato=?,note=? WHERE id=?").run(b.nome, b.categoria || "altro", Number(b.quantita) || 1, b.stato || "ok", b.note || "", req.params.id);
+  audit(req.adminUser.username, "modifica", "cdc_giochi", req.params.id, b.stato || "");
+  res.json({ ok: true });
+});
+adminRouter.delete("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
+  await db.prepare("DELETE FROM cdc_giochi WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "cdc_giochi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/cdc/prestiti", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_prestiti ORDER BY id DESC LIMIT 100").all()));
+adminRouter.post("/cdc/prestiti", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  const info = await db.prepare("INSERT INTO cdc_prestiti (gioco_id,gioco_nome,giocatore,data,ora_inizio,ora_fine,note) VALUES (?,?,?,?,?,?,?)").run(b.gioco_id || null, b.gioco_nome || "", b.giocatore || "", b.data || oggi(), b.ora_inizio || "", b.ora_fine || "", b.note || "");
+  audit(req.adminUser.username, "prestito", "cdc_prestiti", info.lastInsertRowid, b.gioco_nome || "");
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/cdc/prestiti/:id", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE cdc_prestiti SET ora_fine=?,note=? WHERE id=?").run(b.ora_fine || "", b.note || "", req.params.id);
+  audit(req.adminUser.username, "riconsegna", "cdc_prestiti", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/cdc/check", async (req, res) => res.json(await db.prepare("SELECT id,data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,(foto IS NOT NULL AND foto<>'') AS has_foto,created_at FROM cdc_check ORDER BY id DESC LIMIT 60").all()));
+adminRouter.get("/cdc/check/:id/foto", async (req, res) => {
+  const r = await db.prepare("SELECT foto FROM cdc_check WHERE id=?").get(req.params.id);
+  if (!r || !r.foto) return res.status(404).json({ error: "Nessuna foto" });
+  res.json({ foto: r.foto });
+});
+adminRouter.post("/cdc/check", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  const info = await db.prepare("INSERT INTO cdc_check (data,operatore,caffe_giacenza,strumenti_note,arredi_note,esito,foto) VALUES (?,?,?,?,?,?,?)").run(b.data || oggi(), req.adminUser.username, b.caffe_giacenza != null && b.caffe_giacenza !== "" ? Number(b.caffe_giacenza) : null, b.strumenti_note || "", b.arredi_note || "", b.esito || "ok", b.foto || null);
+  if (b.caffe_giacenza != null && b.caffe_giacenza !== "") {
+    const g = Math.max(0, Number(b.caffe_giacenza) || 0);
+    const prev = await db.prepare("SELECT giacenza FROM cdc_caffe WHERE id=1").get();
+    const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
+    await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), "16:00", g, consumo, req.adminUser.username, "da check");
+    await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
+  }
+  audit(req.adminUser.username, "check", "cdc_check", info.lastInsertRowid, b.esito || "ok");
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.get("/allegati", async (req, res) => {
+  res.json(await db.prepare("SELECT id,entita,entita_id,nota,autore,created_at FROM allegati WHERE entita=? AND entita_id=? ORDER BY id DESC").all(req.query.entita || "", String(req.query.entita_id || "")));
+});
+adminRouter.get("/allegati/:id/foto", async (req, res) => {
+  const r = await db.prepare("SELECT immagine FROM allegati WHERE id=?").get(req.params.id);
+  if (!r) return res.status(404).json({ error: "Non trovato" });
+  res.json({ foto: r.immagine });
+});
+adminRouter.post("/allegati", (req, res, next) => {
+  const cap = (req.body || {}).entita === "partita" ? "tabellone" : "cdc";
+  return requireCap(cap)(req, res, next);
+}, async (req, res) => {
+  const b = req.body || {};
+  if (!b.immagine) return res.status(400).json({ error: "Immagine mancante" });
+  const info = await db.prepare("INSERT INTO allegati (entita,entita_id,immagine,nota,autore) VALUES (?,?,?,?,?)").run(b.entita || "generico", String(b.entita_id || ""), b.immagine, b.nota || "", req.adminUser.username);
+  audit(req.adminUser.username, "foto", b.entita || "allegati", b.entita_id || info.lastInsertRowid);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.get("/db/info", requireCap("db"), async (req, res) => {
+  let size = 0;
+  try {
+    size = statSync(DB_PATH).size;
+  } catch (_) {
+  }
+  const persistente = IS_REMOTE || /^\/var\/data\b|^\/data\b/.test(DB_PATH) || process.env.KOINE_PERSISTENT === "1";
+  res.json({
+    path: DB_PATH,
+    tipo: IS_REMOTE ? "gestito (Turso/libSQL)" : DB_PATH === ":memory:" ? "memoria" : "file locale",
+    size_kb: Math.round(size / 1024),
+    persistente,
+    soci: (await db.prepare("SELECT count(*) n FROM soci").get()).n
+  });
+});
+adminRouter.get("/db/backup", requireCap("db"), async (req, res) => {
+  if (DB_PATH === ":memory:") return res.status(400).json({ error: "Database in memoria: nessun backup su file" });
+  if (IS_REMOTE) return res.status(400).json({ error: "Database gestito (Turso): i backup/point-in-time sono gestiti dal provider. Per un estratto usa l\u2019export dei soci." });
+  const tmp = `/tmp/koine-backup-${Date.now()}.db`;
+  try {
+    await db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    const buf = readFileSync(tmp);
+    try {
+      unlinkSync(tmp);
+    } catch (_) {
+    }
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="koine-backup-${stamp}.db"`);
+    audit(req.adminUser.username, "backup_db", "database", 0, `${buf.length} byte`);
+    res.send(buf);
+  } catch (e) {
+    res.status(500).json({ error: "Backup non riuscito: " + e.message });
+  }
+});
+adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
+});
+
+// build/entry.mjs
+init_authuser();
+
+// server/routes/public.js
+init_asyncroute();
+init_db();
+init_push();
+import { Router as Router2 } from "express";
+var publicRouter = asyncify(Router2());
+publicRouter.get("/self-order/stato", async (req, res) => {
+  const s = await statoCompleto();
+  res.json({ aperto: s.aperto, ordinabile: s.ordinabile, sospeso_pressione: s.sospeso_pressione, pressione: s.pressione, eta_min: s.eta_min });
+});
+publicRouter.get("/casate", async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
+  res.json(rows);
+});
+publicRouter.get("/menu", async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni FROM menu_articoli WHERE attivo=1 ORDER BY ordine,id").all();
+  res.json(rows);
+});
+publicRouter.post("/self-order", async (req, res) => {
+  const b = req.body || {};
+  const st = await statoCompleto();
+  if (!st.ordinabile) return res.status(423).json({
+    error: st.sospeso_pressione ? "La cucina \xE8 molto impegnata: ordini dal telefono sospesi per pochi minuti. Rivolgiti allo staff o riprova a breve." : "Gli ordini self sono momentaneamente sospesi. Rivolgiti allo staff.",
+    sospeso_pressione: st.sospeso_pressione
+  });
+  const righeIn = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
+  if (!righeIn.length) return res.status(400).json({ error: "Aggiungi almeno un prodotto" });
+  const punto = String(b.punto || "").trim() || "Chiosco";
+  const tavolo = b.tavolo ? String(b.tavolo).trim() : null;
+  const chi = b.tessera_code ? String(b.tessera_code).trim().toUpperCase() : null;
+  const socio = chi ? await db.prepare("SELECT id FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(chi) : null;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "garden", "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
+  const cid = Number(info.lastInsertRowid);
+  let totale = 0;
+  for (const r of righeIn) {
+    const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=? AND attivo=1").get(r.menu_id);
+    if (!m) continue;
+    const qta = Math.max(1, Math.round(Number(r.qta)));
+    totale += Number(m.prezzo) * qta;
+    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
+  }
+  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
+  audit(chi || "self", "self_order", "comande", cid, `${punto}${tavolo ? " \xB7 tav " + tavolo : ""} \xB7 \u20AC${totale}`);
+  res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo, eta_min: await etaMin(), push: !!socio });
+});
+publicRouter.get("/push/pubkey", async (req, res) => {
+  const { pushEnabled: pushEnabled2, publicKey: publicKey2 } = await Promise.resolve().then(() => (init_push(), push_exports));
+  res.json({ enabled: pushEnabled2(), key: publicKey2() });
+});
+publicRouter.get("/eventi", async (req, res) => {
+  const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ora_inizio,tipologia,artista,prezzo,serata_id FROM eventi WHERE attivo=1 ORDER BY ordine").all();
+  const out = [];
+  for (const e of rows) {
+    let costo = Number(e.prezzo || 0);
+    if (e.serata_id) {
+      const s = await db.prepare("SELECT quota FROM serate WHERE id=?").get(e.serata_id);
+      if (s && Number(s.quota) > 0) costo = Number(s.quota);
+    }
+    out.push({ ...e, costo });
+  }
+  res.json(out);
+});
+publicRouter.get("/risorse", async (req, res) => {
+  const rows = (await db.prepare("SELECT chiave,nome,tipo,sottotitolo,slots,nota FROM risorse WHERE attivo=1").all()).map((r) => ({ ...r, slots: r.slots ? JSON.parse(r.slots) : [] }));
+  res.json(rows);
+});
+publicRouter.get("/bussola", async (req, res) => {
+  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza FROM bussola ORDER BY sezione,ordine").all();
+  const out = {};
+  for (const r of rows) (out[r.sezione] ??= []).push(r);
+  res.json(out);
+});
+publicRouter.get("/contest/corrente", async (req, res) => {
+  const c = await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest WHERE attivo=1 ORDER BY id DESC LIMIT 1").get();
+  res.json(c || null);
+});
+publicRouter.get("/contest", async (req, res) => {
+  res.json(await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest ORDER BY id DESC").all());
+});
+publicRouter.get("/luoghi", async (req, res) => {
+  res.json(await db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
+});
+publicRouter.get("/regolamenti", async (req, res) => {
+  const generali = await db.prepare("SELECT chiave,titolo,testo FROM regolamenti ORDER BY ordine,id").all();
+  const discipline = await db.prepare(`SELECT chiave,nome,dominio,regolamento,data_inizio,data_fine,stato
+    FROM discipline WHERE attivo=1 AND regolamento IS NOT NULL AND regolamento<>'' ORDER BY dominio,ordine`).all();
+  res.json({ generali, discipline });
+});
+publicRouter.get("/albo", async (req, res) => {
+  res.json(await db.prepare("SELECT disciplina_nome,dominio,data_inizio,data_fine,vincitore,archiviata_at FROM edizioni ORDER BY id DESC LIMIT 100").all());
+});
+publicRouter.get("/rifiuti", async (req, res) => {
+  const tipi = await db.prepare("SELECT id,nome,colore FROM rifiuti_tipi ORDER BY ordine,id").all();
+  const cal = (await db.prepare("SELECT periodo,inizio_conf,fine_conf,ora_ritiro,giorni FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
+  res.json({ tipi, calendari: cal });
+});
+var COWO_MAX = 8;
+var TAVOLO_MAX_COPERTI = 40;
+function periodiDi(turno) {
+  const t = (turno || "").toLowerCase();
+  if (t.startsWith("giorn")) return ["mattina", "pomeriggio"];
+  if (t.startsWith("pomerig")) return ["pomeriggio"];
+  return ["mattina"];
+}
+async function cowoUsati(giorno) {
+  const rows = await db.prepare(`SELECT p.turno FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
+    WHERE r.tipo='coworking' AND p.stato='confermata' AND p.giorno=?`).all(giorno || "");
+  let mattina = 0, pomeriggio = 0;
+  for (const r of rows) {
+    const ps = periodiDi(r.turno);
+    if (ps.includes("mattina")) mattina++;
+    if (ps.includes("pomeriggio")) pomeriggio++;
+  }
+  return { mattina, pomeriggio };
+}
+publicRouter.get("/coworking/disponibilita", async (req, res) => {
+  const u = await cowoUsati(req.query.giorno);
+  res.json({
+    giorno: req.query.giorno || null,
+    max: COWO_MAX,
+    mattina: { usati: u.mattina, liberi: Math.max(0, COWO_MAX - u.mattina) },
+    pomeriggio: { usati: u.pomeriggio, liberi: Math.max(0, COWO_MAX - u.pomeriggio) }
+  });
+});
+async function seratePostiUsati(serataId) {
+  return (await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").get(serataId)).n;
+}
+publicRouter.get("/serate", async (req, res) => {
+  const rows = await db.prepare("SELECT id,chiave,titolo,data,quando,tema,descrizione,quota,capienza FROM serate WHERE attivo=1 ORDER BY ordine,data").all();
+  const out = [];
+  for (const s of rows) {
+    const usati = await seratePostiUsati(s.id);
+    out.push({ ...s, posti_liberi: Math.max(0, s.capienza - usati) });
+  }
+  res.json(out);
+});
+publicRouter.post("/serate/:id/prenota", async (req, res) => {
+  const s = await db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Serata non trovata" });
+  const persone = Math.max(1, Number(req.body?.persone) || 1);
+  const usati = await seratePostiUsati(s.id);
+  if (usati + persone > s.capienza) return res.status(409).json({ ok: false, error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.`, posti_liberi: Math.max(0, s.capienza - usati) });
+  const tessera = req.body?.tessera_code || null;
+  const socio = tessera ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(tessera) : null;
+  const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
+  const importo = Math.round(s.quota * persone * 100) / 100;
+  const info = await db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato) VALUES (?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare");
+  audit(tessera || "ospite", "prenota_serata", "serate", s.id, `${persone}p \xB7 \u20AC${importo}`);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid, importo, persone, stato: "da_saldare", titolo: s.titolo });
+});
+publicRouter.get("/discipline/:dominio", async (req, res) => {
+  const dominio = req.params.dominio === "giochi" ? "giochi" : "sport";
+  const discs = await db.prepare("SELECT id,chiave,nome,min_giocatori,max_giocatori FROM discipline WHERE dominio=? AND attivo=1 ORDER BY ordine").all(dominio);
+  const out = [];
+  for (const d of discs) {
+    const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(d.id);
+    const gironi = [];
+    for (const g of gironiRows) {
+      gironi.push({
+        nome: g.nome,
+        rows: await db.prepare(`SELECT c.nome AS t, c.colore AS c, cl.pg, cl.v, cl.pt
+                        FROM classifica cl JOIN casate c ON c.id=cl.casata_id
+                        WHERE cl.girone_id=? ORDER BY cl.pt DESC, (cl.gf-cl.gs) DESC, cl.gf DESC, c.nome`).all(g.id)
+      });
+    }
+    const next = await db.prepare("SELECT casa_a a,casa_b b,('G'||giornata) wh,luogo court FROM partite WHERE disciplina_id=? AND stato='da_giocare' ORDER BY giornata,id LIMIT 6").all(d.id);
+    const results = await db.prepare("SELECT casa_a a,casa_b b,punteggio s FROM partite WHERE disciplina_id=? AND stato='giocata' ORDER BY id DESC LIMIT 6").all(d.id);
+    out.push({ chiave: d.chiave, name: d.nome, min: d.min_giocatori, max: d.max_giocatori, gironi, next, results });
+  }
+  res.json(out);
+});
+publicRouter.get("/tessera/:code", async (req, res) => {
+  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,c.nome AS casata,c.colore
+                        FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
+                        WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
+  if (!s) return res.status(404).json({ error: "Tessera non trovata" });
+  s.is_host = s.host ? 1 : 0;
+  s.ha_casa = s.struttura_id ? 1 : 0;
+  delete s.struttura_id;
+  res.json(s);
+});
+publicRouter.get("/convocazioni/:code", async (req, res) => {
+  const socio = await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(req.params.code);
+  if (!socio) return res.json([]);
+  const rows = await db.prepare(`SELECT cv.id,cv.match_label,cv.quando,cv.luogo,cv.stato,d.nome disciplina,d.dominio
+                           FROM convocazioni cv JOIN discipline d ON d.id=cv.disciplina_id
+                           WHERE cv.socio_id=? ORDER BY cv.created_at DESC`).all(socio.id);
+  res.json(rows);
+});
+publicRouter.post("/prenotazioni", async (req, res) => {
+  const { tessera_code, risorsa, giorno, turno, ospiti } = req.body || {};
+  const socio = tessera_code ? await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
+  const ris = risorsa ? await db.prepare("SELECT id,nome,tipo FROM risorse WHERE chiave=?").get(risorsa) : null;
+  if (ris?.tipo === "coworking") {
+    const u = await cowoUsati(giorno);
+    const richiesti = periodiDi(turno);
+    const pieno = richiesti.filter((p) => (u[p] || 0) >= COWO_MAX);
+    if (pieno.length) {
+      return res.status(409).json({
+        ok: false,
+        error: `Coworking al completo (${pieno.join(" e ")}): max ${COWO_MAX} posti per turno.`,
+        disponibilita: { mattina: Math.max(0, COWO_MAX - u.mattina), pomeriggio: Math.max(0, COWO_MAX - u.pomeriggio) }
+      });
+    }
+  }
+  if (ris?.tipo === "tavolo") {
+    const persone = Math.max(1, Number(req.body?.persone || ospiti) || 1);
+    const usati = (await db.prepare(`SELECT COALESCE(SUM(CASE WHEN ospiti>0 THEN ospiti ELSE 1 END),0) n FROM prenotazioni p JOIN risorse r ON r.id=p.risorsa_id
+      WHERE r.tipo='tavolo' AND p.stato='confermata' AND p.giorno=? AND p.turno=?`).get(giorno || "", turno || "")).n;
+    if (usati + persone > TAVOLO_MAX_COPERTI) {
+      return res.status(409).json({ ok: false, error: `Turno ${turno || ""} al completo: restano ${Math.max(0, TAVOLO_MAX_COPERTI - usati)} coperti.`, posti_liberi: Math.max(0, TAVOLO_MAX_COPERTI - usati) });
+    }
+  }
+  const coperti = ris?.tipo === "tavolo" ? Math.max(1, Number(req.body?.persone || ospiti) || 1) : Number(ospiti) || 0;
+  const info = await db.prepare(`INSERT INTO prenotazioni (socio_id,risorsa_id,risorsa_nome,giorno,turno,ospiti)
+                           VALUES (?,?,?,?,?,?)`).run(socio?.id ?? null, ris?.id ?? null, ris?.nome ?? risorsa ?? "Evento", giorno ?? null, turno ?? null, coperti);
+  audit(tessera_code || "ospite", "prenotazione", "prenotazioni", info.lastInsertRowid, ris?.nome || "");
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+publicRouter.post("/convocazioni/:id/risposta", async (req, res) => {
+  const { stato } = req.body || {};
+  const val = stato === "disponibile" ? "disponibile" : "non_disponibile";
+  const cv = await db.prepare("SELECT socio_id FROM convocazioni WHERE id=?").get(req.params.id);
+  await db.prepare("UPDATE convocazioni SET stato=? WHERE id=?").run(val, req.params.id);
+  let dinieghi = 0, obbligatoria = false;
+  if (cv?.socio_id) {
+    const so = await db.prepare("SELECT tipo_profilo,dinieghi FROM soci WHERE id=?").get(cv.socio_id);
+    if (so) {
+      if (val === "non_disponibile" && so.tipo_profilo !== "ospite_temporaneo") {
+        dinieghi = so.dinieghi + 1;
+        await db.prepare("UPDATE soci SET dinieghi=? WHERE id=?").run(dinieghi, cv.socio_id);
+      } else dinieghi = so.dinieghi;
+      obbligatoria = so.tipo_profilo !== "ospite_temporaneo" && dinieghi >= 3;
+    }
+  }
+  audit("socio", "risposta_convocazione", "convocazioni", req.params.id, val);
+  res.json({ ok: true, stato: val, dinieghi, obbligatoria });
+});
+publicRouter.post("/proposte", async (req, res) => {
+  const { tessera_code, tipo, titolo, dettaglio } = req.body || {};
+  const socio = tessera_code ? await db.prepare("SELECT id FROM soci WHERE tessera_code=?").get(tessera_code) : null;
+  const info = await db.prepare("INSERT INTO proposte (socio_id,tipo,titolo,dettaglio) VALUES (?,?,?,?)").run(socio?.id ?? null, tipo === "openmic" ? "openmic" : "vinile", titolo ?? "", dettaglio ?? "");
+  audit(tessera_code || "ospite", "proposta", "proposte", info.lastInsertRowid, tipo || "");
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+function slotDiCampo(campo) {
+  const toMin = (t) => {
+    const [h, m] = String(t || "0:0").split(":").map(Number);
+    return h * 60 + (m || 0);
+  };
+  const toHHMM = (x) => String(Math.floor(x / 60)).padStart(2, "0") + ":" + String(x % 60).padStart(2, "0");
+  const start = Math.max(toMin(campo.apertura), campo.ora_min ? toMin(campo.ora_min) : 0);
+  const end = toMin(campo.chiusura);
+  const step = Math.max(15, Number(campo.durata_slot) || 60);
+  const out = [];
+  for (let t = start; t + step <= end + 1e-4; t += step) out.push(toHHMM(t));
+  return out;
+}
+var CAMPI_COLS = "id,nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,max_slot_prenotazione,max_pren_settimana";
+function settimanaDi(dataISO) {
+  const d = /* @__PURE__ */ new Date(dataISO + "T12:00:00Z");
+  const dow = (d.getUTCDay() + 6) % 7;
+  const lun = new Date(d.getTime() - dow * 864e5);
+  const dom = new Date(lun.getTime() + 6 * 864e5);
+  return { da: lun.toISOString().slice(0, 10), a: dom.toISOString().slice(0, 10) };
+}
+var socioAttivoByTessera = async (t) => t ? await db.prepare("SELECT id,nome,cognome,attivo FROM soci WHERE tessera_code=?").get(t) : null;
+async function slotBloccati(campoId, data) {
+  const out = /* @__PURE__ */ new Map();
+  const rows = await db.prepare("SELECT slot_da,slot_a,motivo,nota FROM campi_blocchi WHERE campo_id=? AND data=?").all(campoId, data);
+  return { rows, out };
+}
+function slotDentroBlocco(slot, b) {
+  return String(slot) >= String(b.slot_da || "00:00") && String(slot) <= String(b.slot_a || "23:59");
+}
+async function prenSettimana(campoId, socioId, dataISO) {
+  if (!socioId) return 0;
+  const w = settimanaDi(dataISO);
+  const r = await db.prepare(
+    "SELECT COUNT(DISTINCT partita_id) n FROM prenotazioni_campo WHERE campo_id=? AND titolare_socio_id=? AND stato='prenotato' AND data BETWEEN ? AND ?"
+  ).get(campoId, socioId, w.da, w.a);
+  return Number(r?.n || 0);
+}
+publicRouter.get("/campi", async (req, res) => {
+  const rows = await db.prepare(`SELECT ${CAMPI_COLS} FROM campi WHERE attivo=1 ORDER BY ordine,id`).all();
+  res.json(rows);
+});
+publicRouter.get("/campi/:id/disponibilita", async (req, res) => {
+  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
+  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
+  const data = String(req.query.data || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida (YYYY-MM-DD)" });
+  const occ = await db.prepare("SELECT * FROM prenotazioni_campo WHERE campo_id=? AND data=? AND stato='prenotato'").all(campo.id, data);
+  const partite = await db.prepare("SELECT * FROM partite_aperte WHERE campo_id=? AND data=? AND stato IN ('aperta','completa')").all(campo.id, data);
+  const { rows: blocchi } = await slotBloccati(campo.id, data);
+  const iscrittiCount = {};
+  for (const p of partite) iscrittiCount[p.id] = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+  const slots = slotDiCampo(campo).map((slot) => {
+    const o = occ.find((x) => x.slot === slot);
+    if (!o) {
+      const b = blocchi.find((x) => slotDentroBlocco(slot, x));
+      if (b) return { slot, stato: "bloccato", motivo: b.motivo || "torneo", nota: b.nota || "" };
+      return { slot, stato: "libero" };
+    }
+    if (o.partita_id) {
+      const p = partite.find((x) => x.id === o.partita_id);
+      if (p) {
+        const aperta = p.aperta_ai_soci !== 0;
+        return {
+          slot,
+          stato: aperta ? "partita" : "privata",
+          partita_id: p.id,
+          posti_totali: p.posti_totali,
+          iscritti: iscrittiCount[p.id] || 0,
+          livello: p.livello || "",
+          titolare: p.creatore_nome || "",
+          creatore: p.creatore_nome || "",
+          nome: p.creatore_nome || "Prenotato",
+          completa: p.stato === "completa"
+        };
+      }
+    }
+    return { slot, stato: "privata", nome: o.nome || "Prenotato", titolare: o.nome || "" };
+  });
+  let quota = null;
+  const socio = await socioAttivoByTessera(req.query.tessera_code);
+  if (socio && socio.attivo !== 0) {
+    const usate = await prenSettimana(campo.id, socio.id, data);
+    quota = { usate, massimo: campo.max_pren_settimana, residue: Math.max(0, campo.max_pren_settimana - usate) };
+  }
+  res.json({
+    campo: {
+      id: campo.id,
+      nome: campo.nome,
+      sport: campo.sport,
+      durata_slot: campo.durata_slot,
+      posti_default: campo.posti_default,
+      max_slot_prenotazione: campo.max_slot_prenotazione,
+      max_pren_settimana: campo.max_pren_settimana
+    },
+    data,
+    quota,
+    slots
+  });
+});
+async function slotConsecutiviLiberi(campo, data, slot, nSlot) {
+  const tutti = slotDiCampo(campo);
+  const i = tutti.indexOf(slot);
+  if (i < 0) return { error: "Orario non valido per questo campo" + (campo.ora_min ? ` (dalle ${campo.ora_min})` : "") };
+  if (i + nSlot > tutti.length) return { error: "La durata scelta supera l'orario di chiusura" };
+  const scelti = tutti.slice(i, i + nSlot);
+  const { rows: blocchi } = await slotBloccati(campo.id, data);
+  for (const s of scelti) {
+    const ex = await db.prepare("SELECT id FROM prenotazioni_campo WHERE campo_id=? AND data=? AND slot=? AND stato='prenotato'").get(campo.id, data, s);
+    if (ex) return { error: `Slot ${s} gi\xE0 occupato` };
+    const b = blocchi.find((x) => slotDentroBlocco(s, x));
+    if (b) return { error: `Campo non disponibile alle ${s}${b.motivo ? " (" + b.motivo + ")" : ""}` };
+  }
+  return { scelti };
+}
+async function creaPrenotazione(req, res, apertaDiDefault) {
+  const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
+  if (!campo) return res.status(404).json({ error: "Campo non trovato" });
+  const { tessera_code, data, slot, livello, note } = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || ""))) return res.status(400).json({ error: "Data non valida" });
+  const socio = await socioAttivoByTessera(tessera_code);
+  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
+  if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const maxSlot = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
+  const nSlot = Math.max(1, Number(req.body?.n_slot) || 1);
+  if (nSlot > maxSlot) return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito` });
+  const usate = await prenSettimana(campo.id, socio.id, data);
+  if (usate >= campo.max_pren_settimana) {
+    return res.status(409).json({ error: `Hai gi\xE0 ${usate} prenotazioni questa settimana su ${campo.nome} (massimo ${campo.max_pren_settimana})` });
+  }
+  const chk = await slotConsecutiviLiberi(campo, data, slot, nSlot);
+  if (chk.error) return res.status(409).json({ error: chk.error });
+  const aperta = req.body?.aperta_ai_soci == null ? apertaDiDefault : !!req.body.aperta_ai_soci;
+  const posti = Number(campo.posti_default) || 4;
+  const nome = (socio.nome + " " + (socio.cognome || "")).trim();
+  const slotFine = chk.scelti[chk.scelti.length - 1];
+  const pi = await db.prepare(
+    "INSERT INTO partite_aperte (campo_id,data,slot,posti_totali,livello,note,stato,creatore_tessera,creatore_nome,aperta_ai_soci,n_slot,slot_fine,titolare_socio_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).run(campo.id, data, slot, posti, livello || null, note || null, aperta ? "aperta" : "completa", tessera_code, nome, aperta ? 1 : 0, nSlot, slotFine, socio.id);
+  const partitaId = Number(pi.lastInsertRowid);
+  const ins = db.prepare("INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato,partita_id,titolare_socio_id) VALUES (?,?,?,?,?,?,?,?,?,?)");
+  for (const s of chk.scelti) await ins.run(campo.id, data, s, aperta ? "partita" : "privata", socio.id, tessera_code, nome, "prenotato", partitaId, socio.id);
+  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(partitaId, socio.id, tessera_code, nome);
+  audit(tessera_code, aperta ? "apre_partita" : "prenota_campo", "campi", campo.id, `${data} ${slot}-${slotFine} \xB7 ${posti} posti`);
+  if (aperta) await notifyMancaUno(partitaId);
+  res.status(201).json({
+    ok: true,
+    partita_id: partitaId,
+    id: partitaId,
+    posti_totali: posti,
+    n_slot: nSlot,
+    slot_fine: slotFine,
+    aperta_ai_soci: aperta,
+    quota: { usate: usate + 1, massimo: campo.max_pren_settimana, residue: Math.max(0, campo.max_pren_settimana - usate - 1) }
+  });
+}
+publicRouter.post("/campi/:id/prenota", (req, res) => creaPrenotazione(req, res, false));
+publicRouter.post("/campi/:id/partita", (req, res) => creaPrenotazione(req, res, true));
+publicRouter.post("/prenotazioni-campo/:id/annulla", async (req, res) => {
+  const p = await db.prepare("SELECT * FROM prenotazioni_campo WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Prenotazione non trovata" });
+  if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue prenotazioni" });
+  if (p.partita_id) {
+    await db.prepare("UPDATE partite_aperte SET stato='annullata' WHERE id=?").run(p.partita_id);
+    await db.prepare("UPDATE prenotazioni_campo SET stato='annullato' WHERE partita_id=?").run(p.partita_id);
+  } else {
+    await db.prepare("UPDATE prenotazioni_campo SET stato='annullato' WHERE id=?").run(p.id);
+  }
+  audit(req.body?.tessera_code || "socio", "annulla_campo", "campi", p.campo_id, `${p.data} ${p.slot}`);
+  res.json({ ok: true });
+});
+async function notifyMancaUno(partitaId) {
+  try {
+    const p = await db.prepare("SELECT pa.*, c.nome AS campo_nome, c.sport FROM partite_aperte pa JOIN campi c ON c.id=pa.campo_id WHERE pa.id=?").get(partitaId);
+    if (!p || p.stato !== "aperta" || p.aperta_ai_soci === 0) return;
+    const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+    if (p.posti_totali - n !== 1) return;
+    const iscritti = new Set((await db.prepare("SELECT socio_id FROM partita_iscritti WHERE partita_id=? AND socio_id IS NOT NULL").all(p.id)).map((x) => x.socio_id));
+    const soci = await db.prepare("SELECT id FROM soci WHERE attivo=1 AND notifiche_push=1").all();
+    const titolo = "Manca 1 giocatore \u{1F3BE}";
+    const corpo = `${p.campo_nome} \xB7 ${p.data} ${p.slot}${p.livello ? " \xB7 " + p.livello : ""} \u2014 unisciti alla partita!`;
+    const ins = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
+    let cnt = 0;
+    for (const s of soci) {
+      if (iscritti.has(s.id)) continue;
+      await ins.run(s.id, "push", "campi", titolo, corpo);
+      if (++cnt >= 100) break;
+    }
+    audit("sistema", "manca_uno", "campi", p.campo_id, `${cnt} avvisati`);
+  } catch (_) {
+  }
+}
+publicRouter.get("/campi/partite-aperte", async (req, res) => {
+  const data = req.query.data ? String(req.query.data).slice(0, 10) : null;
+  const base = "SELECT p.*, c.nome AS campo_nome, c.sport FROM partite_aperte p JOIN campi c ON c.id=p.campo_id WHERE p.stato='aperta' AND p.aperta_ai_soci=1";
+  const q = data ? await db.prepare(base + " AND p.data=? ORDER BY p.data,p.slot").all(data) : await db.prepare(base + " ORDER BY p.data,p.slot").all();
+  const out = [];
+  for (const p of q) {
+    const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+    out.push({ id: p.id, campo_id: p.campo_id, campo_nome: p.campo_nome, sport: p.sport, data: p.data, slot: p.slot, slot_fine: p.slot_fine || p.slot, posti_totali: p.posti_totali, iscritti: n, mancano: Math.max(0, p.posti_totali - n), livello: p.livello || "", note: p.note || "", titolare: p.creatore_nome || "", creatore: p.creatore_nome || "" });
+  }
+  res.json(out);
+});
+publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
+  const p = await db.prepare("SELECT * FROM partite_aperte WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "aperta") return res.status(409).json({ error: "Partita non disponibile" });
+  if (p.aperta_ai_soci === 0) return res.status(409).json({ error: "Prenotazione riservata: non aperta ai soci" });
+  const { tessera_code } = req.body || {};
+  const socio = await socioAttivoByTessera(tessera_code);
+  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per unirti" });
+  if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const gia = await db.prepare("SELECT id FROM partita_iscritti WHERE partita_id=? AND tessera_code=?").get(p.id, tessera_code);
+  if (gia) return res.status(409).json({ error: "Sei gi\xE0 iscritto a questa partita" });
+  const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
+  if (n >= p.posti_totali) return res.status(409).json({ error: "Partita gi\xE0 al completo" });
+  const nome = (socio.nome + " " + (socio.cognome || "")).trim();
+  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(p.id, socio.id, tessera_code, nome);
+  const nuovi = n + 1;
+  const completa = nuovi >= p.posti_totali;
+  if (completa) await db.prepare("UPDATE partite_aperte SET stato='completa' WHERE id=?").run(p.id);
+  audit(tessera_code, "unisce_partita", "campi", p.campo_id, `${p.data} ${p.slot}`);
+  if (!completa) await notifyMancaUno(p.id);
+  res.json({ ok: true, iscritti: nuovi, posti_totali: p.posti_totali, completa });
+});
+
+// server/seed.js
+init_auth();
+init_crypto();
+init_db();
+init_tournament();
+var force = process.argv.includes("--force");
+async function seed({ verbose = false } = {}) {
+  await initSchema();
+  const already = (await db.prepare("SELECT count(*) c FROM casate").get()).c;
+  if (already > 0 && !force) {
+    if (verbose) console.log("DB gi\xE0 popolato \u2014 salto il seed (usa --force per riscrivere).");
+    return;
+  }
+  if (force) {
+    for (const t of ["audit_log", "allegati", "strutture", "partita_iscritti", "partite_aperte", "prenotazioni_campo", "campi", "comanda_righe", "comande", "menu_articoli", "magazzino_movimenti", "magazzino_articoli", "cdc_prestiti", "cdc_check", "cdc_caffe_conte", "cdc_giochi", "cdc_caffe", "proposte", "serate_prenotazioni", "serate", "convocazioni", "partite", "classifica", "gironi", "discipline", "prenotazioni", "risorse", "eventi", "soci", "bussola", "luoghi", "contest_esiti", "contest", "casate", "utenti_admin"]) {
+      await db.exec(`DELETE FROM ${t};`);
+    }
+  }
+  const CASATE = [
+    ["Aretusa", "#2E6DA4", "l'onda", 62],
+    ["Ortigia", "#B7791F", "la rosa dei venti", 66],
+    ["Neapolis", "#C0553F", "il teatro", 54],
+    ["Dionisio", "#6E5AA6", "la maschera", 50],
+    ["Ciane", "#4d7a4a", "il papiro", 47],
+    ["Plemmirio", "#12324F", "il faro", 44],
+    ["Epipoli", "#7A8790", "le mura", 40],
+    ["Anapo", "#2E7D77", "il fiume", 37]
+  ];
+  const insCasata = db.prepare("INSERT INTO casate (nome,colore,motto,punti) VALUES (?,?,?,?)");
+  const casataId = {};
+  for (const c of CASATE) {
+    const r = await insCasata.run(...c);
+    casataId[c[0]] = r.lastInsertRowid;
+  }
+  const EVENTI = [
+    // Lunedì lasciato VUOTO di proposito: coincide con l'inizio dei periodi di vacanza (arrivi/partenze degli esterni).
+    ["lun", "Luned\xEC", "Giornata libera", "", "#7A8790", "Arrivi, partenze e riposo", "Nessuna attivit\xE0 in cartellone: il luned\xEC coincide con il cambio degli ospiti (arrivi e partenze). \xC8 il giorno di riposo del residence.", null, null, "libero", 1],
+    ["mar", "Marted\xEC", "Vinile & Vino", "Bussola Garden", "#C0553F", "Scegli tu la musica della serata", "La serata la costruisci tu: proponi un vinile, i brani e il perch\xE9. Le proposte della settimana diventano la scaletta di quella successiva.", "Proponi un vinile", "sheet-vinile", "serata", 2],
+    ["mer", "Mercoled\xEC", "Cinema d'autore sotto le stelle", "Bussola Stage", "#12324F", "Ortigia Film Festival & titoli d'autore", "Una proiezione a settimana: opere premiate all'Ortigia Film Festival, alternate a titoli pi\xF9 leggeri ma sempre d'autore.", "Prenota un posto", null, "cinema", 3],
+    ["gio", "Gioved\xEC", "Jazz & Cocktail", "Bussola Garden", "#2E7D77", "La serata-firma \xB7 trio live", "La serata-firma della Bussola: trio live acustico, luci basse, cocktail. Si cena prima dello spettacolo.", "Prenota un tavolo", null, "serata", 4],
+    ["ven", "Venerd\xEC", "Serata dei Clan", "Bussola Stage", "#6E5AA6", "Le otto casate si sfidano", "Le otto casate si sfidano dall\u2019apericena a tarda sera. Questa settimana: gara di karaoke. Coinvolgi un ospite e la tua casata guadagna punti extra.", "Vai alla Coppa", "go-coppa", "serata", 5],
+    ["sab", "Sabato", "Live Session", "Bussola Stage", "#B7791F", "Band e cantautori emergenti", "Band e cantautori emergenti dal vivo sul Bussola Stage.", "Prenota un posto", null, "serata", 6],
+    ["dom", "Domenica", "Open Mic", "Bussola Stage", "#B7791F", "Tre minuti di palco per te", "Microfono aperto: tre minuti a testa per cantare, recitare un monologo, fare stand-up (linguaggio moderato) o suonare.", "Salgo sul palco", "sheet-openmic", "serata", 7]
+  ];
+  const insEvento = db.prepare("INSERT INTO eventi (chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+  for (const e of EVENTI) await insEvento.run(...e);
+  const RISORSE = [
+    ["pickleball", "Campo di Pickleball", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera sul palco."],
+    ["soft", "Campo di Soft tennis", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera."],
+    ["cowo", "Postazione Coworking", "coworking", "Casa di Carta \xB7 wi-fi e caff\xE8", JSON.stringify(["Mattina (9\u201313)", "Pomeriggio (14\u201318)", "Giornata intera"]), null],
+    ["tavolo", "Tavolo per la cena", "tavolo", "~40 coperti serviti \xB7 turni 20:00 e 21:30", JSON.stringify(["20:00", "21:30"]), "Indica il numero di persone. All\u2019apertura di stagione c\u2019\xE8 un unico turno alle 20:00 (segue la sfilata dei clan)."]
+  ];
+  const insRis = db.prepare("INSERT INTO risorse (chiave,nome,tipo,sottotitolo,slots,nota) VALUES (?,?,?,?,?,?)");
+  for (const r of RISORSE) await insRis.run(...r);
+  const CAS_A = ["Aretusa", "Ortigia", "Ciane", "Epipoli"];
+  const CAS_B = ["Neapolis", "Dionisio", "Plemmirio", "Anapo"];
+  const SPORT = [
+    [
+      "pickle",
+      "Pickleball",
+      [[3, 3, 9], [3, 2, 6], [3, 1, 3], [3, 0, 0]],
+      [[3, 2, 6], [3, 2, 6], [3, 1, 3], [3, 1, 3]],
+      [["Aretusa", "Ortigia", "Dom 17:30", "Campo 1"], ["Neapolis", "Dionisio", "Dom 19:00", "Campo 1"], ["Ciane", "Epipoli", "Mar 17:30", "Campo 1"]],
+      [["Aretusa", "Ciane", "11\u20136"], ["Ortigia", "Epipoli", "11\u20139"], ["Plemmirio", "Anapo", "9\u201311"]]
+    ],
+    [
+      "soft",
+      "Soft tennis",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [["Aretusa", "Plemmirio", "Gio 18:00", "Campo 1"], ["Ortigia", "Ciane", "Sab 17:30", "Campo 1"]],
+      [["Neapolis", "Anapo", "6\u20132"], ["Dionisio", "Epipoli", "6\u20134"]]
+    ],
+    [
+      "pingpong",
+      "Ping pong",
+      [[3, 3, 6], [3, 2, 4], [3, 1, 2], [3, 0, 0]],
+      [[3, 2, 4], [3, 2, 4], [3, 1, 2], [3, 1, 2]],
+      [["Ciane", "Aretusa", "Lun 18:30", "Bussola Bar"], ["Anapo", "Neapolis", "Mer 18:30", "Bussola Bar"]],
+      [["Ortigia", "Epipoli", "3\u20131"], ["Dionisio", "Plemmirio", "3\u20132"]]
+    ],
+    [
+      "balilla",
+      "Calcio balilla",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
+      [["Aretusa", "Epipoli", "Ven 19:00", "Bussola Bar"], ["Neapolis", "Plemmirio", "Ven 19:30", "Bussola Bar"]],
+      [["Ortigia", "Ciane", "10\u20137"], ["Dionisio", "Anapo", "10\u20134"]]
+    ],
+    [
+      "basket",
+      "Basket 3\xD73",
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [["Aretusa", "Ciane", "Sab 18:00", "Campo del residence"], ["Neapolis", "Plemmirio", "Dom 18:00", "Campo del residence"]],
+      [["Ortigia", "Epipoli", "21\u201315"], ["Dionisio", "Anapo", "21\u201312"]]
+    ],
+    [
+      "calcetto",
+      "Calcetto a 5",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
+      [["Aretusa", "Epipoli", "Ven 18:30", "Campo del residence"], ["Neapolis", "Dionisio", "Sab 19:00", "Campo del residence"]],
+      [["Ortigia", "Ciane", "5\u20133"], ["Plemmirio", "Anapo", "4\u20134"]]
+    ]
+  ];
+  const GIOCHI = [
+    [
+      "burraco",
+      "Burraco",
+      [[3, 3, 9], [3, 2, 6], [3, 1, 3], [3, 0, 0]],
+      [[3, 2, 6], [3, 2, 6], [3, 1, 3], [3, 1, 3]],
+      [["Aretusa", "Neapolis", "Mar 21:00", "Casa di Carta"], ["Ortigia", "Dionisio", "Gio 21:00", "Casa di Carta"]],
+      [["Ciane", "Epipoli", "2\u20130"], ["Plemmirio", "Anapo", "1\u20132"]]
+    ],
+    [
+      "scala",
+      "Scala 40",
+      [[2, 2, 6], [2, 1, 3], [2, 1, 3], [2, 0, 0]],
+      [[2, 2, 6], [2, 1, 3], [2, 0, 1], [2, 0, 1]],
+      [["Aretusa", "Epipoli", "Gio 21:30", "Casa di Carta"], ["Neapolis", "Anapo", "Sab 21:00", "Casa di Carta"]],
+      [["Ortigia", "Ciane", "1\u20130"], ["Dionisio", "Plemmirio", "1\u20131"]]
+    ],
+    [
+      "briscola",
+      "Briscola/Scopa",
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [[2, 2, 4], [2, 1, 2], [2, 1, 2], [2, 0, 0]],
+      [["Aretusa", "Ciane", "Ven 21:00", "Casa di Carta"], ["Neapolis", "Dionisio", "Dom 21:00", "Casa di Carta"]],
+      [["Ortigia", "Epipoli", "2\u20131"], ["Plemmirio", "Anapo", "2\u20130"]]
+    ],
+    [
+      "scacchi",
+      "Scacchi/Dama",
+      [[3, 3, 6], [3, 2, 4], [3, 1, 2], [3, 0, 0]],
+      [[3, 2, 4], [3, 2, 4], [3, 1, 2], [3, 1, 2]],
+      [["Aretusa", "Ortigia", "Lun 21:00", "Casa di Carta"], ["Ciane", "Epipoli", "Mer 21:00", "Casa di Carta"]],
+      [["Dionisio", "Plemmirio", "1\u20130"], ["Neapolis", "Anapo", "\xBD\u2013\xBD"]]
+    ]
+  ];
+  const MINMAX = {
+    pickle: [2, 2],
+    soft: [2, 2],
+    pingpong: [1, 2],
+    balilla: [2, 2],
+    basket: [3, 4],
+    calcetto: [5, 7],
+    burraco: [2, 4],
+    scala: [2, 4],
+    briscola: [2, 4],
+    scacchi: [1, 1]
+  };
+  const insDisc = db.prepare("INSERT INTO discipline (dominio,chiave,nome,attivo,min_giocatori,max_giocatori,ordine) VALUES (?,?,?,?,?,?,?)");
+  const discIds = [];
+  async function loadDomain(dom, list) {
+    for (let i = 0; i < list.length; i++) {
+      const d = list[i];
+      const mm = MINMAX[d[0]] || [1, 1];
+      discIds.push((await insDisc.run(dom, d[0], d[1], 1, mm[0], mm[1], i)).lastInsertRowid);
+    }
+  }
+  await loadDomain("sport", SPORT);
+  await loadDomain("giochi", GIOCHI);
+  const demoScores = [[2, 1], [1, 1], [2, 0], [1, 0]];
+  for (const did of discIds) {
+    await generaCalendario(did);
+    const g1 = await db.prepare("SELECT id FROM partite WHERE disciplina_id=? AND giornata=1").all(did);
+    for (let k = 0; k < g1.length; k++) {
+      await registraRisultato(g1[k].id, demoScores[k % demoScores.length][0], demoScores[k % demoScores.length][1]);
+    }
+  }
+  const BUSSOLA = [
+    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1],
+    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2],
+    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3],
+    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4],
+    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5],
+    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1],
+    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2],
+    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3],
+    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4],
+    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5],
+    ["rifiuti", "Lun \xB7 Organico", "", "", 1],
+    ["rifiuti", "Mar \xB7 Plastica", "", "", 2],
+    ["rifiuti", "Mer \xB7 Carta", "", "", 3],
+    ["rifiuti", "Gio \xB7 Organico", "", "", 4],
+    ["rifiuti", "Ven \xB7 Vetro", "", "", 5],
+    ["rifiuti", "Sab \xB7 Indifferenziato", "", "", 6],
+    ["orari", "Silenzio pomeridiano", "Dalle 14:00 alle 17:00 \u2014 riposo per tutti.", "", 1],
+    ["orari", "Silenzio notturno", "Dopo le 23:30 \u2014 si abbassano voci e musica.", "", 2]
+  ];
+  const insBus = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)");
+  for (const b of BUSSOLA) await insBus.run(...b);
+  const insContest = db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,vincitore,punti_scala,esito_assegnato,attivo) VALUES (?,?,?,?,?,?,?,?,1)");
+  await insContest.run(
+    "Apertura di stagione \u2014 Sfilata dei Clan",
+    "sfilata",
+    "apertura stagione",
+    "Dopo l'unico turno di cena delle 20:00, le otto casate si presentano in sfilata. Chi dimostra di aver agito come vero clan \u2014 abbigliamento coordinato, un motto, un grido di battaglia, un rito propiziatorio \u2014 prende subito punti. Ai pi\xF9 simpatici, geniali, divertenti e fantasiosi vanno 10 punti. Il voto lo esprimono gli altri clan.",
+    "annunciato",
+    null,
+    JSON.stringify([10, 0, 0, 0, 0, 0, 0, 0]),
+    0
+  );
+  await insContest.run(
+    "Il mio nome \xE8 Bond, James Bond",
+    "cocktail",
+    "25\u201331 agosto",
+    "Dati 3 liquori, un'acqua tonica e un selz, ogni casata crea il proprio cocktail. Banco bar e attrezzatura a disposizione; presentate nome e ricetta. I primi 3 finalisti saranno in vendita nel weekend; a fine settimana la graduatoria della giuria + il bonus vendite (4/2/1 pezzi venduti) assegna i punti Coppa.",
+    "annunciato",
+    null,
+    null,
+    0
+  );
+  const insSerata = db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,ordine) VALUES (?,?,?,?,?,?,?,?,?)");
+  await insSerata.run(
+    "apertura",
+    "Apertura di stagione",
+    "2026-05-30",
+    "Sab 30 maggio \xB7 unico turno 20:00",
+    "Presentazione e sfilata dei Clan",
+    "Cena unica alle 20:00, poi presentazione e sfilata delle otto casate. I clan che si presentano come tali (abbigliamento coordinato, motto, grido, rito) prendono subito punti: 10 al migliore, votato dagli altri clan.",
+    25,
+    120,
+    1
+  );
+  await insSerata.run(
+    "tema_luglio",
+    "Serata a tema \xB7 fine luglio",
+    "2026-07-25",
+    "Sab 25 luglio \xB7 20:00",
+    "Tema da annunciare",
+    "La serata a tema di fine luglio: il tema viene svelato dal CdA. Cena a numero chiuso con prenotazione.",
+    30,
+    100,
+    2
+  );
+  await insSerata.run(
+    "ferragosto",
+    "Cena di Ferragosto",
+    "2026-08-15",
+    "Sab 15 agosto \xB7 20:00",
+    "Gran serata",
+    "La serata clou dell\u2019estate: cena speciale di Ferragosto con musica dal vivo. Posti limitati, prenotazione consigliata.",
+    40,
+    140,
+    3
+  );
+  await insSerata.run(
+    "fine_stagione",
+    "Chiusura di stagione",
+    "2026-09-12",
+    "Sab 12 settembre \xB7 20:00",
+    "Premiazione Coppa delle Casate",
+    "L\u2019ultima grande serata: cena, premiazione della Coppa delle Casate e Albo d\u2019Oro. Si saluta l\u2019estate insieme.",
+    30,
+    120,
+    4
+  );
+  const insLuogo = db.prepare("INSERT INTO luoghi (chiave,nome,lat,lng,ordine) VALUES (?,?,?,?,?)");
+  await insLuogo.run("chiosco", "Chiosco La Bussola", 36.967766, 15.221669, 1);
+  await insLuogo.run("isola", "Isola ecologica", 36.967209, 15.221206, 2);
+  const insSocio = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,notifiche_push,valida_fino)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  await insSocio.run("BR-2026-0001", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
+  await insSocio.run("BR-2026-0002", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
+  const genitoreId = (await insSocio.run("BR-2026-0003", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01")).lastInsertRowid;
+  await insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
+  await insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
+  await db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='BR-2026-0005'").run();
+  const residenteId = Number((await insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30")).lastInsertRowid);
+  await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(residenteId);
+  const struttInfo = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(residenteId, encryptJSON({
+    nome: "Villa Aretusa",
+    cir: "CIR-19091-BEA-00123",
+    cin: "IT089017C2X9ABC123",
+    regole: "Check-out entro le 10:00. Silenzio dopo le 23. Rifiuti secondo il calendario del residence. Vietato fumare all'interno. Animali ammessi su richiesta.",
+    isolato: "B",
+    numero: "14",
+    check_out: "10:00",
+    lat: 37.0361,
+    lng: 15.2969
+  }));
+  await db.prepare("UPDATE soci SET struttura_id=? WHERE tessera_code='BR-2026-0005'").run(Number(struttInfo.lastInsertRowid));
+  const ort = casataId["Ortigia"];
+  const compagni = [["Anna", "B."], ["Paolo", "C."], ["Elena", "D."], ["Davide", "F."], ["Marta", "G."], ["Sara", "L."]];
+  for (let i = 0; i < compagni.length; i++) {
+    const n = compagni[i];
+    await insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
+  }
+  const insRifTipo = db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)");
+  const RIF_TIPI = [["Organico", "#6b4a2b", 1], ["Plastica e lattine", "#d99a00", 2], ["Carta e cartone", "#2E6DA4", 3], ["Vetro", "#3f7a4a", 4], ["Indifferenziato", "#6b6f73", 5]];
+  for (const t of RIF_TIPI) await insRifTipo.run(...t);
+  await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run("Estivo", "18:30", "21:30", "22:00", JSON.stringify({ lun: ["Organico"], mar: ["Plastica e lattine"], mer: ["Carta e cartone"], gio: ["Organico"], ven: ["Carta e cartone", "Vetro"], sab: ["Indifferenziato"], dom: [] }), 1);
+  const insReg = db.prepare("INSERT INTO regolamenti (chiave,titolo,testo,ordine) VALUES (?,?,?,?)");
+  await insReg.run("coppa", "Coppa delle Casate", "Le otto casate si sfidano nelle discipline sportive e nei giochi durante il periodo di svolgimento. Ogni vittoria e pareggio assegna punti alla graduatoria; le migliori accedono a semifinali e finale. La classifica generale determina la Coppa della stagione.", 1);
+  await insReg.run("contest", "Serata dei Clan", "Il CdA lancia la sfida (cocktail, karaoke, recitazione\u2026) la settimana prima. La giuria stila una graduatoria (punti per posizione) a cui si somma il bonus vendite 4/2/1 alle prime tre casate per pezzi venduti. I punti finali si versano una sola volta in Coppa.", 2);
+  await insReg.run("proposte", "Vinile & Open Mic", "Le proposte musicali (vinile) e le esibizioni all'Open Mic raccolte durante la settimana diventano la scaletta di quella successiva. Linguaggio e contenuti moderati; ogni proposta \xE8 valutata dallo staff.", 3);
+  await db.prepare("INSERT OR REPLACE INTO cdc_caffe (id,giacenza,punto_riordino,confezione) VALUES (1,?,?,?)").run(120, 50, 100);
+  const insGioco = db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,ordine) VALUES (?,?,?,?,?)");
+  const GIOCHI_INV = [
+    ["Mazzi di carte francesi", "carte", 4, "ok"],
+    ["Mazzi di carte italiane", "carte", 2, "ok"],
+    ["Cluedo", "gioco_tavolo", 1, "ok"],
+    ["Monopoli", "gioco_tavolo", 1, "ok"],
+    ["Risiko", "gioco_tavolo", 1, "ok"],
+    ["Indovina Chi", "gioco_tavolo", 1, "ok"],
+    ["Scacchiere", "scacchi", 2, "ok"],
+    ["Set di pedine e scacchi", "scacchi", 2, "ok"]
+  ];
+  for (let i = 0; i < GIOCHI_INV.length; i++) {
+    const g = GIOCHI_INV[i];
+    await insGioco.run(g[0], g[1], g[2], g[3], i);
+  }
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const insArt = db.prepare("INSERT INTO magazzino_articoli (nome,area,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?)");
+  const MAG = [
+    // nome, area, unità, giacenza, punto_riordino, soglia_preavviso
+    // (il caffè NON è qui: lo gestisce l'upsert sotto, per non duplicare l'articolo creato dalla migrazione)
+    ["Bicchieri di carta", "chiosco", "pz", 300, 100, 150],
+    ["Acqua naturale 0,5L", "chiosco", "pz", 48, 24, 36],
+    ["Birra media", "chiosco", "pz", 60, 24, 40],
+    ["Patatine (buste)", "chiosco", "pz", 40, 20, 30],
+    ["Ghiaccio (sacchi)", "chiosco", "sacchi", 6, 4, 8],
+    ["Piatti biodegradabili", "serata_clan", "pz", 200, 80, 120],
+    ["Tovaglioli", "serate_tema", "conf", 10, 4, 6]
+  ];
+  for (let i = 0; i < MAG.length; i++) {
+    const a = MAG[i];
+    await insArt.run(a[0], a[1], a[2], a[3], a[4], a[5], i + 1, nowIso);
+  }
+  const exCaffe = await db.prepare("SELECT id FROM magazzino_articoli WHERE area='casa_di_carta' AND nome='Capsule caff\xE8'").get();
+  if (exCaffe) await db.prepare("UPDATE magazzino_articoli SET unita=?,giacenza=?,punto_riordino=?,soglia_preavviso=?,aggiornato_at=? WHERE id=?").run("capsule", 120, 50, 80, nowIso, exCaffe.id);
+  else await insArt.run("Capsule caff\xE8", "casa_di_carta", "capsule", 120, 50, 80, 0, nowIso);
+  const birra = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Birra media'").get();
+  const acqua = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Acqua naturale 0,5L'").get();
+  const patatine = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Patatine (buste)'").get();
+  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,1,?)");
+  const MENU = [
+    // nome, prezzo, stazione, punto(zona), categoria, magazzino_id
+    ["Panino salsiccia", 4.5, "cucina", "garden", "panini", null],
+    ["Panino vegetariano", 4, "cucina", "garden", "panini", null],
+    ["Hamburger", 5.5, "cucina", "garden", "panini", null],
+    ["Patatine fritte", 3, "cucina", "garden", "snack", null],
+    ["Patatine in busta", 1.5, "bar", "bar", "snack", patatine ? patatine.id : null],
+    ["Birra media", 4, "bar", "bar", "birre", birra ? birra.id : null],
+    ["Acqua 0,5L", 1, "bar", "comune", "bibite", acqua ? acqua.id : null],
+    ["Bibita in lattina", 2, "bar", "comune", "bibite", null],
+    ["Caff\xE8", 1, "bar", "bar", "caldi", null]
+  ];
+  for (let i = 0; i < MENU.length; i++) {
+    const m = MENU[i];
+    await insMenu.run(m[0], m[1], m[2], m[3], m[4], m[5], i + 1);
+  }
+  const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
+  const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
+  await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
+  await insAdmin.run("manager", hashPassword(process.env.MANAGER_PASSWORD || "manager2026"), "manager", null);
+  const staffCaps = JSON.stringify(["utenti", "utenti_ins", "casate", "cdc", "discipline", "tabellone", "contest", "serate", "proposte", "eventi", "magazzino", "comande"]);
+  await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff", staffCaps);
+  await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura", null);
+  audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
+  if (verbose) console.log("Seed completato: 8 casate, 7 eventi, 10 discipline, guida Bussola, 3 soci demo, 1 utente back office.");
+}
+if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(String(process.argv[1] || ""))) {
+  seed({ verbose: true }).catch((e) => {
+    console.error("Seed fallito:", e);
+    process.exit(1);
+  });
+}
+
 // build/entry.mjs
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 09:40" : "online";
+var BUILD = true ? "2026-08-18 10:53" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
