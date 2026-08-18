@@ -5822,7 +5822,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.56";
+var VERSION = "4.57";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -6099,7 +6099,6 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       <button class="btn gold block" id="gate_enter" style="margin-top:12px">Entra</button>
       <button class="btn ghost block" id="gate_email" style="margin-top:8px">Non ho la tessera \xB7 accedi con e-mail</button>
       <button class="btn navy block" id="gate_register" style="margin-top:8px">\u2728 Non hai un account? Registrati</button>
-      <button class="gate-demo" id="gate_demo">Guarda in anteprima (demo)</button>
     </div>
   </div>
 </div>
@@ -6605,7 +6604,7 @@ function renderDom(dom) {
 // ---- Overlay / sheet ------------------------------------------------------
 function setSheet(html) { $('#sheetbox').innerHTML = html; }
 function showOv() { $('#ov').classList.add('show'); $('.sheet').scrollTop = 0; }
-function closeOv() { $('#ov').classList.remove('show'); if (!state.tessera && !state.token) showGate(); }
+function closeOv() { $('#ov').classList.remove('show'); if (!state.token) showGate(); }
 function openEvent(k) {
   const e = state.data.eventi.find(x => x.chiave === k); if (!e) return;
   let btn;
@@ -7868,14 +7867,15 @@ async function init() {
   bindGate();
   applyScale(store.get('scale', 1));
   applyContrast(store.get('hc', false));
-  if (state.tessera) {
-    // Gi\xE0 identificato (o anteprima): entra direttamente
-    if (state.token) state.authed = true;
+  if (state.token) {
+    // Sessione valida: entra direttamente (login-first: serve un accesso vero, non la sola tessera)
+    state.authed = true;
     await enterApp();
     if (!store.get('seen', false)) $('#onb').classList.add('show');
     const h = location.hash.replace('#', ''); if (h && document.getElementById('s-' + h)) go(h);
   } else {
-    // Primo avvio senza identit\xE0: mostra l'accesso
+    // Nessuna sessione: si parte SEMPRE dall'accesso
+    if ($('#gate_tess') && state.tessera) $('#gate_tess').value = state.tessera; // pre-compila l'ultima tessera usata
     showGate();
   }
   // Il service worker \xE8 registrato dai tag PWA iniettati dal server (server/pwa.js).
@@ -9165,7 +9165,7 @@ var chiosco_default = `<!DOCTYPE html>
 <meta name="theme-color" content="#12324F">
 <title>Bussola Chiosco</title>
 <style>
-:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--line:#E3E1D6;--muted:#5a6670;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;}
+:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--line:#E3E1D6;--muted:#5a6670;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:16px}
 input,select,button{font-family:inherit;font-size:1rem}
@@ -9178,7 +9178,7 @@ input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;backgro
 .muted{color:var(--muted)}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
-.panel h3{color:var(--navy);font-size:1rem;margin-bottom:10px}
+.panel h3{color:var(--accent);font-size:1rem;margin-bottom:10px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
 /* topbar */
 #top{background:linear-gradient(135deg,#12324F,#1c4a6e);color:#fff;padding:calc(12px + env(safe-area-inset-top)) 16px 0;position:sticky;top:0;z-index:5}
@@ -9209,7 +9209,17 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 .tchip{font-size:.8rem;font-weight:800;color:#fff;border-radius:20px;padding:2px 10px;white-space:nowrap}
 .split{display:flex;flex-direction:column;gap:12px;min-height:calc(100vh - 150px)}
 .split>section{flex:1;min-height:180px;display:flex;flex-direction:column}
-.split>section>.shd{display:flex;align-items:center;gap:8px;font-weight:800;color:var(--navy);margin-bottom:8px;position:sticky;top:0}
+.split>section>.shd{display:flex;align-items:center;gap:8px;font-weight:800;color:var(--accent);margin-bottom:8px;position:sticky;top:0}
+.tcard .zacc{position:absolute;top:0;left:0;right:0;height:4px;border-radius:14px 14px 0 0}
+.tcard.clic{cursor:pointer}
+.tref{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:0 8px;border-radius:9px;font-weight:800;font-size:1.05rem;color:#fff}
+.tsub{font-size:.9rem;font-weight:800}
+/* modale dettaglio */
+.modal{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal.hide{display:none!important}
+.modal .mbg{position:absolute;inset:0;background:rgba(9,20,30,.55)}
+.mbox{position:relative;background:#fff;border-radius:18px;max-width:520px;width:100%;max-height:86vh;overflow:auto;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.mbox h3{color:var(--accent);margin-bottom:2px}
 .split>section>.board{overflow:auto;align-content:start;padding-bottom:4px}
 .split .divider{height:2px;background:repeating-linear-gradient(90deg,var(--line) 0 12px,transparent 12px 20px)}
 </style>
@@ -9253,6 +9263,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
   </div>
   <div id="view"></div>
 </div>
+
+<div id="modal" class="modal hide"><div class="mbg" id="modalBg"></div><div class="mbox" id="mbox"></div></div>
 
 <script>
 /* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
@@ -9457,6 +9469,21 @@ function applyZona() {
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
   const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
+  applyAccent();
+}
+// Accento-colore per FUNZIONE: identit\xE0 unica, ma la topbar e i titoli si tingono in base alla zona,
+// cos\xEC l'operatore sa sempre "dove si trova". Garden=verde \xB7 Bar=oro \xB7 Cucina=corallo \xB7 Magazzino=navy.
+const ZONA_ACCENT = {
+  garden:    { a: '#256b65', g1: '#1d5a54', g2: '#2f8a80', nome: 'Garden' },
+  bar:       { a: '#8a5a12', g1: '#6e4a12', g2: '#a9791f', nome: 'Bar' },
+  cucina:    { a: '#b14a35', g1: '#8f3826', g2: '#c8624b', nome: 'Cucina' },
+  magazzino: { a: '#12324f', g1: '#12324F', g2: '#1c4a6e', nome: 'Magazzino' },
+};
+function applyAccent() {
+  const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
+  document.documentElement.style.setProperty('--accent', z.a);
+  const top = document.querySelector('#top');
+  if (top) top.style.background = \`linear-gradient(135deg, \${z.g1}, \${z.g2})\`;
 }
 
 // Scarica un file (base64) restituito da un endpoint di export.
@@ -9629,31 +9656,61 @@ function statoGruppo(cs, rossoMin, nowMs) {
   return { key: 'arancio', since: null, mins: null, open, delivered };
 }
 const URG = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
-// Card TAVOLO (mappa Garden): numero grande, chip tempo, righe comanda, incasso su verde.
+// Accenti-zona (coerenti con la fase di comanda): Garden verde, Bar oro.
+const ACC_GARDEN = '#256b65', ACC_BAR = '#8a5a12';
+const hhmmOf = (since) => since ? new Date(since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+const chipOf = (st) => st.mins != null ? \`<span class="tchip" style="background:\${ZCOL[st.key].bd}">\${st.mins}\u2032</span>\` : (st.key === 'verde' ? '<span class="tchip" style="background:#3f8f4e">\u2714</span>' : '');
+// Card TAVOLO (mappa Garden): riferimento compatto (chip numero), accento verde, clic per dettaglio.
 function tavoloCard(tb) {
   const c = ZCOL[tb.st.key];
-  const hhmm = tb.st.since ? new Date(tb.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
   const items = tb.cs.flatMap(x => x.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`);
-  const chip = tb.st.mins != null ? \`<span class="tchip" style="background:\${c.bd}">\${tb.st.mins}\u2032</span>\` : (tb.st.key === 'verde' ? '<span class="tchip" style="background:#3f8f4e">\u2714</span>' : '');
   const libero = tb.st.key === 'arancio' && !tb.cs.length;
   const pay = tb.st.key === 'verde' ? \`<button class="btn gold sm" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:8px;width:100%">\u{1F4B6} Incassa</button>\` : '';
-  return \`<div class="tcard\${libero ? ' libero' : ''}" style="border-color:\${c.bd};background:\${c.bg}">
-    <div class="thd"><span class="tnum" style="color:\${c.tx}">\u{1F37D}\uFE0F \${tb.t}</span>\${chip}</div>
-    <div class="tst" style="color:\${c.tx}">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div>
-    \${items.length ? \`<div style="margin-top:8px;font-size:.82rem;color:#2a2a2a;line-height:1.45">\${items.slice(0, 6).join('<br>')}\${items.length > 6 ? '<br>\u2026' : ''}</div>\` : (libero ? '<div class="muted" style="margin-top:8px;font-size:.78rem">\u2014 libero \u2014</div>' : '')}
+  return \`<div class="tcard clic\${libero ? ' libero' : ''}" data-tdetail="\${tb.t}" style="border-color:\${c.bd};background:\${c.bg}">
+    <div class="zacc" style="background:\${ACC_GARDEN}"></div>
+    <div class="thd" style="margin-top:2px"><span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${tb.t}</span><span class="tsub" style="color:\${c.tx}">Tavolo</span></span>\${chipOf(tb.st)}</div>
+    <div class="tst" style="color:\${c.tx}">\${c.lb}\${tb.st.since ? ' \xB7 ' + hhmmOf(tb.st.since) : ''}</div>
+    \${items.length ? \`<div style="margin-top:8px;font-size:.82rem;color:#2a2a2a;line-height:1.45">\${items.slice(0, 5).join('<br>')}\${items.length > 5 ? \`<br><span class="muted">+\${items.length - 5} \u2026</span>\` : ''}</div>\` : (libero ? '<div class="muted" style="margin-top:8px;font-size:.78rem">\u2014 libero \u2014</div>' : '')}
     \${pay}</div>\`;
 }
-// Card CUCINA (per tavolo/nome): righe piatti con azioni Pronta/Consegna.
+// Card CUCINA (per tavolo/nome): riferimento differenziato Bar (nome, oro) / Garden (n\xB0 tavolo, verde), clic per dettaglio.
 function cucinaCard(g) {
   const c = ZCOL[g.st.key];
-  const label = g.zona === 'bar' ? ('\u{1F378} ' + esc(g.rif)) : ('\u{1F37D}\uFE0F ' + esc(g.rif));
-  const hhmm = g.st.since ? new Date(g.st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-  const chip = g.st.mins != null ? \`<span class="tchip" style="background:\${c.bd}">\${g.st.mins}\u2032</span>\` : (g.st.key === 'verde' ? '<span class="tchip" style="background:#3f8f4e">\u2714</span>' : '');
+  const isBar = g.zona === 'bar';
+  const acc = isBar ? ACC_BAR : ACC_GARDEN;
+  const ref = isBar
+    ? \`<span class="row" style="gap:6px"><span class="tsub" style="color:\${c.tx};font-size:1.02rem">\u{1F378} \${esc(g.rif)}</span></span>\`
+    : \`<span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${esc(g.rif)}</span><span class="tsub" style="color:\${c.tx}">Tavolo</span></span>\`;
   const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button>\`}</div>\`).join('');
-  return \`<div class="tcard" style="border-color:\${c.bd};background:\${c.bg}">
-    <div class="thd"><span style="font-size:1.15rem;font-weight:800;color:\${c.tx}">\${label}</span>\${chip}</div>
-    <div class="tst" style="color:\${c.tx}">\${c.lb}\${hhmm ? ' \xB7 ' + hhmm : ''}</div>
+  return \`<div class="tcard clic" data-kdetail="\${g.zona}|\${esc(g.rif)}" style="border-color:\${c.bd};background:\${c.bg}">
+    <div class="zacc" style="background:\${acc}"></div>
+    <div class="thd" style="margin-top:2px">\${ref}\${chipOf(g.st)}</div>
+    <div class="tst" style="color:\${c.tx}">\${c.lb}\${g.st.since ? ' \xB7 ' + hhmmOf(g.st.since) : ''}</div>
     <div style="margin-top:6px">\${righe}</div></div>\`;
+}
+// ---- Modale dettaglio (clic su una card) ----
+function openModal(html) { $('#mbox').innerHTML = html; $('#modal').classList.remove('hide'); const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal; }
+function closeModal() { $('#modal').classList.add('hide'); }
+document.addEventListener('click', (e) => { if (e.target && e.target.id === 'modalBg') closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+function tavoloDetail(tb) {
+  const c = ZCOL[tb.st.key];
+  const tms = (x) => { const d = parseTs(x.created_at); return d ? d.getTime() : 0; };
+  const comande = tb.cs.slice().sort((a, b) => tms(a) - tms(b));
+  const blocks = comande.map(cm => {
+    const t = parseTs(cm.created_at); const hh = t ? t.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
+    const righe = (cm.righe || []).map(r => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f4f2ea"><span><b>\${r.qta}\xD7</b> \${esc(r.nome)} \${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${['pronta', 'consegnata'].includes(r.stato) ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+    return \`<div style="margin-top:10px"><div class="muted" style="font-size:.74rem;font-weight:700">Comanda #\${cm.numero || cm.id}\${hh ? ' \xB7 ' + hh : ''}</div>\${righe}<div style="text-align:right;font-weight:800;margin-top:4px">\${eur(cm.totale)}</div></div>\`;
+  }).join('') || '<p class="muted">Tavolo libero.</p>';
+  const tot = comande.reduce((s, cm) => s + Number(cm.totale || 0), 0);
+  const pay = tb.st.key === 'verde' ? \`<button class="btn gold block" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:12px">\u{1F4B6} Incassa \${eur(tot)}</button>\` : '';
+  return \`<div class="row" style="justify-content:space-between"><h3>\u{1F37D}\uFE0F Tavolo \${tb.t}</h3><span class="tchip" style="background:\${c.bd}">\${c.lb}</span></div>\${blocks}\${pay}<button class="btn ghost block" data-mclose style="margin-top:8px">Chiudi</button>\`;
+}
+function cucinaDetail(g) {
+  const c = ZCOL[g.st.key];
+  const label = g.zona === 'bar' ? ('\u{1F378} ' + esc(g.rif)) : ('\u{1F37D}\uFE0F Tavolo ' + esc(g.rif));
+  const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #f4f2ea"><span><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${r.stato === 'in_coda' ? 'mid' : 'ok'}">\${r.stato === 'in_coda' ? 'da fare' : 'pronta'}</span></div>\`).join('');
+  return \`<div class="row" style="justify-content:space-between"><h3>\${label}</h3><span class="tchip" style="background:\${c.bd}">\${c.lb}\${g.st.mins != null ? ' \xB7 ' + g.st.mins + '\u2032' : ''}</span></div><div style="margin-top:8px">\${righe}</div><button class="btn ghost block" data-mclose style="margin-top:10px">Chiudi</button>\`;
 }
 
 /* ---------- CUCINA: piatti da cucinare raggruppati per tavolo (Garden) / nome (Bar), per urgenza ---------- */
@@ -9686,6 +9743,11 @@ VIEWS.kds = async () => {
       </section>
     </div>\`;
     document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
+    document.querySelectorAll('[data-kdetail]').forEach(card => card.onclick = (e) => {
+      if (e.target.closest('button')) return;
+      const raw = card.dataset.kdetail; const i = raw.indexOf('|'); const zona = raw.slice(0, i), rif = raw.slice(i + 1);
+      const g = all.find(x => x.zona === zona && String(x.rif) === rif); if (g) openModal(cucinaDetail(g));
+    });
   };
   await render();
   window.__kdsTimer = setInterval(render, 8000);
@@ -9742,10 +9804,16 @@ VIEWS.tavoli = async () => {
     $('#view').innerHTML = \`<div class="panel" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 style="margin:0">\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${N} tavoli \xB7 auto-aggiornamento</span></h3>
       <div class="muted" style="font-size:.74rem">\u{1F7E7} libero \xB7 \u{1F7E8} acquisita \xB7 \u{1F7E5} oltre \${rMin}\u2032 \xB7 \u{1F7E9} consegnato</div></div></div>
       <div class="board">\${tables.map(tavoloCard).join('')}</div>\`;
-    document.querySelectorAll('[data-tpay]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => {
+    const bindPay = (root) => root.querySelectorAll('[data-tpay]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => {
       for (const id of String(b.dataset.tpay).split(',').filter(Boolean)) await api('/comande/' + id + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) });
-      render();
+      closeModal(); render();
     }));
+    bindPay(document);
+    document.querySelectorAll('[data-tdetail]').forEach(card => card.onclick = (e) => {
+      if (e.target.closest('button')) return;
+      const tb = tables.find(x => x.t === Number(card.dataset.tdetail)); if (!tb) return;
+      openModal(tavoloDetail(tb)); bindPay($('#mbox'));
+    });
   };
   await render();
   window.__kdsTimer = setInterval(render, 8000);
@@ -10495,7 +10563,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 13:09" : "online";
+var BUILD = true ? "2026-08-17 14:13" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
