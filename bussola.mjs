@@ -794,12 +794,12 @@ async function getTabellone(disciplinaId) {
       id: g.id,
       nome: g.nome,
       classifica: await classificaOrdinata(g.id),
-      partite: await db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
+      partite: await db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato,quando,luogo FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
     });
   }
   const nGir = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n;
   const tuttiGiocati = nGir > 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0;
-  const selFase = (fase) => db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato,fase FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
+  const selFase = (fase) => db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato,fase,quando,luogo FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
   const fasi = {
     quarti: await selFase("quarti"),
     semifinali: await selFase("semifinale"),
@@ -4133,7 +4133,7 @@ var admin_default = `<!DOCTYPE html>
         <div class="grp">Sport &amp; Coppa</div>
         <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate &amp; punti</button>
         <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
-        <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tabellone</button>
+        <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tornei</button>
         <button data-v="campi" data-cap="campi">\u{1F3BE} Campi &amp; prenotazioni</button>
 
         <div class="grp">Serate &amp; Eventi</div>
@@ -4227,7 +4227,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tabellone', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -5060,24 +5060,12 @@ VIEWS.discipline = async () => {
   };
 };
 
-// ---- Tabellone: gironi, calendario, risultati (auto-graduatoria) ----
+// ---- Tornei: periodo, stato, regolamento, calendario, archiviazione, Albo d'Oro ----
+// Il TABELLONE (gironi, giornate, date, risultati, foglio gara) sta nel Crew, non qui:
+// i gironi si formano da soli dalle 8 casate, quindi replicarne la gestione era inutile
+// e creava due posti da tenere allineati.
 // Vista SOLA LETTURA del girone: classifica + calendario con i risultati registrati.
 // L'INSERIMENTO risultati NON \xE8 qui: si fa nell'app Bussola Crew (modulo Sport). Qui il gestore imposta e consulta.
-function gironeHtml(g) {
-  const cls = \`<table><thead><tr><th>Squadra</th><th>PG</th><th>V</th><th>N</th><th>Pt</th></tr></thead><tbody>\${g.classifica.map((r, i) => \`<tr><td><b>\${i + 1}.</b> \${esc(r.nome)}</td><td>\${r.pg}</td><td>\${r.v}</td><td>\${r.p}</td><td><b>\${r.pt}</b></td></tr>\`).join('')}</tbody></table>\`;
-  const byG = {}; g.partite.forEach(p => { (byG[p.giornata] ??= []).push(p); });
-  const cal = Object.keys(byG).map(gn => \`<div style="margin-top:10px"><b class="muted">Giornata \${gn}</b>\${byG[gn].map(p => {
-    const played = p.stato === 'giocata';
-    const score = played ? \`<b>\${esc(String(p.gol_a ?? '') + ' \u2013 ' + String(p.gol_b ?? ''))}</b>\` : '<span class="muted">\u2013 : \u2013</span>';
-    return \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0">
-      <span style="flex:1;text-align:right">\${esc(p.casa_a)}</span>
-      <span style="min-width:72px;text-align:center">\${score}</span>
-      <span style="flex:1">\${esc(p.casa_b)}</span>
-      <button class="btn ghost sm" data-pfoto="\${p.id}" title="Foto referto (evidenza)">\u{1F4F7}</button>
-    </div>\`;
-  }).join('')}</div>\`).join('');
-  return \`<div class="panel"><h3>\${esc(g.nome)}</h3>\${cls}\${cal}</div>\`;
-}
 VIEWS.tabellone = async () => {
   const discs = await api('/discipline');
   if (!discs.length) { $('#view').innerHTML = '<p class="muted">Nessuna disciplina.</p>'; return; }
@@ -5111,29 +5099,36 @@ VIEWS.tabellone = async () => {
     const regsPanel = \`<div class="panel"><h3>Regolamenti generali (visibili in app)</h3>
       \${regs.map(r => \`<div style="margin-bottom:10px"><label>\${esc(r.titolo)}</label><textarea id="rg_\${esc(r.chiave)}" rows="3">\${esc(r.testo || '')}</textarea>
         <button class="btn gold sm" data-rgsave="\${esc(r.chiave)}" style="margin-top:6px">Salva</button></div>\`).join('') || '<p class="muted">Nessun regolamento.</p>'}</div>\`;
+    // Riepilogo essenziale: il tabellone vero (gironi, giornate, risultati, foglio gara)
+    // vive nel Crew, dove si gioca. Qui basta sapere a che punto e' il torneo.
+    const nPartite = t.gironi.reduce((n, g) => n + g.partite.length, 0);
+    const nGiocate = t.gironi.reduce((n, g) => n + g.partite.filter(p => p.stato === 'giocata').length, 0);
+    const avanzamento = t.gironi.length
+      ? \`<div class="panel"><h3>Avanzamento</h3>
+          <div class="row" style="gap:18px;flex-wrap:wrap;align-items:center">
+            <div><b style="font-size:1.4rem">\${t.gironi.length}</b> <span class="muted">gironi</span></div>
+            <div><b style="font-size:1.4rem">\${giornate.length}</b> <span class="muted">giornate per girone</span></div>
+            <div><b style="font-size:1.4rem">\${nGiocate}/\${nPartite}</b> <span class="muted">partite giocate</span></div>
+            \${t.hasFinale ? '<span class="tag ok">fase finale in corso</span>' : '<span class="tag mid">gironi in corso</span>'}
+          </div>
+          <p class="muted" style="font-size:13px;margin-top:8px">Il <b>tabellone</b> \u2014 calendario, date delle giornate, risultati e <b>foglio gara da stampare</b> \u2014 sta nell'app <b>Bussola Crew \xB7 modulo Sport</b>, dove si gioca. Qui il gestore imposta il torneo e lo archivia.</p>
+        </div>\`
+      : '<div class="panel"><p class="muted">Nessun calendario per questa disciplina: premi \u201CGenera\u201D.</p></div>';
     $('#view').innerHTML = \`
       <div class="row">
         <select id="tb_disc">\${discs.map(d => \`<option value="\${d.id}" \${d.id == cur ? 'selected' : ''}>\${d.dominio} \xB7 \${esc(d.nome)}\${d.attivo ? '' : ' (disattivata)'}</option>\`).join('')}</select>
         \${can('tabellone_reset') ? '<button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>' : ''}
-        \${t.completo ? '<span class="tag ok">gironi completi</span>' : '<span class="tag mid">gironi in corso</span>'}
+        \${t.completo ? '<span class="tag ok">gironi completi</span>' : ''}
       </div>
-      <p class="muted" style="font-size:13px;margin:2px 0 8px">\u270D\uFE0F Qui il gestore <b>imposta e consulta</b>. L'<b>inserimento dei risultati</b> si fa a bordo campo nell'app <b>Bussola Crew \xB7 modulo Sport</b> (permesso \u201CTabellone\u201D). La classifica si aggiorna in automatico.</p>
       \${settings}
-      \${giornate.length ? \`<div class="row" style="margin-top:-6px">
-        <span class="muted" style="font-size:13px">Foglio da stampare per raccogliere i risultati a mano:</span>
-        <select id="tb_gio"><option value="">Tutte le giornate</option>\${giornate.map(g => \`<option value="\${g}">Giornata \${g}</option>\`).join('')}</select>
-        <button class="btn ghost sm" id="tb_print">\u{1F5A8}\uFE0F Stampa foglio risultati</button>
-      </div>\` : ''}
-      \${t.gironi.length ? t.gironi.map(gironeHtml).join('') : '<p class="muted">Nessun calendario: premi \u201CGenera\u201D.</p>'}
+      \${avanzamento}
       \${finali}\${albo}\${regsPanel}\`;
     $('#tb_disc').onchange = (e) => { cur = e.target.value; render(); };
     if ($('#tb_gen')) $('#tb_gen').onclick = async () => { if (!confirm('Rigenerare il calendario AZZERA i risultati di questa disciplina. Procedo?')) return; await api('/tabellone/' + cur + '/genera', { method: 'POST' }); render(); };
     $('#tb_setSave').onclick = async () => { await api('/tabellone/' + cur + '/impostazioni', { method: 'PUT', body: JSON.stringify({ data_inizio: $('#tb_di').value, data_fine: $('#tb_df').value, stato: $('#tb_stato').value, regolamento: $('#tb_reg').value }) }); render(); };
     $('#tb_archivia').onclick = async () => { if (!confirm("Archiviare l'edizione corrente nell'Albo d'Oro e azzerare il calendario di questa disciplina?")) return; try { const r = await api('/tabellone/' + cur + '/archivia', { method: 'POST' }); alert('Edizione archiviata \xB7 vince ' + (r.vincitore || '\u2014')); render(); } catch (e) { alert(e.message); } };
-    if ($('#tb_print')) $('#tb_print').onclick = () => stampaGiornata(disc.nome || 'Torneo', t, $('#tb_gio').value);
     document.querySelectorAll('[data-rgsave]').forEach(b => b.onclick = async () => { const k = b.dataset.rgsave; const r = regs.find(x => x.chiave === k) || {}; await api('/regolamenti/' + k, { method: 'PUT', body: JSON.stringify({ titolo: r.titolo, testo: $('#rg_' + k).value }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000); });
     // (inserimento risultati rimosso dal back office: si fa nell'app Bussola Crew \xB7 modulo Sport)
-    document.querySelectorAll('[data-pfoto]').forEach(b => b.onclick = () => openFotoPartita(b.dataset.pfoto));
   };
   await render();
 };
@@ -5148,42 +5143,6 @@ async function openFotoPartita(id) {
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`);
   $('#mCancel').onclick = closeModal;
   document.querySelectorAll('[data-afoto]').forEach(b => b.onclick = async () => { const r = await api('/allegati/' + b.dataset.afoto + '/foto'); const w = window.open('', '_blank'); if (w) { w.document.write('<img src="' + r.foto + '" style="max-width:100%">'); w.document.close(); } });
-}
-
-// Foglio stampabile della/e giornata/e: partite con caselle vuote per segnare i risultati a mano.
-function stampaGiornata(nomeDisc, t, gioFilter) {
-  const partite = t.gironi.flatMap(g => g.partite.map(p => ({ ...p, girone: g.nome })));
-  const giornate = [...new Set(partite.map(p => p.giornata))].sort((a, b) => a - b)
-    .filter(g => !gioFilter || String(g) === String(gioFilter));
-  const box = '<span style="display:inline-block;width:44px;height:26px;border:1.5px solid #12324F;border-radius:5px;vertical-align:middle"></span>';
-  const sezioni = giornate.map(gn => {
-    const ps = partite.filter(p => p.giornata === gn);
-    const righe = ps.map(p => \`<tr>
-        <td style="text-align:right;padding:9px 8px;font-weight:600">\${esc(p.casa_a)}</td>
-        <td style="text-align:center;padding:9px 6px">\${box} <span style="color:#5a6b75">\u2013</span> \${box}</td>
-        <td style="text-align:left;padding:9px 8px;font-weight:600">\${esc(p.casa_b)}</td>
-        <td style="padding:9px 8px;color:#5a6b75;font-size:12px">\${esc(p.girone)}\${p.stato === 'giocata' ? \` \xB7 registrata \${esc((p.gol_a ?? '') + '\u2013' + (p.gol_b ?? ''))}\` : ''}</td>
-      </tr>\`).join('');
-    return \`<h2 style="font-family:Georgia,serif;color:#12324F;margin:18px 0 4px">Giornata \${gn}</h2>
-      <table style="width:100%;border-collapse:collapse">\${righe}</table>\`;
-  }).join('');
-  const html = \`<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Risultati \u2014 \${esc(nomeDisc)}</title>
-    <style>@page{margin:18mm} body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#17242c}
-      h1{font-family:Georgia,serif;color:#12324F;margin:0} .hd{border-bottom:2px solid #12324F;padding-bottom:8px;margin-bottom:6px}
-      .meta{color:#5a6b75;font-size:13px;margin-top:4px} tr:nth-child(even){background:#f7f5ee}
-      .firma{margin-top:26px;color:#5a6b75;font-size:13px}
-      @media print{button{display:none}}</style></head>
-    <body>
-      <div class="hd"><h1>Bussola Residence \xB7 Coppa delle Casate</h1>
-        <div class="meta"><b>\${esc(nomeDisc)}</b> \u2014 foglio raccolta risultati\${gioFilter ? \` \xB7 Giornata \${esc(gioFilter)}\` : ''}. Data: ____ / ____ / ______ \xB7 Arbitro/Staff: __________________</div></div>
-      \${sezioni || '<p>Nessuna partita da stampare.</p>'}
-      <div class="firma">Compila le caselle con il punteggio e riporta i risultati nel back office (Tabellone) con calma. Firma staff: __________________</div>
-      <button onclick="window.print()" style="margin-top:16px;padding:8px 14px">Stampa</button>
-    </body></html>\`;
-  const w = window.open('', '_blank');
-  if (!w) { alert('Consenti le finestre pop-up per stampare il foglio.'); return; }
-  w.document.write(html); w.document.close(); w.focus();
-  setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
 }
 
 // ---- Contest Serata dei Clan ----
@@ -6085,11 +6044,16 @@ VIEWS.tavoli = async () => {
   window.__kdsTimer = setInterval(render, 8000);
 };
 
-/* ---------- SPORT: risultati live (Coppa delle Casate) \u2014 modulo operativo mobile ----------
-   Il gestore crea/imposta discipline e tabelloni nel back office; qui la crew inserisce i risultati
-   a bordo campo e la classifica del girone si aggiorna in tempo reale. Permesso: tabellone. */
+/* ---------- SPORT: tabellone e risultati (Coppa delle Casate) \u2014 modulo operativo ----------
+   Il tabellone vive QUI, non nel back office: i gironi si formano da soli (8 casate \u2192 due
+   gironi da 4 \u2192 3 giornate da 2 partite), quindi replicarne la gestione altrove non serve.
+   Nel back office restano i TORNEI: periodo, stato, regolamento, archiviazione, Albo d'Oro.
+   Impianto: i due gironi affiancati, classifica compatta, e sotto le giornate del girone. */
 let SPORT_DISC = null;
-const spDot = (c) => \`<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:\${/^#|rgb/.test(String(c||''))?esc(c):'#'+esc(String(c||'888'))};vertical-align:middle;margin-right:5px;border:1px solid rgba(0,0,0,.2)"></span>\`;
+const spDot = (c) => \`<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:\${/^#|rgb/.test(String(c || '')) ? esc(c) : '#' + esc(String(c || '888'))};vertical-align:middle;margin-right:5px;border:1px solid rgba(0,0,0,.2)"></span>\`;
+// "Girone A" arriva gia' col suo nome per esteso: non anteporre un'altra volta la parola.
+const nomeGirone = (n) => /girone/i.test(String(n || '')) ? String(n) : 'Girone ' + String(n || '');
+
 VIEWS.sport = async () => {
   const disc = (await api('/discipline').catch(() => [])) || [];
   const usabili = disc.filter(d => d.stato !== 'archiviato');
@@ -6097,62 +6061,90 @@ VIEWS.sport = async () => {
   const cur = disc.find(d => d.id === SPORT_DISC);
   const opt = disc.map(d => \`<option value="\${d.id}" \${d.id === SPORT_DISC ? 'selected' : ''}>\${d.dominio === 'giochi' ? '\u{1F3B2}' : '\u{1F3C5}'} \${esc(d.nome)}\${d.stato === 'archiviato' ? ' \xB7 archiviata' : d.stato === 'in_corso' ? ' \xB7 in corso' : ''}</option>\`).join('');
   const head = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <h3 style="margin:0">\u{1F3C6} Sport \xB7 risultati live</h3>
-      \${disc.length ? \`<select id="sp_disc" style="min-width:180px">\${opt}</select>\` : ''}</div>
-    <p class="muted" style="font-size:.78rem;margin-top:6px">Inserisci i punteggi a bordo campo: la classifica del girone si aggiorna da sola. Le discipline e i tabelloni si creano e si impostano nel back office del gestore.</p></div>\`;
+      <h3 style="margin:0">\u{1F3C6} Tabellone \xB7 \${cur ? esc(cur.nome) : 'Sport'}</h3>
+      <div class="row" style="gap:6px;align-items:center">
+        \${disc.length ? \`<select id="sp_disc" style="min-width:170px">\${opt}</select>\` : ''}
+        <button class="btn ghost sm" id="sp_print" title="Foglio gara da portare in campo">\u{1F5A8}\uFE0F Foglio gara</button>
+      </div></div></div>\`;
   if (!cur) { $('#view').innerHTML = head + '<div class="panel"><p class="muted">Nessuna disciplina disponibile. Il gestore la crea nel back office.</p></div>'; wireDisc(); return; }
-  const t = await api('/tabellone/' + cur.id).catch(() => ({ gironi: [], finali: null, completo: false }));
+  const t = await api('/tabellone/' + cur.id).catch(() => ({ gironi: [], fasi: {}, completo: false }));
   if (!t.gironi || !t.gironi.length) {
-    $('#view').innerHTML = head + \`<div class="panel"><p class="muted">Tabellone non ancora generato per <b>\${esc(cur.nome)}</b>. Il gestore lo genera dal back office (Tabellone).</p></div>\`; wireDisc(); return;
+    $('#view').innerHTML = head + \`<div class="panel"><p class="muted">Calendario non ancora generato per <b>\${esc(cur.nome)}</b>. Si genera dal back office, sezione Tornei.</p></div>\`; wireDisc(); return;
   }
-  const matchCard = (p, label) => {
+  window.__spTab = t;
+  window.__spDiscNome = cur.nome;
+
+  // --- una partita: due casate, due punteggi, salva + foto referto
+  const matchRow = (p, label) => {
     const giocata = p.stato === 'giocata';
-    const draw = !!label && giocata && p.gol_a != null && p.gol_a === p.gol_b;   // pareggio nella fase finale = da spareggiare
-    const acc = draw ? 'var(--coral)' : giocata ? 'var(--ok)' : 'var(--gold)';
-    const cap = label ? esc(label) : ('Giornata ' + esc(String(p.giornata || 1)));
-    return \`<div class="tcard" style="border-color:\${acc};background:#fff">
-      <div class="zacc" style="background:\${acc}"></div>
-      <div style="font-size:.7rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">\${cap}\${draw ? ' \xB7 \u26A0\uFE0F pari: serve un vincitore' : giocata ? ' \xB7 \u2714 giocata' : ''}</div>
-      <div class="row" style="justify-content:space-between;gap:6px;margin-top:6px;align-items:center">
-        <span style="flex:1;font-weight:700">\${esc(p.casa_a)}</span>
-        <input id="ga_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_a != null ? esc(String(p.gol_a)) : ''}" style="width:48px;text-align:center">
+    const pari = !!label && giocata && p.gol_a != null && p.gol_a === p.gol_b;
+    const acc = pari ? 'var(--coral)' : giocata ? 'var(--ok)' : 'var(--gold)';
+    return \`<div class="mrow" style="border-left:3px solid \${acc};background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:6px">
+      \${label ? \`<div style="font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">\${esc(label)}\${pari ? ' \xB7 \u26A0\uFE0F serve un vincitore' : ''}</div>\` : ''}
+      <div class="row" style="gap:6px;align-items:center">
+        <span style="flex:1;font-weight:700;font-size:.86rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${esc(p.casa_a)}</span>
+        <input id="ga_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_a != null ? esc(String(p.gol_a)) : ''}" style="width:42px;text-align:center;padding:4px">
         <span class="muted">:</span>
-        <input id="gb_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_b != null ? esc(String(p.gol_b)) : ''}" style="width:48px;text-align:center">
-        <span style="flex:1;font-weight:700;text-align:right">\${esc(p.casa_b)}</span>
-      </div>
-      <div class="row" style="margin-top:8px;gap:6px"><button class="btn gold sm" data-sp-save="\${p.id}" style="flex:1">\${giocata ? 'Aggiorna' : 'Salva'}</button><button class="btn ghost sm" data-sp-foto="\${p.id}" title="Foto referto (anti-contestazione)">\u{1F4F7}</button></div></div>\`;
+        <input id="gb_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_b != null ? esc(String(p.gol_b)) : ''}" style="width:42px;text-align:center;padding:4px">
+        <span style="flex:1;font-weight:700;font-size:.86rem;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${esc(p.casa_b)}</span>
+        <button class="btn gold sm" data-sp-save="\${p.id}" style="padding:4px 10px">\${giocata ? '\u2713' : 'Salva'}</button>
+        <button class="btn ghost sm" data-sp-foto="\${p.id}" title="Foto referto" style="padding:4px 8px">\u{1F4F7}</button>
+      </div></div>\`;
   };
-  const gironiHtml = t.gironi.map(g => {
-    const cls = (g.classifica || []).map((c, i) => \`<tr><td style="text-align:center">\${i + 1}</td><td>\${spDot(c.colore)}<b>\${esc(c.nome)}</b></td><td style="text-align:center">\${esc(String(c.pg || 0))}</td><td style="text-align:center">\${esc(String((c.gf || 0)))}-\${esc(String(c.gs || 0))}</td><td style="text-align:center"><b>\${esc(String(c.pt || 0))}</b></td></tr>\`).join('');
-    return \`<div class="panel"><h3>Girone \${esc(g.nome)}</h3>
-      <table><thead><tr><th>#</th><th>Casata</th><th>G</th><th>Gol</th><th>Pt</th></tr></thead><tbody>\${cls}</tbody></table>
-      <div class="board" style="margin-top:12px">\${g.partite.map(matchCard).join('')}</div></div>\`;
-  }).join('');
-  // Fase finale: quarti incrociati \u2192 semifinali \u2192 finali 3\xBA/4\xBA e 1\xBA/2\xBA (risultati inseribili come i gironi).
+
+  // --- un girone: classifica compatta + le sue 3 giornate, ognuna con la data
+  const gironeCol = (g) => {
+    const cls = (g.classifica || []).map((c, i) => \`<tr>
+      <td style="text-align:center;width:18px;color:var(--muted)">\${i + 1}</td>
+      <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${spDot(c.colore)}<b style="font-size:.84rem">\${esc(c.nome)}</b></td>
+      <td style="text-align:center;width:26px">\${esc(String(c.pg || 0))}</td>
+      <td style="text-align:center;width:46px;font-size:.8rem">\${esc(String(c.gf || 0))}-\${esc(String(c.gs || 0))}</td>
+      <td style="text-align:center;width:26px"><b>\${esc(String(c.pt || 0))}</b></td></tr>\`).join('');
+    const giornate = [...new Set((g.partite || []).map(p => p.giornata))].sort((a, b) => a - b);
+    const blocchi = giornate.map(n => {
+      const ps = g.partite.filter(p => p.giornata === n);
+      const data = (ps.find(p => p.quando) || {}).quando || '';
+      const fatte = ps.filter(p => p.stato === 'giocata').length;
+      return \`<div style="border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:#fbfaf6">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
+          <b style="font-size:.8rem;color:var(--accent)">Giornata \${n}<span class="muted" style="font-weight:400"> \xB7 \${fatte}/\${ps.length}</span></b>
+          <input type="date" value="\${esc(data)}" data-sp-data="\${g.id}|\${n}" style="padding:3px 6px;font-size:.78rem" title="Data della giornata">
+        </div>
+        \${ps.map(p => matchRow(p)).join('')}</div>\`;
+    }).join('');
+    return \`<div class="panel" style="margin:0">
+      <h3 style="margin:0 0 8px">\${esc(nomeGirone(g.nome))}</h3>
+      <table style="font-size:.85rem"><thead><tr><th style="width:18px"></th><th>Casata</th><th style="width:26px">G</th><th style="width:46px">Gol</th><th style="width:26px">Pt</th></tr></thead><tbody>\${cls}</tbody></table>
+      <div style="margin-top:10px">\${blocchi}</div></div>\`;
+  };
+
+  // Due colonne su schermo largo, una sotto l'altra sul telefono.
+  const gironiHtml = \`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:12px">
+    \${t.gironi.map(gironeCol).join('')}</div>\`;
+
+  // --- fase finale
   const fasi = t.fasi || {};
-  const faseDef = [['quarti', 'Quarto di finale'], ['semifinali', 'Semifinale'], ['finale3', 'Finale 3\xBA/4\xBA posto'], ['finale1', 'Finale 1\xBA/2\xBA posto']];
-  // Quante partite dei gironi mancano prima di sbloccare la fase finale (visibilit\xE0 dello stato).
+  const faseDef = [['quarti', 'Quarto di finale'], ['semifinali', 'Semifinale'], ['finale3', 'Finale 3\xBA/4\xBA'], ['finale1', 'Finale 1\xBA/2\xBA']];
   const gironiTot = t.gironi.reduce((n, g) => n + (g.partite || []).length, 0);
-  const gironiMancanti = t.gironi.reduce((n, g) => n + (g.partite || []).filter(p => p.stato !== 'giocata' || p.gol_a == null || p.gol_b == null).length, 0);
-  const blocks = faseDef.map(([key, label]) => {
-    const arr = fasi[key] || []; if (!arr.length) return '';
-    return \`<div style="font-weight:800;color:var(--accent);margin:12px 0 6px">\${esc(label)}\${arr.length > 1 ? ' (' + arr.length + ')' : ''}</div><div class="board">\${arr.map((p, i) => matchCard(p, arr.length > 1 ? label + ' ' + (i + 1) : label)).join('')}</div>\`;
+  const gironiMancanti = t.gironi.reduce((n, g) => n + (g.partite || []).filter(p => p.stato !== 'giocata' || p.gol_a == null).length, 0);
+  const blocks = faseDef.map(([k, label]) => {
+    const arr = fasi[k] || []; if (!arr.length) return '';
+    return \`<div style="font-weight:800;color:var(--accent);margin:10px 0 6px;font-size:.82rem">\${esc(label)}</div>\${arr.map((p, i) => matchRow(p, arr.length > 1 ? label + ' ' + (i + 1) : label)).join('')}\`;
   }).join('');
-  // La fase finale \xE8 SEMPRE visibile: se i gironi non sono finiti mostra lo stato e quante partite mancano.
-  const statoFinale = (t.hasFinale && blocks)
-    ? blocks
-    : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--muted);border-radius:12px;padding:12px;margin-top:8px">
+  const statoFinale = (t.hasFinale && blocks) ? blocks
+    : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--muted);border-radius:12px;padding:12px">
         <div style="font-size:1.4rem">\u23F3</div>
-        <div><b>Fase finale non ancora sbloccata.</b><br>
-        <span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Completa i due gironi: mancano <b>\${gironiMancanti}</b> partite su \${gironiTot}. Poi quarti, semifinali e finali compaiono qui in automatico.\` : 'Gironi completati: la fase finale si sta generando, aggiorna la pagina.'}</span></div></div>\`;
-  const finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale \xB7 Coppa</h3><p class="muted" style="font-size:.76rem">Incroci dei due gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un risultato con un vincitore.</p>\${statoFinale}</div>\`;
-  // Graduatoria finale con i punti Coppa (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA), quando le finali sono decise.
+        <div><b>Fase finale non ancora sbloccata.</b><br><span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Mancano <b>\${gironiMancanti}</b> partite su \${gironiTot} nei gironi.\` : 'Gironi completati: la fase finale si sta generando, riapri la scheda.'}</span></div></div>\`;
+  const finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale</h3>
+    <p class="muted" style="font-size:.76rem;margin-bottom:6px">Incroci fra i gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un vincitore.</p>\${statoFinale}</div>\`;
+
   let gradHtml = '';
   if (t.graduatoria && t.graduatoria.length) {
     gradHtml = \`<div class="panel"><h3>\u{1F3C5} Graduatoria finale \xB7 punti Coppa</h3>
-      <table><thead><tr><th>Pos.</th><th>Casata</th><th>Punti Coppa</th></tr></thead><tbody>\${t.graduatoria.map(r => \`<tr><td style="text-align:center"><b>\${esc(String(r.posizione))}</b></td><td><b>\${esc(r.nome)}</b></td><td style="text-align:center"><b style="color:var(--gold)">\${esc(String(r.punti))}</b></td></tr>\`).join('')}</tbody></table>
-      <p class="muted" style="font-size:.74rem;margin-top:6px">Questi punti confluiscono nel cartellone della Coppa delle Casate.</p></div>\`;
+      <table><thead><tr><th>Pos.</th><th>Casata</th><th>Punti</th></tr></thead><tbody>\${t.graduatoria.map(r => \`<tr><td style="text-align:center"><b>\${esc(String(r.posizione))}</b></td><td><b>\${esc(r.nome)}</b></td><td style="text-align:center"><b style="color:var(--gold)">\${esc(String(r.punti))}</b></td></tr>\`).join('')}</tbody></table>
+      <p class="muted" style="font-size:.74rem;margin-top:6px">Confluiscono da soli nel cartellone della Coppa.</p></div>\`;
   }
+
   $('#view').innerHTML = head + gironiHtml + finaliHtml + gradHtml;
   wireDisc();
   document.querySelectorAll('[data-sp-save]').forEach(b => b.onclick = async () => {
@@ -6163,8 +6155,61 @@ VIEWS.sport = async () => {
     catch (e) { alert('Errore: ' + e.message); }
   });
   document.querySelectorAll('[data-sp-foto]').forEach(b => b.onclick = () => fotoPartita(b.dataset.spFoto));
+  document.querySelectorAll('[data-sp-data]').forEach(inp => inp.onchange = async () => {
+    const [gid, n] = inp.dataset.spData.split('|');
+    try { await api('/tabellone/' + SPORT_DISC + '/giornata', { method: 'PUT', body: JSON.stringify({ girone_id: Number(gid), giornata: Number(n), quando: inp.value }) }); }
+    catch (e) { alert('Data non salvata: ' + e.message); }
+  });
+  $('#sp_print').onclick = () => stampaFoglioGara(window.__spTab, window.__spDiscNome);
   function wireDisc() { const s = $('#sp_disc'); if (s) s.onchange = () => { SPORT_DISC = Number(s.value); show('sport'); }; }
 };
+
+// Foglio gara: si stampa da qui, dove si gioca. Una pagina A4 per disciplina, giornata per
+// giornata, con le caselle vuote per segnare i risultati a mano quando manca il telefono.
+function stampaFoglioGara(t, nomeDisc) {
+  const riga = (p) => \`<tr><td class="sq">\${esc(p.casa_a)}</td><td class="box"></td><td class="sep">:</td><td class="box"></td><td class="sq r">\${esc(p.casa_b)}</td></tr>\`;
+  const gironi = (t.gironi || []).map(g => {
+    const giornate = [...new Set((g.partite || []).map(p => p.giornata))].sort((a, b) => a - b);
+    const blocchi = giornate.map(n => {
+      const ps = g.partite.filter(p => p.giornata === n);
+      const data = (ps.find(p => p.quando) || {}).quando || '';
+      return \`<div class="gio"><div class="giohd">Giornata \${n} <span class="data">\${data ? esc(data) : 'data ____ / ____ / ______'}</span></div>
+        <table class="mt">\${ps.map(riga).join('')}</table></div>\`;
+    }).join('');
+    return \`<div class="gir"><h2>\${esc(nomeGirone(g.nome))}</h2>\${blocchi}</div>\`;
+  }).join('');
+  const w = window.open('', '_blank');
+  if (!w) { alert('Consenti le finestre pop-up per stampare il foglio.'); return; }
+  w.document.write(\`<html><head><title>Foglio gara \xB7 \${esc(nomeDisc || '')}</title><style>
+    @page{size:A4;margin:18mm}
+    *{box-sizing:border-box}
+    body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
+    header{border-bottom:2px solid #E0B44A;padding-bottom:10px;margin-bottom:14px}
+    header h1{margin:0;font-size:1.5rem;letter-spacing:1px}
+    header .meta{font-family:Arial,sans-serif;font-size:.82rem;color:#5a6b75;margin-top:4px}
+    .wrap{display:flex;gap:18px}
+    .gir{flex:1;break-inside:avoid}
+    .gir h2{font-family:Arial,sans-serif;font-size:1rem;margin:0 0 8px;padding-bottom:4px;border-bottom:2px solid #12324F}
+    .gio{margin-bottom:12px;break-inside:avoid}
+    .giohd{font-family:Arial,sans-serif;font-size:.8rem;font-weight:bold;margin-bottom:4px}
+    .giohd .data{font-weight:normal;color:#5a6b75;margin-left:6px}
+    table.mt{width:100%;border-collapse:collapse}
+    table.mt td{padding:6px 2px;font-size:.86rem;border-bottom:1px solid #e6ddc7}
+    td.sq{width:38%}
+    td.sq.r{text-align:right}
+    td.box{width:34px;height:26px;border:1.5px solid #12324F;border-radius:4px}
+    td.sep{width:14px;text-align:center;color:#8a8a8a}
+    footer{margin-top:18px;border-top:1px solid #e6ddc7;padding-top:8px;font-family:Arial,sans-serif;font-size:.76rem;color:#777}
+  </style></head><body>
+    <header><h1>\${esc(nomeDisc || 'Torneo')} \xB7 foglio gara</h1>
+      <div class="meta">Coppa delle Casate \xB7 Bussola Residence \u2014 segnare i risultati e riportarli in app \xB7 Staff: __________________</div></header>
+    <div class="wrap">\${gironi}</div>
+    <footer>I punti Coppa (12 \xB7 10 \xB7 8 \xB7 6 ai primi quattro, 4 dal 5\xBA all'8\xBA) si calcolano da soli al termine delle finali.</footer>
+    <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\\\/script>
+  </body></html>\`);
+  w.document.close();
+}
+
 // Camera/allegato: scatta o sceglie un'immagine e restituisce il dataURL.
 function pickImage(cb) {
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.capture = 'environment';
@@ -7231,7 +7276,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.70";
+var VERSION = "4.71";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -11134,6 +11179,20 @@ adminRouter.put("/tavoli/prenotazioni/:id", requireCap("comande"), async (req, r
   audit(req.adminUser.username, "modifica", "prenotazioni_tavolo", p.id);
   res.json({ ok: true });
 });
+adminRouter.put("/tabellone/:disciplinaId/giornata", requireCap("tabellone"), async (req, res) => {
+  const b = req.body || {};
+  const quando = String(b.quando || "").slice(0, 10);
+  if (quando && !/^\d{4}-\d{2}-\d{2}$/.test(quando)) return res.status(400).json({ error: "Data non valida" });
+  const g = Number(b.giornata);
+  if (!g) return res.status(400).json({ error: "Giornata mancante" });
+  if (b.girone_id) {
+    await db.prepare("UPDATE partite SET quando=? WHERE disciplina_id=? AND girone_id=? AND giornata=?").run(quando || null, req.params.disciplinaId, Number(b.girone_id), g);
+  } else {
+    await db.prepare("UPDATE partite SET quando=? WHERE disciplina_id=? AND fase='girone' AND giornata=?").run(quando || null, req.params.disciplinaId, g);
+  }
+  audit(req.adminUser.username, "data_giornata", "partite", req.params.disciplinaId, `giornata ${g} -> ${quando || "\u2014"}`);
+  res.json({ ok: true });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -12028,7 +12087,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 12:07" : "online";
+var BUILD = true ? "2026-08-18 12:34" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
