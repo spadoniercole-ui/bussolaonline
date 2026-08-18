@@ -19,6 +19,7 @@ __export(menucat_exports, {
   CATEGORIE_ORDINE: () => CATEGORIE_ORDINE,
   categoriaArticolo: () => categoriaArticolo,
   inferCategoria: () => inferCategoria,
+  inferPunto: () => inferPunto,
   ordinaCategorie: () => ordinaCategorie
 });
 function inferCategoria(nome) {
@@ -27,6 +28,10 @@ function inferCategoria(nome) {
     if (rx.test(s)) return name;
   }
   return null;
+}
+function inferPunto(nome, categoria) {
+  const s = String(nome || "") + " " + String(categoria || "");
+  return PUNTO_GARDEN_RX.test(s) ? "garden" : "bar";
 }
 function categoriaArticolo({ categoria, nome, stazione } = {}) {
   const esplicita = categoria && String(categoria).trim();
@@ -41,7 +46,7 @@ function ordinaCategorie(arr) {
   };
   return arr.slice().sort((a, b) => rank(a) - rank(b) || String(a).localeCompare(String(b)));
 }
-var CAT_RULES, CATEGORIE_ORDINE;
+var CAT_RULES, CATEGORIE_ORDINE, PUNTO_GARDEN_RX;
 var init_menucat = __esm({
   "server/menucat.js"() {
     CAT_RULES = [
@@ -56,6 +61,7 @@ var init_menucat = __esm({
       ["Dolci", /cornetto|brioch|croissant|\bdolc|\btorta\b|crostat|muffin|biscott|tiramis|budino|crep|cr[eê]pe|waffle|nutella|pancake/i]
     ];
     CATEGORIE_ORDINE = CAT_RULES.map((r) => r[0]).concat(["Bar", "Cucina"]);
+    PUNTO_GARDEN_RX = /panin|toast|piadin|hamburger|cheeseburger|hot\s*dog|hotdog|pizz|focacc|tramezzin|\bwrap\b|insalat|\bpasta\b|bruschett|tagliere|\bfritt|arancin|panell|crocch|wurstel|petto\s*di\s*pollo|cotolett|\bpiatt|contorn|combo|bambini|salsicc|melanzan|\bkebab\b/i;
   }
 });
 
@@ -687,6 +693,19 @@ async function migrate() {
   await addIfMissing("discipline", "regolamento", "regolamento TEXT");
   await addIfMissing("menu_articoli", "descrizione", "descrizione TEXT");
   await addIfMissing("menu_articoli", "allergeni", "allergeni TEXT");
+  await addIfMissing("menu_articoli", "zona", "zona TEXT NOT NULL DEFAULT 'bar'");
+  try {
+    if (await getSetting("menu_zona_backfill", "") !== "v1") {
+      const { inferPunto: inferPunto2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
+      const arts = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
+      for (const m of arts) {
+        const z = m.stazione === "cucina" ? "garden" : inferPunto2(m.nome, m.categoria);
+        await db.prepare("UPDATE menu_articoli SET zona=? WHERE id=?").run(z, m.id);
+      }
+      await setSetting("menu_zona_backfill", "v1");
+    }
+  } catch (_) {
+  }
   try {
     const { inferCategoria: inferCategoria2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
     const vuoti = await db.prepare("SELECT id,nome,stazione FROM menu_articoli WHERE categoria IS NULL OR trim(categoria)=''").all();
@@ -1544,21 +1563,22 @@ async function seed({ verbose = false } = {}) {
   const birra = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Birra media'").get();
   const acqua = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Acqua naturale 0,5L'").get();
   const patatine = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Patatine (buste)'").get();
-  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,1,?)");
+  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,1,?)");
   const MENU = [
-    ["Panino salsiccia", 4.5, "cucina", "panini", null],
-    ["Panino vegetariano", 4, "cucina", "panini", null],
-    ["Hamburger", 5.5, "cucina", "panini", null],
-    ["Patatine fritte", 3, "cucina", "snack", null],
-    ["Patatine in busta", 1.5, "bar", "snack", patatine ? patatine.id : null],
-    ["Birra media", 4, "bar", "birre", birra ? birra.id : null],
-    ["Acqua 0,5L", 1, "bar", "bibite", acqua ? acqua.id : null],
-    ["Bibita in lattina", 2, "bar", "bibite", null],
-    ["Caff\xE8", 1, "bar", "caldi", null]
+    // nome, prezzo, stazione, punto(zona), categoria, magazzino_id
+    ["Panino salsiccia", 4.5, "cucina", "garden", "panini", null],
+    ["Panino vegetariano", 4, "cucina", "garden", "panini", null],
+    ["Hamburger", 5.5, "cucina", "garden", "panini", null],
+    ["Patatine fritte", 3, "cucina", "garden", "snack", null],
+    ["Patatine in busta", 1.5, "bar", "bar", "snack", patatine ? patatine.id : null],
+    ["Birra media", 4, "bar", "bar", "birre", birra ? birra.id : null],
+    ["Acqua 0,5L", 1, "bar", "comune", "bibite", acqua ? acqua.id : null],
+    ["Bibita in lattina", 2, "bar", "comune", "bibite", null],
+    ["Caff\xE8", 1, "bar", "bar", "caldi", null]
   ];
   for (let i = 0; i < MENU.length; i++) {
     const m = MENU[i];
-    await insMenu.run(m[0], m[1], m[2], m[3], m[4], i + 1);
+    await insMenu.run(m[0], m[1], m[2], m[3], m[4], m[5], i + 1);
   }
   const insCampo = db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,ordine) VALUES (?,?,?,?,?,?,?,?)");
   const CAMPI = [
@@ -3929,6 +3949,10 @@ function qrSvg(text, { cellSize = 5, margin = 2, ecc = "M" } = {}) {
 // server/routes/admin.js
 init_menucat();
 init_push();
+function menuZona(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
+}
 async function segnaPronta(comandaId) {
   await db.prepare("UPDATE comande SET pronta_at=? WHERE id=? AND pronta_at IS NULL").run((/* @__PURE__ */ new Date()).toISOString(), comandaId);
 }
@@ -4772,8 +4796,8 @@ adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) =
   res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
 });
 adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
-  const m = await db.prepare("SELECT nome,prezzo,stazione,categoria,descrizione,allergeni FROM menu_articoli ORDER BY ordine,id").all();
-  const rows = m.map((x) => ({ nome: x.nome, prezzo: Number(x.prezzo), stazione: x.stazione, categoria: x.categoria || "", descrizione: x.descrizione || "", allergeni: x.allergeni || "" }));
+  const m = await db.prepare("SELECT nome,prezzo,stazione,zona,categoria,descrizione,allergeni FROM menu_articoli ORDER BY ordine,id").all();
+  const rows = m.map((x) => ({ nome: x.nome, prezzo: Number(x.prezzo), stazione: x.stazione, punto: x.zona || "bar", categoria: x.categoria || "", descrizione: x.descrizione || "", allergeni: x.allergeni || "" }));
   res.json({ filename: "menu.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Menu") });
 });
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
@@ -4784,27 +4808,27 @@ adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
+  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
   audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
   audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
 function parseMenuFile(fileB64) {
   const json = sheetRows(fileB64);
   const norm = (s) => String(s || "").trim().toLowerCase();
-  const alias = { nome: ["nome", "prodotto", "articolo", "name"], prezzo: ["prezzo", "price", "costo"], stazione: ["stazione", "station", "reparto"], categoria: ["categoria", "category"], descrizione: ["descrizione", "description", "desc"], allergeni: ["allergeni", "allergen", "allergens"] };
+  const alias = { nome: ["nome", "prodotto", "articolo", "name"], prezzo: ["prezzo", "price", "costo"], stazione: ["stazione", "station", "reparto"], punto: ["punto", "zona", "zone", "point"], categoria: ["categoria", "category"], descrizione: ["descrizione", "description", "desc"], allergeni: ["allergeni", "allergen", "allergens"] };
   return json.map((r) => {
     const keys = Object.keys(r);
     const pick = (al) => {
       const k = keys.find((k2) => al.includes(norm(k2)));
       return k != null ? r[k] : "";
     };
-    return { nome: pick(alias.nome), prezzo: pick(alias.prezzo), stazione: pick(alias.stazione), categoria: pick(alias.categoria), descrizione: pick(alias.descrizione), allergeni: pick(alias.allergeni) };
+    return { nome: pick(alias.nome), prezzo: pick(alias.prezzo), stazione: pick(alias.stazione), punto: pick(alias.punto), categoria: pick(alias.categoria), descrizione: pick(alias.descrizione), allergeni: pick(alias.allergeni) };
   }).filter((r) => String(r.nome).trim());
 }
 adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
@@ -4835,12 +4859,15 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     const descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
     const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
     const categoria = catImport(r, r.stazione ? stazione : ex ? ex.stazione : stazione, ex);
+    const hasPunto = r.punto != null && String(r.punto).trim() !== "";
+    const zonaNew = hasPunto ? menuZona(r.punto) : stazione === "cucina" ? "garden" : inferPunto(nome, categoria);
+    const puntoSignal = hasPunto || !!clean(r.categoria) || !!(r.stazione && String(r.stazione).trim());
     if (ex) {
-      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
+      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, puntoSignal ? zonaNew : ex.zona || zonaNew, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
       aggiornati++;
     } else {
       const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-      await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,categoria,descrizione,allergeni,attivo,ordine) VALUES (?,?,?,?,?,?,1,?)").run(nome, prezzo, stazione, categoria, descrizione, allergeni, ord);
+      await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,attivo,ordine) VALUES (?,?,?,?,?,?,?,1,?)").run(nome, prezzo, stazione, zonaNew, categoria, descrizione, allergeni, ord);
       creati++;
     }
   }
@@ -4857,6 +4884,18 @@ adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) 
   }
   audit(req.adminUser.username, "ricategorizza", "menu_articoli", null, `categorizzati ${n}`);
   res.json({ ok: true, categorizzati: n });
+});
+adminRouter.post("/menu/deduci-punto", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
+  let garden = 0, bar = 0;
+  for (const m of rows) {
+    const z = m.stazione === "cucina" ? "garden" : inferPunto(m.nome, m.categoria);
+    await db.prepare("UPDATE menu_articoli SET zona=? WHERE id=?").run(z, m.id);
+    if (z === "garden") garden++;
+    else bar++;
+  }
+  audit(req.adminUser.username, "deduci_punto", "menu_articoli", null, `garden ${garden}, bar ${bar}`);
+  res.json({ ok: true, garden, bar });
 });
 adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
   await db.prepare("DELETE FROM menu_articoli WHERE id=?").run(req.params.id);
@@ -5822,7 +5861,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.59";
+var VERSION = "4.61";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9471,8 +9510,10 @@ async function login() {
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
     const zs = $('#zonaSwitch'); if (zs && !zs.__wired) { zs.__wired = true; zs.onchange = () => setZona(zs.value); }
+    // Zona iniziale: quella dichiarata nel men\xF9 di login (postazione) \u2192 se non valida, l'ultima salvata \u2192 prima consentita.
+    const scelta = $('#zona') ? $('#zona').value : null;
     const salvata = (() => { try { return localStorage.getItem('bussola_zona'); } catch (_) { return null; } })();
-    setZona(zone.includes(salvata) ? salvata : zone[0]);   // parte da una zona consentita
+    setZona(zone.includes(scelta) ? scelta : (zone.includes(salvata) ? salvata : zone[0]));
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
@@ -10097,26 +10138,24 @@ function stampaMenuPDF(menu, punto, qr, zona) {
   // Stesso raggruppamento e ordine della comanda: un solo vettore, niente "scalini" tra PDF e ordini.
   const catOf = (window.Comanda && Comanda.catOf) ? Comanda.catOf : (m => m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'));
   const sortCats = (window.Comanda && Comanda.sortCats) ? Comanda.sortCats : (a => a.slice());
-  const gruppi = {};
-  attivi.forEach(m => { const k = catOf(m); (gruppi[k] = gruppi[k] || []).push(m); });
-  const cats = sortCats(Object.keys(gruppi));
-  // (11) Ordine per punto di stampa: stazione della zona di stampa prima, poi la complementare.
-  //      Bar = prodotti "bar" (bevande) \xB7 Garden = prodotti "cucina" (cibo). Ogni categoria eredita
-  //      la stazione prevalente dei suoi articoli.
-  const primaria = zona === 'bar' ? 'bar' : 'cucina';
-  const stazCat = (items) => { const b = items.filter(m => m.stazione === 'bar').length; return b >= (items.length - b) ? 'bar' : 'cucina'; };
-  const catsPrim = cats.filter(c => stazCat(gruppi[c]) === primaria);
-  const catsCompl = cats.filter(c => stazCat(gruppi[c]) !== primaria);
+  // (11) Ordine per PUNTO di stampa: prima i prodotti del punto di stampa (+ i 'comune'), poi la
+  //      complementare. Il punto \xE8 il campo men\xF9 \`zona\` (bar/garden/comune), distinto dalla stazione.
+  const primaria = zona === 'bar' ? 'bar' : 'garden';
+  const puntoOf = (m) => (m.zona === 'garden' || m.zona === 'comune') ? m.zona : 'bar';
+  const inPrim = (m) => { const z = puntoOf(m); return z === primaria || z === 'comune'; };
+  const primItems = attivi.filter(inPrim);
+  const complItems = attivi.filter(m => !inPrim(m));
   const logo = \`<svg width="46" height="46" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#12324F" opacity="0.85"/></svg>\`;
-  const renderCat = (cat) => \`<section><h2>\${esc(cat)}</h2>\${gruppi[cat].map(m => \`
+  const renderCat = (cat, items) => \`<section><h2>\${esc(cat)}</h2>\${items.map(m => \`
     <div class="item"><div class="line"><span class="nm">\${esc(m.nome)}</span><span class="dots"></span><span class="pz">\${eur(m.prezzo)}</span></div>
     \${m.descrizione ? \`<div class="desc">\${esc(m.descrizione)}</div>\` : ''}
     \${m.allergeni ? \`<div class="alg">Allergeni: \${esc(m.allergeni)}</div>\` : ''}</div>\`).join('')}</section>\`;
-  const macro = (titolo, list) => list.length ? \`<div class="zona"><div class="zonahd">\${esc(titolo)}</div>\${list.map(renderCat).join('')}</div>\` : '';
+  const blockCats = (items) => { const g = {}; items.forEach(m => { const k = catOf(m); (g[k] = g[k] || []).push(m); }); return sortCats(Object.keys(g)).map(c => renderCat(c, g[c])).join(''); };
+  const macro = (titolo, items) => items.length ? \`<div class="zona"><div class="zonahd">\${esc(titolo)}</div>\${blockCats(items)}</div>\` : '';
   const labelBar = '\u{1F378} Bussola Bar', labelGarden = '\u{1F37D}\uFE0F Bussola Garden';
   const primLabel = zona === 'bar' ? labelBar : labelGarden;
   const complLabel = zona === 'bar' ? labelGarden : labelBar;
-  const body = (macro(primLabel, catsPrim) + macro(complLabel, catsCompl)) || '<p>Nessun articolo attivo.</p>';
+  const body = (macro(primLabel, primItems) + macro(complLabel, complItems)) || '<p>Nessun articolo attivo.</p>';
   const w = window.open('', '_blank');
   if (!w) { alert('Consenti i popup per stampare.'); return; }
   w.document.write(\`<html><head><title>Men\xF9 \xB7 \${esc(punto)}</title><style>
@@ -10159,6 +10198,7 @@ VIEWS.menu = async () => {
     <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:140px"></td>
     <td><input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px"></td>
     <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
+    <td><select id="mn_z_\${m.id}"><option value="bar" \${(m.zona || 'bar') === 'bar' ? 'selected' : ''}>\u{1F378} Bar</option><option value="garden" \${m.zona === 'garden' ? 'selected' : ''}>\u{1F37D}\uFE0F Garden</option><option value="comune" \${m.zona === 'comune' ? 'selected' : ''}>\u{1F501} Entrambi</option></select></td>
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
     <td><input id="mn_al_\${m.id}" value="\${esc(m.allergeni || '')}" style="width:150px" placeholder="glutine, latte\u2026"></td>
     <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
@@ -10173,15 +10213,17 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
       <div class="row"><span class="muted" style="font-size:.85rem">Punto: <b>\${ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden'}</b> (dalla zona della postazione)</span><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
       <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
-      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button></div></div>
+      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button></div>
+      <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
-      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="7" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
-      <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px"><b>Staz.</b> = chi lo prepara (Cucina/Bar, per il KDS) \xB7 <b>Punto</b> = dove si vende (Bar/Garden/Entrambi), guida l'ordine di stampa del men\xF9.</p>
+      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Punto</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
+      <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
-  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
+  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, zona: $('#mn_z_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
-  $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
+  $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, zona: $('#mn_new_z').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
   $('#menu_pdf').onclick = async () => {
     const punto = ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden';
     let qr = null;
@@ -10197,6 +10239,7 @@ VIEWS.menu = async () => {
     stampaMenuPDF(menu, punto, qr, ZONA);
   };
   $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
+  $('#menu_punto').onclick = async () => { if (!confirm('Assegnare il Punto (Bar/Garden) a tutti gli articoli in base a nome/categoria? Le scelte manuali verranno ricalcolate.')) return; const r = await api('/menu/deduci-punto', { method: 'POST', body: '{}' }); alert(\`Punto assegnato: \${r.garden} Garden, \${r.bar} Bar. Rivedi i casi particolari nella colonna Punto.\`); show('menu'); };
 
   // template CSV
   $('#menu_exp').onclick = () => esporta('/menu/export');
@@ -10626,7 +10669,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 06:54" : "online";
+var BUILD = true ? "2026-08-18 07:16" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
