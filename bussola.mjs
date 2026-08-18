@@ -5275,14 +5275,32 @@ VIEWS.tabellone = async () => {
     // vive nel Crew, dove si gioca. Qui basta sapere a che punto e' il torneo.
     const nPartite = t.gironi.reduce((n, g) => n + g.partite.length, 0);
     const nGiocate = t.gironi.reduce((n, g) => n + g.partite.filter(p => p.stato === 'giocata').length, 0);
+    // Struttura attesa con 8 casate: due gironi da 4, girone all'italiana = 3 giornate da 2
+    // partite, quindi 6 partite per girone. Se i numeri non tornano il calendario e' stato
+    // generato da una versione precedente: si rigenera e torna in riga.
+    const dettaglio = t.gironi.map(g => {
+      const gio = [...new Set(g.partite.map(p => p.giornata))].length;
+      const ok = g.classifica.length === 4 && g.partite.length === 6 && gio === 3;
+      return { nome: g.nome, casate: g.classifica.length, partite: g.partite.length, giornate: gio, ok };
+    });
+    const anomalo = dettaglio.some(d => !d.ok) || t.gironi.length !== 2;
+    const avviso = anomalo
+      ? \`<div class="panel" style="border-left:4px solid var(--gold)">
+          <b>\u26A0\uFE0F Calendario non standard</b>
+          <p class="muted" style="font-size:13px;margin-top:4px">Con 8 casate ci si aspetta <b>2 gironi da 4</b>, cio\xE8 <b>3 giornate da 2 partite</b> per girone (6 per girone, 12 in tutto). Qui non \xE8 cos\xEC: \${dettaglio.map(d => \`<b>\${esc(d.nome)}</b> \${d.casate} casate \xB7 \${d.partite} partite \xB7 \${d.giornate} giornate\`).join(' \xB7 ')}.<br>
+          Di solito succede quando il calendario \xE8 stato generato da una versione precedente: premi <b>\u201CGenera / azzera calendario\u201D</b> per rifarlo con il motore attuale. <i>Attenzione: azzera i risultati di questa disciplina.</i></p></div>\`
+      : '';
     const avanzamento = t.gironi.length
-      ? \`<div class="panel"><h3>Avanzamento</h3>
+      ? avviso + \`<div class="panel"><h3>Avanzamento</h3>
           <div class="row" style="gap:18px;flex-wrap:wrap;align-items:center">
             <div><b style="font-size:1.4rem">\${t.gironi.length}</b> <span class="muted">gironi</span></div>
             <div><b style="font-size:1.4rem">\${giornate.length}</b> <span class="muted">giornate per girone</span></div>
             <div><b style="font-size:1.4rem">\${nGiocate}/\${nPartite}</b> <span class="muted">partite giocate</span></div>
             \${t.hasFinale ? '<span class="tag ok">fase finale in corso</span>' : '<span class="tag mid">gironi in corso</span>'}
           </div>
+          <table style="margin-top:10px"><thead><tr><th>Girone</th><th>Casate</th><th>Giornate</th><th>Partite</th><th></th></tr></thead><tbody>
+            \${dettaglio.map(d => \`<tr><td><b>\${esc(d.nome)}</b></td><td>\${d.casate}</td><td>\${d.giornate}</td><td>\${d.partite}</td><td>\${d.ok ? '<span class="tag ok">regolare</span>' : '<span class="tag no">da rigenerare</span>'}</td></tr>\`).join('')}
+          </tbody></table>
           <p class="muted" style="font-size:13px;margin-top:8px">Il <b>tabellone</b> \u2014 calendario, date delle giornate, risultati e <b>foglio gara da stampare</b> \u2014 sta nell'app <b>Bussola Crew \xB7 modulo Sport</b>, dove si gioca. Qui il gestore imposta il torneo e lo archivia.</p>
         </div>\`
       : '<div class="panel"><p class="muted">Nessun calendario per questa disciplina: premi \u201CGenera\u201D.</p></div>';
@@ -7563,7 +7581,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.74";
+var VERSION = "4.75";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12712,7 +12730,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 13:23" : "online";
+var BUILD = true ? "2026-08-18 13:39" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
