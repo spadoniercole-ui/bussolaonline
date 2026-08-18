@@ -1563,6 +1563,50 @@ async function migrate() {
     }
   } catch (_) {
   }
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS tavoli_layout (
+    id          INTEGER PRIMARY KEY,
+    nome        TEXT NOT NULL,
+    predefinito INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS tavoli (
+    id        INTEGER PRIMARY KEY,
+    layout_id INTEGER NOT NULL REFERENCES tavoli_layout(id) ON DELETE CASCADE,
+    numero    INTEGER NOT NULL,
+    posti     INTEGER NOT NULL DEFAULT 4,
+    forma     TEXT NOT NULL DEFAULT 'tondo',        -- tondo | quadrato | rettangolo
+    x         REAL NOT NULL DEFAULT 50,             -- percentuale 0-100 della pianta
+    y         REAL NOT NULL DEFAULT 50,
+    attivo    INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_tavoli_layout_num ON tavoli(layout_id, numero);
+  -- Quale disposizione vale in un certo giorno (se assente vale il layout predefinito).
+  CREATE TABLE IF NOT EXISTS tavoli_giorni (
+    data      TEXT PRIMARY KEY,
+    layout_id INTEGER NOT NULL REFERENCES tavoli_layout(id) ON DELETE CASCADE
+  );
+  -- Prenotazione della cena al Garden: due turni, tavoli assegnati dal centro alla periferia.
+  -- 'tavoli' e' la lista dei numeri occupati: un gruppo numeroso ne puo' occupare piu' d'uno.
+  CREATE TABLE IF NOT EXISTS prenotazioni_tavolo (
+    id           INTEGER PRIMARY KEY,
+    data         TEXT NOT NULL,
+    turno        TEXT NOT NULL,                     -- '20:00' | '21:30'
+    persone      INTEGER NOT NULL DEFAULT 2,
+    tavoli       TEXT NOT NULL DEFAULT '[]',        -- JSON: [numero, ...]
+    socio_id     INTEGER,
+    tessera_code TEXT,
+    nome         TEXT,
+    origine      TEXT NOT NULL DEFAULT 'app',       -- app | crew
+    stato        TEXT NOT NULL DEFAULT 'prenotato', -- prenotato | annullato
+    note         TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_prent_giorno ON prenotazioni_tavolo(data, turno, stato);
+  `);
+  } catch (_) {
+  }
   await addIfMissing("edizioni", "punti_coppa", "punti_coppa TEXT");
   await addIfMissing("campi", "max_slot_prenotazione", "max_slot_prenotazione INTEGER NOT NULL DEFAULT 2");
   await addIfMissing("campi", "max_pren_settimana", "max_pren_settimana INTEGER NOT NULL DEFAULT 3");
@@ -5429,6 +5473,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <div id="tabs">
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
       <button data-v="tavoli">\u{1F5FA}\uFE0F Tavoli</button>
+      <button data-v="pianta">\u{1FA91} Pianta</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="scorte">\u{1F4CA} Giacenze</button>
@@ -5672,6 +5717,7 @@ function applyZona() {
   const hasMag = ME.gestore || (ME.caps || []).includes('magazzino');
   tog('comande', ZONA === 'garden' || ZONA === 'bar');
   tog('tavoli', ZONA === 'garden');
+  tog('pianta', ZONA === 'garden');
   tog('bar', ZONA === 'bar');
   tog('kds', ZONA === 'cucina');
   tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
@@ -6705,6 +6751,199 @@ VIEWS.cdc = async () => {
 
 // Scorte della Casa di Carta: e' una zona del magazzino Centrale, come Bar e Garden.
 VIEWS.scortecdc = async () => { await magHubZona('cdc'); };
+
+// ===== PIANTA DEL GARDEN: disposizione trascinabile + prenotazioni per turno ===============
+// Due modalita' sullo stesso disegno:
+//   SERVIZIO  \u2192 si vede chi occupa cosa e si prenota al banco
+//   DISPOSIZIONE \u2192 si trascinano i tavoli per adattare la sala alla serata, poi si salva
+// La regola "dal centro alla periferia" e' calcolata sul baricentro dei tavoli attivi: cambia
+// da sola quando la Crew sposta i tavoli, senza nessuna configurazione.
+let PIANTA = { data: '', turno: '', modo: 'servizio', layoutId: null, tavoli: [], sporco: false, sel: null };
+
+VIEWS.pianta = async () => {
+  if (!PIANTA.data) PIANTA.data = oggiISO();
+  const [conf, turnoDati] = await Promise.all([
+    api('/tavoli/layout').catch(() => ({ layout: [], giorni: [], turni: ['20:00', '21:30'] })),
+    api(\`/tavoli/turno?data=\${PIANTA.data}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch(() => null)
+  ]);
+  if (!turnoDati) { $('#view').innerHTML = '<div class="panel"><p class="muted">Pianta non disponibile.</p></div>'; return; }
+  PIANTA.turno = turnoDati.turno;
+  PIANTA.layoutId = turnoDati.layout.id;
+  if (PIANTA.modo === 'disposizione' && !PIANTA.sporco) {
+    const l = (conf.layout || []).find(x => x.id === PIANTA.layoutId);
+    PIANTA.tavoli = (l ? l.tavoli : []).map(t => ({ ...t }));
+  }
+
+  const turniBtn = (turnoDati.turni || []).map(t => \`<button class="btn \${t === PIANTA.turno ? 'gold' : 'ghost'} sm" data-ptur="\${t}">\u{1F557} \${esc(t)}</button>\`).join('');
+  const layoutOpts = (conf.layout || []).map(l => \`<option value="\${l.id}" \${l.id === PIANTA.layoutId ? 'selected' : ''}>\${esc(l.nome)}\${l.predefinito ? ' \u2605' : ''}</option>\`).join('');
+
+  const testa = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <b style="color:var(--navy)">\u{1F5FA}\uFE0F Pianta del Garden</b>
+      <div class="row" style="gap:6px;align-items:center">
+        <input type="date" id="p_data" value="\${PIANTA.data}">
+        <button class="btn \${PIANTA.modo === 'servizio' ? 'gold' : 'ghost'} sm" data-pmodo="servizio">\u{1F37D}\uFE0F Servizio</button>
+        <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" data-pmodo="disposizione">\u270B Disposizione</button>
+      </div></div>
+    <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      \${turniBtn}
+      <span style="flex:1"></span>
+      <label class="muted" style="font-size:.78rem">Disposizione <select id="p_layout">\${layoutOpts}</select></label>
+    </div></div>\`;
+
+  const stato = PIANTA.modo === 'servizio'
+    ? \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span>Turno <b>\${esc(PIANTA.turno)}</b> \xB7 <b>\${turnoDati.coperti_prenotati}</b> coperti prenotati</span>
+        <span class="muted">\${turnoDati.posti_liberi} posti liberi su \${turnoDati.posti_totali}</span>
+      </div></div>\`
+    : \`<div class="panel"><p class="muted" style="font-size:.8rem;margin:0">Trascina i tavoli per riprodurre la sala di stasera. Tocca un tavolo per cambiarne i posti o toglierlo dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La prenotazione assegna sempre <b>dal centro verso l'esterno</b>, quindi la disposizione che disegni qui decide anche l'ordine di riempimento.</p>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn gold sm" id="p_salva">\u{1F4BE} Salva disposizione</button>
+        <button class="btn ghost sm" id="p_addt">+ Tavolo</button>
+        <button class="btn ghost sm" id="p_nuovo">\u271A Nuova disposizione</button>
+        <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>
+      </div><div id="p_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
+
+  const sorgente = PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli;
+  const box = sorgente.map(t => {
+    const occupato = PIANTA.modo === 'servizio' && !t.libero;
+    const raggio = 22 + Math.min(16, Number(t.posti) * 2);
+    const bg = PIANTA.modo === 'disposizione'
+      ? (t.attivo === 0 ? '#d9d4c6' : 'var(--accent)')
+      : (occupato ? '#b14a35' : '#2e6b45');
+    return \`<div class="tv" data-tv="\${t.numero}" style="position:absolute;left:\${t.x}%;top:\${t.y}%;transform:translate(-50%,-50%);
+        width:\${raggio * 2}px;height:\${raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
+        background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
+        font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none">
+        <span>\${t.numero}</span>
+        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
+      </div>\`;
+  }).join('');
+
+  const prenBox = PIANTA.modo === 'servizio' ? \`<div class="panel"><b style="color:var(--navy)">Prenotazioni del turno</b>
+      <div style="margin-top:8px">\${(turnoDati.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+        <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 tavoli \${p.tavoli.join(', ')} \xB7 \${p.origine === 'crew' ? 'al banco' : 'app'}</span></span>
+        <button class="btn ghost sm" data-pann="\${p.id}">Annulla</button></div>\`).join('') || '<p class="muted">Nessuna prenotazione per questo turno.</p>'}</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <input id="p_nome" placeholder="Nome o tessera" style="min-width:140px">
+        <input id="p_pers" type="number" min="1" value="2" style="width:70px" title="Persone">
+        <button class="btn gold sm" id="p_pren">+ Prenota al banco</button>
+      </div><div id="p_msg2" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\` : '';
+
+  $('#view').innerHTML = testa + stato + \`
+    <div class="panel"><div id="p_canvas" style="position:relative;width:100%;height:64vh;min-height:340px;border-radius:14px;
+      background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:1px solid var(--line);overflow:hidden">
+      <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
+      \${box}
+    </div></div>\` + prenBox;
+
+  // --- interazioni
+  $('#p_data').onchange = () => { PIANTA.data = $('#p_data').value; PIANTA.sporco = false; show('pianta'); };
+  document.querySelectorAll('[data-ptur]').forEach(b => b.onclick = () => { PIANTA.turno = b.dataset.ptur; show('pianta'); });
+  document.querySelectorAll('[data-pmodo]').forEach(b => b.onclick = () => { PIANTA.modo = b.dataset.pmodo; PIANTA.sporco = false; show('pianta'); });
+  $('#p_layout').onchange = async () => {
+    await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: Number($('#p_layout').value) }) });
+    PIANTA.sporco = false; show('pianta');
+  };
+  document.querySelectorAll('[data-pann]').forEach(b => b.onclick = async () => {
+    if (!confirm('Annullare la prenotazione?')) return;
+    await api('/tavoli/prenotazioni/' + b.dataset.pann, { method: 'PUT', body: JSON.stringify({ stato: 'annullato' }) });
+    show('pianta');
+  });
+  if ($('#p_pren')) $('#p_pren').onclick = async () => {
+    const v = $('#p_nome').value.trim();
+    const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#p_pers').value) || 2 };
+    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    try { await api('/tavoli/prenota', { method: 'POST', body: JSON.stringify(body) }); show('pianta'); }
+    catch (e) { $('#p_msg2').textContent = e.message; }
+  };
+
+  if (PIANTA.modo !== 'disposizione') return;
+
+  // --- trascinamento (pointer events: funziona con dito e mouse)
+  const canvas = $('#p_canvas');
+  canvas.querySelectorAll('.tv').forEach(el => {
+    let drag = null;
+    el.addEventListener('pointerdown', (ev) => {
+      // La cattura tiene il trascinamento anche se il dito esce dal tavolo, ma non e'
+      // indispensabile: se il browser la rifiuta si continua lo stesso.
+      try { el.setPointerCapture(ev.pointerId); } catch (_) { }
+      const r = canvas.getBoundingClientRect();
+      drag = { moved: false, r };
+      el.style.cursor = 'grabbing';
+      ev.preventDefault();
+    });
+    el.addEventListener('pointermove', (ev) => {
+      if (!drag) return;
+      drag.moved = true;
+      const x = Math.max(3, Math.min(97, ((ev.clientX - drag.r.left) / drag.r.width) * 100));
+      const y = Math.max(5, Math.min(95, ((ev.clientY - drag.r.top) / drag.r.height) * 100));
+      el.style.left = x + '%'; el.style.top = y + '%';
+      const t = PIANTA.tavoli.find(z => z.numero === Number(el.dataset.tv));
+      if (t) { t.x = Math.round(x * 10) / 10; t.y = Math.round(y * 10) / 10; }
+      PIANTA.sporco = true;
+    });
+    const fine = (ev) => {
+      if (!drag) return;
+      el.style.cursor = 'grab';
+      const eraDrag = drag.moved; drag = null;
+      if (!eraDrag) apriTavolo(Number(el.dataset.tv));
+      else if ($('#p_msg')) $('#p_msg').textContent = 'Disposizione modificata: ricordati di salvare.';
+    };
+    el.addEventListener('pointerup', fine);
+    el.addEventListener('pointercancel', fine);
+  });
+
+  $('#p_addt').onclick = () => {
+    const n = PIANTA.tavoli.reduce((m, t) => Math.max(m, t.numero), 0) + 1;
+    PIANTA.tavoli.push({ numero: n, posti: 4, forma: 'tondo', x: 50, y: 50, attivo: 1 });
+    PIANTA.sporco = true; show('pianta');
+  };
+  $('#p_salva').onclick = async () => {
+    try {
+      await api('/tavoli/layout/' + PIANTA.layoutId, { method: 'PUT', body: JSON.stringify({ tavoli: PIANTA.tavoli }) });
+      PIANTA.sporco = false;
+      $('#p_msg').textContent = '\u2713 Disposizione salvata.';
+    } catch (e) { $('#p_msg').textContent = 'Salvataggio non riuscito: ' + e.message; }
+  };
+  $('#p_nuovo').onclick = async () => {
+    const nome = prompt('Nome della disposizione (es. "Concerto", "Cena unica")');
+    if (!nome) return;
+    const r = await api('/tavoli/layout', { method: 'POST', body: JSON.stringify({ nome, copia_da: PIANTA.layoutId }) });
+    await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: r.id }) });
+    PIANTA.sporco = false; show('pianta');
+  };
+  $('#p_giorno').onclick = async () => {
+    await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: PIANTA.layoutId }) });
+    $('#p_msg').textContent = '\u2713 Questa disposizione vale per il ' + PIANTA.data + '.';
+  };
+};
+
+// Scheda del singolo tavolo in modalita' disposizione: posti, forma, fuori servizio.
+function apriTavolo(numero) {
+  const t = PIANTA.tavoli.find(z => z.numero === numero);
+  if (!t) return;
+  openModal(\`<h3 style="margin-bottom:8px">Tavolo \${t.numero}</h3>
+    <label style="display:block;font-size:.82rem;margin-bottom:6px">Posti <input id="tv_p" type="number" min="1" value="\${t.posti}" style="width:80px"></label>
+    <label style="display:block;font-size:.82rem;margin-bottom:6px">Forma
+      <select id="tv_f"><option value="tondo" \${t.forma === 'tondo' ? 'selected' : ''}>tondo</option><option value="quadrato" \${t.forma === 'quadrato' ? 'selected' : ''}>quadrato</option><option value="rettangolo" \${t.forma === 'rettangolo' ? 'selected' : ''}>rettangolo</option></select></label>
+    <label style="display:block;font-size:.82rem;margin-bottom:10px"><input type="checkbox" id="tv_a" \${t.attivo === 0 ? '' : 'checked'}> in servizio stasera</label>
+    <div class="row" style="gap:8px">
+      <button class="btn gold sm" id="tv_ok">Applica</button>
+      <button class="btn danger sm" id="tv_del">\u{1F5D1} Togli il tavolo</button>
+      <button class="btn ghost sm" id="tv_no">Chiudi</button>
+    </div>\`);
+  $('#tv_ok').onclick = () => {
+    t.posti = Math.max(1, Number($('#tv_p').value) || 4);
+    t.forma = $('#tv_f').value;
+    t.attivo = $('#tv_a').checked ? 1 : 0;
+    PIANTA.sporco = true; closeModal(); show('pianta');
+  };
+  $('#tv_del').onclick = () => {
+    PIANTA.tavoli = PIANTA.tavoli.filter(z => z.numero !== numero);
+    PIANTA.sporco = true; closeModal(); show('pianta');
+  };
+  $('#tv_no').onclick = closeModal;
+}
 </script>
 </body>
 </html>
@@ -6992,7 +7231,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.69";
+var VERSION = "4.70";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -9042,6 +9281,149 @@ async function setSelfOrderAperto(v) {
 // server/routes/admin.js
 init_tournament();
 init_coppa();
+
+// server/tavoli.js
+init_db();
+var TURNI_DEFAULT = ["20:00", "21:30"];
+async function turni() {
+  const raw = await getSetting("garden_turni", TURNI_DEFAULT.join(","));
+  const t = String(raw).split(",").map((x) => x.trim()).filter(Boolean);
+  return t.length ? t : TURNI_DEFAULT;
+}
+async function layoutPredefinito() {
+  let l = await db.prepare("SELECT * FROM tavoli_layout WHERE predefinito=1").get();
+  if (l) return l;
+  l = await db.prepare("SELECT * FROM tavoli_layout ORDER BY id LIMIT 1").get();
+  if (l) {
+    await db.prepare("UPDATE tavoli_layout SET predefinito=1 WHERE id=?").run(l.id);
+    return l;
+  }
+  const n = Math.max(1, Number(await getSetting("garden_tavoli", "12")) || 12);
+  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito) VALUES (?,1)").run("Standard");
+  const id = Number(info.lastInsertRowid);
+  const cols = Math.ceil(Math.sqrt(n));
+  const righe = Math.ceil(n / cols);
+  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y) VALUES (?,?,?,?,?,?)");
+  for (let i = 0; i < n; i++) {
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    const x = (c + 1) / (cols + 1) * 100;
+    const y = (r + 1) / (righe + 1) * 100;
+    await ins.run(id, i + 1, 4, "tondo", Number(x.toFixed(1)), Number(y.toFixed(1)));
+  }
+  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
+}
+async function layoutDelGiorno(data) {
+  if (data) {
+    const g = await db.prepare("SELECT l.* FROM tavoli_giorni g JOIN tavoli_layout l ON l.id=g.layout_id WHERE g.data=?").get(data);
+    if (g) return g;
+  }
+  return await layoutPredefinito();
+}
+async function tavoliDi(layoutId) {
+  return await db.prepare("SELECT * FROM tavoli WHERE layout_id=? ORDER BY numero").all(layoutId);
+}
+function conDistanza(tavoli) {
+  const att = tavoli.filter((t) => t.attivo !== 0);
+  if (!att.length) return [];
+  const cx = att.reduce((s, t) => s + Number(t.x), 0) / att.length;
+  const cy = att.reduce((s, t) => s + Number(t.y), 0) / att.length;
+  return att.map((t) => ({
+    ...t,
+    distanza: Math.round(Math.hypot(Number(t.x) - cx, Number(t.y) - cy) * 100) / 100
+  })).sort((a, b) => a.distanza - b.distanza || a.numero - b.numero);
+}
+async function prenotazioniDi(data, turno) {
+  const q = turno ? await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE data=? AND turno=? AND stato='prenotato' ORDER BY id").all(data, turno) : await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE data=? AND stato='prenotato' ORDER BY turno,id").all(data);
+  return q.map((p) => ({ ...p, tavoli: parseTavoli(p.tavoli) }));
+}
+function parseTavoli(v) {
+  try {
+    const a = JSON.parse(v || "[]");
+    return Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : [];
+  } catch (_) {
+    return [];
+  }
+}
+async function statoTurno(data, turno) {
+  const layout = await layoutDelGiorno(data);
+  const tav = conDistanza(await tavoliDi(layout.id));
+  const pren = await prenotazioniDi(data, turno);
+  const occupanti = /* @__PURE__ */ new Map();
+  for (const p of pren) for (const n of p.tavoli) occupanti.set(n, p);
+  const tavoli = tav.map((t) => {
+    const p = occupanti.get(t.numero);
+    return {
+      numero: t.numero,
+      posti: t.posti,
+      forma: t.forma,
+      x: t.x,
+      y: t.y,
+      distanza: t.distanza,
+      libero: !p,
+      prenotazione_id: p ? p.id : null,
+      nome: p ? p.nome || "" : "",
+      persone: p ? p.persone : null,
+      origine: p ? p.origine : null
+    };
+  });
+  const postiTot = tavoli.reduce((s, t) => s + Number(t.posti), 0);
+  const postiOcc = tavoli.filter((t) => !t.libero).reduce((s, t) => s + Number(t.posti), 0);
+  return {
+    layout: { id: layout.id, nome: layout.nome },
+    data,
+    turno,
+    tavoli,
+    prenotazioni: pren,
+    posti_totali: postiTot,
+    posti_occupati: postiOcc,
+    posti_liberi: postiTot - postiOcc,
+    coperti_prenotati: pren.reduce((s, p) => s + Number(p.persone || 0), 0)
+  };
+}
+function assegnaTavoli(tavoliLiberi, persone) {
+  const ord = [...tavoliLiberi].sort((a, b) => a.distanza - b.distanza || a.numero - b.numero);
+  const adatti = ord.filter((t) => Number(t.posti) >= persone);
+  if (adatti.length) {
+    const minPosti = Math.min(...adatti.map((t) => Number(t.posti)));
+    const stretti = adatti.filter((t) => Number(t.posti) === minPosti);
+    return [stretti[0].numero];
+  }
+  const scelti = [];
+  let somma = 0;
+  for (const t of ord) {
+    scelti.push(t.numero);
+    somma += Number(t.posti);
+    if (somma >= persone) return scelti;
+  }
+  return null;
+}
+async function prenotaTavolo({ data, turno, persone, socio, tessera_code, nome, origine, note, tavoli: forzati }) {
+  const t = await turni();
+  if (!t.includes(turno)) return { error: `Turno non valido (${t.join(" o ")})` };
+  const n = Math.max(1, Number(persone) || 1);
+  const stato = await statoTurno(data, turno);
+  let numeri = Array.isArray(forzati) && forzati.length ? forzati.map(Number) : null;
+  if (numeri) {
+    const occupati = numeri.filter((x) => !stato.tavoli.find((tt) => tt.numero === x && tt.libero));
+    if (occupati.length) return { error: `Tavoli gi\xE0 occupati: ${occupati.join(", ")}` };
+  } else {
+    numeri = assegnaTavoli(stato.tavoli.filter((x) => x.libero), n);
+    if (!numeri) return { error: `Non ci sono abbastanza posti liberi nel turno delle ${turno}` };
+  }
+  const info = await db.prepare(
+    "INSERT INTO prenotazioni_tavolo (data,turno,persone,tavoli,socio_id,tessera_code,nome,origine,note) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(data, turno, n, JSON.stringify(numeri), socio?.id ?? null, tessera_code || null, nome || null, origine === "crew" ? "crew" : "app", note || null);
+  return { id: Number(info.lastInsertRowid), tavoli: numeri, persone: n, turno, data };
+}
+async function turnoSuccessivo(ora) {
+  const t = await turni();
+  const hhmm = String(ora || "").slice(0, 5);
+  for (const x of t) if (x > hhmm) return x;
+  return null;
+}
+
+// server/routes/admin.js
 function menuZona(v) {
   const s = String(v || "").trim().toLowerCase();
   return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
@@ -10640,6 +11022,118 @@ adminRouter.get("/db/backup", requireCap("db"), async (req, res) => {
 adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
 });
+adminRouter.get("/tavoli/layout", requireCap("comande"), async (req, res) => {
+  await layoutPredefinito();
+  const rows = await db.prepare("SELECT * FROM tavoli_layout ORDER BY predefinito DESC, nome").all();
+  const out = [];
+  for (const l of rows) {
+    const t = await tavoliDi(l.id);
+    out.push({ ...l, tavoli: t, n_tavoli: t.length, posti: t.reduce((s, x) => s + Number(x.posti), 0) });
+  }
+  const giorni = await db.prepare("SELECT * FROM tavoli_giorni WHERE data>=date('now','-1 day') ORDER BY data").all();
+  res.json({ layout: out, giorni, turni: await turni() });
+});
+adminRouter.post("/tavoli/layout", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
+  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito) VALUES (?,0)").run(b.nome);
+  const id = Number(info.lastInsertRowid);
+  const src = await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(b.copia_da) || await layoutPredefinito();
+  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo) VALUES (?,?,?,?,?,?,?)");
+  for (const t of await tavoliDi(src.id)) await ins.run(id, t.numero, t.posti, t.forma, t.x, t.y, t.attivo);
+  audit(req.adminUser.username, "crea", "tavoli_layout", id, b.nome);
+  res.status(201).json({ ok: true, id });
+});
+adminRouter.put("/tavoli/layout/:id", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  const l = await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(req.params.id);
+  if (!l) return res.status(404).json({ error: "Disposizione non trovata" });
+  if (b.nome) await db.prepare("UPDATE tavoli_layout SET nome=? WHERE id=?").run(b.nome, l.id);
+  if (b.predefinito) {
+    await db.prepare("UPDATE tavoli_layout SET predefinito=0").run();
+    await db.prepare("UPDATE tavoli_layout SET predefinito=1 WHERE id=?").run(l.id);
+  }
+  if (Array.isArray(b.tavoli)) {
+    const num = (v, d) => Number.isFinite(Number(v)) ? Number(v) : d;
+    const clamp = (v) => Math.max(0, Math.min(100, num(v, 50)));
+    await db.prepare("DELETE FROM tavoli WHERE layout_id=?").run(l.id);
+    const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo) VALUES (?,?,?,?,?,?,?)");
+    const visti = /* @__PURE__ */ new Set();
+    for (const t of b.tavoli) {
+      const n = num(t.numero, 0);
+      if (!n || visti.has(n)) continue;
+      visti.add(n);
+      await ins.run(l.id, n, Math.max(1, num(t.posti, 4)), ["tondo", "quadrato", "rettangolo"].includes(t.forma) ? t.forma : "tondo", clamp(t.x), clamp(t.y), t.attivo === false ? 0 : 1);
+    }
+  }
+  audit(req.adminUser.username, "modifica", "tavoli_layout", l.id, `${(b.tavoli || []).length} tavoli`);
+  res.json({ ok: true });
+});
+adminRouter.delete("/tavoli/layout/:id", requireCap("comande"), async (req, res) => {
+  const l = await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(req.params.id);
+  if (!l) return res.status(404).json({ error: "Disposizione non trovata" });
+  if (l.predefinito) return res.status(409).json({ error: "Non puoi eliminare la disposizione predefinita" });
+  await db.prepare("DELETE FROM tavoli WHERE layout_id=?").run(l.id);
+  await db.prepare("DELETE FROM tavoli_giorni WHERE layout_id=?").run(l.id);
+  await db.prepare("DELETE FROM tavoli_layout WHERE id=?").run(l.id);
+  audit(req.adminUser.username, "cancella", "tavoli_layout", l.id, l.nome);
+  res.json({ ok: true });
+});
+adminRouter.put("/tavoli/giorno", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
+  if (b.layout_id) {
+    await db.prepare("INSERT INTO tavoli_giorni (data,layout_id) VALUES (?,?) ON CONFLICT(data) DO UPDATE SET layout_id=excluded.layout_id").run(b.data, Number(b.layout_id));
+  } else {
+    await db.prepare("DELETE FROM tavoli_giorni WHERE data=?").run(b.data);
+  }
+  audit(req.adminUser.username, "layout_giorno", "tavoli_giorni", 0, `${b.data} -> ${b.layout_id || "predefinito"}`);
+  res.json({ ok: true });
+});
+adminRouter.get("/tavoli/turno", requireCap("comande"), async (req, res) => {
+  const data = String(req.query.data || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const t = await turni();
+  const turno = t.includes(String(req.query.turno)) ? String(req.query.turno) : t[0];
+  res.json({ ...await statoTurno(data, turno), turni: t });
+});
+adminRouter.post("/tavoli/prenota", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  const data = String(b.data || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
+  let turno = b.turno;
+  if (!turno) {
+    turno = await turnoSuccessivo(b.ora || (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5));
+    if (!turno) return res.status(409).json({ error: "Nessun turno disponibile dopo quest'ora: scegli un altro giorno" });
+  }
+  const socio = b.tessera_code ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(b.tessera_code) : null;
+  const nome = b.nome || (socio ? (socio.nome + " " + (socio.cognome || "")).trim() : "Ospite");
+  const r = await prenotaTavolo({ data, turno, persone: b.persone, socio, tessera_code: b.tessera_code, nome, origine: "crew", note: b.note, tavoli: b.tavoli });
+  if (r.error) return res.status(409).json({ error: r.error });
+  audit(req.adminUser.username, "prenota_tavolo", "prenotazioni_tavolo", r.id, `${data} ${turno} \xB7 ${r.persone}p \xB7 tavoli ${r.tavoli.join(",")}`);
+  res.status(201).json({ ok: true, ...r });
+});
+adminRouter.put("/tavoli/prenotazioni/:id", requireCap("comande"), async (req, res) => {
+  const b = req.body || {};
+  const p = await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Prenotazione non trovata" });
+  if (b.stato === "annullato") {
+    await db.prepare("UPDATE prenotazioni_tavolo SET stato='annullato' WHERE id=?").run(p.id);
+    audit(req.adminUser.username, "annulla_tavolo", "prenotazioni_tavolo", p.id);
+    return res.json({ ok: true });
+  }
+  if (Array.isArray(b.tavoli)) {
+    const stato = await statoTurno(p.data, p.turno);
+    const occupati = b.tavoli.map(Number).filter((n) => {
+      const t = stato.tavoli.find((x) => x.numero === n);
+      return t && !t.libero && t.prenotazione_id !== p.id;
+    });
+    if (occupati.length) return res.status(409).json({ error: `Tavoli gi\xE0 occupati: ${occupati.join(", ")}` });
+    await db.prepare("UPDATE prenotazioni_tavolo SET tavoli=? WHERE id=?").run(JSON.stringify(b.tavoli.map(Number)), p.id);
+  }
+  if (b.persone) await db.prepare("UPDATE prenotazioni_tavolo SET persone=? WHERE id=?").run(Math.max(1, Number(b.persone)), p.id);
+  audit(req.adminUser.username, "modifica", "prenotazioni_tavolo", p.id);
+  res.json({ ok: true });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -10647,9 +11141,9 @@ init_authuser();
 // server/routes/public.js
 init_asyncroute();
 init_coppa();
+import { Router as Router2 } from "express";
 init_db();
 init_push();
-import { Router as Router2 } from "express";
 var publicRouter = asyncify(Router2());
 publicRouter.get("/self-order/stato", async (req, res) => {
   const s = await statoCompleto();
@@ -11116,6 +11610,43 @@ publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
   if (!completa) await notifyMancaUno(p.id);
   res.json({ ok: true, iscritti: nuovi, posti_totali: p.posti_totali, completa });
 });
+publicRouter.get("/garden/turni", async (req, res) => {
+  const data = String(req.query.data || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
+  const out = [];
+  for (const t of await turni()) {
+    const s = await statoTurno(data, t);
+    out.push({ turno: t, posti_liberi: s.posti_liberi, posti_totali: s.posti_totali, coperti_prenotati: s.coperti_prenotati });
+  }
+  res.json({ data, turni: out });
+});
+publicRouter.post("/garden/prenota", async (req, res) => {
+  const b = req.body || {};
+  const data = String(b.data || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
+  const socio = await socioAttivoByTessera(b.tessera_code);
+  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
+  if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const nome = (socio.nome + " " + (socio.cognome || "")).trim();
+  const r = await prenotaTavolo({ data, turno: String(b.turno || ""), persone: b.persone, socio, tessera_code: b.tessera_code, nome, origine: "app", note: b.note });
+  if (r.error) return res.status(409).json({ error: r.error });
+  audit(b.tessera_code, "prenota_tavolo", "prenotazioni_tavolo", r.id, `${data} ${r.turno} \xB7 ${r.persone}p`);
+  res.status(201).json({ ok: true, ...r });
+});
+publicRouter.get("/garden/mie-prenotazioni", async (req, res) => {
+  const t = String(req.query.tessera_code || "");
+  if (!t) return res.json([]);
+  const rows = await db.prepare("SELECT id,data,turno,persone,tavoli,stato FROM prenotazioni_tavolo WHERE tessera_code=? AND stato='prenotato' AND data>=date('now','-1 day') ORDER BY data,turno").all(t);
+  res.json(rows.map((r) => ({ ...r, tavoli: JSON.parse(r.tavoli || "[]") })));
+});
+publicRouter.post("/garden/prenotazioni/:id/annulla", async (req, res) => {
+  const p = await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Prenotazione non trovata" });
+  if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue prenotazioni" });
+  await db.prepare("UPDATE prenotazioni_tavolo SET stato='annullato' WHERE id=?").run(p.id);
+  audit(req.body?.tessera_code || "socio", "annulla_tavolo", "prenotazioni_tavolo", p.id);
+  res.json({ ok: true });
+});
 
 // server/seed.js
 init_auth();
@@ -11497,7 +12028,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 11:44" : "online";
+var BUILD = true ? "2026-08-18 12:07" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
