@@ -5421,7 +5421,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option></select>
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -5434,6 +5434,10 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="scorte">\u{1F4CA} Giacenze</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
       <button data-v="sport">\u{1F3C6} Sport</button>
+      <button data-v="campi">\u{1F3BE} Campi</button>
+      <button data-v="serate">\u{1F37D}\uFE0F Serate</button>
+      <button data-v="cdc">\u{1F4DA} Casa di Carta</button>
+      <button data-v="scortecdc">\u{1F4CA} Scorte</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
     </div>
@@ -5618,7 +5622,7 @@ async function login() {
     ME = await api('/me').catch(() => ({ gestore: false, caps: [] }));
     // Accesso a Bussola Crew: basta UN permesso operativo (comande o magazzino); si vedono solo le zone consentite.
     const zone = allowedZones();
-    if (!zone.length) throw new Error('Nessun permesso operativo. Chiedi al gestore l\u2019abilitazione a Comande o Magazzino.');
+    if (!zone.length) throw new Error('Il tuo utente non ha ancora nessun permesso operativo. Chiedi al gestore di abilitarti ad almeno uno di questi moduli: ' + Object.values(CAP_MODULO).join(' \xB7 ') + '.');
     filterZoneSelectors(zone);
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
@@ -5635,9 +5639,14 @@ function allowedZones() {
   const z = [];
   if (ME.gestore || caps.includes('comande')) z.push('garden', 'bar', 'cucina');
   if (ME.gestore || caps.includes('magazzino')) z.push('magazzino');
-  if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // modulo operativo Sport (risultati live)
+  if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // risultati live
+  if (ME.gestore || caps.includes('campi')) z.push('campi');       // prenotazioni campi al banco
+  if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
+  if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
   return z;
 }
+// Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta' };
 // Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
   const el = document.querySelector('#zonaSwitch');
@@ -5653,7 +5662,8 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  show(ZONA === 'cucina' ? 'kds' : ZONA === 'magazzino' ? 'magazzino' : ZONA === 'sport' ? 'sport' : 'comande');
+  const PRIMA = { cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc' };
+  show(PRIMA[ZONA] || 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
 //  Garden \u2192 Comande+Tavoli+Giacenze \xB7 Bar \u2192 Comande+Bar+Giacenze \xB7 Cucina \u2192 Cucina \xB7 Magazzino \u2192 hub Centrale/Bar/Garden.
@@ -5667,6 +5677,10 @@ function applyZona() {
   tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
   tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
+  tog('campi', ZONA === 'campi');
+  tog('serate', ZONA === 'serate');
+  tog('cdc', ZONA === 'cdc');
+  tog('scortecdc', hasMag && ZONA === 'cdc');                      // Casa di Carta: zona del magazzino Centrale
   tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
@@ -5681,6 +5695,9 @@ const ZONA_ACCENT = {
   cucina:    { a: '#b14a35', g1: '#8f3826', g2: '#c8624b', nome: 'Cucina' },
   magazzino: { a: '#12324f', g1: '#12324F', g2: '#1c4a6e', nome: 'Magazzino' },
   sport:     { a: '#5b3f8a', g1: '#463170', g2: '#6b4ea0', nome: 'Sport' },
+  campi:     { a: '#2e6b45', g1: '#245437', g2: '#3d8a5a', nome: 'Campi' },
+  serate:    { a: '#a0356b', g1: '#7d2853', g2: '#b8497f', nome: 'Serate' },
+  cdc:       { a: '#7a5c2e', g1: '#5f4723', g2: '#96733d', nome: 'Casa di Carta' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -6125,13 +6142,13 @@ async function fotoPartita(id) {
 const MAG_AREE = [['chiosco', 'Chiosco'], ['casa_di_carta', 'Casa di Carta'], ['serata_clan', 'Serata Clan'], ['serate_tema', 'Serate a tema']];
 const magAreaLabel = (a) => (MAG_AREE.find(x => x[0] === a) || [a, a])[1];
 const magBadge = (s) => s === 'da_riordinare' ? '<span class="tag no">Da riordinare</span>' : s === 'in_esaurimento' ? '<span class="tag mid">In esaurimento</span>' : '<span class="tag ok">OK</span>';
-const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
+const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : z === 'cdc' ? '<span class="tag" style="background:#f2ece0;color:#7a5c2e">\u{1F4DA} Casa di Carta</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
 // ===== MAGAZZINO A DUE LIVELLI (v4.48): hub Centrale / Bar / Garden =====
 let MAG_SUB = 'centrale';
-const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', quadratura: '\u{1F4CA} Quadratura', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden' };
+const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', quadratura: '\u{1F4CA} Quadratura', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', cdc: '\u{1F4DA} Casa di Carta' };
 const magSubbar = () => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
   <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 merce unica al Centrale</span></b>
-  <div class="row">\${['centrale', 'previsione', 'calendario', 'quadratura', 'bar', 'garden'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
+  <div class="row">\${['centrale', 'previsione', 'calendario', 'quadratura', 'bar', 'garden', 'cdc'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
 VIEWS.magazzino = async () => {
   if (MAG_SUB === 'centrale') await magCentrale();
   else if (MAG_SUB === 'previsione') await magPrevisione();
@@ -6273,7 +6290,7 @@ async function magCentrale() {
     <div id="mimp_prev" style="margin-top:10px"></div></div>\`;
   const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3><div class="row">
     <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select>
-    <select id="ma_z"><option value="comune">\u{1F501} Comune</option><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option></select>
+    <select id="ma_z"><option value="comune">\u{1F501} Comune</option><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option><option value="cdc">\u{1F4DA} Casa di Carta</option></select>
     <input id="ma_u" value="pz" style="width:70px"><input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
     <button class="btn gold sm" id="ma_add">+ Aggiungi</button></div></div>\`;
   $('#view').innerHTML = magSubbar() + alert + ricPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
@@ -6508,6 +6525,186 @@ $('#p').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.v));
 
+
+// ===== MODULO CAMPI (cap 'campi') \u2014 prenotazioni del giorno e prenotazione al banco =========
+const oggiISO = () => new Date().toISOString().slice(0, 10);
+let CAMPI_DATA = '';
+VIEWS.campi = async () => {
+  const data = CAMPI_DATA || (CAMPI_DATA = oggiISO());
+  const [campi, pren, blocchi] = await Promise.all([
+    api('/campi').catch(() => []),
+    api('/campi/prenotazioni?data=' + data).catch(() => []),
+    api('/campi/blocchi?data=' + data).catch(() => [])
+  ]);
+  const righe = pren.map(p => {
+    const ora = p.slot_da === p.slot_a ? esc(p.slot_da) : \`\${esc(p.slot_da)}\u2013\${esc(p.slot_a)}\`;
+    const nomi = (p.partecipanti || []).map(x => esc(x.nome)).join(', ');
+    const cap = p.posti_totali ? \`\${(p.partecipanti || []).length}/\${p.posti_totali}\` : '';
+    return \`<div class="card" style="padding:10px 12px;margin-bottom:8px">
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+        <b style="color:var(--navy)">\${ora} \xB7 \${esc(p.campo_nome)}</b>
+        <span class="tag">\${p.aperta_ai_soci ? '\u{1F465} Aperta' : '\u{1F512} Riservata'} \${cap}</span>
+      </div>
+      <div style="font-size:.85rem;margin-top:4px">Titolare <b>\${esc(p.titolare || '\u2014')}</b></div>
+      \${nomi ? \`<div class="muted" style="font-size:.8rem">Con: \${nomi}</div>\` : ''}
+    </div>\`;
+  }).join('');
+  const bl = blocchi.map(b => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+      <span>\u{1F6A7} <b>\${esc(b.campo_nome)}</b> \${esc(b.slot_da)}\u2013\${esc(b.slot_a)} <span class="muted">\${esc(b.motivo)}</span></span>
+      <button class="btn danger sm" data-cbldel="\${b.id}">\u{1F5D1}</button></div>\`).join('');
+  const opts = campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('');
+  $('#view').innerHTML = \`
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <b style="color:var(--navy)">\u{1F3BE} Campi</b>
+      <input type="date" id="cw_data" value="\${data}">
+    </div>
+    <p class="muted" style="font-size:.78rem;margin-top:6px">I campi sono gratuiti: qui si vede <b>chi usa</b> e a chi fare riferimento. Ogni prenotazione ha un titolare socio.</p></div>
+    <div class="panel"><b style="color:var(--navy)">Prenotazioni del giorno</b>
+      <div style="margin-top:8px">\${righe || '<p class="muted">Nessuna prenotazione per questa data.</p>'}</div></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F3AB} Prenota al banco</b>
+      <p class="muted" style="font-size:.78rem;margin:6px 0">Serve la tessera del socio che prenota: resta lui il titolare.</p>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <select id="cw_campo">\${opts}</select>
+        <select id="cw_slot"><option>\u2014</option></select>
+        <input id="cw_tess" placeholder="Tessera socio" style="min-width:150px">
+        <select id="cw_tipo"><option value="1">\u{1F465} Aperta ai soci</option><option value="0">\u{1F512} Riservata</option></select>
+        <button class="btn gold sm" id="cw_book">Prenota</button>
+      </div>
+      <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F6A7} Campo impegnato</b>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0">
+        <select id="cw_bcampo">\${opts}</select>
+        <input id="cw_bda" value="09:00" style="width:70px"><span class="muted">\u2013</span><input id="cw_ba" value="22:00" style="width:70px">
+        <select id="cw_bmot"><option value="torneo">torneo</option><option value="manutenzione">manutenzione</option><option value="evento">evento</option></select>
+        <button class="btn gold sm" id="cw_bloc">+ Blocca</button>
+      </div>
+      <div>\${bl || '<p class="muted">Nessun blocco per questa data.</p>'}</div></div>\`;
+
+  const caricaSlot = async () => {
+    const id = $('#cw_campo').value;
+    const d = await api(\`/../campi/\${id}/disponibilita?data=\${$('#cw_data').value}\`).catch(() => ({ slots: [] }));
+    const liberi = (d.slots || []).filter(s => s.stato === 'libero');
+    $('#cw_slot').innerHTML = liberi.length ? liberi.map(s => \`<option value="\${s.slot}">\${s.slot}</option>\`).join('') : '<option value="">nessuna fascia libera</option>';
+  };
+  await caricaSlot();
+  $('#cw_campo').onchange = caricaSlot;
+  $('#cw_data').onchange = () => { CAMPI_DATA = $('#cw_data').value; show('campi'); };
+  $('#cw_book').onclick = async () => {
+    const tess = $('#cw_tess').value.trim().toUpperCase();
+    const slot = $('#cw_slot').value;
+    if (!tess) { $('#cw_msg').textContent = 'Serve la tessera del socio.'; return; }
+    if (!slot) { $('#cw_msg').textContent = 'Nessuna fascia libera selezionata.'; return; }
+    const aperta = $('#cw_tipo').value === '1';
+    try {
+      const r = await fetch(API_BASE + '/api/campi/' + $('#cw_campo').value + (aperta ? '/partita' : '/prenota'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tessera_code: tess, data: $('#cw_data').value, slot, n_slot: 1 })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { $('#cw_msg').textContent = j.error || 'Prenotazione non riuscita.'; return; }
+      show('campi');
+    } catch (e) { $('#cw_msg').textContent = 'Errore di rete.'; }
+  };
+  $('#cw_bloc').onclick = async () => {
+    await api('/campi/blocchi', { method: 'POST', body: JSON.stringify({ campo_id: Number($('#cw_bcampo').value), data: $('#cw_data').value, slot_da: $('#cw_bda').value, slot_a: $('#cw_ba').value, motivo: $('#cw_bmot').value }) });
+    show('campi');
+  };
+  document.querySelectorAll('[data-cbldel]').forEach(b => b.onclick = async () => { await api('/campi/blocchi/' + b.dataset.cbldel, { method: 'DELETE' }); show('campi'); });
+};
+
+// ===== MODULO SERATE & CENA (cap 'serate') \u2014 presenze e incassi al banco ====================
+let SERATA_SEL = null;
+VIEWS.serate = async () => {
+  const serate = await api('/serate').catch(() => []);
+  if (!serate.length) { $('#view').innerHTML = '<div class="panel"><p class="muted">Nessuna serata configurata. Le serate si creano nel back office.</p></div>'; return; }
+  if (!SERATA_SEL || !serate.some(s => s.id === SERATA_SEL)) SERATA_SEL = serate[0].id;
+  const s = serate.find(x => x.id === SERATA_SEL);
+  const pren = await api(\`/serate/\${s.id}/prenotazioni\`).catch(() => []);
+  const attive = pren.filter(p => p.stato !== 'annullata');
+  const coperti = attive.reduce((n, p) => n + Number(p.persone || 0), 0);
+  const daIncassare = pren.filter(p => p.stato === 'da_saldare').reduce((n, p) => n + Number(p.importo || 0), 0);
+  const chips = serate.map(x => \`<button class="btn \${x.id === SERATA_SEL ? 'gold' : 'ghost'} sm" data-sersel="\${x.id}">\${esc(x.titolo)}</button>\`).join('');
+  const righe = pren.map(p => {
+    const stato = p.stato === 'saldata' ? '<span class="tag ok">saldata</span>' : p.stato === 'annullata' ? '<span class="tag">annullata</span>' : '<span class="tag no">da saldare</span>';
+    return \`<div class="card" style="padding:10px 12px;margin-bottom:8px">
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+        <b>\${esc(p.nome || p.tessera_code || '\u2014')}</b>\${stato}
+      </div>
+      <div class="muted" style="font-size:.82rem">\${esc(String(p.persone || 0))} persone \xB7 \${eur(p.importo)}</div>
+      <div class="row" style="gap:6px;margin-top:6px">
+        \${p.stato !== 'saldata' ? \`<button class="btn gold sm" data-sersald="\${p.id}">\u{1F4B6} Segna saldata</button>\` : ''}
+        \${p.stato !== 'annullata' ? \`<button class="btn ghost sm" data-serann="\${p.id}">Annulla</button>\` : ''}
+      </div></div>\`;
+  }).join('');
+  $('#view').innerHTML = \`
+    <div class="panel"><b style="color:var(--navy)">\u{1F37D}\uFE0F Serate & cena</b>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div><b style="color:var(--navy)">\${esc(s.titolo)}</b><div class="muted" style="font-size:.82rem">\${esc(s.quando || s.data || '')}</div></div>
+        <div style="text-align:right">
+          <div><b>\${coperti}</b><span class="muted">/\${esc(String(s.capienza || 0))} coperti</span></div>
+          <div class="muted" style="font-size:.82rem">da incassare <b>\${eur(daIncassare)}</b></div>
+        </div></div></div>
+    <div class="panel"><b style="color:var(--navy)">Prenotati</b>
+      <div style="margin-top:8px">\${righe || '<p class="muted">Nessuna prenotazione.</p>'}</div></div>\`;
+  document.querySelectorAll('[data-sersel]').forEach(b => b.onclick = () => { SERATA_SEL = Number(b.dataset.sersel); show('serate'); });
+  document.querySelectorAll('[data-sersald]').forEach(b => b.onclick = async () => { await api('/serate-prenotazioni/' + b.dataset.sersald, { method: 'PUT', body: JSON.stringify({ stato: 'saldata' }) }); show('serate'); });
+  document.querySelectorAll('[data-serann]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la prenotazione?')) return; await api('/serate-prenotazioni/' + b.dataset.serann, { method: 'PUT', body: JSON.stringify({ stato: 'annullata' }) }); show('serate'); });
+};
+
+// ===== MODULO CASA DI CARTA (cap 'cdc') \u2014 caff\xE8, giochi, prestiti ===========================
+VIEWS.cdc = async () => {
+  const [caffe, giochi, prestiti] = await Promise.all([
+    api('/cdc/caffe').catch(() => ({ config: {}, conte: [] })),
+    api('/cdc/giochi').catch(() => []),
+    api('/cdc/prestiti').catch(() => [])
+  ]);
+  const cfg = caffe.config || {};
+  const fuori = prestiti.filter(p => !p.ora_fine);
+  const gopts = giochi.map(g => \`<option value="\${g.id}">\${esc(g.nome)}</option>\`).join('');
+  $('#view').innerHTML = \`
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <b style="color:var(--navy)">\u2615 Caff\xE8 \xB7 giacenza <b style="font-size:1.2rem">\${esc(String(cfg.giacenza ?? 0))}</b></b>
+      \${caffe.da_riordinare ? \`<span class="tag no">da riordinare \xB7 suggerite \${esc(String(caffe.ordine_suggerito || 0))}</span>\` : '<span class="tag ok">scorta ok</span>'}
+    </div>
+    <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
+      <input id="cdc_g" type="number" inputmode="numeric" placeholder="capsule contate" style="width:150px">
+      <button class="btn gold sm" id="cdc_conta">Registra conta</button>
+    </div></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F3B2} Prestiti in corso (\${fuori.length})</b>
+      <div style="margin-top:8px">\${fuori.map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+        <span><b>\${esc(p.gioco_nome)}</b> <span class="muted">\xB7 \${esc(p.giocatore || '\u2014')} \xB7 dalle \${esc(p.ora_inizio || '')}</span></span>
+        <button class="btn gold sm" data-cdcret="\${p.id}">\u21A9\uFE0E Riconsegna</button></div>\`).join('') || '<p class="muted">Nessun gioco fuori.</p>'}</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <select id="cdc_gioco">\${gopts}</select>
+        <input id="cdc_chi" placeholder="Chi lo prende" style="min-width:140px">
+        <button class="btn gold sm" id="cdc_presta">+ Presta</button>
+      </div></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F4DA} Inventario giochi</b>
+      <div style="margin-top:8px">\${giochi.map(g => \`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
+        <span>\${esc(g.nome)} <span class="muted">\xB7 \${esc(g.categoria || '')}</span></span>
+        <span class="tag \${g.stato === 'ok' ? 'ok' : 'no'}">\${esc(g.stato)} \xB7 \${esc(String(g.quantita))}</span></div>\`).join('') || '<p class="muted">Inventario vuoto.</p>'}</div></div>\`;
+  $('#cdc_conta').onclick = async () => {
+    const g = Number($('#cdc_g').value);
+    if (!Number.isFinite(g) || g < 0) { alert('Indica le capsule contate.'); return; }
+    await api('/cdc/caffe/conta', { method: 'POST', body: JSON.stringify({ giacenza: g }) });
+    show('cdc');
+  };
+  $('#cdc_presta').onclick = async () => {
+    const sel = $('#cdc_gioco'); if (!sel || !sel.value) { alert('Nessun gioco in inventario.'); return; }
+    const nome = sel.options[sel.selectedIndex].textContent;
+    const ora = new Date().toTimeString().slice(0, 5);
+    await api('/cdc/prestiti', { method: 'POST', body: JSON.stringify({ gioco_id: Number(sel.value), gioco_nome: nome, giocatore: $('#cdc_chi').value, ora_inizio: ora }) });
+    show('cdc');
+  };
+  document.querySelectorAll('[data-cdcret]').forEach(b => b.onclick = async () => {
+    await api('/cdc/prestiti/' + b.dataset.cdcret, { method: 'PUT', body: JSON.stringify({ ora_fine: new Date().toTimeString().slice(0, 5) }) });
+    show('cdc');
+  });
+};
+
+// Scorte della Casa di Carta: e' una zona del magazzino Centrale, come Bar e Garden.
+VIEWS.scortecdc = async () => { await magHubZona('cdc'); };
 </script>
 </body>
 </html>
@@ -6795,7 +6992,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.68";
+var VERSION = "4.69";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -9202,7 +9399,7 @@ function magStato(a) {
 adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   const area = req.query.area;
   const zona = req.query.zona;
-  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
+  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "cdc" ? "zona IN ('cdc','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
   const conds = [];
   const args = [];
   if (area) {
@@ -9211,7 +9408,7 @@ adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   }
   if (zonaWhere) {
     conds.push(zonaWhere);
-    if (zona && !["bar", "garden", "comune"].includes(zona)) args.push(zona);
+    if (zona && !["bar", "garden", "cdc", "comune"].includes(zona)) args.push(zona);
   }
   const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
   const rows = await db.prepare(`SELECT * FROM magazzino_articoli ${where} ORDER BY area,ordine,id`).all(...args);
@@ -9282,8 +9479,10 @@ async function impegnoZona(articoloId, zona) {
   const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata'").get(articoloId, zona);
   return Number(r.q);
 }
+var ZONE_MAGAZZINO = ["bar", "garden", "cdc"];
+var zonaMag = (v) => ZONE_MAGAZZINO.includes(String(v)) ? String(v) : "garden";
 adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, res) => {
-  const zona = req.params.zona === "bar" ? "bar" : "garden";
+  const zona = zonaMag(req.params.zona);
   const arts = await db.prepare("SELECT * FROM magazzino_articoli WHERE zona=? OR zona='comune' ORDER BY nome").all(zona);
   const out = [];
   for (const a of arts) {
@@ -9309,7 +9508,7 @@ adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, re
   res.json({ articoli: out, riepilogo });
 });
 adminRouter.post("/magazzino/zona/:zona/scarico", requireCap("magazzino"), async (req, res) => {
-  const zona = req.params.zona === "bar" ? "bar" : "garden";
+  const zona = zonaMag(req.params.zona);
   const b = req.body || {};
   const art = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
   if (!art) return res.status(404).json({ error: "Articolo non trovato" });
@@ -9334,7 +9533,7 @@ adminRouter.post("/magazzino/zona/:zona/scarico", requireCap("magazzino"), async
 });
 adminRouter.post("/magazzino/richieste", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
-  const zona = b.zona === "bar" ? "bar" : "garden";
+  const zona = zonaMag(b.zona);
   const art = await db.prepare("SELECT id FROM magazzino_articoli WHERE id=?").get(b.articolo_id);
   if (!art) return res.status(404).json({ error: "Articolo non trovato" });
   const q = Math.abs(Number(b.quantita || 0));
@@ -9593,6 +9792,7 @@ function magNormZona(v) {
   const s = String(v || "").trim().toLowerCase();
   if (s.startsWith("bar")) return "bar";
   if (s.startsWith("gard") || s.startsWith("giard")) return "garden";
+  if (s.startsWith("cdc") || s.startsWith("casa")) return "cdc";
   return "comune";
 }
 function toNum(v) {
@@ -11297,7 +11497,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 11:09" : "online";
+var BUILD = true ? "2026-08-18 11:44" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
