@@ -2042,9 +2042,9 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .hero .eyebrow{color:#ffe1ac;}
 .hero h2{font-family:Georgia,serif; font-size:1.5rem; margin:4px 0 2px;} .hero p{font-size:.82rem; opacity:.95;}
 .hero .btn{margin-top:12px; align-self:flex-start;}
-.pgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px;}
-.ptile{background:var(--card); border:1px solid var(--line); border-radius:15px; padding:14px 8px; text-align:center; cursor:pointer; box-shadow:0 3px 9px rgba(18,50,79,.05); min-height:var(--tap);}
-.ptile .ic{font-size:1.4rem;} .ptile b{display:block; font-size:.78rem; color:var(--navy); margin-top:5px;} .ptile span{display:block; font-size:.62rem; color:var(--mute); margin-top:1px;}
+.pgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;}
+.ptile{background:var(--card); border:1px solid var(--line); border-radius:15px; padding:16px 10px; text-align:center; cursor:pointer; box-shadow:0 3px 9px rgba(18,50,79,.05); min-height:calc(var(--tap) * 2);}
+.ptile .ic{font-size:2rem; line-height:1.1;} .ptile b{display:block; font-size:.86rem; color:var(--navy); margin-top:7px;} .ptile span{display:block; font-size:.68rem; color:var(--mute); margin-top:2px; line-height:1.25;}
 .evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
 .evcard .stripe{width:6px; flex:0 0 6px;}
 .evcard .body{flex:1; padding:12px 4px 12px 13px; min-width:0;}
@@ -2578,7 +2578,8 @@ function renderHome() {
       <div class="ptile" role="button" tabindex="0" data-campi=""><div class="ic">\u{1F3BE}</div><b>\${T('Campi')}</b><span>\${T('prenota o partita')}</span></div>
       <div class="ptile" role="button" tabindex="0" data-partite=""><div class="ic">\u{1F465}</div><b>\${T('Partite aperte')}</b><span>\${T('unisciti')}</span></div>
       <div class="ptile" role="button" tabindex="0" data-book="cowo"><div class="ic">\u{1F4BB}</div><b>\${T('Coworking')}</b><span>\${T('postazione')}</span></div>
-      <div class="ptile" role="button" tabindex="0" data-ordina=""><div class="ic">\u{1F354}</div><b>\${T('Ordina')}</b><span>\${T('bar & garden')}</span></div>
+      <div class="ptile" role="button" tabindex="0" data-ordina="bar"><div class="ic">\u{1F378}</div><b>\${T('Bar')}</b><span>\${T('ordina e ritira')}</span></div>
+      <div class="ptile" role="button" tabindex="0" data-ordina="garden"><div class="ic">\u{1F37D}\uFE0F</div><b>\${T('Garden')}</b><span>\${T('cena e tavolo')}</span></div>
     </div>
     \${serateSectionHTML()}
     <div class="sect-title">\${T('Questa settimana')}</div>
@@ -2629,7 +2630,7 @@ function renderCoppa() {
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${T('Coppa delle Casate')}</h2>
     <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}</h3><p>\${T('La tua casata')} \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">\${T('posto')}</div></div></div>
     \${contestCard}\${capCard}
-    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${posizioneDi(c,sorted,i)}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
+    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank" role="button" tabindex="0" data-casatamembri="\${c.id}" style="cursor:pointer"><div class="rn">\${posizioneDi(c,sorted,i)}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>\${T('Campionati sport')}</b><p class="tiny muted">\${T('Gironi, calendario e risultati.')}</p></div><button class="btn navy sm" data-go="sport">\${T('Apri')}</button></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>\${T('Giochi da Tavolo')}</b><p class="tiny muted">\${T('Burraco, scala 40, briscola, scacchi.')}</p></div><button class="btn navy sm" data-go="giochi">\${T('Apri')}</button></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--gold); font-size:1.4rem">\u{1F4DC}</div><div style="flex:1"><b>\${T("Regolamenti & Albo d'Oro")}</b><p class="tiny muted">\${T('Regole di Coppa, Contest e Proposte; le edizioni passate.')}</p></div><button class="btn navy sm" data-sheet="regolamenti">\${T('Apri')}</button></div>\`;
@@ -2995,6 +2996,29 @@ async function campoUnisci(pid) {
   try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } okThen(j.completa ? T('Partita al completo, ci vediamo in campo! \u{1F3BE}') : \`\${T('Iscritto!')} \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen(T('Errore di rete'), false); return; }
   if (state._campoSel) openCampi(state._campoSel); else openPartiteAperte();
 }
+
+// ---- Appartenenti a una casata (con il capitano in evidenza) ----
+async function openCasataMembri(id) {
+  let d;
+  try { d = await api('/casate/' + id + '/appartenenti'); }
+  catch { okThen(T('Elenco non disponibile'), false); return; }
+  const mio = state.socio && state.socio.casata === d.casata.nome;
+  const riga = (m) => \`<div class="matchrow"><div style="flex:1">
+      <b style="font-size:.88rem">\${m.capitano ? '\u2B50 ' : ''}\${esc(m.nome)}</b>
+      <div class="ct">\${esc(m.ruolo)}</div></div>
+    \${m.capitano ? \`<span class="tag" style="background:#f4ead6;color:#8a5a12;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('CAPITANO')}</span>\` : ''}</div>\`;
+  setSheet(\`<div class="grab"></div>
+    <div class="eyebrow" style="color:\${d.casata.colore}">\${T('Casata')}\${mio ? ' \xB7 ' + T('la tua') : ''}</div>
+    <h2>\${esc(d.casata.nome)}</h2>
+    <p class="sub">\${esc(d.casata.motto || '')} \xB7 <b>\${d.casata.punti}</b> \${T('punti')}</p>
+    <div class="sect-title" style="margin-top:6px">\${d.quanti} \${T(d.quanti === 1 ? 'appartenente' : 'appartenenti')}</div>
+    <div class="card" style="padding:4px 14px">\${d.membri.map(riga).join('') || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessun iscritto a questa casata.')}</p>\`}</div>
+    \${d.capitano ? '' : \`<div class="note">\${T('Questa casata non ha ancora un capitano.')}</div>\`}
+    <div class="note">\${T('La chat interna alla casata arriver\xE0 in una prossima versione.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+
 // ---- Tessera salvabile come immagine (logo + residence + nome + numero) ----
 function tesseraCardSvg(s) {
   const nome = esc((s.nome || '') + ' ' + (s.cognome || '')).trim();
@@ -3059,12 +3083,16 @@ async function scegliCasata(id) {
 
 // ---- Self-order dall'app (loggato): stesso componente e stessa vista del QR al tavolo ----
 let ORD_COM = null;
-async function openOrdina() {
-  let menu; try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; }
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F354} \${T('Ordina')}</div><h2>\${T('Ordina e ritira al punto')}</h2>
-    <div class="field"><label>\${T('Punto')}</label><select id="ord_punto" style="width:100%;padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px"><option>Bussola Bar</option><option>Bussola Garden</option></select></div>
-    <div id="ord_menu" style="max-height:44vh;overflow:auto"></div>
+// Bar e Garden sono due percorsi diversi: al Bar si ordina e si ritira al banco, al Garden
+// si cena a un tavolo, e il tavolo si prenota per uno dei due turni.
+async function openOrdina(punto) {
+  const p = punto === 'garden' ? 'garden' : 'bar';
+  if (p === 'garden') return openGarden();
+  let menu; try { menu = await api('/menu?zona=bar'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F378} \${T('Bussola Bar')}</div><h2>\${T('Ordina e ritira al banco')}</h2>
+    <div id="ord_menu" style="max-height:52vh;overflow:auto"></div>
     <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
+    <input type="hidden" id="ord_punto" value="Bussola Bar">
     <button class="btn gold block" style="margin-top:8px" id="ord_send" disabled>\${T('Invia ordine')}</button>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
@@ -3074,6 +3102,76 @@ async function openOrdina() {
   });
   $('#ord_send').onclick = ordInvia;
 }
+
+// ---- Garden: prima il tavolo (turno), poi si ordina --------------------------------------
+function gardenGiorni() {
+  const out = []; const g = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
+  const base = new Date(); base.setHours(12, 0, 0, 0);
+  for (let i = 0; i < 7; i++) { const d = new Date(base.getTime() + i * 86400000); const iso = d.toISOString().slice(0, 10); out.push({ iso, label: i === 0 ? T('Oggi') : i === 1 ? T('Domani') : \`\${T(g[d.getDay()])} \${d.getDate()}\` }); }
+  return out;
+}
+async function openGarden() {
+  const giorni = gardenGiorni();
+  if (!state._gardData || !giorni.some(d => d.iso === state._gardData)) state._gardData = giorni[0].iso;
+  const data = state._gardData;
+  let turni = null, mie = [];
+  try { turni = await api(\`/garden/turni?data=\${data}\`); } catch { }
+  if (state.tessera) { try { mie = await api('/garden/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera)); } catch { } }
+  const dayChips = giorni.map(d => \`<button class="chip\${d.iso === data ? ' sel' : ''}" data-gard-date="\${d.iso}">\${esc(d.label)}</button>\`).join('');
+  const persone = state._gardPers || 2;
+  const turnoBox = (t) => {
+    const pieno = t.posti_liberi <= 0;
+    return \`<div class="matchrow"><div style="flex:1">
+        <b style="font-size:.95rem">\u{1F557} \${esc(t.turno)}</b>
+        <div class="ct">\${pieno ? T('nessun posto libero') : \`\${t.posti_liberi} \${T('posti liberi')} \xB7 \${t.coperti_prenotati} \${T('coperti prenotati')}\`}</div></div>
+      \${pieno ? \`<span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\`
+              : \`<button class="btn gold sm" data-gard-pren="\${esc(t.turno)}">\${T('Prenota')}</button>\`}</div>\`;
+  };
+  const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:10px">\${T('Le mie prenotazioni')}</div>
+    <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)}</b><div class="ct">\${m.persone} \${T('persone')} \xB7 \${T('tavolo')} \${m.tavoli.join(', ')}</div></div><button class="btn ghost sm" data-gard-ann="\${m.id}">\${T('Annulla')}</button></div>\`).join('')}</div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Cena al tavolo')}</h2>
+    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    <div class="field"><label>\${T('Quante persone')}</label><div class="chips">\${[1, 2, 3, 4, 5, 6, 8].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-gard-pers="\${n}">\${n}</button>\`).join('')}</div></div>
+    <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
+    <div class="card" style="padding:4px 14px">\${turni && turni.turni ? turni.turni.map(turnoBox).join('') : \`<p class="tiny muted" style="padding:8px 0">\${T('Prenotazione non disponibile.')}</p>\`}</div>
+    \${mieHTML}
+    <div class="note">\${T('Il tavolo lo assegniamo noi, partendo da quelli pi\xF9 al centro: indica solo quante persone siete.')}</div>
+    <button class="btn navy block" style="margin-top:8px" data-gard-menu>\u{1F37D}\uFE0F \${T('Guarda il men\xF9 del Garden')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+async function gardenPrenota(turno) {
+  if (!state.tessera) { okThen(T('Serve la tessera di un socio per prenotare'), false); return; }
+  const persone = state._gardPers || 2;
+  try {
+    const r = await fetch(API_BASE + '/api/garden/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._gardData, turno, persone }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; }
+    okThen(\`\${T('Tavolo')} \${j.tavoli.join(', ')} \xB7 \${dataBella(state._gardData)} \${turno}\`);
+  } catch { okThen(T('Errore di rete'), false); return; }
+  openGarden();
+}
+async function gardenAnnulla(id) {
+  try { await api('/garden/prenotazioni/' + id + '/annulla', { method: 'POST', body: JSON.stringify({ tessera_code: state.tessera }) }); }
+  catch (e) { okThen(e.message || T('Non riuscito'), false); return; }
+  openGarden();
+}
+async function openMenuGarden() {
+  let menu; try { menu = await api('/menu?zona=garden'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Il men\xF9')}</h2>
+    <div id="ord_menu" style="max-height:58vh;overflow:auto"></div>
+    <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
+    <input type="hidden" id="ord_punto" value="Bussola Garden">
+    <button class="btn gold block" style="margin-top:8px" id="ord_send" disabled>\${T('Invia ordine')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+  ORD_COM = Comanda.create({
+    mount: $('#ord_menu'), menu, search: true,
+    onChange: (cart, tot, n) => { const t = $('#ord_tot'); if (t) t.textContent = n ? \`\${n} \${T('prodotti')} \xB7 \${eur(tot)}\` : ''; const s = $('#ord_send'); if (s) s.disabled = !n; }
+  });
+  $('#ord_send').onclick = ordInvia;
+}
+
 async function ordInvia() {
   const righe = ORD_COM ? ORD_COM.getRighe() : [];
   if (!righe.length) return;
@@ -3956,7 +4054,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-ordina],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-ordina],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -3992,7 +4090,13 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.install != null) return openInstallHint();
   if (t.dataset.opencasata != null) return openCasata(false);
   if (t.dataset.casata) return scegliCasata(t.dataset.casata);
-  if (t.dataset.ordina != null) return openOrdina();
+  if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
+  if (t.dataset.gardDate) { state._gardData = t.dataset.gardDate; return openGarden(); }
+  if (t.dataset.gardPers) { state._gardPers = Number(t.dataset.gardPers); return openGarden(); }
+  if (t.dataset.gardPren) return gardenPrenota(t.dataset.gardPren);
+  if (t.dataset.gardAnn) return gardenAnnulla(t.dataset.gardAnn);
+  if (t.dataset.gardMenu != null) return openMenuGarden();
+  if (t.dataset.ordina != null) return openOrdina(t.dataset.ordina);
   if (t.dataset.struttSave != null) return strutturaSalva(t.dataset.struttSave);
   if (t.dataset.campi != null) return openCampi();
   if (t.dataset.partite != null) return openPartiteAperte();
@@ -7459,7 +7563,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.73";
+var VERSION = "4.74";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -11678,7 +11782,9 @@ publicRouter.get("/casate", async (req, res) => {
   res.json(conPosizioni(rows));
 });
 publicRouter.get("/menu", async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni FROM menu_articoli WHERE attivo=1 ORDER BY ordine,id").all();
+  const z = String(req.query.zona || "");
+  const base = "SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni,zona FROM menu_articoli WHERE attivo=1";
+  const rows = z === "bar" || z === "garden" ? await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z) : await db.prepare(base + " ORDER BY ordine,id").all();
   res.json(rows);
 });
 publicRouter.post("/self-order", async (req, res) => {
@@ -12206,6 +12312,25 @@ publicRouter.post("/garden/prenotazioni/:id/annulla", async (req, res) => {
   audit(req.body?.tessera_code || "socio", "annulla_tavolo", "prenotazioni_tavolo", p.id);
   res.json({ ok: true });
 });
+publicRouter.get("/casate/:id/appartenenti", async (req, res) => {
+  const casata = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate WHERE id=?").get(req.params.id);
+  if (!casata) return res.status(404).json({ error: "Casata non trovata" });
+  const rows = await db.prepare(
+    "SELECT nome,cognome,ruolo,tipo_profilo FROM soci WHERE casata_id=? AND attivo=1 ORDER BY (LOWER(ruolo)='capitano') DESC, nome, cognome"
+  ).all(casata.id);
+  const membri = rows.map((r) => ({
+    nome: (r.nome + " " + (r.cognome || "")).trim(),
+    ruolo: r.ruolo || "Socio",
+    capitano: String(r.ruolo || "").toLowerCase() === "capitano",
+    profilo: r.tipo_profilo
+  }));
+  res.json({
+    casata,
+    capitano: membri.find((m) => m.capitano) || null,
+    membri,
+    quanti: membri.length
+  });
+});
 
 // server/seed.js
 init_auth();
@@ -12587,7 +12712,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 13:11" : "online";
+var BUILD = true ? "2026-08-18 13:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
