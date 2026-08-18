@@ -1043,12 +1043,6 @@ function genOtp() {
 // server/tournament.js
 init_db();
 var ORDINE_CASATE = ["Aretusa", "Ortigia", "Neapolis", "Dionisio", "Ciane", "Plemmirio", "Epipoli", "Anapo"];
-function giornateGirone(sq) {
-  return [
-    [[sq[0], sq[1]], [sq[2], sq[3]]],
-    [[sq[1], sq[2]], [sq[3], sq[0]]]
-  ];
-}
 async function casateByName() {
   const rows = await db.prepare("SELECT id,nome FROM casate").all();
   const m = {};
@@ -1098,7 +1092,7 @@ async function generaCalendario(disciplinaId) {
     if (!sq.length) continue;
     const gid = (await insGir.run(disciplinaId, nome)).lastInsertRowid;
     for (const n of sq) await insCla.run(gid, idByName[n]);
-    const giornate = sq.length === 4 ? giornateGirone(sq) : roundRobinRounds(sq);
+    const giornate = roundRobinRounds(sq);
     for (let ri = 0; ri < giornate.length; ri++) {
       for (const [a, b] of giornate[ri]) await insPar.run(disciplinaId, gid, "girone", ri + 1, idByName[a], idByName[b], a, b);
     }
@@ -5416,7 +5410,10 @@ adminRouter.get("/allegati/:id/foto", async (req, res) => {
   if (!r) return res.status(404).json({ error: "Non trovato" });
   res.json({ foto: r.immagine });
 });
-adminRouter.post("/allegati", requireCap("cdc"), async (req, res) => {
+adminRouter.post("/allegati", (req, res, next) => {
+  const cap = (req.body || {}).entita === "partita" ? "tabellone" : "cdc";
+  return requireCap(cap)(req, res, next);
+}, async (req, res) => {
   const b = req.body || {};
   if (!b.immagine) return res.status(400).json({ error: "Immagine mancante" });
   const info = await db.prepare("INSERT INTO allegati (entita,entita_id,immagine,nota,autore) VALUES (?,?,?,?,?)").run(b.entita || "generico", String(b.entita_id || ""), b.immagine, b.nota || "", req.adminUser.username);
@@ -5861,7 +5858,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.62";
+var VERSION = "4.64";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8227,7 +8224,7 @@ VIEWS.installa = async () => {
 };
 
 // ---- Operatori & permessi (solo gestore) ----
-const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone (risultati/archivio)', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', comande:'Crew \xB7 Comande e Cucina', campi:'Campi & prenotazioni' };
+const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Sport \xB7 risultati (Crew) + tabellone', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', comande:'Crew \xB7 Comande e Cucina', campi:'Campi & prenotazioni' };
 VIEWS.operatori = async () => {
   const d = await api('/operatori');
   const caps = d.caps_delegabili;
@@ -8906,19 +8903,21 @@ VIEWS.discipline = async () => {
 };
 
 // ---- Tabellone: gironi, calendario, risultati (auto-graduatoria) ----
+// Vista SOLA LETTURA del girone: classifica + calendario con i risultati registrati.
+// L'INSERIMENTO risultati NON \xE8 qui: si fa nell'app Bussola Crew (modulo Sport). Qui il gestore imposta e consulta.
 function gironeHtml(g) {
   const cls = \`<table><thead><tr><th>Squadra</th><th>PG</th><th>V</th><th>N</th><th>Pt</th></tr></thead><tbody>\${g.classifica.map((r, i) => \`<tr><td><b>\${i + 1}.</b> \${esc(r.nome)}</td><td>\${r.pg}</td><td>\${r.v}</td><td>\${r.p}</td><td><b>\${r.pt}</b></td></tr>\`).join('')}</tbody></table>\`;
   const byG = {}; g.partite.forEach(p => { (byG[p.giornata] ??= []).push(p); });
-  const cal = Object.keys(byG).map(gn => \`<div style="margin-top:10px"><b class="muted">Giornata \${gn}</b>\${byG[gn].map(p => \`
-    <div style="display:flex;gap:8px;align-items:center;padding:5px 0">
+  const cal = Object.keys(byG).map(gn => \`<div style="margin-top:10px"><b class="muted">Giornata \${gn}</b>\${byG[gn].map(p => {
+    const played = p.stato === 'giocata';
+    const score = played ? \`<b>\${esc(String(p.gol_a ?? '') + ' \u2013 ' + String(p.gol_b ?? ''))}</b>\` : '<span class="muted">\u2013 : \u2013</span>';
+    return \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0">
       <span style="flex:1;text-align:right">\${esc(p.casa_a)}</span>
-      <input id="ga_\${p.id}" type="number" min="0" value="\${p.gol_a ?? ''}" style="width:48px;text-align:center">
-      <span>\u2013</span>
-      <input id="gb_\${p.id}" type="number" min="0" value="\${p.gol_b ?? ''}" style="width:48px;text-align:center">
+      <span style="min-width:72px;text-align:center">\${score}</span>
       <span style="flex:1">\${esc(p.casa_b)}</span>
-      <button class="btn gold sm" data-psave="\${p.id}">\${p.stato === 'giocata' ? '\u2713' : 'Salva'}</button>
-      <button class="btn ghost sm" data-pfoto="\${p.id}" title="Foto del punteggio (anti-contestazione)">\u{1F4F7}</button>
-    </div>\`).join('')}</div>\`).join('');
+      <button class="btn ghost sm" data-pfoto="\${p.id}" title="Foto referto (evidenza)">\u{1F4F7}</button>
+    </div>\`;
+  }).join('')}</div>\`).join('');
   return \`<div class="panel"><h3>\${esc(g.nome)}</h3>\${cls}\${cal}</div>\`;
 }
 VIEWS.tabellone = async () => {
@@ -8955,6 +8954,7 @@ VIEWS.tabellone = async () => {
         \${can('tabellone_reset') ? '<button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>' : ''}
         \${t.completo ? '<span class="tag ok">gironi completi</span>' : '<span class="tag mid">gironi in corso</span>'}
       </div>
+      <p class="muted" style="font-size:13px;margin:2px 0 8px">\u270D\uFE0F Qui il gestore <b>imposta e consulta</b>. L'<b>inserimento dei risultati</b> si fa a bordo campo nell'app <b>Bussola Crew \xB7 modulo Sport</b> (permesso \u201CTabellone\u201D). La classifica si aggiorna in automatico.</p>
       \${settings}
       \${giornate.length ? \`<div class="row" style="margin-top:-6px">
         <span class="muted" style="font-size:13px">Foglio da stampare per raccogliere i risultati a mano:</span>
@@ -8969,11 +8969,7 @@ VIEWS.tabellone = async () => {
     $('#tb_archivia').onclick = async () => { if (!confirm("Archiviare l'edizione corrente nell'Albo d'Oro e azzerare il calendario di questa disciplina?")) return; try { const r = await api('/tabellone/' + cur + '/archivia', { method: 'POST' }); alert('Edizione archiviata \xB7 vince ' + (r.vincitore || '\u2014')); render(); } catch (e) { alert(e.message); } };
     if ($('#tb_print')) $('#tb_print').onclick = () => stampaGiornata(disc.nome || 'Torneo', t, $('#tb_gio').value);
     document.querySelectorAll('[data-rgsave]').forEach(b => b.onclick = async () => { const k = b.dataset.rgsave; const r = regs.find(x => x.chiave === k) || {}; await api('/regolamenti/' + k, { method: 'PUT', body: JSON.stringify({ titolo: r.titolo, testo: $('#rg_' + k).value }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000); });
-    document.querySelectorAll('[data-psave]').forEach(b => b.onclick = async () => {
-      const id = b.dataset.psave;
-      try { await api('/partite/' + id, { method: 'PUT', body: JSON.stringify({ gol_a: $('#ga_' + id).value, gol_b: $('#gb_' + id).value }) }); render(); }
-      catch (e) { alert(e.message); }
-    });
+    // (inserimento risultati rimosso dal back office: si fa nell'app Bussola Crew \xB7 modulo Sport)
     document.querySelectorAll('[data-pfoto]').forEach(b => b.onclick = () => openFotoPartita(b.dataset.pfoto));
   };
   await render();
@@ -8983,12 +8979,11 @@ VIEWS.tabellone = async () => {
 async function openFotoPartita(id) {
   const list = await api('/allegati?entita=partita&entita_id=' + id).catch(() => []);
   const thumbs = list.length ? list.map(a => \`<button class="btn ghost sm" data-afoto="\${a.id}">\u{1F4F7} \${esc(a.created_at)}</button>\`).join(' ') : '<span class="muted">Nessuna foto allegata.</span>';
-  modal(\`<h3>Foto punteggio \xB7 partita #\${esc(String(id))}</h3>
-    <p class="muted" style="font-size:13px">Allega la foto del referto/tabellino per certificare il risultato.</p>
+  modal(\`<h3>Foto referto \xB7 partita #\${esc(String(id))}</h3>
+    <p class="muted" style="font-size:13px">Evidenza dei risultati (sola consultazione). Le foto si <b>scattano dall'app Bussola Crew</b> a bordo campo.</p>
     <div id="af_list" style="display:flex;gap:6px;flex-wrap:wrap">\${thumbs}</div>
-    <div class="row" style="justify-content:space-between;margin-top:14px"><button class="btn gold sm" id="af_add">\u{1F4F7} Aggiungi foto</button><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`);
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`);
   $('#mCancel').onclick = closeModal;
-  $('#af_add').onclick = () => pickPhoto(async d => { await api('/allegati', { method: 'POST', body: JSON.stringify({ entita: 'partita', entita_id: id, immagine: d }) }); openFotoPartita(id); });
   document.querySelectorAll('[data-afoto]').forEach(b => b.onclick = async () => { const r = await api('/allegati/' + b.dataset.afoto + '/foto'); const w = window.open('', '_blank'); if (w) { w.document.write('<img src="' + r.foto + '" style="max-width:100%">'); w.document.close(); } });
 }
 
@@ -9295,9 +9290,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <div class="sub">Back office operativo \xB7 accesso in base ai permessi</div>
     <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
-    <label for="zona">Modulo operativo (postazione)</label>
-    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option><option value="cucina">\u{1F373} Cucina \u2014 ai fornelli</option><option value="magazzino">\u{1F4E6} Magazzino \u2014 logistica</option><option value="sport">\u{1F3C6} Sport \u2014 risultati live</option></select>
-    <div class="sub" style="margin-top:4px">Potrai cambiarla al volo dalla barra in alto, senza rifare l'accesso.</div>
+    <div class="sub" style="margin-top:8px">Entri direttamente nel tuo modulo. Se ne hai pi\xF9 d'uno, cambi al volo dalla barra in alto.</div>
     <button class="btn gold" id="loginBtn" style="width:100%;margin-top:16px">Entra</button>
     <div id="loginErr"></div>
   </div>
@@ -9511,10 +9504,9 @@ async function login() {
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
     const zs = $('#zonaSwitch'); if (zs && !zs.__wired) { zs.__wired = true; zs.onchange = () => setZona(zs.value); }
-    // Zona iniziale: quella dichiarata nel men\xF9 di login (postazione) \u2192 se non valida, l'ultima salvata \u2192 prima consentita.
-    const scelta = $('#zona') ? $('#zona').value : null;
+    // Modulo iniziale: l'ultimo usato su questo dispositivo (se ancora consentito) \u2192 altrimenti il primo consentito.
     const salvata = (() => { try { return localStorage.getItem('bussola_zona'); } catch (_) { return null; } })();
-    setZona(zone.includes(scelta) ? scelta : (zone.includes(salvata) ? salvata : zone[0]));
+    setZona(zone.includes(salvata) ? salvata : zone[0]);
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
@@ -9527,13 +9519,14 @@ function allowedZones() {
   if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // modulo operativo Sport (risultati live)
   return z;
 }
-// Filtra i selettori zona (login + barra) lasciando solo le zone consentite.
+// Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
-  ['#login #zona', '#zonaSwitch'].forEach(sel => {
-    const el = document.querySelector(sel); if (!el) return;
-    Array.from(el.options).forEach(o => { const ok = zone.includes(o.value); o.hidden = !ok; o.disabled = !ok; });
-    if (!zone.includes(el.value)) el.value = zone[0];
-  });
+  const el = document.querySelector('#zonaSwitch');
+  if (!el) return;
+  Array.from(el.options).forEach(o => { const ok = zone.includes(o.value); o.hidden = !ok; o.disabled = !ok; });
+  if (!zone.includes(el.value)) el.value = zone[0];
+  const wrap = el.closest('label') || el;   // se un solo modulo, il selettore non serve \u2192 nascondilo
+  wrap.style.display = zone.length > 1 ? '' : 'none';
 }
 // Cambio zona AL VOLO (stessa persona): resta nelle zone consentite dai permessi.
 function setZona(z) {
@@ -9943,7 +9936,7 @@ VIEWS.sport = async () => {
         <input id="gb_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_b != null ? esc(String(p.gol_b)) : ''}" style="width:48px;text-align:center">
         <span style="flex:1;font-weight:700;text-align:right">\${esc(p.casa_b)}</span>
       </div>
-      <button class="btn gold sm" data-sp-save="\${p.id}" style="width:100%;margin-top:8px">\${giocata ? 'Aggiorna risultato' : 'Salva risultato'}</button></div>\`;
+      <div class="row" style="margin-top:8px;gap:6px"><button class="btn gold sm" data-sp-save="\${p.id}" style="flex:1">\${giocata ? 'Aggiorna' : 'Salva'}</button><button class="btn ghost sm" data-sp-foto="\${p.id}" title="Foto referto (anti-contestazione)">\u{1F4F7}</button></div></div>\`;
   };
   const gironiHtml = t.gironi.map(g => {
     const cls = (g.classifica || []).map((c, i) => \`<tr><td style="text-align:center">\${i + 1}</td><td>\${spDot(c.colore)}<b>\${esc(c.nome)}</b></td><td style="text-align:center">\${esc(String(c.pg || 0))}</td><td style="text-align:center">\${esc(String((c.gf || 0)))}-\${esc(String(c.gs || 0))}</td><td style="text-align:center"><b>\${esc(String(c.pt || 0))}</b></td></tr>\`).join('');
@@ -9964,8 +9957,27 @@ VIEWS.sport = async () => {
     try { await api('/partite/' + id, { method: 'PUT', body: JSON.stringify({ gol_a: Number(a), gol_b: Number(bb) }) }); show('sport'); }
     catch (e) { alert('Errore: ' + e.message); }
   });
+  document.querySelectorAll('[data-sp-foto]').forEach(b => b.onclick = () => fotoPartita(b.dataset.spFoto));
   function wireDisc() { const s = $('#sp_disc'); if (s) s.onchange = () => { SPORT_DISC = Number(s.value); show('sport'); }; }
 };
+// Camera/allegato: scatta o sceglie un'immagine e restituisce il dataURL.
+function pickImage(cb) {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.capture = 'environment';
+  inp.onchange = () => { const f = inp.files && inp.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => cb(String(rd.result)); rd.readAsDataURL(f); };
+  inp.click();
+}
+// Foto referto della partita (evidenza anti-contestazione) \u2014 scattata dalla crew a bordo campo.
+async function fotoPartita(id) {
+  const list = await api('/allegati?entita=partita&entita_id=' + id).catch(() => []);
+  const thumbs = list.length ? list.map(a => \`<button class="btn ghost sm" data-vf="\${a.id}">\u{1F4F7} \${esc(a.created_at || '')}</button>\`).join(' ') : '<span class="muted">Nessuna foto allegata.</span>';
+  openModal(\`<h3>\u{1F4F7} Foto referto \xB7 partita #\${esc(String(id))}</h3>
+    <p class="muted" style="font-size:.8rem">Scatta o allega la foto del tabellino per certificare il risultato.</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0">\${thumbs}</div>
+    <div class="row" style="justify-content:space-between"><button class="btn gold sm" data-addf>\u{1F4F7} Scatta / allega</button><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+  const add = $('#mbox').querySelector('[data-addf]');
+  if (add) add.onclick = () => pickImage(async (d) => { try { await api('/allegati', { method: 'POST', body: JSON.stringify({ entita: 'partita', entita_id: String(id), immagine: d }) }); fotoPartita(id); } catch (e) { alert('Errore: ' + e.message); } });
+  $('#mbox').querySelectorAll('[data-vf]').forEach(b => b.onclick = async () => { const r = await api('/allegati/' + b.dataset.vf + '/foto'); const w = window.open('', '_blank'); if (w) { w.document.write('<img src="' + r.foto + '" style="max-width:100%">'); w.document.close(); } });
+}
 
 /* ---------- MAGAZZINO ---------- */
 const MAG_AREE = [['chiosco', 'Chiosco'], ['casa_di_carta', 'Casa di Carta'], ['serata_clan', 'Serata Clan'], ['serate_tema', 'Serate a tema']];
@@ -10730,7 +10742,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 08:17" : "online";
+var BUILD = true ? "2026-08-18 08:45" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
