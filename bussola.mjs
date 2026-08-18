@@ -785,6 +785,45 @@ async function classificaOrdinata(gironeId) {
   return await db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
     WHERE c.girone_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(gironeId);
 }
+async function strutturaFinale(disciplinaId) {
+  const gironi = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
+  if (gironi.length !== 2) return null;
+  const cls = [await classificaOrdinata(gironi[0].id), await classificaOrdinata(gironi[1].id)];
+  const lettera = ["A", "B"];
+  const daGirone = (gi, pos) => {
+    const r = cls[gi][pos];
+    return { etichetta: `${pos + 1}\xBA ${gironi[gi].nome || "Girone " + lettera[gi]}`, provvisorio: r ? r.nome : null };
+  };
+  const giocata = async (fase, slot) => {
+    const m = (await faseMatches(disciplinaId, fase)).find((x) => x.giornata === slot);
+    return m || null;
+  };
+  const daVincente = async (fase, slot, testo) => {
+    const m = await giocata(fase, slot);
+    const w = m ? vincitrice(m) : null;
+    return { etichetta: testo, provvisorio: w ? w.nome : null };
+  };
+  const daPerdente = async (fase, slot, testo) => {
+    const m = await giocata(fase, slot);
+    const l = m ? perdente(m) : null;
+    return { etichetta: testo, provvisorio: l ? l.nome : null };
+  };
+  const quarti = [
+    { slot: 1, a: daGirone(0, 0), b: daGirone(1, 3) },
+    { slot: 2, a: daGirone(0, 1), b: daGirone(1, 2) },
+    { slot: 3, a: daGirone(0, 2), b: daGirone(1, 1) },
+    { slot: 4, a: daGirone(0, 3), b: daGirone(1, 0) }
+  ];
+  for (const q of quarti) q.partita = await giocata("quarti", q.slot);
+  const semifinali = [
+    { slot: 1, a: await daVincente("quarti", 1, "Vincente quarto 1"), b: await daVincente("quarti", 4, "Vincente quarto 4") },
+    { slot: 2, a: await daVincente("quarti", 2, "Vincente quarto 2"), b: await daVincente("quarti", 3, "Vincente quarto 3") }
+  ];
+  for (const s2 of semifinali) s2.partita = await giocata("semifinale", s2.slot);
+  const finale1 = { slot: 1, a: await daVincente("semifinale", 1, "Vincente semifinale 1"), b: await daVincente("semifinale", 2, "Vincente semifinale 2"), partita: await giocata("finale1", 1) };
+  const finale3 = { slot: 1, a: await daPerdente("semifinale", 1, "Perdente semifinale 1"), b: await daPerdente("semifinale", 2, "Perdente semifinale 2"), partita: await giocata("finale3", 1) };
+  return { quarti, semifinali, finale1, finale3 };
+}
 async function getTabellone(disciplinaId) {
   await avanzaFaseFinale(disciplinaId);
   const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
@@ -808,7 +847,8 @@ async function getTabellone(disciplinaId) {
   };
   const hasFinale = fasi.quarti.length > 0;
   const graduatoria = await graduatoriaFinale(disciplinaId);
-  return { gironi, fasi, hasFinale, graduatoria, completo: tuttiGiocati };
+  const struttura = await strutturaFinale(disciplinaId);
+  return { gironi, fasi, hasFinale, struttura, graduatoria, completo: tuttiGiocati };
 }
 var ORDINE_CASATE, COPPA_PUNTI, vincitrice, perdente;
 var init_tournament = __esm({
@@ -1563,6 +1603,9 @@ async function migrate() {
     }
   } catch (_) {
   }
+  await addIfMissing("tavoli", "uniti", "uniti TEXT");
+  await addIfMissing("eventi", "costo_tipo", "costo_tipo TEXT NOT NULL DEFAULT 'nessuno'");
+  await addIfMissing("eventi", "consumazione", "consumazione TEXT");
   try {
     await db.exec(`
   CREATE TABLE IF NOT EXISTS tavoli_layout (
@@ -2514,8 +2557,10 @@ function evCardHTML(e, withAction) {
   const meta = [];
   if (e.tipologia) meta.push(\`<span class="ev-ty" style="background:\${e.colore||'var(--navy)'}">\${esc(e.tipologia)}</span>\`);
   if (e.artista) meta.push(\`<span class="ev-ar">\u{1F3A4} \${esc(e.artista)}</span>\`);
+  // L'ingresso puo' costare un biglietto oppure una consumazione obbligatoria.
   const costo = Number(e.costo || 0);
-  if (costo > 0) meta.push(\`<span class="ev-co">\u{1F39F}\uFE0F \u20AC \${costo.toFixed(2)}</span>\`);
+  if (e.costo_tipo === 'consumazione') meta.push(\`<span class="ev-co">\u{1F942} \${esc(e.consumazione || T('consumazione obbligatoria'))}</span>\`);
+  else if (costo > 0) meta.push(\`<span class="ev-co">\u{1F39F}\uFE0F \u20AC \${costo.toFixed(2)}</span>\`);
   const metaHTML = meta.length ? \`<div class="ev-meta">\${meta.join('')}</div>\` : '';
   return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${dl}</div><h4>\${esc(e.titolo)}</h4><p>\${esc(e.sottotitolo)}</p>\${metaHTML}</div><div class="cta">\${action}</div></div>\`;
 }
@@ -2712,7 +2757,9 @@ function openEvent(k) {
   if (e.tipologia) info.push(\`<span class="ev-ty" style="background:\${e.colore||'var(--navy)'}">\${esc(e.tipologia)}</span>\`);
   if (e.artista) info.push(\`<span class="ev-ar">\u{1F3A4} \${esc(e.artista)}</span>\`);
   const costo = Number(e.costo || 0);
-  info.push(\`<span class="ev-co">\u{1F39F}\uFE0F \${costo > 0 ? '\u20AC ' + costo.toFixed(2) : T('Ingresso libero')}</span>\`);
+  info.push(e.costo_tipo === 'consumazione'
+    ? \`<span class="ev-co">\u{1F942} \${esc(e.consumazione || T('consumazione obbligatoria'))}</span>\`
+    : \`<span class="ev-co">\u{1F39F}\uFE0F \${costo > 0 ? '\u20AC ' + costo.toFixed(2) : T('Ingresso libero')}</span>\`);
   const infoHTML = \`<div class="ev-meta" style="margin:6px 0 12px">\${info.join('')}</div>\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:\${e.colore}">\${eyebrowBits.join(' \xB7 ')}</div><h2>\${esc(e.titolo)}</h2>\${infoHTML}<p class="sub">\${esc(e.descrizione)}</p>\${btn}<button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
@@ -4152,6 +4199,7 @@ var admin_default = `<!DOCTYPE html>
 
         <div class="grp">Sistema</div>
         <button data-v="installa" data-cap="guida">\u{1F4F2} Installa app (QR)</button>
+        <button data-v="parametri" data-cap="parametri">\u2699\uFE0F Regole & parametri</button>
         <button data-v="database" data-cap="db">\u{1F5C4}\uFE0F Database</button>
         <button data-v="audit" data-cap="registro">\u{1F5C2}\uFE0F Registro</button>
       </nav>
@@ -4168,7 +4216,7 @@ var admin_default = `<!DOCTYPE html>
 <script>
 /* Back office KOIN\xC8 Village \u2014 SPA minimale su fetch/API. */
 'use strict';
-let TOKEN = null, USER = null, CASATE = [], ME = { ruolo: '', gestore: false, caps: [] };
+let TOKEN = null, USER = null, PAR = {}, CASATE = [], ME = { ruolo: '', gestore: false, caps: [] };
 const can = (cap) => ME.gestore || (ME.caps || []).includes(cap);
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -4199,6 +4247,7 @@ async function login() {
     ME = await api('/me').catch(() => ({ ruolo: USER.ruolo, gestore: USER.ruolo === 'gestore', caps: [] }));
     applyMenuPermessi();
     CASATE = await api('/../casate').catch(() => []);   // riusa endpoint pubblico
+    await caricaParametri();
     show('dashboard');
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
@@ -4227,7 +4276,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -4778,11 +4827,17 @@ VIEWS.proposte = async () => {
 const GIORNI_SETT = ['Luned\xEC', 'Marted\xEC', 'Mercoled\xEC', 'Gioved\xEC', 'Venerd\xEC', 'Sabato', 'Domenica'];
 function giornoIdx(g) { const i = GIORNI_SETT.findIndex(d => d.toLowerCase() === String(g || '').trim().toLowerCase()); return i < 0 ? 99 : i; }
 // Costo mostrato: quota della serata collegata (se c'\xE8) \u2192 altrimenti prezzo dell'evento \u2192 altrimenti libero.
+// L'ingresso puo' costare un prezzo oppure una consumazione obbligatoria: si entra consumando.
 function costoEvento(e, serate) {
-  if (e.serata_id) { const s = (serate || []).find(x => x.id == e.serata_id); if (s && Number(s.quota) > 0) return Number(s.quota); }
-  return Number(e.prezzo || 0);
+  if (e.costo_tipo === 'consumazione') return { tipo: 'consumazione', testo: e.consumazione || '1 consumazione obbligatoria' };
+  if (e.serata_id) { const s = (serate || []).find(x => x.id == e.serata_id); if (s && Number(s.quota) > 0) return { tipo: 'prezzo', valore: Number(s.quota) }; }
+  return { tipo: Number(e.prezzo || 0) > 0 ? 'prezzo' : 'nessuno', valore: Number(e.prezzo || 0) };
 }
-function costoLabel(v) { return v > 0 ? '\u20AC ' + Number(v).toFixed(2) : 'Ingresso libero'; }
+function costoLabel(c) {
+  if (!c || c.tipo === 'nessuno') return 'Ingresso libero';
+  if (c.tipo === 'consumazione') return '\u{1F942} ' + esc(c.testo);
+  return '\u20AC ' + Number(c.valore).toFixed(2);
+}
 
 VIEWS.eventi = async () => {
   const [list, serate] = await Promise.all([api('/eventi'), api('/serate').catch(() => [])]);
@@ -4796,7 +4851,7 @@ VIEWS.eventi = async () => {
     \${ordinati.map(e => \`<tr><td><b>\${esc(e.giorno || '\u2014')}</b></td><td>\${esc(e.ora_inizio || '\u2014')}</td>
       <td><b>\${esc(e.titolo)}</b>\${e.sottotitolo ? \`<br><span class="muted">\${esc(e.sottotitolo)}</span>\` : ''}</td>
       <td>\${esc(e.tipologia || '\u2014')}\${e.artista ? \`<br><span class="muted">\u{1F3A4} \${esc(e.artista)}</span>\` : ''}</td>
-      <td>\${e.serata_id ? '\u{1F39F}\uFE0F ' : ''}\${esc(costoLabel(costoEvento(e, serate)))}</td>
+      <td>\${e.serata_id ? '\u{1F39F}\uFE0F ' : ''}\${costoLabel(costoEvento(e, serate))}</td>
       <td>\${e.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag no">no</span>'}</td>
       <td class="row"><button class="btn ghost sm" data-ev="\${e.id}">\u270E</button><button class="btn danger sm" data-evdel="\${e.id}">\u{1F5D1}</button></td></tr>\`).join('')}
   </tbody></table></div>\`;
@@ -4813,10 +4868,20 @@ VIEWS.eventi = async () => {
         <label style="flex:1">Artista<input id="e_ar" placeholder="es. Trio X" value="\${esc(e.artista || '')}"></label></div>
       <label>Ambiente / luogo</label><input id="e_a" value="\${esc(e.ambiente || '')}">
       <label>Descrizione</label><textarea id="e_d" rows="3">\${esc(e.descrizione || '')}</textarea>
-      <div class="row"><label style="width:150px">Prezzo biglietto \u20AC<input id="e_pz" type="number" step="0.01" inputmode="decimal" value="\${Number(e.prezzo || 0)}"></label>
-        <label style="flex:1">Collega a Serata a pagamento<select id="e_ser">\${serOpt(e.serata_id)}</select></label>
+      \${PAR.eventi_onerosi === false ? '<p class="muted" style="font-size:.78rem">Gli eventi a pagamento sono <b>disattivati</b> nei Parametri: tutti gli ingressi sono liberi.</p>' : \`
+      <label>Ingresso</label>
+      <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
+        <label class="check"><input type="radio" name="e_ct" value="nessuno" \${(e.costo_tipo || 'nessuno') === 'nessuno' ? 'checked' : ''}> Libero</label>
+        \${PAR.eventi_modo_costo !== 'consumazione' ? \`<label class="check"><input type="radio" name="e_ct" value="prezzo" \${e.costo_tipo === 'prezzo' ? 'checked' : ''}> Prezzo d'ingresso</label>\` : ''}
+        \${PAR.eventi_modo_costo !== 'prezzo' ? \`<label class="check"><input type="radio" name="e_ct" value="consumazione" \${e.costo_tipo === 'consumazione' ? 'checked' : ''}> Consumazione obbligatoria</label>\` : ''}
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label style="width:150px">Prezzo \u20AC<input id="e_pz" type="number" step="0.01" inputmode="decimal" value="\${Number(e.prezzo || 0)}"></label>
+        <label style="flex:1">Testo della consumazione<input id="e_cons" placeholder="1 consumazione obbligatoria" value="\${esc(e.consumazione || '')}"></label>
+      </div>
+      <div class="row" style="margin-top:8px"><label style="flex:1">Collega a Serata a pagamento<select id="e_ser">\${serOpt(e.serata_id)}</select></label>
         <button class="btn ghost sm" id="e_ser_new" style="align-self:flex-end">+ Crea serata</button></div>
-      <p class="muted" style="font-size:.78rem">0 = ingresso libero. Se colleghi una Serata, prenotazione e incasso si gestiscono nella sezione <b>Serate</b> e in locandina compare la quota della serata. "<b>+ Crea serata</b>" genera una serata da questo evento (titolo, giorno/ora, quota = prezzo) e la collega qui.</p>
+      <p class="muted" style="font-size:.78rem">Con la <b>consumazione obbligatoria</b> non si paga un biglietto: si entra consumando, e in app e in locandina compare il testo che scrivi qui. Se colleghi una Serata, prenotazione e incasso si gestiscono nella sezione <b>Serate</b>.</p>\`}
       <label class="check"><input type="checkbox" id="e_on" \${e.attivo ? 'checked' : ''}> Visibile nell'app</label>
       <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
     $('#mCancel').onclick = closeModal;
@@ -4837,7 +4902,10 @@ VIEWS.eventi = async () => {
       } catch (err) { alert('Non riesco a creare la serata: ' + (err.message || 'permesso mancante?')); }
     };
     $('#mSave').onclick = async () => {
-      const body = { giorno: $('#e_g').value, ora_inizio: $('#e_h').value, titolo: $('#e_t').value, sottotitolo: $('#e_s').value, tipologia: $('#e_ty').value, artista: $('#e_ar').value, ambiente: $('#e_a').value, descrizione: $('#e_d').value, prezzo: Number($('#e_pz').value || 0), serata_id: $('#e_ser').value || null, attivo: $('#e_on').checked };
+      const ct = document.querySelector('input[name="e_ct"]:checked');
+      const body = { giorno: $('#e_g').value, ora_inizio: $('#e_h').value, titolo: $('#e_t').value, sottotitolo: $('#e_s').value, tipologia: $('#e_ty').value, artista: $('#e_ar').value, ambiente: $('#e_a').value, descrizione: $('#e_d').value,
+        costo_tipo: ct ? ct.value : 'nessuno', prezzo: Number(($('#e_pz') || {}).value || 0), consumazione: ($('#e_cons') || {}).value || '',
+        serata_id: ($('#e_ser') || {}).value || null, attivo: $('#e_on').checked };
       if (!body.titolo) { alert('Titolo obbligatorio'); return; }
       if (isNew) await api('/eventi', { method: 'POST', body: JSON.stringify(body) });
       else await api('/eventi/' + e.id, { method: 'PUT', body: JSON.stringify(body) });
@@ -4885,7 +4953,7 @@ function locandinaA3(eventi, serate) {
       <div class="mid"><div class="ti">\${esc(e.titolo || '')}</div>
         \${e.tipologia ? \`<div class="ty">\${esc(e.tipologia)}</div>\` : ''}
         \${e.artista ? \`<div class="ar">\u{1F3A4} \${esc(e.artista)}</div>\` : ''}</div>
-      <div class="co">\${esc(costo)}</div></div>\`;
+      <div class="co">\${costo}</div></div>\`;
   }).join('');
   const w = window.open('', '_blank');
   if (!w) { alert('Consenti i popup per stampare la locandina.'); return; }
@@ -5144,6 +5212,60 @@ async function openFotoPartita(id) {
   $('#mCancel').onclick = closeModal;
   document.querySelectorAll('[data-afoto]').forEach(b => b.onclick = async () => { const r = await api('/allegati/' + b.dataset.afoto + '/foto'); const w = window.open('', '_blank'); if (w) { w.document.write('<img src="' + r.foto + '" style="max-width:100%">'); w.document.close(); } });
 }
+
+
+// ---- Parametri di funzionamento ----
+// Le regole che accendono o spengono un comportamento: quello che oggi e' una scelta, domani
+// puo' essere un'altra. Le voci figlie compaiono solo quando il loro interruttore e' acceso.
+async function caricaParametri() {
+  try {
+    const list = await api('/parametri');
+    PAR = Object.fromEntries(list.map(p => [p.chiave, p.valore]));
+    return list;
+  } catch (_) { PAR = {}; return []; }
+}
+VIEWS.parametri = async () => {
+  const list = await caricaParametri();
+  const gruppi = [...new Set(list.map(p => p.gruppo))];
+  const campo = (p) => {
+    if (p.tipo === 'bool') return \`<label class="check" style="margin:0"><input type="checkbox" class="p_in" data-pk="\${esc(p.chiave)}" data-pt="bool" \${p.valore ? 'checked' : ''}> <b>\${p.valore ? 'S\xCC' : 'NO'}</b></label>\`;
+    if (p.tipo === 'numero') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="numero" type="number" \${p.min != null ? \`min="\${p.min}"\` : ''} \${p.max != null ? \`max="\${p.max}"\` : ''} value="\${esc(String(p.valore ?? p.predefinito))}" style="width:110px">\`;
+    return \`<select class="p_in" data-pk="\${esc(p.chiave)}" data-pt="scelta">\${(p.opzioni || []).map(o => \`<option value="\${esc(o.valore)}" \${o.valore === (p.valore ?? p.predefinito) ? 'selected' : ''}>\${esc(o.etichetta)}</option>\`).join('')}</select>\`;
+  };
+  const blocchi = gruppi.map(g => \`<div class="panel"><h3>\${esc(g)}</h3>
+    \${list.filter(p => p.gruppo === g).map(p => \`<div style="display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line);\${p.attivo ? '' : 'opacity:.45'}">
+      <div style="flex:1">
+        <b style="font-size:.95rem">\${p.dipende_da ? '\u21B3 ' : ''}\${esc(p.etichetta)}</b>
+        \${p.personalizzato ? '' : '<span class="tag mid" style="margin-left:6px">predefinito</span>'}
+        <div class="muted" style="font-size:.8rem;margin-top:2px">\${esc(p.aiuto || '')}\${p.attivo ? '' : ' <i>\u2014 non applicato: l\\'interruttore da cui dipende \xE8 spento.</i>'}</div>
+      </div>
+      <div style="min-width:180px;text-align:right">\${campo(p)}</div>
+    </div>\`).join('')}</div>\`).join('');
+  $('#view').innerHTML = \`<div class="panel"><h3>\u2699\uFE0F Regole di funzionamento</h3>
+      <p class="muted" style="font-size:13px">Tutto ci\xF2 che determina una condizione si accende e si spegne da qui, e vale per l'intero residence. Le voci con <b>\u21B3</b> dipendono dall'interruttore sopra di loro: se quello \xE8 spento, non vengono applicate.</p>
+    </div>\${blocchi}
+    <div class="row" style="gap:8px;margin-top:4px;align-items:center">
+      <button class="btn gold" id="p_save">\u{1F4BE} Salva le regole</button>
+      <span class="muted" id="p_msg" style="font-size:13px"></span>
+    </div>\`;
+  $('#p_save').onclick = async () => {
+    const body = {};
+    document.querySelectorAll('.p_in').forEach(el => {
+      const k = el.dataset.pk;
+      body[k] = el.dataset.pt === 'bool' ? el.checked : el.dataset.pt === 'numero' ? Number(el.value) : el.value;
+    });
+    try {
+      const r = await api('/parametri', { method: 'PUT', body: JSON.stringify(body) });
+      PAR = Object.fromEntries((r.parametri || []).map(p => [p.chiave, p.valore]));
+      show('parametri');
+      setTimeout(() => { const m = $('#p_msg'); if (m) m.textContent = '\u2713 Regole salvate.'; }, 60);
+    } catch (e) { $('#p_msg').textContent = 'Non salvate: ' + e.message; }
+  };
+  // le voci figlie si accendono/spengono subito, senza salvare
+  document.querySelectorAll('.p_in[data-pt="bool"]').forEach(el => el.onchange = () => {
+    const b = el.closest('div').querySelector('b'); if (b) b.textContent = el.checked ? 'S\xCC' : 'NO';
+  });
+};
 
 // ---- Contest Serata dei Clan ----
 function contestForm(c) {
@@ -5602,7 +5724,7 @@ window.Comanda = (function () {
 /* Bussola Chiosco \u2014 app operativa separata: comande + KDS + magazzino + men\xF9.
    Stesso server/API del back office, ma ambiente e login dedicati agli operatori. */
 'use strict';
-let TOKEN = null, ME = { gestore: false, caps: [] };
+let TOKEN = null, ME = { gestore: false, caps: [] }, PAR = {};
 // Zona della postazione (dichiarata al login): 'garden' = comande a tavolo \xB7 'bar' = comande a nome.
 let ZONA = (typeof localStorage !== 'undefined' && localStorage.getItem('bussola_zona')) || 'garden';
 const $ = (s) => document.querySelector(s);
@@ -5624,6 +5746,8 @@ async function login() {
     if (!res.ok) throw new Error('Credenziali non valide');
     const j = await res.json(); TOKEN = j.token;
     ME = await api('/me').catch(() => ({ gestore: false, caps: [] }));
+    // Regole di funzionamento decise dal gestore: qui servono per mostrare o meno certi comandi.
+    try { PAR = Object.fromEntries((await api('/parametri')).map(p => [p.chiave, p.valore])); } catch (_) { PAR = {}; }
     // Accesso a Bussola Crew: basta UN permesso operativo (comande o magazzino); si vedono solo le zone consentite.
     const zone = allowedZones();
     if (!zone.length) throw new Error('Il tuo utente non ha ancora nessun permesso operativo. Chiedi al gestore di abilitarti ad almeno uno di questi moduli: ' + Object.values(CAP_MODULO).join(' \xB7 ') + '.');
@@ -5893,7 +6017,7 @@ function tavoloCard(tb) {
   const pay = tb.st.key === 'verde' ? \`<button class="btn gold sm" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:8px;width:100%">\u{1F4B6} Incassa</button>\` : '';
   return \`<div class="tcard clic\${libero ? ' libero' : ''}" data-tdetail="\${tb.t}" style="border-color:\${c.bd};background:\${c.bg}">
     <div class="zacc" style="background:\${ACC_GARDEN}"></div>
-    <div class="thd" style="margin-top:2px"><span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${tb.t}</span><span class="tsub" style="color:\${c.tx}">Tavolo</span></span>\${chipOf(tb.st)}</div>
+    <div class="thd" style="margin-top:2px"><span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${tb.t}</span><span class="tsub" style="color:\${c.tx}">Tavolo\${(tb.uniti && tb.uniti.length) ? ' + ' + tb.uniti.join(' + ') : ''}\${tb.posti ? ' \xB7 ' + tb.posti + ' p' : ''}</span></span>\${chipOf(tb.st)}</div>
     <div class="tst" style="color:\${c.tx}">\${c.lb}\${tb.st.since ? ' \xB7 ' + hhmmOf(tb.st.since) : ''}</div>
     \${items.length ? \`<div style="margin-top:8px;font-size:.82rem;color:#2a2a2a;line-height:1.45">\${items.slice(0, 5).join('<br>')}\${items.length > 5 ? \`<br><span class="muted">+\${items.length - 5} \u2026</span>\` : ''}</div>\` : (libero ? '<div class="muted" style="margin-top:8px;font-size:.78rem">\u2014 libero \u2014</div>' : '')}
     \${pay}</div>\`;
@@ -6011,22 +6135,28 @@ VIEWS.bar = async () => {
    Un nuovo ordine sul tavolo riparte da giallo; all'incasso torna arancio. */
 VIEWS.tavoli = async () => {
   const cfg = await api('/self-order/config').catch(() => ({}));
-  const N = Math.max(1, Number(cfg.garden_tavoli || 12));
   const rMin = Number(cfg.map_rosso_min || 10);
+  // La sala e' quella disegnata nella Pianta: i tavoli aggiunti compaiono, quelli assorbiti da
+  // un'unione spariscono ma le loro comande confluiscono sul tavolo che li ha assorbiti.
+  const sala = await api('/tavoli/sala').catch(() => null);
   const render = async () => {
     const comande = (await api('/comande').catch(() => [])).filter(c => c.zona !== 'bar');   // solo Garden
+    const verso = (sala && sala.verso) || {};
     const byTable = {};
     for (const c of comande) {
       const ref = String(c.riferimento || '').trim();
       if (!/^\\d+$/.test(ref)) continue;                       // solo riferimenti numerici = tavoli Garden
-      const t = Number(ref); (byTable[t] = byTable[t] || []).push(c);
+      const t = Number(verso[ref] != null ? verso[ref] : ref);  // il numero del QR punta al tavolo reale
+      (byTable[t] = byTable[t] || []).push(c);
     }
     const now = Date.now();
-    const tables = [];
-    for (let t = 1; t <= N; t++) { const cs = byTable[t] || []; tables.push({ t, cs, st: statoGruppo(cs, rMin, now) }); }
+    const elenco = (sala && sala.tavoli && sala.tavoli.length)
+      ? sala.tavoli
+      : Array.from({ length: Math.max(1, Number(cfg.garden_tavoli || 12)) }, (_, i) => ({ numero: i + 1, posti: null, uniti: [] }));
+    const tables = elenco.map(x => { const cs = byTable[x.numero] || []; return { t: x.numero, posti: x.posti, uniti: x.uniti || [], cs, st: statoGruppo(cs, rMin, now) }; });
     const rank = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
     tables.sort((a, b) => (rank[a.st.key] - rank[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)) || (a.t - b.t));
-    $('#view').innerHTML = \`<div class="panel" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 style="margin:0">\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${N} tavoli \xB7 auto-aggiornamento</span></h3>
+    $('#view').innerHTML = \`<div class="panel" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 style="margin:0">\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${tables.length} tavoli\${sala ? ' \xB7 ' + esc(sala.layout.nome) : ''} \xB7 auto-aggiornamento</span></h3>
       <div class="muted" style="font-size:.74rem">\u{1F7E7} libero \xB7 \u{1F7E8} acquisita \xB7 \u{1F7E5} oltre \${rMin}\u2032 \xB7 \u{1F7E9} consegnato</div></div></div>
       <div class="board">\${tables.map(tavoloCard).join('')}</div>\`;
     const bindPay = (root) => root.querySelectorAll('[data-tpay]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => {
@@ -6064,7 +6194,7 @@ VIEWS.sport = async () => {
       <h3 style="margin:0">\u{1F3C6} Tabellone \xB7 \${cur ? esc(cur.nome) : 'Sport'}</h3>
       <div class="row" style="gap:6px;align-items:center">
         \${disc.length ? \`<select id="sp_disc" style="min-width:170px">\${opt}</select>\` : ''}
-        <button class="btn ghost sm" id="sp_print" title="Foglio gara da portare in campo">\u{1F5A8}\uFE0F Foglio gara</button>
+        \${PAR.sport_foglio_gara === false ? '' : '<button class="btn ghost sm" id="sp_print" title="Foglio gara da portare in campo">\u{1F5A8}\uFE0F Foglio gara</button>'}
       </div></div></div>\`;
   if (!cur) { $('#view').innerHTML = head + '<div class="panel"><p class="muted">Nessuna disciplina disponibile. Il gestore la crea nel back office.</p></div>'; wireDisc(); return; }
   const t = await api('/tabellone/' + cur.id).catch(() => ({ gironi: [], fasi: {}, completo: false }));
@@ -6089,6 +6219,10 @@ VIEWS.sport = async () => {
         <span style="flex:1;font-weight:700;font-size:.86rem;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${esc(p.casa_b)}</span>
         <button class="btn gold sm" data-sp-save="\${p.id}" style="padding:4px 10px">\${giocata ? '\u2713' : 'Salva'}</button>
         <button class="btn ghost sm" data-sp-foto="\${p.id}" title="Foto referto" style="padding:4px 8px">\u{1F4F7}</button>
+      </div>
+      <div class="row" style="gap:6px;align-items:center;margin-top:5px">
+        <span class="muted" style="font-size:.7rem">Si gioca il</span>
+        <input type="date" value="\${esc(p.quando || '')}" data-sp-pdata="\${p.id}" style="padding:2px 5px;font-size:.74rem" title="Sposta solo questa partita">
       </div></div>\`;
   };
 
@@ -6131,10 +6265,26 @@ VIEWS.sport = async () => {
     const arr = fasi[k] || []; if (!arr.length) return '';
     return \`<div style="font-weight:800;color:var(--accent);margin:10px 0 6px;font-size:.82rem">\${esc(label)}</div>\${arr.map((p, i) => matchRow(p, arr.length > 1 ? label + ' ' + (i + 1) : label)).join('')}\`;
   }).join('');
-  const statoFinale = (t.hasFinale && blocks) ? blocks
-    : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--muted);border-radius:12px;padding:12px">
-        <div style="font-size:1.4rem">\u23F3</div>
-        <div><b>Fase finale non ancora sbloccata.</b><br><span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Mancano <b>\${gironiMancanti}</b> partite su \${gironiTot} nei gironi.\` : 'Gironi completati: la fase finale si sta generando, riapri la scheda.'}</span></div></div>\`;
+  // Struttura sempre visibile: ogni casella dice da dove arriva la casata e, se la classifica
+  // esiste gia', chi la occuperebbe oggi. Si vede dove si e' diretti prima che si sblocchi.
+  const cella = (s2) => s2.provvisorio
+    ? \`<b style="font-size:.86rem">\${esc(s2.provvisorio)}</b> <span class="muted" style="font-size:.68rem">(\${esc(s2.etichetta)})</span>\`
+    : \`<span class="muted" style="font-size:.82rem;font-style:italic">\${esc(s2.etichetta)}</span>\`;
+  const scontro = (x, titolo) => \`<div style="border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
+      <div style="font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">\${esc(titolo)}</div>
+      <div style="margin-top:3px">\${cella(x.a)}</div>
+      <div class="muted" style="font-size:.7rem;margin:1px 0">contro</div>
+      <div>\${cella(x.b)}</div></div>\`;
+  const st = t.struttura;
+  const schema = st ? \`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">
+      <div><div style="font-weight:800;color:var(--accent);font-size:.8rem;margin-bottom:6px">Quarti</div>\${st.quarti.map(q => scontro(q, 'Quarto ' + q.slot)).join('')}</div>
+      <div><div style="font-weight:800;color:var(--accent);font-size:.8rem;margin-bottom:6px">Semifinali</div>\${st.semifinali.map(q => scontro(q, 'Semifinale ' + q.slot)).join('')}</div>
+      <div><div style="font-weight:800;color:var(--accent);font-size:.8rem;margin-bottom:6px">Finali</div>\${scontro(st.finale1, 'Finale 1\xBA/2\xBA')}\${scontro(st.finale3, 'Finale 3\xBA/4\xBA')}</div>
+    </div>\` : '';
+  const avviso = t.hasFinale ? '' : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--muted);border-radius:12px;padding:10px;margin-bottom:10px">
+        <div style="font-size:1.3rem">\u23F3</div>
+        <div><b style="font-size:.9rem">Non ancora sbloccata.</b> <span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Mancano <b>\${gironiMancanti}</b> partite su \${gironiTot} nei gironi; gli accoppiamenti qui sotto sono quelli che risulterebbero con la classifica di adesso.\` : 'Gironi completati: la fase finale si sta generando, riapri la scheda.'}</span></div></div>\`;
+  const statoFinale = (t.hasFinale && blocks) ? (schema + '<div style="margin-top:10px">' + blocks + '</div>') : (avviso + schema);
   const finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale</h3>
     <p class="muted" style="font-size:.76rem;margin-bottom:6px">Incroci fra i gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un vincitore.</p>\${statoFinale}</div>\`;
 
@@ -6155,12 +6305,16 @@ VIEWS.sport = async () => {
     catch (e) { alert('Errore: ' + e.message); }
   });
   document.querySelectorAll('[data-sp-foto]').forEach(b => b.onclick = () => fotoPartita(b.dataset.spFoto));
+  document.querySelectorAll('[data-sp-pdata]').forEach(inp => inp.onchange = async () => {
+    try { await api('/partite/' + inp.dataset.spPdata + '/quando', { method: 'PUT', body: JSON.stringify({ quando: inp.value }) }); }
+    catch (e) { alert('Data non salvata: ' + e.message); }
+  });
   document.querySelectorAll('[data-sp-data]').forEach(inp => inp.onchange = async () => {
     const [gid, n] = inp.dataset.spData.split('|');
     try { await api('/tabellone/' + SPORT_DISC + '/giornata', { method: 'PUT', body: JSON.stringify({ girone_id: Number(gid), giornata: Number(n), quando: inp.value }) }); }
     catch (e) { alert('Data non salvata: ' + e.message); }
   });
-  $('#sp_print').onclick = () => stampaFoglioGara(window.__spTab, window.__spDiscNome);
+  if ($('#sp_print')) $('#sp_print').onclick = () => stampaFoglioGara(window.__spTab, window.__spDiscNome);
   function wireDisc() { const s = $('#sp_disc'); if (s) s.onchange = () => { SPORT_DISC = Number(s.value); show('sport'); }; }
 };
 
@@ -6848,7 +7002,8 @@ VIEWS.pianta = async () => {
         <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>
       </div><div id="p_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
 
-  const sorgente = PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli;
+  // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
+  const sorgente = (PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli).filter(t => PIANTA.modo === 'disposizione' || t.attivo !== 0);
   const box = sorgente.map(t => {
     const occupato = PIANTA.modo === 'servizio' && !t.libero;
     const raggio = 22 + Math.min(16, Number(t.posti) * 2);
@@ -6859,7 +7014,7 @@ VIEWS.pianta = async () => {
         width:\${raggio * 2}px;height:\${raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
         background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
         font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none">
-        <span>\${t.numero}</span>
+        <span>\${t.numero}\${(t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : ''}</span>
         <span style="font-weight:500;font-size:.62rem;opacity:.9">\${occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
       </div>\`;
   }).join('');
@@ -6972,11 +7127,39 @@ function apriTavolo(numero) {
     <label style="display:block;font-size:.82rem;margin-bottom:6px">Forma
       <select id="tv_f"><option value="tondo" \${t.forma === 'tondo' ? 'selected' : ''}>tondo</option><option value="quadrato" \${t.forma === 'quadrato' ? 'selected' : ''}>quadrato</option><option value="rettangolo" \${t.forma === 'rettangolo' ? 'selected' : ''}>rettangolo</option></select></label>
     <label style="display:block;font-size:.82rem;margin-bottom:10px"><input type="checkbox" id="tv_a" \${t.attivo === 0 ? '' : 'checked'}> in servizio stasera</label>
+    \${(t.uniti && t.uniti.length)
+      ? \`<div class="row" style="gap:8px;align-items:center;margin-bottom:10px;background:#f4efe2;border-radius:10px;padding:8px">
+          <span style="font-size:.8rem">Unito con <b>\${t.uniti.join(', ')}</b></span>
+          <button class="btn ghost sm" id="tv_sep">\u2702\uFE0F Separa</button></div>\`
+      : \`<div class="row" style="gap:6px;align-items:center;margin-bottom:10px">
+          <label style="font-size:.82rem">Unisci al tavolo <select id="tv_u">\${PIANTA.tavoli.filter(z => z.numero !== t.numero && z.attivo !== 0 && !(z.uniti || []).length).map(z => \`<option value="\${z.numero}">\${z.numero} \xB7 \${z.posti} p</option>\`).join('') || '<option value="">nessuno</option>'}</select></label>
+          <button class="btn ghost sm" id="tv_unisci">\u{1F517} Unisci</button></div>\`}
     <div class="row" style="gap:8px">
       <button class="btn gold sm" id="tv_ok">Applica</button>
       <button class="btn danger sm" id="tv_del">\u{1F5D1} Togli il tavolo</button>
       <button class="btn ghost sm" id="tv_no">Chiudi</button>
     </div>\`);
+  // Unire due tavoli accostati: restano un tavolo solo, con i posti sommati. Il numero
+  // assorbito non sparisce dal mondo \u2014 i QR gia' stampati continuano a funzionare e le
+  // comande finiscono sul tavolo che lo ha assorbito.
+  if ($('#tv_unisci')) $('#tv_unisci').onclick = () => {
+    const altro = Number(($('#tv_u') || {}).value);
+    const b = PIANTA.tavoli.find(z => z.numero === altro);
+    if (!b) { alert('Nessun tavolo libero da unire.'); return; }
+    t.posti = Number(t.posti) + Number(b.posti);
+    t.uniti = [...(t.uniti || []), b.numero, ...(b.uniti || [])];
+    t.forma = 'rettangolo';
+    b.attivo = 0; b.uniti = [];
+    PIANTA.sporco = true; closeModal(); show('pianta');
+  };
+  if ($('#tv_sep')) $('#tv_sep').onclick = () => {
+    for (const n of (t.uniti || [])) {
+      const b = PIANTA.tavoli.find(z => z.numero === n);
+      if (b) { b.attivo = 1; t.posti = Math.max(1, Number(t.posti) - Number(b.posti)); }
+    }
+    t.uniti = [];
+    PIANTA.sporco = true; closeModal(); show('pianta');
+  };
   $('#tv_ok').onclick = () => {
     t.posti = Math.max(1, Number($('#tv_p').value) || 4);
     t.forma = $('#tv_f').value;
@@ -7276,7 +7459,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.71";
+var VERSION = "4.73";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -7513,8 +7696,10 @@ var CAPS_GESTORE_ONLY = [
   // Registro attività
   "db",
   // Database & backup
-  "operatori"
+  "operatori",
   // gestione account staff e permessi
+  "parametri"
+  // regole di funzionamento: decidono come funziona il residence, non si delegano
 ];
 var GO = new Set(CAPS_GESTORE_ONLY);
 var MANAGER_CAPS = /* @__PURE__ */ new Set([
@@ -9366,7 +9551,24 @@ async function layoutDelGiorno(data) {
   return await layoutPredefinito();
 }
 async function tavoliDi(layoutId) {
-  return await db.prepare("SELECT * FROM tavoli WHERE layout_id=? ORDER BY numero").all(layoutId);
+  const rows = await db.prepare("SELECT * FROM tavoli WHERE layout_id=? ORDER BY numero").all(layoutId);
+  return rows.map((t) => ({ ...t, uniti: parseNumeri(t.uniti) }));
+}
+function parseNumeri(v) {
+  try {
+    const a = JSON.parse(v || "[]");
+    return Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : [];
+  } catch (_) {
+    return [];
+  }
+}
+async function mappaTavoli(data) {
+  const layout = await layoutDelGiorno(data);
+  const tav = await tavoliDi(layout.id);
+  const verso = /* @__PURE__ */ new Map();
+  for (const t of tav) if (t.attivo !== 0) verso.set(t.numero, t.numero);
+  for (const t of tav) if (t.attivo !== 0) for (const n of t.uniti) verso.set(n, t.numero);
+  return { layout, tavoli: tav, verso };
 }
 function conDistanza(tavoli) {
   const att = tavoli.filter((t) => t.attivo !== 0);
@@ -9405,6 +9607,7 @@ async function statoTurno(data, turno) {
       x: t.x,
       y: t.y,
       distanza: t.distanza,
+      uniti: t.uniti || [],
       libero: !p,
       prenotazione_id: p ? p.id : null,
       nome: p ? p.nome || "" : "",
@@ -9466,6 +9669,218 @@ async function turnoSuccessivo(ora) {
   const hhmm = String(ora || "").slice(0, 5);
   for (const x of t) if (x > hhmm) return x;
   return null;
+}
+
+// server/parametri.js
+init_db();
+var REGISTRO = [
+  // ---- Campi ----
+  {
+    chiave: "campi_limita_durata",
+    gruppo: "Campi",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Limite di durata per prenotazione",
+    aiuto: "Se spento, un socio puo' prenotare quante fasce consecutive vuole. Il numero massimo resta quello indicato sulla scheda del singolo campo."
+  },
+  {
+    chiave: "campi_limita_settimana",
+    gruppo: "Campi",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Tetto di prenotazioni a settimana",
+    aiuto: "Se spento, nessun limite settimanale. Serve a evitare che siano sempre gli stessi a occupare il campo; il numero e' sulla scheda del campo."
+  },
+  {
+    chiave: "campi_prenotazione_obbligatoria",
+    gruppo: "Campi",
+    tipo: "bool",
+    predefinito: false,
+    etichetta: "Prenotazione obbligatoria anche per il gioco libero",
+    aiuto: "Se acceso, il campo si usa solo se prenotato: in app compare la regola e la crew puo' verificare a chi e' assegnata la fascia."
+  },
+  {
+    chiave: "campi_durata_max_minuti",
+    gruppo: "Campi",
+    tipo: "numero",
+    predefinito: 90,
+    min: 15,
+    max: 300,
+    dipende_da: "campi_prenotazione_obbligatoria",
+    etichetta: "Tempo massimo di utilizzo (minuti)",
+    aiuto: "Durata oltre la quale il campo va liberato se c'e' chi aspetta."
+  },
+  {
+    chiave: "campi_unisciti",
+    gruppo: "Campi",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Partite aperte: gli altri si uniscono",
+    aiuto: "Se spento, ogni prenotazione e' riservata al titolare e nessuno puo' aggiungersi."
+  },
+  {
+    chiave: "campi_unisciti_modo",
+    gruppo: "Campi",
+    tipo: "scelta",
+    predefinito: "unisciti_o_nuova",
+    dipende_da: "campi_unisciti",
+    opzioni: [
+      { valore: "unisciti_o_nuova", etichetta: "Ci si unisce oppure si prenota una fascia nuova" },
+      { valore: "solo_unisciti", etichetta: "Solo unendosi: niente seconda prenotazione nello stesso giorno" }
+    ],
+    etichetta: "Come si partecipa",
+    aiuto: `Con "solo unendosi", chi ha gia' una prenotazione quel giorno su quel campo deve aggregarsi a una partita aperta invece di aprirne un'altra.`
+  },
+  // ---- Sport ----
+  {
+    chiave: "sport_foglio_gara",
+    gruppo: "Sport",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Foglio gara stampabile dal Crew",
+    aiuto: "Mostra il bottone di stampa nel modulo Sport. Spegnilo se i risultati si prendono solo dal telefono."
+  },
+  // ---- Eventi ----
+  {
+    chiave: "eventi_onerosi",
+    gruppo: "Eventi",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Eventi a pagamento",
+    aiuto: "Se spento, tutti gli eventi sono liberi e nella scheda evento non compare nessun costo."
+  },
+  {
+    chiave: "eventi_modo_costo",
+    gruppo: "Eventi",
+    tipo: "scelta",
+    predefinito: "entrambi",
+    dipende_da: "eventi_onerosi",
+    opzioni: [
+      { valore: "prezzo", etichetta: "Solo prezzo d'ingresso" },
+      { valore: "consumazione", etichetta: "Solo consumazione obbligatoria" },
+      { valore: "entrambi", etichetta: "Si sceglie evento per evento" }
+    ],
+    etichetta: "Come si paga l'ingresso",
+    aiuto: "La consumazione obbligatoria sostituisce il biglietto: si entra consumando."
+  },
+  // ---- Garden ----
+  {
+    chiave: "garden_prenotazione_cena",
+    gruppo: "Garden",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Prenotazione della cena a turni",
+    aiuto: "Se spento, il Garden non accetta prenotazioni: ci si siede e basta."
+  }
+];
+var perChiave = new Map(REGISTRO.map((p) => [p.chiave, p]));
+function normalizza(def, raw) {
+  if (raw == null) return def.predefinito;
+  if (def.tipo === "bool") return raw === "1" || raw === "true" || raw === true;
+  if (def.tipo === "numero") {
+    let n = Number(raw);
+    if (!Number.isFinite(n)) return def.predefinito;
+    if (def.min != null) n = Math.max(def.min, n);
+    if (def.max != null) n = Math.min(def.max, n);
+    return n;
+  }
+  const ok = (def.opzioni || []).some((o) => o.valore === raw);
+  return ok ? raw : def.predefinito;
+}
+async function par(chiave) {
+  const def = perChiave.get(chiave);
+  if (!def) return null;
+  if (def.dipende_da) {
+    const acceso = await par(def.dipende_da);
+    if (!acceso) return def.tipo === "bool" ? false : null;
+  }
+  return normalizza(def, await getSetting("par_" + chiave, null));
+}
+async function tuttiParametri() {
+  const out = [];
+  for (const def of REGISTRO) {
+    const grezzo = await getSetting("par_" + def.chiave, null);
+    out.push({
+      ...def,
+      valore: normalizza(def, grezzo),
+      personalizzato: grezzo != null,
+      // se il genitore e' spento la voce resta visibile ma disattivata, per capire perche'
+      attivo: def.dipende_da ? !!await par(def.dipende_da) : true
+    });
+  }
+  return out;
+}
+async function salvaParametri(patch) {
+  const cambiati = [];
+  for (const [chiave, valore] of Object.entries(patch || {})) {
+    const def = perChiave.get(chiave);
+    if (!def) continue;
+    const v = def.tipo === "bool" ? valore ? "1" : "0" : String(normalizza(def, valore));
+    await setSetting("par_" + chiave, v);
+    cambiati.push(chiave);
+  }
+  return cambiati;
+}
+
+// server/referenze.js
+init_db();
+var VINCOLI = {
+  casate: [
+    { tabella: "soci", colonna: "casata_id", etichetta: "soci iscritti alla casata" },
+    { tabella: "classifica", colonna: "casata_id", etichetta: "tornei in cui e\u0300 iscritta" },
+    { tabella: "contest_esiti", colonna: "casata_id", etichetta: "esiti di contest registrati" }
+  ],
+  discipline: [
+    { tabella: "partite", colonna: "disciplina_id", soloSe: "stato='giocata'", etichetta: "partite gia\u0300 giocate" },
+    { tabella: "edizioni", colonna: "disciplina_id", etichetta: "edizioni nell'Albo d'Oro" }
+  ],
+  campi: [
+    { tabella: "prenotazioni_campo", colonna: "campo_id", soloSe: "stato='prenotato'", etichetta: "prenotazioni attive" },
+    { tabella: "partite_aperte", colonna: "campo_id", soloSe: "stato IN ('aperta','completa')", etichetta: "partite aperte" }
+  ],
+  magazzino_articoli: [
+    { tabella: "magazzino_movimenti", colonna: "articolo_id", etichetta: "movimenti di carico/scarico" },
+    { tabella: "magazzino_richieste", colonna: "articolo_id", soloSe: "stato='impegnata'", etichetta: "impegni in corso" }
+  ],
+  menu_articoli: [
+    { tabella: "comanda_righe", colonna: "articolo_id", etichetta: "righe di comanda che lo contengono" }
+  ],
+  cdc_giochi: [
+    { tabella: "cdc_prestiti", colonna: "gioco_id", soloSe: "ora_fine IS NULL OR ora_fine=''", etichetta: "prestiti non ancora rientrati" }
+  ],
+  serate: [
+    { tabella: "serate_prenotazioni", colonna: "serata_id", soloSe: "stato<>'annullata'", etichetta: "prenotazioni non annullate" }
+  ],
+  contest: [
+    { tabella: "contest_esiti", colonna: "contest_id", etichetta: "esiti registrati" }
+  ],
+  tavoli_layout: [
+    { tabella: "tavoli_giorni", colonna: "layout_id", etichetta: "giornate che la usano" }
+  ]
+};
+async function rami(entita, id) {
+  const regole = VINCOLI[entita] || [];
+  const out = [];
+  for (const r of regole) {
+    try {
+      const dove = `${r.colonna}=?` + (r.soloSe ? ` AND (${r.soloSe})` : "");
+      const q = await db.prepare(`SELECT COUNT(*) n FROM ${r.tabella} WHERE ${dove}`).get(id);
+      const n = Number(q?.n || 0);
+      if (n > 0) out.push({ tabella: r.tabella, etichetta: r.etichetta, quanti: n });
+    } catch (_) {
+    }
+  }
+  return out;
+}
+function messaggio(cosa, blocchi) {
+  const elenco = blocchi.map((b) => `${b.quanti} ${b.etichetta}`).join(", ");
+  return `Non posso eliminare ${cosa}: prima vanno rimossi ${elenco}.`;
+}
+async function bloccaSeCollegato(res, entita, id, cosa) {
+  const blocchi = await rami(entita, id);
+  if (!blocchi.length) return false;
+  res.status(409).json({ error: messaggio(cosa, blocchi), blocchi });
+  return true;
 }
 
 // server/routes/admin.js
@@ -9678,7 +10093,8 @@ adminRouter.get("/eventi", async (req, res) => {
 });
 adminRouter.put("/eventi/:id", requireCap("eventi"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,serata_id=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.attivo ? 1 : 0, req.params.id);
+  const c = await costoEvento(b);
+  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,costo_tipo=?,consumazione=?,serata_id=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, c.prezzo, c.costo_tipo, c.consumazione, b.serata_id || null, b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "eventi", req.params.id);
   res.json({ ok: true });
 });
@@ -9686,7 +10102,8 @@ adminRouter.post("/eventi", requireCap("eventi"), async (req, res) => {
   const b = req.body || {};
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM eventi").get()).n;
-  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,serata_id,tipo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, Number(b.prezzo || 0), b.serata_id || null, b.tipo ?? "serata", ord);
+  const c = await costoEvento(b);
+  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,costo_tipo,consumazione,serata_id,tipo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, c.prezzo, c.costo_tipo, c.consumazione, b.serata_id || null, b.tipo ?? "serata", ord);
   audit(req.adminUser.username, "crea", "eventi", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
@@ -9877,7 +10294,7 @@ adminRouter.put("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.delete("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
-  await db.prepare("DELETE FROM magazzino_movimenti WHERE articolo_id=?").run(req.params.id);
+  if (await bloccaSeCollegato(res, "magazzino_articoli", req.params.id, "l'articolo")) return;
   await db.prepare("DELETE FROM magazzino_articoli WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "magazzino_articoli", req.params.id);
   res.json({ ok: true });
@@ -10418,6 +10835,7 @@ adminRouter.post("/menu/deduci-punto", requireCap("comande"), async (req, res) =
   res.json({ ok: true, garden, bar });
 });
 adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
+  if (await bloccaSeCollegato(res, "menu_articoli", req.params.id, "la voce di men\xF9")) return;
   await db.prepare("DELETE FROM menu_articoli WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
   res.json({ ok: true });
@@ -10655,6 +11073,7 @@ adminRouter.put("/campi/:id", requireCap("campi"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.delete("/campi/:id", requireCap("campi"), async (req, res) => {
+  if (await bloccaSeCollegato(res, "campi", req.params.id, "il campo")) return;
   await db.prepare("DELETE FROM partita_iscritti WHERE partita_id IN (SELECT id FROM partite_aperte WHERE campo_id=?)").run(req.params.id);
   await db.prepare("DELETE FROM partite_aperte WHERE campo_id=?").run(req.params.id);
   await db.prepare("DELETE FROM prenotazioni_campo WHERE campo_id=?").run(req.params.id);
@@ -10769,6 +11188,7 @@ adminRouter.put("/discipline/:id", requireCap("discipline"), async (req, res) =>
 });
 adminRouter.delete("/discipline/:id", requireCap("discipline_del"), async (req, res) => {
   const id = req.params.id;
+  if (await bloccaSeCollegato(res, "discipline", id, "la disciplina")) return;
   await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id);
   const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id);
   for (const g of gironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
@@ -10851,7 +11271,7 @@ adminRouter.put("/contest/:id", requireCap("contest"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.delete("/contest/:id", requireCap("contest"), async (req, res) => {
-  await db.prepare("DELETE FROM contest_esiti WHERE contest_id=?").run(req.params.id);
+  if (await bloccaSeCollegato(res, "contest", req.params.id, "il contest")) return;
   await db.prepare("DELETE FROM contest WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "contest", req.params.id);
   res.json({ ok: true });
@@ -10904,6 +11324,7 @@ adminRouter.put("/serate/:id", requireCap("serate"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.delete("/serate/:id", requireCap("serate"), async (req, res) => {
+  if (await bloccaSeCollegato(res, "serate", req.params.id, "la serata")) return;
   await db.prepare("DELETE FROM serate_prenotazioni WHERE serata_id=?").run(req.params.id);
   await db.prepare("DELETE FROM serate WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "serate", req.params.id);
@@ -10975,6 +11396,7 @@ adminRouter.put("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.delete("/cdc/giochi/:id", requireCap("cdc"), async (req, res) => {
+  if (await bloccaSeCollegato(res, "cdc_giochi", req.params.id, "il gioco")) return;
   await db.prepare("DELETE FROM cdc_giochi WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "cancella", "cdc_giochi", req.params.id);
   res.json({ ok: true });
@@ -11084,8 +11506,8 @@ adminRouter.post("/tavoli/layout", requireCap("comande"), async (req, res) => {
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito) VALUES (?,0)").run(b.nome);
   const id = Number(info.lastInsertRowid);
   const src = await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(b.copia_da) || await layoutPredefinito();
-  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo) VALUES (?,?,?,?,?,?,?)");
-  for (const t of await tavoliDi(src.id)) await ins.run(id, t.numero, t.posti, t.forma, t.x, t.y, t.attivo);
+  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo,uniti) VALUES (?,?,?,?,?,?,?,?)");
+  for (const t of await tavoliDi(src.id)) await ins.run(id, t.numero, t.posti, t.forma, t.x, t.y, t.attivo, JSON.stringify(t.uniti || []));
   audit(req.adminUser.username, "crea", "tavoli_layout", id, b.nome);
   res.status(201).json({ ok: true, id });
 });
@@ -11102,13 +11524,13 @@ adminRouter.put("/tavoli/layout/:id", requireCap("comande"), async (req, res) =>
     const num = (v, d) => Number.isFinite(Number(v)) ? Number(v) : d;
     const clamp = (v) => Math.max(0, Math.min(100, num(v, 50)));
     await db.prepare("DELETE FROM tavoli WHERE layout_id=?").run(l.id);
-    const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo) VALUES (?,?,?,?,?,?,?)");
+    const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo,uniti) VALUES (?,?,?,?,?,?,?,?)");
     const visti = /* @__PURE__ */ new Set();
     for (const t of b.tavoli) {
       const n = num(t.numero, 0);
       if (!n || visti.has(n)) continue;
       visti.add(n);
-      await ins.run(l.id, n, Math.max(1, num(t.posti, 4)), ["tondo", "quadrato", "rettangolo"].includes(t.forma) ? t.forma : "tondo", clamp(t.x), clamp(t.y), t.attivo === false ? 0 : 1);
+      await ins.run(l.id, n, Math.max(1, num(t.posti, 4)), ["tondo", "quadrato", "rettangolo"].includes(t.forma) ? t.forma : "tondo", clamp(t.x), clamp(t.y), t.attivo === false ? 0 : 1, JSON.stringify((Array.isArray(t.uniti) ? t.uniti : []).map(Number).filter(Boolean)));
     }
   }
   audit(req.adminUser.username, "modifica", "tavoli_layout", l.id, `${(b.tavoli || []).length} tavoli`);
@@ -11118,6 +11540,7 @@ adminRouter.delete("/tavoli/layout/:id", requireCap("comande"), async (req, res)
   const l = await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(req.params.id);
   if (!l) return res.status(404).json({ error: "Disposizione non trovata" });
   if (l.predefinito) return res.status(409).json({ error: "Non puoi eliminare la disposizione predefinita" });
+  if (await bloccaSeCollegato(res, "tavoli_layout", l.id, "la disposizione")) return;
   await db.prepare("DELETE FROM tavoli WHERE layout_id=?").run(l.id);
   await db.prepare("DELETE FROM tavoli_giorni WHERE layout_id=?").run(l.id);
   await db.prepare("DELETE FROM tavoli_layout WHERE id=?").run(l.id);
@@ -11193,6 +11616,48 @@ adminRouter.put("/tabellone/:disciplinaId/giornata", requireCap("tabellone"), as
   audit(req.adminUser.username, "data_giornata", "partite", req.params.disciplinaId, `giornata ${g} -> ${quando || "\u2014"}`);
   res.json({ ok: true });
 });
+adminRouter.get("/parametri", async (req, res) => {
+  res.json(await tuttiParametri());
+});
+adminRouter.put("/parametri", requireCap("parametri"), async (req, res) => {
+  const cambiati = await salvaParametri(req.body || {});
+  audit(req.adminUser.username, "parametri", "impostazioni", 0, cambiati.join(", "));
+  res.json({ ok: true, cambiati, parametri: await tuttiParametri() });
+});
+async function costoEvento(b) {
+  const onerosi = await par("eventi_onerosi");
+  if (!onerosi) return { costo_tipo: "nessuno", prezzo: 0, consumazione: null };
+  const modo = await par("eventi_modo_costo");
+  let tipo = ["nessuno", "prezzo", "consumazione"].includes(b.costo_tipo) ? b.costo_tipo : Number(b.prezzo) > 0 ? "prezzo" : "nessuno";
+  if (modo === "prezzo" && tipo === "consumazione") tipo = "prezzo";
+  if (modo === "consumazione" && tipo === "prezzo") tipo = "consumazione";
+  if (tipo === "prezzo") return { costo_tipo: "prezzo", prezzo: Number(b.prezzo) || 0, consumazione: null };
+  if (tipo === "consumazione") return { costo_tipo: "consumazione", prezzo: 0, consumazione: String(b.consumazione || "1 consumazione obbligatoria").slice(0, 120) };
+  return { costo_tipo: "nessuno", prezzo: 0, consumazione: null };
+}
+adminRouter.get("/referenze/:entita/:id", async (req, res) => {
+  res.json({ blocchi: await rami(req.params.entita, req.params.id) });
+});
+adminRouter.put("/partite/:id/quando", requireCap("tabellone"), async (req, res) => {
+  const quando = String(req.body?.quando || "").slice(0, 10);
+  if (quando && !/^\d{4}-\d{2}-\d{2}$/.test(quando)) return res.status(400).json({ error: "Data non valida" });
+  const m = await db.prepare("SELECT id FROM partite WHERE id=?").get(req.params.id);
+  if (!m) return res.status(404).json({ error: "Partita non trovata" });
+  await db.prepare("UPDATE partite SET quando=? WHERE id=?").run(quando || null, m.id);
+  audit(req.adminUser.username, "data_partita", "partite", m.id, quando || "\u2014");
+  res.json({ ok: true });
+});
+adminRouter.get("/tavoli/sala", requireCap("comande"), async (req, res) => {
+  const data = String(req.query.data || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const { layout, tavoli, verso } = await mappaTavoli(data);
+  res.json({
+    data,
+    layout: { id: layout.id, nome: layout.nome },
+    tavoli: tavoli.filter((t) => t.attivo !== 0).map((t) => ({ numero: t.numero, posti: t.posti, forma: t.forma, x: t.x, y: t.y, uniti: t.uniti })),
+    // numero scritto sulla comanda -> tavolo che lo serve
+    verso: Object.fromEntries(verso)
+  });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -11250,15 +11715,24 @@ publicRouter.get("/push/pubkey", async (req, res) => {
   res.json({ enabled: pushEnabled2(), key: publicKey2() });
 });
 publicRouter.get("/eventi", async (req, res) => {
-  const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ora_inizio,tipologia,artista,prezzo,serata_id FROM eventi WHERE attivo=1 ORDER BY ordine").all();
+  const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ora_inizio,tipologia,artista,prezzo,costo_tipo,consumazione,serata_id FROM eventi WHERE attivo=1 ORDER BY ordine").all();
+  const onerosi = await par("eventi_onerosi");
   const out = [];
   for (const e of rows) {
+    if (!onerosi) {
+      out.push({ ...e, costo: 0, costo_tipo: "nessuno", consumazione: null });
+      continue;
+    }
+    if (e.costo_tipo === "consumazione") {
+      out.push({ ...e, costo: 0 });
+      continue;
+    }
     let costo = Number(e.prezzo || 0);
     if (e.serata_id) {
       const s = await db.prepare("SELECT quota FROM serate WHERE id=?").get(e.serata_id);
       if (s && Number(s.quota) > 0) costo = Number(s.quota);
     }
-    out.push({ ...e, costo });
+    out.push({ ...e, costo, costo_tipo: costo > 0 ? "prezzo" : "nessuno" });
   }
   res.json(out);
 });
@@ -11485,7 +11959,20 @@ async function prenSettimana(campoId, socioId, dataISO) {
 }
 publicRouter.get("/campi", async (req, res) => {
   const rows = await db.prepare(`SELECT ${CAMPI_COLS} FROM campi WHERE attivo=1 ORDER BY ordine,id`).all();
-  res.json(rows);
+  const regole = {
+    limita_durata: await par("campi_limita_durata"),
+    limita_settimana: await par("campi_limita_settimana"),
+    prenotazione_obbligatoria: await par("campi_prenotazione_obbligatoria"),
+    durata_max_minuti: await par("campi_durata_max_minuti"),
+    unisciti: await par("campi_unisciti"),
+    unisciti_modo: await par("campi_unisciti_modo")
+  };
+  res.json(rows.map((c) => ({
+    ...c,
+    max_slot_prenotazione: regole.limita_durata ? c.max_slot_prenotazione : null,
+    max_pren_settimana: regole.limita_settimana ? c.max_pren_settimana : null,
+    regole
+  })));
 });
 publicRouter.get("/campi/:id/disponibilita", async (req, res) => {
   const campo = await db.prepare("SELECT * FROM campi WHERE id=? AND attivo=1").get(req.params.id);
@@ -11570,14 +12057,25 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const maxSlot = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
   const nSlot = Math.max(1, Number(req.body?.n_slot) || 1);
-  if (nSlot > maxSlot) return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito` });
+  if (await par("campi_limita_durata") && nSlot > maxSlot) {
+    return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito` });
+  }
   const usate = await prenSettimana(campo.id, socio.id, data);
-  if (usate >= campo.max_pren_settimana) {
+  if (await par("campi_limita_settimana") && usate >= campo.max_pren_settimana) {
     return res.status(409).json({ error: `Hai gi\xE0 ${usate} prenotazioni questa settimana su ${campo.nome} (massimo ${campo.max_pren_settimana})` });
   }
   const chk = await slotConsecutiviLiberi(campo, data, slot, nSlot);
   if (chk.error) return res.status(409).json({ error: chk.error });
-  const aperta = req.body?.aperta_ai_soci == null ? apertaDiDefault : !!req.body.aperta_ai_soci;
+  const unisciti = await par("campi_unisciti");
+  const aperta = unisciti && (req.body?.aperta_ai_soci == null ? apertaDiDefault : !!req.body.aperta_ai_soci);
+  if (unisciti && await par("campi_unisciti_modo") === "solo_unisciti" && usate > 0) {
+    const aperteOggi = await db.prepare(
+      "SELECT COUNT(*) n FROM partite_aperte WHERE campo_id=? AND data=? AND stato='aperta' AND aperta_ai_soci=1"
+    ).get(campo.id, data);
+    if (Number(aperteOggi?.n || 0) > 0) {
+      return res.status(409).json({ error: "Hai gi\xE0 una prenotazione oggi su questo campo: unisciti a una partita aperta invece di aprirne un'altra" });
+    }
+  }
   const posti = Number(campo.posti_default) || 4;
   const nome = (socio.nome + " " + (socio.cognome || "")).trim();
   const slotFine = chk.scelti[chk.scelti.length - 1];
@@ -11651,6 +12149,7 @@ publicRouter.get("/campi/partite-aperte", async (req, res) => {
 publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
   const p = await db.prepare("SELECT * FROM partite_aperte WHERE id=?").get(req.params.id);
   if (!p || p.stato !== "aperta") return res.status(409).json({ error: "Partita non disponibile" });
+  if (!await par("campi_unisciti")) return res.status(409).json({ error: "Le partite aperte sono disattivate: ogni prenotazione e\u0300 riservata al titolare" });
   if (p.aperta_ai_soci === 0) return res.status(409).json({ error: "Prenotazione riservata: non aperta ai soci" });
   const { tessera_code } = req.body || {};
   const socio = await socioAttivoByTessera(tessera_code);
@@ -11680,6 +12179,7 @@ publicRouter.get("/garden/turni", async (req, res) => {
   res.json({ data, turni: out });
 });
 publicRouter.post("/garden/prenota", async (req, res) => {
+  if (!await par("garden_prenotazione_cena")) return res.status(409).json({ error: "La prenotazione della cena non e\u0300 attiva" });
   const b = req.body || {};
   const data = String(b.data || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
@@ -12087,7 +12587,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 12:34" : "online";
+var BUILD = true ? "2026-08-18 13:11" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
