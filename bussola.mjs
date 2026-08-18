@@ -5822,7 +5822,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.58";
+var VERSION = "4.59";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -7927,6 +7927,8 @@ var admin_default = `<!DOCTYPE html>
   nav.menu{margin-top:14px;display:flex;flex-direction:column;gap:2px;}
   nav.menu button{background:none;border:none;color:#cdd8e3;text-align:left;padding:11px 12px;border-radius:9px;font-size:14px;display:flex;gap:9px;align-items:center;}
   nav.menu button.on,nav.menu button:hover{background:rgba(255,255,255,.12);color:#fff;}
+  nav.menu .grp{color:#7f93a6;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.9px;padding:12px 12px 4px;margin-top:6px;border-top:1px solid rgba(255,255,255,.10);}
+  nav.menu .grp:first-of-type{margin-top:4px;}
   main{padding:26px 30px;overflow:auto;}
   .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
   .top h2{font-family:Georgia,serif;color:var(--navy);font-size:24px;}
@@ -8000,21 +8002,33 @@ var admin_default = `<!DOCTYPE html>
       <div class="brand">BUSSOLA<small>RESIDENCE \xB7 ADMIN</small></div>
       <nav class="menu" id="menu">
         <button data-v="dashboard" class="on">\u{1F4CA} Cruscotto</button>
+
+        <div class="grp">Persone &amp; accessi</div>
         <button data-v="soci" data-cap="utenti">\u{1F464} Utenti</button>
-        <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate & punti</button>
-        <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
+        <button data-v="operatori" data-cap="operatori">\u{1F511} Operatori &amp; permessi</button>
+
+        <div class="grp">Sport &amp; Coppa</div>
+        <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate &amp; punti</button>
         <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
-        <button data-v="campi" data-cap="campi">\u{1F3BE} Campi & prenotazioni</button>
         <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tabellone</button>
-        <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
-        <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate & cena</button>
-        <button data-v="proposte" data-cap="proposte">\u{1F3B5} Proposte</button>
+        <button data-v="campi" data-cap="campi">\u{1F3BE} Campi &amp; prenotazioni</button>
+
+        <div class="grp">Serate &amp; Eventi</div>
         <button data-v="eventi" data-cap="eventi">\u{1F3AD} Eventi</button>
+        <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate &amp; cena</button>
+        <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
+        <button data-v="proposte" data-cap="proposte">\u{1F3B5} Proposte</button>
         <button data-v="avvisi" data-cap="eventi">\u{1F514} Avvisi push</button>
+
+        <div class="grp">Operativit\xE0</div>
+        <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
+
+        <div class="grp">Guida &amp; luoghi</div>
         <button data-v="bussola" data-cap="guida">\u{1F9ED} Guida</button>
         <button data-v="luoghi" data-cap="luoghi">\u{1F4CD} Luoghi (Siamo qui)</button>
+
+        <div class="grp">Sistema</div>
         <button data-v="installa" data-cap="guida">\u{1F4F2} Installa app (QR)</button>
-        <button data-v="operatori" data-cap="operatori">\u{1F511} Operatori & permessi</button>
         <button data-v="database" data-cap="db">\u{1F5C4}\uFE0F Database</button>
         <button data-v="audit" data-cap="registro">\u{1F5C2}\uFE0F Registro</button>
       </nav>
@@ -8072,6 +8086,17 @@ function applyMenuPermessi() {
   document.querySelectorAll('#menu button').forEach(b => {
     const cap = b.dataset.cap;
     b.style.display = (!cap || can(cap)) ? '' : 'none';
+  });
+  // Nasconde l'intestazione di un gruppo se tutte le voci sottostanti sono nascoste.
+  const kids = Array.from(document.querySelectorAll('#menu > *'));
+  kids.forEach((el, i) => {
+    if (!el.classList.contains('grp')) return;
+    let visibile = false;
+    for (let j = i + 1; j < kids.length; j++) {
+      if (kids[j].classList.contains('grp')) break;
+      if (kids[j].tagName === 'BUTTON' && kids[j].style.display !== 'none') { visibile = true; break; }
+    }
+    el.style.display = visibile ? '' : 'none';
   });
 }
 
@@ -8163,7 +8188,7 @@ VIEWS.installa = async () => {
 };
 
 // ---- Operatori & permessi (solo gestore) ----
-const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone (risultati/archivio)', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Magazzino/Chiosco' };
+const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Tabellone (risultati/archivio)', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', comande:'Crew \xB7 Comande e Cucina', campi:'Campi & prenotazioni' };
 VIEWS.operatori = async () => {
   const d = await api('/operatori');
   const caps = d.caps_delegabili;
@@ -9163,7 +9188,7 @@ var chiosco_default = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#12324F">
-<title>Bussola Chiosco</title>
+<title>Bussola Crew</title>
 <style>
 :root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--line:#E3E1D6;--muted:#5a6670;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -9227,8 +9252,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 <body>
 <div id="login">
   <div class="card">
-    <h1>Bussola Chiosco</h1>
-    <div class="sub">Comande \xB7 Cucine \xB7 Magazzino</div>
+    <h1>Bussola Crew</h1>
+    <div class="sub">Back office operativo \xB7 accesso in base ai permessi</div>
     <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
     <label for="zona">Zona di questa postazione</label>
@@ -9242,7 +9267,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 <div id="app" style="display:none">
   <div id="top">
     <div class="row" style="justify-content:space-between">
-      <span class="brand">\u{1F354} Bussola Chiosco</span>
+      <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Zona
           <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option></select>
@@ -9439,20 +9464,41 @@ async function login() {
     if (!res.ok) throw new Error('Credenziali non valide');
     const j = await res.json(); TOKEN = j.token;
     ME = await api('/me').catch(() => ({ gestore: false, caps: [] }));
-    if (!(ME.gestore || (ME.caps || []).includes('comande'))) throw new Error('Questo operatore non ha accesso alle comande');
+    // Accesso a Bussola Crew: basta UN permesso operativo (comande o magazzino); si vedono solo le zone consentite.
+    const zone = allowedZones();
+    if (!zone.length) throw new Error('Nessun permesso operativo. Chiedi al gestore l\u2019abilitazione a Comande o Magazzino.');
+    filterZoneSelectors(zone);
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
     const zs = $('#zonaSwitch'); if (zs && !zs.__wired) { zs.__wired = true; zs.onchange = () => setZona(zs.value); }
-    setZona($('#zona') ? $('#zona').value : ZONA);   // dichiara la zona iniziale e mostra la vista giusta
+    const salvata = (() => { try { return localStorage.getItem('bussola_zona'); } catch (_) { return null; } })();
+    setZona(zone.includes(salvata) ? salvata : zone[0]);   // parte da una zona consentita
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
-// Cambio zona AL VOLO (stessa persona, stesse autorizzazioni): non serve rifare il login.
+// Zone consentite in base ai permessi: comande \u2192 garden/bar/cucina \xB7 magazzino \u2192 magazzino.
+function allowedZones() {
+  const caps = ME.caps || [];
+  const z = [];
+  if (ME.gestore || caps.includes('comande')) z.push('garden', 'bar', 'cucina');
+  if (ME.gestore || caps.includes('magazzino')) z.push('magazzino');
+  return z;
+}
+// Filtra i selettori zona (login + barra) lasciando solo le zone consentite.
+function filterZoneSelectors(zone) {
+  ['#login #zona', '#zonaSwitch'].forEach(sel => {
+    const el = document.querySelector(sel); if (!el) return;
+    Array.from(el.options).forEach(o => { const ok = zone.includes(o.value); o.hidden = !ok; o.disabled = !ok; });
+    if (!zone.includes(el.value)) el.value = zone[0];
+  });
+}
+// Cambio zona AL VOLO (stessa persona): resta nelle zone consentite dai permessi.
 function setZona(z) {
-  ZONA = ['garden', 'bar', 'cucina', 'magazzino'].includes(z) ? z : 'garden';
+  const allow = allowedZones();
+  ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  show(ZONA === 'cucina' ? 'kds' : ZONA === 'magazzino' ? 'magazzino' : ZONA === 'bar' || ZONA === 'garden' ? 'comande' : 'comande');
+  show(ZONA === 'cucina' ? 'kds' : ZONA === 'magazzino' ? 'magazzino' : 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
 //  Garden \u2192 Comande+Tavoli+Giacenze \xB7 Bar \u2192 Comande+Bar+Giacenze \xB7 Cucina \u2192 Cucina \xB7 Magazzino \u2192 hub Centrale/Bar/Garden.
@@ -10580,7 +10626,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 06:47" : "online";
+var BUILD = true ? "2026-08-18 06:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
