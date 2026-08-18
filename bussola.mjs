@@ -5861,7 +5861,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.61";
+var VERSION = "4.62";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -9295,8 +9295,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <div class="sub">Back office operativo \xB7 accesso in base ai permessi</div>
     <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
     <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
-    <label for="zona">Zona di questa postazione</label>
-    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option><option value="cucina">\u{1F373} Cucina \u2014 ai fornelli</option><option value="magazzino">\u{1F4E6} Magazzino \u2014 logistica</option></select>
+    <label for="zona">Modulo operativo (postazione)</label>
+    <select id="zona"><option value="garden">\u{1F33F} Garden \u2014 comande a tavolo</option><option value="bar">\u{1F378} Bar \u2014 comande a nome</option><option value="cucina">\u{1F373} Cucina \u2014 ai fornelli</option><option value="magazzino">\u{1F4E6} Magazzino \u2014 logistica</option><option value="sport">\u{1F3C6} Sport \u2014 risultati live</option></select>
     <div class="sub" style="margin-top:4px">Potrai cambiarla al volo dalla barra in alto, senza rifare l'accesso.</div>
     <button class="btn gold" id="loginBtn" style="width:100%;margin-top:16px">Entra</button>
     <div id="loginErr"></div>
@@ -9308,8 +9308,8 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     <div class="row" style="justify-content:space-between">
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
-        <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Zona
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option></select>
+        <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -9321,6 +9321,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="scorte">\u{1F4CA} Giacenze</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
+      <button data-v="sport">\u{1F3C6} Sport</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
     </div>
@@ -9523,6 +9524,7 @@ function allowedZones() {
   const z = [];
   if (ME.gestore || caps.includes('comande')) z.push('garden', 'bar', 'cucina');
   if (ME.gestore || caps.includes('magazzino')) z.push('magazzino');
+  if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // modulo operativo Sport (risultati live)
   return z;
 }
 // Filtra i selettori zona (login + barra) lasciando solo le zone consentite.
@@ -9539,7 +9541,7 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  show(ZONA === 'cucina' ? 'kds' : ZONA === 'magazzino' ? 'magazzino' : 'comande');
+  show(ZONA === 'cucina' ? 'kds' : ZONA === 'magazzino' ? 'magazzino' : ZONA === 'sport' ? 'sport' : 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
 //  Garden \u2192 Comande+Tavoli+Giacenze \xB7 Bar \u2192 Comande+Bar+Giacenze \xB7 Cucina \u2192 Cucina \xB7 Magazzino \u2192 hub Centrale/Bar/Garden.
@@ -9552,6 +9554,7 @@ function applyZona() {
   tog('kds', ZONA === 'cucina');
   tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
+  tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
   tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
@@ -9565,6 +9568,7 @@ const ZONA_ACCENT = {
   bar:       { a: '#8a5a12', g1: '#6e4a12', g2: '#a9791f', nome: 'Bar' },
   cucina:    { a: '#b14a35', g1: '#8f3826', g2: '#c8624b', nome: 'Cucina' },
   magazzino: { a: '#12324f', g1: '#12324F', g2: '#1c4a6e', nome: 'Magazzino' },
+  sport:     { a: '#5b3f8a', g1: '#463170', g2: '#6b4ea0', nome: 'Sport' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -9904,6 +9908,63 @@ VIEWS.tavoli = async () => {
   };
   await render();
   window.__kdsTimer = setInterval(render, 8000);
+};
+
+/* ---------- SPORT: risultati live (Coppa delle Casate) \u2014 modulo operativo mobile ----------
+   Il gestore crea/imposta discipline e tabelloni nel back office; qui la crew inserisce i risultati
+   a bordo campo e la classifica del girone si aggiorna in tempo reale. Permesso: tabellone. */
+let SPORT_DISC = null;
+const spDot = (c) => \`<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:\${/^#|rgb/.test(String(c||''))?esc(c):'#'+esc(String(c||'888'))};vertical-align:middle;margin-right:5px;border:1px solid rgba(0,0,0,.2)"></span>\`;
+VIEWS.sport = async () => {
+  const disc = (await api('/discipline').catch(() => [])) || [];
+  const usabili = disc.filter(d => d.stato !== 'archiviato');
+  if (!disc.find(d => d.id === SPORT_DISC)) SPORT_DISC = (usabili[0] || disc[0] || {}).id || null;
+  const cur = disc.find(d => d.id === SPORT_DISC);
+  const opt = disc.map(d => \`<option value="\${d.id}" \${d.id === SPORT_DISC ? 'selected' : ''}>\${d.dominio === 'giochi' ? '\u{1F3B2}' : '\u{1F3C5}'} \${esc(d.nome)}\${d.stato === 'archiviato' ? ' \xB7 archiviata' : d.stato === 'in_corso' ? ' \xB7 in corso' : ''}</option>\`).join('');
+  const head = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h3 style="margin:0">\u{1F3C6} Sport \xB7 risultati live</h3>
+      \${disc.length ? \`<select id="sp_disc" style="min-width:180px">\${opt}</select>\` : ''}</div>
+    <p class="muted" style="font-size:.78rem;margin-top:6px">Inserisci i punteggi a bordo campo: la classifica del girone si aggiorna da sola. Le discipline e i tabelloni si creano e si impostano nel back office del gestore.</p></div>\`;
+  if (!cur) { $('#view').innerHTML = head + '<div class="panel"><p class="muted">Nessuna disciplina disponibile. Il gestore la crea nel back office.</p></div>'; wireDisc(); return; }
+  const t = await api('/tabellone/' + cur.id).catch(() => ({ gironi: [], finali: null, completo: false }));
+  if (!t.gironi || !t.gironi.length) {
+    $('#view').innerHTML = head + \`<div class="panel"><p class="muted">Tabellone non ancora generato per <b>\${esc(cur.nome)}</b>. Il gestore lo genera dal back office (Tabellone).</p></div>\`; wireDisc(); return;
+  }
+  const matchCard = (p) => {
+    const giocata = p.stato === 'giocata';
+    const acc = giocata ? 'var(--ok)' : 'var(--gold)';
+    return \`<div class="tcard" style="border-color:\${acc};background:#fff">
+      <div class="zacc" style="background:\${acc}"></div>
+      <div style="font-size:.7rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Giornata \${esc(String(p.giornata || 1))}\${giocata ? ' \xB7 \u2714 giocata' : ''}</div>
+      <div class="row" style="justify-content:space-between;gap:6px;margin-top:6px;align-items:center">
+        <span style="flex:1;font-weight:700">\${esc(p.casa_a)}</span>
+        <input id="ga_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_a != null ? esc(String(p.gol_a)) : ''}" style="width:48px;text-align:center">
+        <span class="muted">:</span>
+        <input id="gb_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_b != null ? esc(String(p.gol_b)) : ''}" style="width:48px;text-align:center">
+        <span style="flex:1;font-weight:700;text-align:right">\${esc(p.casa_b)}</span>
+      </div>
+      <button class="btn gold sm" data-sp-save="\${p.id}" style="width:100%;margin-top:8px">\${giocata ? 'Aggiorna risultato' : 'Salva risultato'}</button></div>\`;
+  };
+  const gironiHtml = t.gironi.map(g => {
+    const cls = (g.classifica || []).map((c, i) => \`<tr><td style="text-align:center">\${i + 1}</td><td>\${spDot(c.colore)}<b>\${esc(c.nome)}</b></td><td style="text-align:center">\${esc(String(c.pg || 0))}</td><td style="text-align:center">\${esc(String((c.gf || 0)))}-\${esc(String(c.gs || 0))}</td><td style="text-align:center"><b>\${esc(String(c.pt || 0))}</b></td></tr>\`).join('');
+    return \`<div class="panel"><h3>Girone \${esc(g.nome)}</h3>
+      <table><thead><tr><th>#</th><th>Casata</th><th>G</th><th>Gol</th><th>Pt</th></tr></thead><tbody>\${cls}</tbody></table>
+      <div class="board" style="margin-top:12px">\${g.partite.map(matchCard).join('')}</div></div>\`;
+  }).join('');
+  let finaliHtml = '';
+  if (t.finali && t.finali.semifinali) {
+    finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale (qualificate)</h3>\${t.finali.semifinali.map((s, i) => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>Semifinale \${i + 1}: \${spDot(s.cA)}<b>\${esc(s.casa || '\u2014')}</b> vs \${spDot(s.cB)}<b>\${esc(s.ospite || '\u2014')}</b></span></div>\`).join('')}<p class="muted" style="font-size:.75rem;margin-top:6px">Gironi completi: incroci 1\xBA-2\xBA pronti. (La gestione completa di semifinali/finali arriva con l'aggiornamento del tabellone.)</p></div>\`;
+  }
+  $('#view').innerHTML = head + gironiHtml + finaliHtml;
+  wireDisc();
+  document.querySelectorAll('[data-sp-save]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.spSave;
+    const a = $('#ga_' + id).value, bb = $('#gb_' + id).value;
+    if (a === '' || bb === '') { alert('Inserisci entrambi i punteggi.'); return; }
+    try { await api('/partite/' + id, { method: 'PUT', body: JSON.stringify({ gol_a: Number(a), gol_b: Number(bb) }) }); show('sport'); }
+    catch (e) { alert('Errore: ' + e.message); }
+  });
+  function wireDisc() { const s = $('#sp_disc'); if (s) s.onchange = () => { SPORT_DISC = Number(s.value); show('sport'); }; }
 };
 
 /* ---------- MAGAZZINO ---------- */
@@ -10669,7 +10730,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 07:16" : "online";
+var BUILD = true ? "2026-08-18 08:17" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
