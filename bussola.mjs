@@ -679,7 +679,9 @@ async function archiviaEdizione(disciplinaId) {
   if (!d) throw new Error("Disciplina inesistente");
   const cl = await classificaCombinata(disciplinaId);
   const vincitore = cl[0]?.nome || null;
-  await db.prepare("INSERT INTO edizioni (disciplina_id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,classifica) VALUES (?,?,?,?,?,?,?)").run(d.id, d.nome, d.dominio, d.data_inizio || null, d.data_fine || null, vincitore, JSON.stringify(cl));
+  const grad = await graduatoriaFinale(disciplinaId).catch(() => null);
+  const puntiCoppa = grad ? JSON.stringify(grad.map((r) => ({ casata_id: r.id, nome: r.nome, posizione: r.posizione, punti: r.punti }))) : null;
+  await db.prepare("INSERT INTO edizioni (disciplina_id,disciplina_nome,dominio,data_inizio,data_fine,vincitore,classifica,punti_coppa) VALUES (?,?,?,?,?,?,?,?)").run(d.id, d.nome, d.dominio, d.data_inizio || null, d.data_fine || null, vincitore, JSON.stringify(cl), puntiCoppa);
   await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(disciplinaId);
   const g = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(disciplinaId);
   for (const x of g) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(x.id);
@@ -1561,6 +1563,7 @@ async function migrate() {
     }
   } catch (_) {
   }
+  await addIfMissing("edizioni", "punti_coppa", "punti_coppa TEXT");
   await addIfMissing("campi", "max_slot_prenotazione", "max_slot_prenotazione INTEGER NOT NULL DEFAULT 2");
   await addIfMissing("campi", "max_pren_settimana", "max_pren_settimana INTEGER NOT NULL DEFAULT 3");
   await addIfMissing("partite_aperte", "aperta_ai_soci", "aperta_ai_soci INTEGER NOT NULL DEFAULT 1");
@@ -1758,6 +1761,110 @@ var init_auth = __esm({
     init_db();
     TTL = 8 * 60 * 60 * 1e3;
     cache = /* @__PURE__ */ new Map();
+  }
+});
+
+// server/coppa.js
+var coppa_exports = {};
+__export(coppa_exports, {
+  conPosizioni: () => conPosizioni,
+  congelaPuntiEdizione: () => congelaPuntiEdizione,
+  punteggiCoppa: () => punteggiCoppa,
+  ricalcolaCoppa: () => ricalcolaCoppa
+});
+function conPosizioni(righe) {
+  const ord = [...righe].sort((a, b) => b.punti - a.punti || String(a.nome).localeCompare(String(b.nome)));
+  let ultimoPunti = null;
+  let ultimaPos = 0;
+  return ord.map((r, i) => {
+    if (r.punti !== ultimoPunti) {
+      ultimaPos = i + 1;
+      ultimoPunti = r.punti;
+    }
+    return { ...r, posizione: ultimaPos, exAequo: false };
+  }).map((r, i, arr) => ({
+    ...r,
+    exAequo: arr.filter((x) => x.posizione === r.posizione).length > 1
+  }));
+}
+async function punteggiCoppa() {
+  const casate = await db.prepare("SELECT id,nome,colore,motto FROM casate ORDER BY nome").all();
+  const discipline = await db.prepare("SELECT id,nome,dominio,stato FROM discipline WHERE attivo=1 ORDER BY dominio,ordine,id").all();
+  const celle = {};
+  const tornei = {};
+  const contest = {};
+  casate.forEach((c) => {
+    tornei[c.id] = 0;
+    contest[c.id] = 0;
+  });
+  for (const d of discipline) {
+    celle[d.id] = {};
+    const grad = await graduatoriaFinale(d.id).catch(() => null);
+    if (!grad) continue;
+    for (const r of grad) {
+      celle[d.id][r.id] = r.punti;
+      tornei[r.id] = (tornei[r.id] || 0) + r.punti;
+    }
+  }
+  const edizioni = await db.prepare("SELECT disciplina_id,disciplina_nome,punti_coppa FROM edizioni WHERE punti_coppa IS NOT NULL").all();
+  const archivio = [];
+  for (const e of edizioni) {
+    let righe2 = null;
+    try {
+      righe2 = JSON.parse(e.punti_coppa);
+    } catch (_) {
+      righe2 = null;
+    }
+    if (!Array.isArray(righe2)) continue;
+    archivio.push({ disciplina_nome: e.disciplina_nome, righe: righe2 });
+    for (const r of righe2) {
+      const id = Number(r.casata_id);
+      if (tornei[id] == null) continue;
+      tornei[id] += Number(r.punti) || 0;
+      if (e.disciplina_id && celle[e.disciplina_id]) {
+        celle[e.disciplina_id][id] = (celle[e.disciplina_id][id] || 0) + (Number(r.punti) || 0);
+      }
+    }
+  }
+  const esiti = await db.prepare(
+    "SELECT ce.casata_id, SUM(ce.punti) p FROM contest_esiti ce JOIN contest c ON c.id=ce.contest_id WHERE c.esito_assegnato=1 GROUP BY ce.casata_id"
+  ).all();
+  for (const e of esiti) {
+    const id = Number(e.casata_id);
+    if (contest[id] == null) continue;
+    contest[id] = Number(e.p) || 0;
+  }
+  const righe = casate.map((c) => ({
+    id: c.id,
+    nome: c.nome,
+    colore: c.colore,
+    motto: c.motto,
+    tornei: tornei[c.id] || 0,
+    contest: contest[c.id] || 0,
+    punti: (tornei[c.id] || 0) + (contest[c.id] || 0)
+  }));
+  return { graduatoria: conPosizioni(righe), discipline, celle, archivio };
+}
+async function ricalcolaCoppa(chi = "sistema") {
+  const dati = await punteggiCoppa();
+  const upd = db.prepare("UPDATE casate SET punti=? WHERE id=? AND punti<>?");
+  let cambiate = 0;
+  for (const r of dati.graduatoria) {
+    const info = await upd.run(r.punti, r.id, r.punti);
+    if (info.changes) cambiate++;
+  }
+  if (cambiate) audit(chi, "ricalcolo_coppa", "casate", null, `${cambiate} casate aggiornate`);
+  return { ...dati, cambiate };
+}
+async function congelaPuntiEdizione(disciplinaId) {
+  const grad = await graduatoriaFinale(disciplinaId).catch(() => null);
+  if (!grad) return null;
+  return JSON.stringify(grad.map((r) => ({ casata_id: r.id, nome: r.nome, posizione: r.posizione, punti: r.punti })));
+}
+var init_coppa = __esm({
+  "server/coppa.js"() {
+    init_db();
+    init_tournament();
   }
 });
 
@@ -2405,11 +2512,14 @@ function renderEventi() {
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
     <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}</div>\`;
 }
+// La posizione arriva dal server: a parita' di punti le casate condividono l'indice.
+function posizioneDi(c, sorted, i) { return c.posizione || i + 1; }
 function renderCoppa() {
-  const sorted = [...state.data.casate].sort((a, b) => b.punti - a.punti);
+  const sorted = [...state.data.casate].sort((a, b) => (a.posizione || 99) - (b.posizione || 99) || b.punti - a.punti);
   const max = sorted[0].punti || 1;
   const mine = state.socio.casata || '';
-  const myPos = sorted.findIndex(c => c.nome === mine) + 1;
+  const myClanIdx = sorted.findIndex(c => c.nome === mine);
+  const myPos = myClanIdx < 0 ? 0 : posizioneDi(sorted[myClanIdx], sorted, myClanIdx);
   const myClan = sorted.find(c => c.nome === mine) || sorted[0];
   const isCap = String(state.socio.ruolo || '').toLowerCase() === 'capitano';
   const ct = state.data.contest;
@@ -2430,7 +2540,7 @@ function renderCoppa() {
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${T('Coppa delle Casate')}</h2>
     <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}</h3><p>\${T('La tua casata')} \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">\${T('posto')}</div></div></div>
     \${contestCard}\${capCard}
-    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${i+1}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
+    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank"><div class="rn">\${posizioneDi(c,sorted,i)}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>\${T('Campionati sport')}</b><p class="tiny muted">\${T('Gironi, calendario e risultati.')}</p></div><button class="btn navy sm" data-go="sport">\${T('Apri')}</button></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>\${T('Giochi da Tavolo')}</b><p class="tiny muted">\${T('Burraco, scala 40, briscola, scacchi.')}</p></div><button class="btn navy sm" data-go="giochi">\${T('Apri')}</button></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--gold); font-size:1.4rem">\u{1F4DC}</div><div style="flex:1"><b>\${T("Regolamenti & Albo d'Oro")}</b><p class="tiny muted">\${T('Regole di Coppa, Contest e Proposte; le edizioni passate.')}</p></div><button class="btn navy sm" data-sheet="regolamenti">\${T('Apri')}</button></div>\`;
@@ -3638,8 +3748,10 @@ async function capSendMirata() {
   catch { okThen(T('Non riesco a convocare ora')); }
 }
 function openCapSerata() {
-  const sorted = [...state.data.casate].sort((a, b) => b.punti - a.punti);
-  const mine = state.socio.casata; const pos = sorted.findIndex(c => c.nome === mine) + 1;
+  const sorted = [...state.data.casate].sort((a, b) => (a.posizione || 99) - (b.posizione || 99) || b.punti - a.punti);
+  const mine = state.socio.casata;
+  const idx = sorted.findIndex(c => c.nome === mine);
+  const pos = idx < 0 ? 0 : posizioneDi(sorted[idx], sorted, idx);
   const my = sorted.find(c => c.nome === mine) || sorted[0];
   const ct = state.data.contest;
   const titolo = ct ? ct.titolo : T('Serata dei Clan');
@@ -4315,43 +4427,42 @@ async function delSocio(id, render) {
 
 // ---- Casate ----
 VIEWS.casate = async () => {
-  const list = await api('/../casate');
-  const cart = await api('/coppa/cartellone').catch(() => ({ casate: [], discipline: [], celle: {}, totali: {} }));
-  const disc = cart.discipline || [];
-  const totali = cart.totali || {};
-  const celle = cart.celle || {};
+  // Graduatoria interamente calcolata: nessun campo da compilare, nessun salvataggio.
+  let cart = await api('/coppa/cartellone').catch(() => ({ graduatoria: [], discipline: [], celle: {} }));
   const dom = (d) => d === 'giochi' ? '\u{1F3B2}' : '\u{1F3C5}';
-  // UN SOLO tabellone: la graduatoria che vedono i soci (casate.punti), con l'incrocio per disciplina come dettaglio.
-  // "Tornei" = somma auto dai risultati nel Crew; "Punti Coppa" = ci\xF2 che vedono i soci (modificabile: puoi aggiungere Contest/serate).
+
   const render = () => {
-    // ordina per punti soci desc (poi nome); l'ordinamento si applica solo col tasto Riordina o al primo caricamento
-    const ord = list.slice().sort((a, b) => (b._punti ?? b.punti) - (a._punti ?? a.punti) || a.nome.localeCompare(b.nome));
+    const grad = cart.graduatoria || [];
+    const disc = cart.discipline || [];
+    const celle = cart.celle || {};
     const cols = disc.map(d => \`<th style="text-align:center;min-width:64px"><div style="font-weight:700;font-size:11px;line-height:1.15">\${esc(d.nome)}</div><div style="font-size:17px;margin-top:2px">\${dom(d.dominio)}</div></th>\`).join('');
-    const rows = ord.map((c, i) => {
-      const cur = c._punti ?? c.punti;
-      const tot = totali[c.id] || 0;
-      const cells = disc.map(d => { const v = (celle[d.id] || {})[c.id]; return \`<td style="text-align:center">\${v != null ? \`<b>\${v}</b>\` : '<span class="muted">\xB7</span>'}</td>\`; }).join('');
-      const medal = i === 0 ? '\u{1F947}' : i === 1 ? '\u{1F948}' : i === 2 ? '\u{1F949}' : \`<span class="muted">\${i + 1}</span>\`;
-      return \`<tr><td style="text-align:center">\${medal}</td>
+    const medaglia = (pos) => pos === 1 ? '\u{1F947}' : pos === 2 ? '\u{1F948}' : pos === 3 ? '\u{1F949}' : \`<span class="muted">\${pos}</span>\`;
+    const rows = grad.map(c => {
+      const cells = disc.map(d => { const v = (celle[d.id] || {})[c.id]; return \`<td style="text-align:center">\${v ? \`<b>\${v}</b>\` : '<span class="muted">\xB7</span>'}</td>\`; }).join('');
+      return \`<tr><td style="text-align:center;white-space:nowrap">\${medaglia(c.posizione)}\${c.exAequo ? ' <span class="muted" title="a pari merito" style="font-size:11px">=</span>' : ''}</td>
         <td style="text-align:left;white-space:nowrap"><b>\${esc(c.nome)}</b> <span class="muted">\${esc(c.motto || '')}</span></td>
-        <td style="text-align:center"><input type="number" value="\${cur}" id="pt_\${c.id}" style="width:70px;text-align:center;font-weight:700"> <button class="btn ghost sm" data-settot="\${c.id}" data-tot="\${tot}" title="Copia il totale dei tornei nei Punti Coppa">= \${tot}</button></td>
-        <td style="text-align:center"><b style="color:var(--navy)">\${tot}</b></td>\${cells}</tr>\`;
+        <td style="text-align:center;font-size:1.05rem"><b style="color:var(--navy)">\${c.punti}</b></td>
+        <td style="text-align:center">\${c.tornei ? c.tornei : '<span class="muted">\xB7</span>'}</td>
+        <td style="text-align:center">\${c.contest ? c.contest : '<span class="muted">\xB7</span>'}</td>\${cells}</tr>\`;
     }).join('');
     $('#view').innerHTML = \`<div class="panel"><h3>\u{1F3C6} Coppa delle Casate \xB7 cartellone e graduatoria</h3>
-      <p class="muted" style="font-size:13px;margin-bottom:8px">Questa \xE8 <b>l'unica graduatoria</b>: \xE8 quella che vedono i soci nell'app. La colonna <b>Tornei</b> si somma da sola dai risultati inseriti nel Crew (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA); i <b>Punti Coppa</b> sono il totale mostrato ai soci \u2014 puoi allinearli ai tornei o aggiungere a mano Contest/serate. Il tasto <b>Riordina</b> aggiorna la classifica. Le colonne per disciplina (a destra) sono il dettaglio e scorrono lateralmente.</p>
-      <div style="overflow:auto"><table><thead><tr><th style="text-align:center">#</th><th style="text-align:left">Casata</th><th style="text-align:center">Punti Coppa</th><th style="text-align:center">Tornei</th>\${cols}</tr></thead><tbody>\${rows}</tbody></table></div>
-      <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap">
-        <button class="btn gold" id="ca_save">\u{1F4BE} Salva Punti Coppa</button>
-        <button class="btn ghost" id="ca_fromtornei" title="Copia i totali dei tornei nei Punti Coppa di tutte le casate">\u2B07 Applica totali tornei a tutte</button>
-        <button class="btn ghost" id="ca_reorder">\u21BB Riordina graduatoria</button>
+      <p class="muted" style="font-size:13px;margin-bottom:8px">Questa \xE8 <b>l'unica graduatoria</b>, ed \xE8 quella che vedono i soci nell'app. <b>Non si inserisce nulla a mano</b>: il totale si compone da solo da <b>Tornei</b> (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA, dai risultati inseriti nel Crew, comprese le edizioni gi\xE0 archiviate) e da <b>Contest</b> (le serate i cui punti sono stati assegnati alla Coppa). A parit\xE0 di punteggio le casate condividono la stessa posizione. Le colonne per disciplina, a destra, sono il dettaglio e scorrono lateralmente.</p>
+      <div style="overflow:auto"><table><thead><tr><th style="text-align:center">#</th><th style="text-align:left">Casata</th><th style="text-align:center">Totale</th><th style="text-align:center">Tornei</th><th style="text-align:center">Contest</th>\${cols}</tr></thead><tbody>\${rows || '<tr><td colspan="5" class="muted">Nessuna casata.</td></tr>'}</tbody></table></div>
+      <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+        <button class="btn gold" id="ca_recalc">\u21BB Ricalcola e riordina</button>
+        <span class="muted" id="ca_msg" style="font-size:13px">Il ricalcolo avviene gi\xE0 da solo a ogni risultato, archiviazione ed esito di contest.</span>
       </div></div>\`;
-    document.querySelectorAll('[data-settot]').forEach(b => b.onclick = () => { const inp = $('#pt_' + b.dataset.settot); if (inp) inp.value = b.dataset.tot; });
-    $('#ca_fromtornei').onclick = () => { list.forEach(c => { const inp = $('#pt_' + c.id); if (inp) inp.value = totali[c.id] || 0; }); };
-    $('#ca_reorder').onclick = () => { list.forEach(c => { const inp = $('#pt_' + c.id); if (inp) c._punti = Number(inp.value); }); render(); };
-    $('#ca_save').onclick = async () => {
-      const btn = $('#ca_save'); btn.disabled = true; btn.textContent = 'Salvo\u2026';
-      for (const c of list) { const inp = $('#pt_' + c.id); if (inp) { const v = Number(inp.value); c.punti = v; c._punti = v; await api('/casate/' + c.id + '/punti', { method: 'PUT', body: JSON.stringify({ punti: v }) }); } }
-      btn.disabled = false; btn.textContent = '\u2713 Salvato'; setTimeout(() => { btn.textContent = '\u{1F4BE} Salva Punti Coppa'; }, 1400);
+    $('#ca_recalc').onclick = async () => {
+      const b = $('#ca_recalc'); b.disabled = true; b.textContent = 'Ricalcolo\u2026';
+      try {
+        const r = await api('/coppa/ricalcola', { method: 'POST' });
+        cart = { graduatoria: r.graduatoria, discipline: r.discipline, celle: r.celle };
+        render();
+        $('#ca_msg').textContent = r.cambiate ? \`Aggiornate \${r.cambiate} casate.\` : 'Graduatoria gi\xE0 allineata.';
+      } catch (e) {
+        b.disabled = false; b.textContent = '\u21BB Ricalcola e riordina';
+        alert('Ricalcolo non riuscito: ' + (e.message || e));
+      }
     };
   };
   render();
@@ -6684,7 +6795,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.67";
+var VERSION = "4.68";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -6840,14 +6951,8 @@ async function assegnaCoppa(contestId) {
   if (contest.esito_assegnato) throw new Error("Punti gi\xE0 assegnati");
   const esiti = await db.prepare("SELECT * FROM contest_esiti WHERE contest_id=?").all(contestId);
   if (!esiti.length) throw new Error("Nessun esito salvato: registra prima la graduatoria");
-  const addPunti = db.prepare("UPDATE casate SET punti = punti + ? WHERE id=?");
   let totale = 0;
-  for (const e of esiti) {
-    if (e.punti) {
-      await addPunti.run(e.punti, e.casata_id);
-      totale += e.punti;
-    }
-  }
+  for (const e of esiti) totale += Number(e.punti) || 0;
   const primo = esiti.filter((e) => e.posizione === 1)[0];
   const vincitore = primo ? (await db.prepare("SELECT nome FROM casate WHERE id=?").get(primo.casata_id))?.nome : null;
   await db.prepare("UPDATE contest SET stato='concluso', esito_assegnato=1, vincitore=? WHERE id=?").run(vincitore || null, contestId);
@@ -8739,6 +8844,7 @@ async function setSelfOrderAperto(v) {
 
 // server/routes/admin.js
 init_tournament();
+init_coppa();
 function menuZona(v) {
   const s = String(v || "").trim().toLowerCase();
   return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
@@ -8941,10 +9047,7 @@ adminRouter.delete("/soci/:id", requireCap("utenti_del"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.put("/casate/:id/punti", requireCap("casate"), async (req, res) => {
-  const { punti } = req.body || {};
-  await db.prepare("UPDATE casate SET punti=? WHERE id=?").run(Number(punti) || 0, req.params.id);
-  audit(req.adminUser.username, "punti", "casate", req.params.id, String(punti));
-  res.json({ ok: true });
+  res.status(410).json({ error: "I punti della Coppa sono calcolati dai tornei e dai contest: usa Ricalcola." });
 });
 adminRouter.get("/eventi", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM eventi ORDER BY ordine").all());
@@ -10005,22 +10108,19 @@ adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
 adminRouter.get("/coppa/cartellone", requireCap("casate"), async (req, res) => {
-  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
-  const discipline = await db.prepare("SELECT id,nome,dominio,stato FROM discipline WHERE attivo=1 ORDER BY dominio,ordine,id").all();
-  const celle = {};
-  const totali = {};
-  casate.forEach((c) => {
-    totali[c.id] = 0;
+  const { graduatoria, discipline, celle } = await punteggiCoppa();
+  res.json({
+    graduatoria,
+    discipline,
+    celle,
+    // retro-compatibilita' con i client precedenti
+    casate: graduatoria,
+    totali: Object.fromEntries(graduatoria.map((c) => [c.id, c.punti]))
   });
-  for (const d of discipline) {
-    const grad = await graduatoriaFinale(d.id).catch(() => null);
-    celle[d.id] = {};
-    if (grad) for (const r of grad) {
-      celle[d.id][r.id] = r.punti;
-      totali[r.id] = (totali[r.id] || 0) + r.punti;
-    }
-  }
-  res.json({ casate, discipline, celle, totali });
+});
+adminRouter.post("/coppa/ricalcola", requireCap("casate"), async (req, res) => {
+  const r = await ricalcolaCoppa(req.adminUser.username);
+  res.json({ ok: true, graduatoria: r.graduatoria, discipline: r.discipline, celle: r.celle, cambiate: r.cambiate });
 });
 adminRouter.post("/discipline", requireCap("discipline"), async (req, res) => {
   const b = req.body || {};
@@ -10069,6 +10169,7 @@ adminRouter.put("/partite/:id", requireCap("tabellone"), async (req, res) => {
   try {
     await registraRisultato(Number(req.params.id), a, b);
     audit(req.adminUser.username, "risultato", "partite", req.params.id, `${a}-${b}`);
+    await ricalcolaCoppa(req.adminUser.username);
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -10085,6 +10186,7 @@ adminRouter.post("/tabellone/:id/archivia", requireCap("tabellone"), async (req,
   try {
     const r = await archiviaEdizione(Number(req.params.id));
     audit(req.adminUser.username, "archivia_edizione", "discipline", req.params.id, `vince ${r.vincitore || "\u2014"}`);
+    await ricalcolaCoppa(req.adminUser.username);
     res.json({ ok: true, ...r });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -10144,7 +10246,9 @@ adminRouter.post("/contest/:id/esito", requireCap("contest"), async (req, res) =
 });
 adminRouter.post("/contest/:id/assegna", requireCap("contest"), async (req, res) => {
   try {
-    res.json({ ok: true, ...await assegnaCoppa(Number(req.params.id)) });
+    const r = await assegnaCoppa(Number(req.params.id));
+    await ricalcolaCoppa(req.adminUser.username);
+    res.json({ ok: true, ...r });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -10342,6 +10446,7 @@ init_authuser();
 
 // server/routes/public.js
 init_asyncroute();
+init_coppa();
 init_db();
 init_push();
 import { Router as Router2 } from "express";
@@ -10351,8 +10456,8 @@ publicRouter.get("/self-order/stato", async (req, res) => {
   res.json({ aperto: s.aperto, ordinabile: s.ordinabile, sospeso_pressione: s.sospeso_pressione, pressione: s.pressione, eta_min: s.eta_min });
 });
 publicRouter.get("/casate", async (req, res) => {
-  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate ORDER BY punti DESC").all();
-  res.json(rows);
+  const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate").all();
+  res.json(conPosizioni(rows));
 });
 publicRouter.get("/menu", async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni FROM menu_articoli WHERE attivo=1 ORDER BY ordine,id").all();
@@ -10831,14 +10936,14 @@ async function seed({ verbose = false } = {}) {
     }
   }
   const CASATE = [
-    ["Aretusa", "#2E6DA4", "l'onda", 62],
-    ["Ortigia", "#B7791F", "la rosa dei venti", 66],
-    ["Neapolis", "#C0553F", "il teatro", 54],
-    ["Dionisio", "#6E5AA6", "la maschera", 50],
-    ["Ciane", "#4d7a4a", "il papiro", 47],
-    ["Plemmirio", "#12324F", "il faro", 44],
-    ["Epipoli", "#7A8790", "le mura", 40],
-    ["Anapo", "#2E7D77", "il fiume", 37]
+    ["Aretusa", "#2E6DA4", "l'onda", 0],
+    ["Ortigia", "#B7791F", "la rosa dei venti", 0],
+    ["Neapolis", "#C0553F", "il teatro", 0],
+    ["Dionisio", "#6E5AA6", "la maschera", 0],
+    ["Ciane", "#4d7a4a", "il papiro", 0],
+    ["Plemmirio", "#12324F", "il faro", 0],
+    ["Epipoli", "#7A8790", "le mura", 0],
+    ["Anapo", "#2E7D77", "il fiume", 0]
   ];
   const insCasata = db.prepare("INSERT INTO casate (nome,colore,motto,punti) VALUES (?,?,?,?)");
   const casataId = {};
@@ -11173,6 +11278,11 @@ async function seed({ verbose = false } = {}) {
   const staffCaps = JSON.stringify(["utenti", "utenti_ins", "casate", "cdc", "discipline", "tabellone", "contest", "serate", "proposte", "eventi", "magazzino", "comande"]);
   await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff", staffCaps);
   await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura", null);
+  try {
+    const { ricalcolaCoppa: ricalcolaCoppa2 } = await Promise.resolve().then(() => (init_coppa(), coppa_exports));
+    await ricalcolaCoppa2("seed");
+  } catch (_) {
+  }
   audit("sistema", "seed", "database", 0, "Popolamento iniziale KOIN\xC8 Village");
   if (verbose) console.log("Seed completato: 8 casate, 7 eventi, 10 discipline, guida Bussola, 3 soci demo, 1 utente back office.");
 }
@@ -11187,7 +11297,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 10:53" : "online";
+var BUILD = true ? "2026-08-18 11:09" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
