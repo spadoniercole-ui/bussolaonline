@@ -5822,7 +5822,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.57";
+var VERSION = "4.58";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -6563,8 +6563,8 @@ function renderBussola() {
       <div class="benefit" style="border-color:#ecdcbd"><span style="font-size:1.1rem">\u{1F92B}</span><div><b>\${T('Silenzio pomeridiano')}</b><p style="color:#5c4d2a">\${esc(b.orari?.[0]?.dettaglio||'14:00\u201317:00')}</p></div></div>
       <div class="benefit"><span style="font-size:1.1rem">\u{1F319}</span><div><b>\${T('Silenzio notturno')}</b><p style="color:#5c4d2a">\${esc(b.orari?.[1]?.dettaglio||'dopo le 23:30')}</p></div></div>
     </div>
-    <div class="sect-title">\${T('Numeri utili & servizi')}</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
     <div class="sect-title">\${T('Raccolta rifiuti')}</div>\${rifiutiHTML()}
+    <div class="sect-title">\${T('Numeri utili & servizi')}</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
     <div class="sect-title">\${T('Cosa vedere')}</div><div class="card" style="padding:4px 14px">\${rows(b.vedere)}</div>
     <div style="height:6px"></div>\`;
 }
@@ -10046,45 +10046,62 @@ VIEWS.scorte = async () => {
 /* ---------- MEN\xD9 (config + import Excel/CSV) ---------- */
 let IMPORT_B64 = null;
 // Men\xF9 stampabile (PDF via "Salva come PDF" del browser) con logo, punto vendita, categorie, composizione, allergeni.
-function stampaMenuPDF(menu, punto, qr) {
+function stampaMenuPDF(menu, punto, qr, zona) {
   const attivi = (menu || []).filter(m => m.attivo);
   // Stesso raggruppamento e ordine della comanda: un solo vettore, niente "scalini" tra PDF e ordini.
   const catOf = (window.Comanda && Comanda.catOf) ? Comanda.catOf : (m => m.categoria || (m.stazione === 'cucina' ? 'Cucina' : 'Bar'));
   const sortCats = (window.Comanda && Comanda.sortCats) ? Comanda.sortCats : (a => a.slice());
   const gruppi = {};
   attivi.forEach(m => { const k = catOf(m); (gruppi[k] = gruppi[k] || []).push(m); });
+  const cats = sortCats(Object.keys(gruppi));
+  // (11) Ordine per punto di stampa: stazione della zona di stampa prima, poi la complementare.
+  //      Bar = prodotti "bar" (bevande) \xB7 Garden = prodotti "cucina" (cibo). Ogni categoria eredita
+  //      la stazione prevalente dei suoi articoli.
+  const primaria = zona === 'bar' ? 'bar' : 'cucina';
+  const stazCat = (items) => { const b = items.filter(m => m.stazione === 'bar').length; return b >= (items.length - b) ? 'bar' : 'cucina'; };
+  const catsPrim = cats.filter(c => stazCat(gruppi[c]) === primaria);
+  const catsCompl = cats.filter(c => stazCat(gruppi[c]) !== primaria);
   const logo = \`<svg width="46" height="46" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#12324F" opacity="0.85"/></svg>\`;
-  const sezioni = sortCats(Object.keys(gruppi)).map(cat => \`<section><h2>\${esc(cat)}</h2>\${gruppi[cat].map(m => \`
+  const renderCat = (cat) => \`<section><h2>\${esc(cat)}</h2>\${gruppi[cat].map(m => \`
     <div class="item"><div class="line"><span class="nm">\${esc(m.nome)}</span><span class="dots"></span><span class="pz">\${eur(m.prezzo)}</span></div>
     \${m.descrizione ? \`<div class="desc">\${esc(m.descrizione)}</div>\` : ''}
-    \${m.allergeni ? \`<div class="alg">Allergeni: \${esc(m.allergeni)}</div>\` : ''}</div>\`).join('')}</section>\`).join('');
+    \${m.allergeni ? \`<div class="alg">Allergeni: \${esc(m.allergeni)}</div>\` : ''}</div>\`).join('')}</section>\`;
+  const macro = (titolo, list) => list.length ? \`<div class="zona"><div class="zonahd">\${esc(titolo)}</div>\${list.map(renderCat).join('')}</div>\` : '';
+  const labelBar = '\u{1F378} Bussola Bar', labelGarden = '\u{1F37D}\uFE0F Bussola Garden';
+  const primLabel = zona === 'bar' ? labelBar : labelGarden;
+  const complLabel = zona === 'bar' ? labelGarden : labelBar;
+  const body = (macro(primLabel, catsPrim) + macro(complLabel, catsCompl)) || '<p>Nessun articolo attivo.</p>';
   const w = window.open('', '_blank');
   if (!w) { alert('Consenti i popup per stampare.'); return; }
   w.document.write(\`<html><head><title>Men\xF9 \xB7 \${esc(punto)}</title><style>
-    @page{margin:16mm}
+    /* (10) A4 con margini simmetrici \u2192 contenuto sempre centrato sul foglio */
+    @page{size:A4;margin:18mm}
+    html,body{background:#fff}
     body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
-    header{display:flex;align-items:center;gap:14px;border-bottom:2px solid #E0B44A;padding-bottom:12px;margin-bottom:18px}
+    header{display:flex;align-items:center;gap:14px;border-bottom:2px solid #E0B44A;padding-bottom:12px;margin-bottom:16px;break-after:avoid}
     header .t{flex:1}
     header h1{margin:0;font-size:1.5rem;letter-spacing:1px}
-    header .sub{font-size:.8rem;letter-spacing:2px;color:#8a6d1f;font-family:Arial,sans-serif}
     header .punto{font-size:1.05rem;font-weight:bold;color:#12324F;font-family:Arial,sans-serif}
-    section{margin-bottom:18px;break-inside:avoid}
-    section h2{font-size:1.05rem;color:#8a6d1f;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #e6ddc7;padding-bottom:4px}
-    .item{margin:8px 0}
+    .zonahd{font-size:1.15rem;font-weight:bold;color:#12324F;font-family:Arial,sans-serif;margin:14px 0 6px;padding-bottom:4px;border-bottom:2px solid #12324F;break-after:avoid}
+    .zona{margin-bottom:6px}
+    /* (10) niente salti "zoppi": categorie e singole voci non si spezzano tra due pagine */
+    section{margin-bottom:16px;break-inside:avoid;page-break-inside:avoid}
+    section h2{font-size:1.05rem;color:#8a6d1f;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #e6ddc7;padding-bottom:4px;break-after:avoid}
+    .item{margin:8px 0;break-inside:avoid;page-break-inside:avoid}
     .line{display:flex;align-items:baseline}
     .nm{font-weight:bold} .pz{font-weight:bold;white-space:nowrap}
     .dots{flex:1;border-bottom:1px dotted #b9c2ca;margin:0 6px;transform:translateY(-3px)}
     .desc{font-size:.85rem;color:#333;font-family:Arial,sans-serif;margin-top:2px}
     .alg{font-size:.75rem;color:#8a6d1f;font-style:italic;font-family:Arial,sans-serif}
-    footer{margin-top:20px;border-top:1px solid #e6ddc7;padding-top:8px;font-size:.72rem;color:#777;font-family:Arial,sans-serif}
-    .qr{margin-top:24px;text-align:center;break-inside:avoid}
+    footer{margin-top:18px;border-top:1px solid #e6ddc7;padding-top:8px;font-size:.72rem;color:#777;font-family:Arial,sans-serif;break-inside:avoid}
+    .qr{margin-top:20px;text-align:center;break-inside:avoid}
     .qr svg{width:132px;height:132px}
     .qrcap{font-size:.9rem;color:#12324F;font-family:Arial,sans-serif;margin-top:6px;font-weight:bold}
   </style></head><body>
-    <header>\${logo}<div class="t"><h1>BUSSOLA RESIDENCE</h1><div class="sub">by KOIN\xC8</div></div><div class="punto">\${esc(punto)}</div></header>
-    \${sezioni || '<p>Nessun articolo attivo.</p>'}
+    <header>\${logo}<div class="t"><h1>BUSSOLA RESIDENCE</h1></div><div class="punto">\${esc(punto)}</div></header>
+    \${body}
     \${qr && qr.svg ? \`<div class="qr">\${qr.svg}<div class="qrcap">\${esc(qr.caption || '')}</div></div>\` : ''}
-    <footer>Allergeni indicati secondo Reg. UE 1169/2011. Men\xF9 generato dall'app Bussola Chiosco.</footer>
+    <footer>Allergeni indicati secondo Reg. UE 1169/2011.</footer>
     <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
   </body></html>\`);
   w.document.close();
@@ -10131,7 +10148,7 @@ VIEWS.menu = async () => {
         qr = { svg: d.svg, caption: '\u{1F4F1} Inquadra e ordina dal tuo tavolo' };
       }
     } catch (_) {}
-    stampaMenuPDF(menu, punto, qr);
+    stampaMenuPDF(menu, punto, qr, ZONA);
   };
   $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
 
@@ -10563,7 +10580,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-17 14:13" : "online";
+var BUILD = true ? "2026-08-18 06:47" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
