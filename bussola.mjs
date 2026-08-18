@@ -1157,13 +1157,68 @@ async function registraRisultato(partitaId, golA, golB) {
   if (!m) throw new Error("Partita inesistente");
   await db.prepare("UPDATE partite SET gol_a=?,gol_b=?,punteggio=?,stato='giocata' WHERE id=?").run(golA, golB, `${golA}\u2013${golB}`, partitaId);
   if (m.girone_id) await recomputeGirone(m.girone_id);
+  await avanzaFaseFinale(m.disciplina_id);
   return true;
+}
+var COPPA_PUNTI = { 1: 12, 2: 10, 3: 8, 4: 6, altri: 4 };
+var vincitrice = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_a_id, nome: m.casa_a } : { id: m.casata_b_id, nome: m.casa_b };
+var perdente = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_b_id, nome: m.casa_b } : { id: m.casata_a_id, nome: m.casa_a };
+async function faseMatches(disciplinaId, fase) {
+  return db.prepare("SELECT * FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
+}
+async function insFinale(disciplinaId, fase, slot, a, b) {
+  await db.prepare(`INSERT INTO partite (disciplina_id,girone_id,fase,giornata,casata_a_id,casata_b_id,casa_a,casa_b,stato)
+    VALUES (?,?,?,?,?,?,?,?, 'da_giocare')`).run(disciplinaId, null, fase, slot, a.id, b.id, a.nome, b.nome);
+}
+async function avanzaFaseFinale(disciplinaId) {
+  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
+  if (gironi.length !== 2) return;
+  const gironiCompleti = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n > 0;
+  if (!gironiCompleti) return;
+  if (!(await faseMatches(disciplinaId, "quarti")).length) {
+    const A = await classificaOrdinata(gironi[0].id), B = await classificaOrdinata(gironi[1].id);
+    if (A.length >= 4 && B.length >= 4) {
+      const coppie = [[A[0], B[3]], [A[1], B[2]], [A[2], B[1]], [A[3], B[0]]];
+      for (let i = 0; i < 4; i++) await insFinale(disciplinaId, "quarti", i + 1, { id: coppie[i][0].casata_id, nome: coppie[i][0].nome }, { id: coppie[i][1].casata_id, nome: coppie[i][1].nome });
+    }
+    return;
+  }
+  const quarti = await faseMatches(disciplinaId, "quarti");
+  const quartiOk = quarti.length === 4 && quarti.every((m) => vincitrice(m));
+  if (quartiOk && !(await faseMatches(disciplinaId, "semifinale")).length) {
+    const w = quarti.map(vincitrice);
+    await insFinale(disciplinaId, "semifinale", 1, w[0], w[3]);
+    await insFinale(disciplinaId, "semifinale", 2, w[1], w[2]);
+    return;
+  }
+  const semi = await faseMatches(disciplinaId, "semifinale");
+  const semiOk = semi.length === 2 && semi.every((m) => vincitrice(m));
+  if (semiOk && !(await faseMatches(disciplinaId, "finale1")).length) {
+    await insFinale(disciplinaId, "finale1", 1, vincitrice(semi[0]), vincitrice(semi[1]));
+    await insFinale(disciplinaId, "finale3", 1, perdente(semi[0]), perdente(semi[1]));
+  }
+}
+async function graduatoriaFinale(disciplinaId) {
+  const f1 = (await faseMatches(disciplinaId, "finale1"))[0];
+  const f3 = (await faseMatches(disciplinaId, "finale3"))[0];
+  if (!f1 || !vincitrice(f1) || !f3 || !vincitrice(f3)) return null;
+  const quarti = await faseMatches(disciplinaId, "quarti");
+  const eliminatiQuarti = quarti.map(perdente).filter(Boolean);
+  const out = [
+    { posizione: 1, punti: COPPA_PUNTI[1], ...vincitrice(f1) },
+    { posizione: 2, punti: COPPA_PUNTI[2], ...perdente(f1) },
+    { posizione: 3, punti: COPPA_PUNTI[3], ...vincitrice(f3) },
+    { posizione: 4, punti: COPPA_PUNTI[4], ...perdente(f3) }
+  ];
+  eliminatiQuarti.forEach((e, i) => out.push({ posizione: 5 + i, punti: COPPA_PUNTI.altri, ...e }));
+  return out;
 }
 async function classificaOrdinata(gironeId) {
   return await db.prepare(`SELECT c.*, ca.nome, ca.colore FROM classifica c JOIN casate ca ON ca.id=c.casata_id
     WHERE c.girone_id=? ORDER BY c.pt DESC, (c.gf-c.gs) DESC, c.gf DESC, ca.nome`).all(gironeId);
 }
 async function getTabellone(disciplinaId) {
+  await avanzaFaseFinale(disciplinaId);
   const gironiRows = await db.prepare("SELECT id,nome FROM gironi WHERE disciplina_id=? ORDER BY nome").all(disciplinaId);
   const gironi = [];
   for (const g of gironiRows) {
@@ -1174,18 +1229,18 @@ async function getTabellone(disciplinaId) {
       partite: await db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato FROM partite WHERE girone_id=? ORDER BY giornata,id").all(g.id)
     });
   }
-  const tuttiGiocati = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0;
-  let finali = null;
-  if (gironi.length === 2 && tuttiGiocati) {
-    const A = gironi[0].classifica, B = gironi[1].classifica;
-    finali = {
-      semifinali: [
-        { casa: A[0]?.nome, ospite: B[1]?.nome, cA: A[0]?.colore, cB: B[1]?.colore },
-        { casa: B[0]?.nome, ospite: A[1]?.nome, cA: B[0]?.colore, cB: A[1]?.colore }
-      ]
-    };
-  }
-  return { gironi, finali, completo: tuttiGiocati };
+  const nGir = (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone'").get(disciplinaId)).n;
+  const tuttiGiocati = nGir > 0 && (await db.prepare("SELECT count(*) n FROM partite WHERE disciplina_id=? AND fase='girone' AND stato!='giocata'").get(disciplinaId)).n === 0;
+  const selFase = (fase) => db.prepare("SELECT id,giornata,casa_a,casa_b,gol_a,gol_b,stato,fase FROM partite WHERE disciplina_id=? AND fase=? ORDER BY giornata,id").all(disciplinaId, fase);
+  const fasi = {
+    quarti: await selFase("quarti"),
+    semifinali: await selFase("semifinale"),
+    finale3: await selFase("finale3"),
+    finale1: await selFase("finale1")
+  };
+  const hasFinale = fasi.quarti.length > 0;
+  const graduatoria = await graduatoriaFinale(disciplinaId);
+  return { gironi, fasi, hasFinale, graduatoria, completo: tuttiGiocati };
 }
 
 // server/crypto.js
@@ -5144,6 +5199,24 @@ adminRouter.get("/campi/prenotazioni", requireCap("campi"), async (req, res) => 
 adminRouter.get("/discipline", async (req, res) => {
   res.json(await db.prepare("SELECT * FROM discipline ORDER BY dominio, ordine").all());
 });
+adminRouter.get("/coppa/cartellone", requireCap("casate"), async (req, res) => {
+  const casate = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY nome").all();
+  const discipline = await db.prepare("SELECT id,nome,dominio,stato FROM discipline WHERE attivo=1 ORDER BY dominio,ordine,id").all();
+  const celle = {};
+  const totali = {};
+  casate.forEach((c) => {
+    totali[c.id] = 0;
+  });
+  for (const d of discipline) {
+    const grad = await graduatoriaFinale(d.id).catch(() => null);
+    celle[d.id] = {};
+    if (grad) for (const r of grad) {
+      celle[d.id][r.id] = r.punti;
+      totali[r.id] = (totali[r.id] || 0) + r.punti;
+    }
+  }
+  res.json({ casate, discipline, celle, totali });
+});
 adminRouter.post("/discipline", requireCap("discipline"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome || !b.chiave || !b.dominio) return res.status(400).json({ error: "Dominio, chiave e nome obbligatori" });
@@ -5858,7 +5931,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.64";
+var VERSION = "4.65";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8385,15 +8458,27 @@ async function delSocio(id, render) {
 // ---- Casate ----
 VIEWS.casate = async () => {
   const list = await api('/../casate');
-  $('#view').innerHTML = \`<div class="panel"><h3>Punti Coppa delle Casate</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th></tr></thead><tbody>
+  const cart = await api('/coppa/cartellone').catch(() => ({ casate: [], discipline: [], celle: {}, totali: {} }));
+  // Cartellone: griglia discipline (colonne) \xD7 casate (righe), incrocio = punti dalla graduatoria finale del torneo.
+  const casateOrd = (cart.casate || []).slice().sort((a, b) => (cart.totali[b.id] || 0) - (cart.totali[a.id] || 0) || a.nome.localeCompare(b.nome));
+  const dom = (d) => d === 'giochi' ? '\u{1F3B2}' : '\u{1F3C5}';
+  const grid = (cart.discipline && cart.discipline.length) ? \`<div class="panel"><h3>\u{1F3C6} Cartellone Coppa \xB7 somma dei tornei</h3>
+    <p class="muted" style="font-size:13px;margin-bottom:8px">All'incrocio i <b>punti Coppa</b> dalla graduatoria finale di ogni torneo (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA). I tornei non ancora conclusi non assegnano punti. Auto-calcolato dai risultati inseriti nel Crew.</p>
+    <div style="overflow:auto"><table><thead><tr><th style="text-align:left">Casata</th>\${cart.discipline.map(d => \`<th title="\${esc(d.nome)}">\${dom(d.dominio)}<br><span style="font-weight:400;font-size:11px">\${esc(d.nome)}</span></th>\`).join('')}<th>Totale</th></tr></thead><tbody>
+    \${casateOrd.map(c => \`<tr><td style="text-align:left"><b>\${esc(c.nome)}</b></td>\${cart.discipline.map(d => { const v = (cart.celle[d.id] || {})[c.id]; return \`<td style="text-align:center">\${v != null ? \`<b>\${v}</b>\` : '<span class="muted">\xB7</span>'}</td>\`; }).join('')}<td style="text-align:center"><b style="color:var(--navy)">\${cart.totali[c.id] || 0}</b></td></tr>\`).join('')}
+    </tbody></table></div></div>\` : '';
+  $('#view').innerHTML = grid + \`<div class="panel"><h3>Punti Coppa manuali (totale visibile in app ai soci)</h3>
+    <p class="muted" style="font-size:13px;margin-bottom:8px">Punteggio complessivo mostrato ai soci. Puoi allinearlo ai totali del cartellone qui sopra, oppure tenerne conto se sommi anche Contest/serate.</p>
+    <table><thead><tr><th>Casata</th><th>Punti</th><th></th></tr></thead><tbody>
     \${list.map(c => \`<tr><td><b>\${esc(c.nome)}</b> <span class="muted">\${esc(c.motto||'')}</span></td>
       <td><input type="number" value="\${c.punti}" id="pt_\${c.id}" style="width:90px"></td>
-      <td><button class="btn gold sm" data-save="\${c.id}">Salva</button></td></tr>\`).join('')}
+      <td><button class="btn gold sm" data-save="\${c.id}">Salva</button>\${(cart.totali && cart.totali[c.id] != null) ? \`<button class="btn ghost sm" data-settot="\${c.id}" data-tot="\${cart.totali[c.id]||0}" title="Usa il totale del cartellone">= \${cart.totali[c.id]||0}</button>\` : ''}</td></tr>\`).join('')}
   </tbody></table></div>\`;
   document.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
     await api('/casate/' + b.dataset.save + '/punti', { method:'PUT', body:JSON.stringify({ punti: Number($('#pt_'+b.dataset.save).value) }) });
     b.textContent = '\u2713 Salvato'; setTimeout(() => b.textContent = 'Salva', 1200);
   });
+  document.querySelectorAll('[data-settot]').forEach(b => b.onclick = () => { const inp = $('#pt_' + b.dataset.settot); if (inp) inp.value = b.dataset.tot; });
 };
 
 // ---- Prenotazioni (sport, tavolo, eventi). Il coworking \xE8 nella sezione Casa di Carta. ----
@@ -8929,7 +9014,12 @@ VIEWS.tabellone = async () => {
     const disc = (await api('/discipline')).find(d => d.id == cur) || {};   // fresco (periodo/regolamento)
     const edz = await api('/tabellone/' + cur + '/edizioni').catch(() => []);
     const giornate = [...new Set(t.gironi.flatMap(g => g.partite.map(p => p.giornata)))].sort((a, b) => a - b);
-    const finali = t.finali ? \`<div class="panel"><h3>Fase finale \xB7 qualificate</h3>\${t.finali.semifinali.map((s, i) => \`<div style="padding:6px 0"><b>Semifinale \${i + 1}:</b> \${esc(s.casa || '\u2014')} vs \${esc(s.ospite || '\u2014')}</div>\`).join('')}</div>\` : '';
+    const scoreOf = (p) => p.stato === 'giocata' ? \`<b>\${esc(String(p.gol_a ?? '') + ' \u2013 ' + String(p.gol_b ?? ''))}</b>\` : '<span class="muted">\u2013 : \u2013</span>';
+    const faseBlk = (arr, label) => (arr && arr.length) ? \`<div style="margin-top:8px"><b class="muted">\${esc(label)}</b>\${arr.map(p => \`<div style="display:flex;gap:8px;align-items:center;padding:4px 0"><span style="flex:1;text-align:right">\${esc(p.casa_a)}</span><span style="min-width:64px;text-align:center">\${scoreOf(p)}</span><span style="flex:1">\${esc(p.casa_b)}</span></div>\`).join('')}</div>\` : '';
+    const fasi = t.fasi || {};
+    const finali = t.hasFinale ? \`<div class="panel"><h3>Fase finale \xB7 Coppa <span class="tag mid">sola lettura \xB7 risultati dal Crew</span></h3>
+      \${faseBlk(fasi.quarti, 'Quarti (incroci 1-4, 2-3, 3-2, 4-1)')}\${faseBlk(fasi.semifinali, 'Semifinali')}\${faseBlk(fasi.finale3, 'Finale 3\xBA/4\xBA')}\${faseBlk(fasi.finale1, 'Finale 1\xBA/2\xBA')}
+      \${t.graduatoria ? \`<div style="margin-top:10px"><b class="muted">Graduatoria finale \xB7 punti Coppa</b><table><thead><tr><th>Pos</th><th>Casata</th><th>Punti</th></tr></thead><tbody>\${t.graduatoria.map(r => \`<tr><td>\${r.posizione}</td><td><b>\${esc(r.nome)}</b></td><td><b>\${r.punti}</b></td></tr>\`).join('')}</tbody></table></div>\` : ''}</div>\` : '';
     const statoTag = { preparazione: 'mid', in_corso: 'ok', archiviato: 'no' }[disc.stato] || 'mid';
     const settings = \`<div class="panel"><h3>Periodo, stato e regolamento <span class="tag \${statoTag}">\${esc(disc.stato || 'preparazione')}</span></h3>
       <div class="grid2">
@@ -9923,12 +10013,14 @@ VIEWS.sport = async () => {
   if (!t.gironi || !t.gironi.length) {
     $('#view').innerHTML = head + \`<div class="panel"><p class="muted">Tabellone non ancora generato per <b>\${esc(cur.nome)}</b>. Il gestore lo genera dal back office (Tabellone).</p></div>\`; wireDisc(); return;
   }
-  const matchCard = (p) => {
+  const matchCard = (p, label) => {
     const giocata = p.stato === 'giocata';
-    const acc = giocata ? 'var(--ok)' : 'var(--gold)';
+    const draw = !!label && giocata && p.gol_a != null && p.gol_a === p.gol_b;   // pareggio nella fase finale = da spareggiare
+    const acc = draw ? 'var(--coral)' : giocata ? 'var(--ok)' : 'var(--gold)';
+    const cap = label ? esc(label) : ('Giornata ' + esc(String(p.giornata || 1)));
     return \`<div class="tcard" style="border-color:\${acc};background:#fff">
       <div class="zacc" style="background:\${acc}"></div>
-      <div style="font-size:.7rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Giornata \${esc(String(p.giornata || 1))}\${giocata ? ' \xB7 \u2714 giocata' : ''}</div>
+      <div style="font-size:.7rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">\${cap}\${draw ? ' \xB7 \u26A0\uFE0F pari: serve un vincitore' : giocata ? ' \xB7 \u2714 giocata' : ''}</div>
       <div class="row" style="justify-content:space-between;gap:6px;margin-top:6px;align-items:center">
         <span style="flex:1;font-weight:700">\${esc(p.casa_a)}</span>
         <input id="ga_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_a != null ? esc(String(p.gol_a)) : ''}" style="width:48px;text-align:center">
@@ -9944,11 +10036,25 @@ VIEWS.sport = async () => {
       <table><thead><tr><th>#</th><th>Casata</th><th>G</th><th>Gol</th><th>Pt</th></tr></thead><tbody>\${cls}</tbody></table>
       <div class="board" style="margin-top:12px">\${g.partite.map(matchCard).join('')}</div></div>\`;
   }).join('');
+  // Fase finale: quarti incrociati \u2192 semifinali \u2192 finali 3\xBA/4\xBA e 1\xBA/2\xBA (risultati inseribili come i gironi).
+  const fasi = t.fasi || {};
+  const faseDef = [['quarti', 'Quarto di finale'], ['semifinali', 'Semifinale'], ['finale3', 'Finale 3\xBA/4\xBA posto'], ['finale1', 'Finale 1\xBA/2\xBA posto']];
   let finaliHtml = '';
-  if (t.finali && t.finali.semifinali) {
-    finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale (qualificate)</h3>\${t.finali.semifinali.map((s, i) => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>Semifinale \${i + 1}: \${spDot(s.cA)}<b>\${esc(s.casa || '\u2014')}</b> vs \${spDot(s.cB)}<b>\${esc(s.ospite || '\u2014')}</b></span></div>\`).join('')}<p class="muted" style="font-size:.75rem;margin-top:6px">Gironi completi: incroci 1\xBA-2\xBA pronti. (La gestione completa di semifinali/finali arriva con l'aggiornamento del tabellone.)</p></div>\`;
+  if (t.hasFinale) {
+    const blocks = faseDef.map(([key, label]) => {
+      const arr = fasi[key] || []; if (!arr.length) return '';
+      return \`<div style="font-weight:800;color:var(--accent);margin:12px 0 6px">\${esc(label)}\${arr.length > 1 ? ' (' + arr.length + ')' : ''}</div><div class="board">\${arr.map((p, i) => matchCard(p, arr.length > 1 ? label + ' ' + (i + 1) : label)).join('')}</div>\`;
+    }).join('');
+    finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale \xB7 Coppa</h3><p class="muted" style="font-size:.76rem">Incroci dei due gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un risultato con un vincitore.</p>\${blocks || '<p class="muted">In attesa del completamento dei gironi.</p>'}</div>\`;
   }
-  $('#view').innerHTML = head + gironiHtml + finaliHtml;
+  // Graduatoria finale con i punti Coppa (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA), quando le finali sono decise.
+  let gradHtml = '';
+  if (t.graduatoria && t.graduatoria.length) {
+    gradHtml = \`<div class="panel"><h3>\u{1F3C5} Graduatoria finale \xB7 punti Coppa</h3>
+      <table><thead><tr><th>Pos.</th><th>Casata</th><th>Punti Coppa</th></tr></thead><tbody>\${t.graduatoria.map(r => \`<tr><td style="text-align:center"><b>\${esc(String(r.posizione))}</b></td><td><b>\${esc(r.nome)}</b></td><td style="text-align:center"><b style="color:var(--gold)">\${esc(String(r.punti))}</b></td></tr>\`).join('')}</tbody></table>
+      <p class="muted" style="font-size:.74rem;margin-top:6px">Questi punti confluiscono nel cartellone della Coppa delle Casate.</p></div>\`;
+  }
+  $('#view').innerHTML = head + gironiHtml + finaliHtml + gradHtml;
   wireDisc();
   document.querySelectorAll('[data-sp-save]').forEach(b => b.onclick = async () => {
     const id = b.dataset.spSave;
@@ -10742,7 +10848,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 08:45" : "online";
+var BUILD = true ? "2026-08-18 09:00" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
