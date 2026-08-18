@@ -807,6 +807,34 @@ async function migrate() {
     }
   } catch (_) {
   }
+  try {
+    if (await getSetting("campi_categoria_backfill", "") !== "v1") {
+      const MAP = { pickleball: "tennis", soft_tennis: "tennis", beach: "volley", calcetto: "calcio" };
+      for (const [vecchio, nuovo] of Object.entries(MAP)) {
+        await db.prepare("UPDATE campi SET sport=? WHERE sport=?").run(nuovo, vecchio);
+      }
+      await setSetting("campi_categoria_backfill", "v1");
+    }
+  } catch (_) {
+  }
+  try {
+    if (await getSetting("campi_default_v1", "") !== "done") {
+      const n = await db.prepare("SELECT COUNT(*) c FROM campi").get();
+      if (Number(n?.c || 0) === 0) {
+        const ins = db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,ordine) VALUES (?,?,?,?,?,?,?,?)");
+        const DEF = [
+          ["Campo Tennis 1", "tennis", "08:00", "22:00", 60, null, 4, 1],
+          ["Campo Tennis 2", "tennis", "08:00", "22:00", 60, null, 4, 2],
+          ["Campo Beach Volley", "volley", "09:00", "22:00", 60, null, 12, 3],
+          ["Campo Calcio a 5", "calcio", "18:00", "23:00", 60, "18:00", 10, 4],
+          ["Campo Basket 3\xD73", "basket", "09:00", "22:00", 60, null, 6, 5]
+        ];
+        for (const c of DEF) await ins.run(...c);
+      }
+      await setSetting("campi_default_v1", "done");
+    }
+  } catch (_) {
+  }
 }
 var TURSO_URL, AUTH, url, LOCAL_FILE, IS_REMOTE, DB_PATH, client, flat, db;
 var init_db = __esm({
@@ -1629,15 +1657,6 @@ async function seed({ verbose = false } = {}) {
     const m = MENU[i];
     await insMenu.run(m[0], m[1], m[2], m[3], m[4], m[5], i + 1);
   }
-  const insCampo = db.prepare("INSERT INTO campi (nome,sport,apertura,chiusura,durata_slot,ora_min,posti_default,ordine) VALUES (?,?,?,?,?,?,?,?)");
-  const CAMPI = [
-    // nome, sport, apertura, chiusura, durata_slot, ora_min, posti_default
-    ["Campo Pickleball", "pickleball", "09:00", "22:00", 60, null, 4, 1],
-    ["Campo Soft Tennis", "soft_tennis", "09:00", "22:00", 60, null, 4, 2],
-    ["Campo Calcetto", "calcetto", "18:00", "23:00", 60, "18:00", 10, 3]
-    // regola: solo dopo le 18
-  ];
-  for (const c of CAMPI) await insCampo.run(...c);
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
   const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
   await insAdmin.run("gestore", hashPassword(adminPwd), "gestore", null);
@@ -5931,7 +5950,7 @@ authUserRouter.post("/host/ospiti/:id/scollega", requireUser, async (req, res) =
 });
 
 // server/version.js
-var VERSION = "4.65";
+var VERSION = "4.66";
 
 // build/frontend.html
 var frontend_default = `<!DOCTYPE html>
@@ -8459,26 +8478,44 @@ async function delSocio(id, render) {
 VIEWS.casate = async () => {
   const list = await api('/../casate');
   const cart = await api('/coppa/cartellone').catch(() => ({ casate: [], discipline: [], celle: {}, totali: {} }));
-  // Cartellone: griglia discipline (colonne) \xD7 casate (righe), incrocio = punti dalla graduatoria finale del torneo.
-  const casateOrd = (cart.casate || []).slice().sort((a, b) => (cart.totali[b.id] || 0) - (cart.totali[a.id] || 0) || a.nome.localeCompare(b.nome));
+  const disc = cart.discipline || [];
+  const totali = cart.totali || {};
+  const celle = cart.celle || {};
   const dom = (d) => d === 'giochi' ? '\u{1F3B2}' : '\u{1F3C5}';
-  const grid = (cart.discipline && cart.discipline.length) ? \`<div class="panel"><h3>\u{1F3C6} Cartellone Coppa \xB7 somma dei tornei</h3>
-    <p class="muted" style="font-size:13px;margin-bottom:8px">All'incrocio i <b>punti Coppa</b> dalla graduatoria finale di ogni torneo (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA). I tornei non ancora conclusi non assegnano punti. Auto-calcolato dai risultati inseriti nel Crew.</p>
-    <div style="overflow:auto"><table><thead><tr><th style="text-align:left">Casata</th>\${cart.discipline.map(d => \`<th title="\${esc(d.nome)}">\${dom(d.dominio)}<br><span style="font-weight:400;font-size:11px">\${esc(d.nome)}</span></th>\`).join('')}<th>Totale</th></tr></thead><tbody>
-    \${casateOrd.map(c => \`<tr><td style="text-align:left"><b>\${esc(c.nome)}</b></td>\${cart.discipline.map(d => { const v = (cart.celle[d.id] || {})[c.id]; return \`<td style="text-align:center">\${v != null ? \`<b>\${v}</b>\` : '<span class="muted">\xB7</span>'}</td>\`; }).join('')}<td style="text-align:center"><b style="color:var(--navy)">\${cart.totali[c.id] || 0}</b></td></tr>\`).join('')}
-    </tbody></table></div></div>\` : '';
-  $('#view').innerHTML = grid + \`<div class="panel"><h3>Punti Coppa manuali (totale visibile in app ai soci)</h3>
-    <p class="muted" style="font-size:13px;margin-bottom:8px">Punteggio complessivo mostrato ai soci. Puoi allinearlo ai totali del cartellone qui sopra, oppure tenerne conto se sommi anche Contest/serate.</p>
-    <table><thead><tr><th>Casata</th><th>Punti</th><th></th></tr></thead><tbody>
-    \${list.map(c => \`<tr><td><b>\${esc(c.nome)}</b> <span class="muted">\${esc(c.motto||'')}</span></td>
-      <td><input type="number" value="\${c.punti}" id="pt_\${c.id}" style="width:90px"></td>
-      <td><button class="btn gold sm" data-save="\${c.id}">Salva</button>\${(cart.totali && cart.totali[c.id] != null) ? \`<button class="btn ghost sm" data-settot="\${c.id}" data-tot="\${cart.totali[c.id]||0}" title="Usa il totale del cartellone">= \${cart.totali[c.id]||0}</button>\` : ''}</td></tr>\`).join('')}
-  </tbody></table></div>\`;
-  document.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
-    await api('/casate/' + b.dataset.save + '/punti', { method:'PUT', body:JSON.stringify({ punti: Number($('#pt_'+b.dataset.save).value) }) });
-    b.textContent = '\u2713 Salvato'; setTimeout(() => b.textContent = 'Salva', 1200);
-  });
-  document.querySelectorAll('[data-settot]').forEach(b => b.onclick = () => { const inp = $('#pt_' + b.dataset.settot); if (inp) inp.value = b.dataset.tot; });
+  // UN SOLO tabellone: la graduatoria che vedono i soci (casate.punti), con l'incrocio per disciplina come dettaglio.
+  // "Tornei" = somma auto dai risultati nel Crew; "Punti Coppa" = ci\xF2 che vedono i soci (modificabile: puoi aggiungere Contest/serate).
+  const render = () => {
+    // ordina per punti soci desc (poi nome); l'ordinamento si applica solo col tasto Riordina o al primo caricamento
+    const ord = list.slice().sort((a, b) => (b._punti ?? b.punti) - (a._punti ?? a.punti) || a.nome.localeCompare(b.nome));
+    const cols = disc.map(d => \`<th style="text-align:center;min-width:64px"><div style="font-weight:700;font-size:11px;line-height:1.15">\${esc(d.nome)}</div><div style="font-size:17px;margin-top:2px">\${dom(d.dominio)}</div></th>\`).join('');
+    const rows = ord.map((c, i) => {
+      const cur = c._punti ?? c.punti;
+      const tot = totali[c.id] || 0;
+      const cells = disc.map(d => { const v = (celle[d.id] || {})[c.id]; return \`<td style="text-align:center">\${v != null ? \`<b>\${v}</b>\` : '<span class="muted">\xB7</span>'}</td>\`; }).join('');
+      const medal = i === 0 ? '\u{1F947}' : i === 1 ? '\u{1F948}' : i === 2 ? '\u{1F949}' : \`<span class="muted">\${i + 1}</span>\`;
+      return \`<tr><td style="text-align:center">\${medal}</td>
+        <td style="text-align:left;white-space:nowrap"><b>\${esc(c.nome)}</b> <span class="muted">\${esc(c.motto || '')}</span></td>
+        <td style="text-align:center"><input type="number" value="\${cur}" id="pt_\${c.id}" style="width:70px;text-align:center;font-weight:700"> <button class="btn ghost sm" data-settot="\${c.id}" data-tot="\${tot}" title="Copia il totale dei tornei nei Punti Coppa">= \${tot}</button></td>
+        <td style="text-align:center"><b style="color:var(--navy)">\${tot}</b></td>\${cells}</tr>\`;
+    }).join('');
+    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F3C6} Coppa delle Casate \xB7 cartellone e graduatoria</h3>
+      <p class="muted" style="font-size:13px;margin-bottom:8px">Questa \xE8 <b>l'unica graduatoria</b>: \xE8 quella che vedono i soci nell'app. La colonna <b>Tornei</b> si somma da sola dai risultati inseriti nel Crew (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA); i <b>Punti Coppa</b> sono il totale mostrato ai soci \u2014 puoi allinearli ai tornei o aggiungere a mano Contest/serate. Il tasto <b>Riordina</b> aggiorna la classifica. Le colonne per disciplina (a destra) sono il dettaglio e scorrono lateralmente.</p>
+      <div style="overflow:auto"><table><thead><tr><th style="text-align:center">#</th><th style="text-align:left">Casata</th><th style="text-align:center">Punti Coppa</th><th style="text-align:center">Tornei</th>\${cols}</tr></thead><tbody>\${rows}</tbody></table></div>
+      <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn gold" id="ca_save">\u{1F4BE} Salva Punti Coppa</button>
+        <button class="btn ghost" id="ca_fromtornei" title="Copia i totali dei tornei nei Punti Coppa di tutte le casate">\u2B07 Applica totali tornei a tutte</button>
+        <button class="btn ghost" id="ca_reorder">\u21BB Riordina graduatoria</button>
+      </div></div>\`;
+    document.querySelectorAll('[data-settot]').forEach(b => b.onclick = () => { const inp = $('#pt_' + b.dataset.settot); if (inp) inp.value = b.dataset.tot; });
+    $('#ca_fromtornei').onclick = () => { list.forEach(c => { const inp = $('#pt_' + c.id); if (inp) inp.value = totali[c.id] || 0; }); };
+    $('#ca_reorder').onclick = () => { list.forEach(c => { const inp = $('#pt_' + c.id); if (inp) c._punti = Number(inp.value); }); render(); };
+    $('#ca_save').onclick = async () => {
+      const btn = $('#ca_save'); btn.disabled = true; btn.textContent = 'Salvo\u2026';
+      for (const c of list) { const inp = $('#pt_' + c.id); if (inp) { const v = Number(inp.value); c.punti = v; c._punti = v; await api('/casate/' + c.id + '/punti', { method: 'PUT', body: JSON.stringify({ punti: v }) }); } }
+      btn.disabled = false; btn.textContent = '\u2713 Salvato'; setTimeout(() => { btn.textContent = '\u{1F4BE} Salva Punti Coppa'; }, 1400);
+    };
+  };
+  render();
 };
 
 // ---- Prenotazioni (sport, tavolo, eventi). Il coworking \xE8 nella sezione Casa di Carta. ----
@@ -8645,11 +8682,15 @@ function stampaModuloPrelievo(giochi) {
 }
 
 // ---- Campi & prenotazioni (stile Playtomic) ----
-const SPORTS = [['pickleball', 'Pickleball'], ['soft_tennis', 'Soft tennis'], ['calcetto', 'Calcetto'], ['beach', 'Beach volley'], ['tennis', 'Tennis'], ['altro', 'Altro']];
+// Tipologie di CAMPO (raggruppano pi\xF9 discipline): un campo Tennis ospita pickleball, soft tennis, tennis\u2026
+const SPORTS = [['tennis', 'Tennis (pickleball \xB7 soft tennis \xB7 tennis)'], ['volley', 'Volley (beach volley)'], ['calcio', 'Calcio (calcetto \xB7 calcio a 5)'], ['basket', 'Basket'], ['altro', 'Altro']];
+// Vecchi valori \u2192 nuove categorie (retrocompatibilit\xE0 con campi gi\xE0 salvati).
+const SPORT_ALIAS = { pickleball: 'tennis', soft_tennis: 'tennis', tennis: 'tennis', beach: 'volley', volley: 'volley', calcetto: 'calcio', calcio: 'calcio', basket: 'basket' };
+const sportCat = (v) => SPORT_ALIAS[v] || (SPORTS.some(s => s[0] === v) ? v : 'altro');
 VIEWS.campi = async () => {
   const campi = await api('/campi');
   const oggi = new Date().toISOString().slice(0, 10);
-  const sportOpts = (sel) => SPORTS.map(s => \`<option value="\${s[0]}" \${sel === s[0] ? 'selected' : ''}>\${esc(s[1])}</option>\`).join('');
+  const sportOpts = (sel) => SPORTS.map(s => \`<option value="\${s[0]}" \${sportCat(sel) === s[0] ? 'selected' : ''}>\${esc(s[1])}</option>\`).join('');
   const rows = campi.map(c => \`<tr>
     <td><input id="cp_n_\${c.id}" value="\${esc(c.nome)}" style="min-width:150px"></td>
     <td><select id="cp_sp_\${c.id}">\${sportOpts(c.sport)}</select></td>
@@ -8665,7 +8706,7 @@ VIEWS.campi = async () => {
     <p class="muted" style="font-size:.78rem;margin-bottom:8px">La colonna <b>Da (ora)</b> \xE8 la regola oraria: lasciala vuota per nessun vincolo, oppure metti es. <b>18:00</b> (il calcetto si prenota solo dopo le 18). Gli slot sono lunghi <b>Durata</b> minuti, da <b>Apre</b> a <b>Chiude</b>.</p>
     <table><thead><tr><th>Nome</th><th>Sport</th><th>Apre</th><th>Chiude</th><th>Durata</th><th>Da (ora)</th><th>Posti part.</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun campo.</td></tr>'}</tbody></table>
     <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
-      <input id="cp_new_n" placeholder="Nome (es. Campo Pickleball)" style="min-width:180px"><select id="cp_new_sp">\${sportOpts('pickleball')}</select>
+      <input id="cp_new_n" placeholder="Nome (es. Campo Tennis)" style="min-width:180px"><select id="cp_new_sp">\${sportOpts('tennis')}</select>
       <input id="cp_new_ap" value="09:00" style="width:64px" title="Apertura"><input id="cp_new_ch" value="22:00" style="width:64px" title="Chiusura">
       <input id="cp_new_du" type="number" value="60" style="width:64px" title="Durata slot (min)"><input id="cp_new_om" placeholder="Da (ora)" style="width:80px">
       <input id="cp_new_pd" type="number" value="4" style="width:64px" title="Posti partita"><button class="btn gold sm" id="cp_add">+ Aggiungi</button>
@@ -10039,14 +10080,21 @@ VIEWS.sport = async () => {
   // Fase finale: quarti incrociati \u2192 semifinali \u2192 finali 3\xBA/4\xBA e 1\xBA/2\xBA (risultati inseribili come i gironi).
   const fasi = t.fasi || {};
   const faseDef = [['quarti', 'Quarto di finale'], ['semifinali', 'Semifinale'], ['finale3', 'Finale 3\xBA/4\xBA posto'], ['finale1', 'Finale 1\xBA/2\xBA posto']];
-  let finaliHtml = '';
-  if (t.hasFinale) {
-    const blocks = faseDef.map(([key, label]) => {
-      const arr = fasi[key] || []; if (!arr.length) return '';
-      return \`<div style="font-weight:800;color:var(--accent);margin:12px 0 6px">\${esc(label)}\${arr.length > 1 ? ' (' + arr.length + ')' : ''}</div><div class="board">\${arr.map((p, i) => matchCard(p, arr.length > 1 ? label + ' ' + (i + 1) : label)).join('')}</div>\`;
-    }).join('');
-    finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale \xB7 Coppa</h3><p class="muted" style="font-size:.76rem">Incroci dei due gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un risultato con un vincitore.</p>\${blocks || '<p class="muted">In attesa del completamento dei gironi.</p>'}</div>\`;
-  }
+  // Quante partite dei gironi mancano prima di sbloccare la fase finale (visibilit\xE0 dello stato).
+  const gironiTot = t.gironi.reduce((n, g) => n + (g.partite || []).length, 0);
+  const gironiMancanti = t.gironi.reduce((n, g) => n + (g.partite || []).filter(p => p.stato !== 'giocata' || p.gol_a == null || p.gol_b == null).length, 0);
+  const blocks = faseDef.map(([key, label]) => {
+    const arr = fasi[key] || []; if (!arr.length) return '';
+    return \`<div style="font-weight:800;color:var(--accent);margin:12px 0 6px">\${esc(label)}\${arr.length > 1 ? ' (' + arr.length + ')' : ''}</div><div class="board">\${arr.map((p, i) => matchCard(p, arr.length > 1 ? label + ' ' + (i + 1) : label)).join('')}</div>\`;
+  }).join('');
+  // La fase finale \xE8 SEMPRE visibile: se i gironi non sono finiti mostra lo stato e quante partite mancano.
+  const statoFinale = (t.hasFinale && blocks)
+    ? blocks
+    : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--muted);border-radius:12px;padding:12px;margin-top:8px">
+        <div style="font-size:1.4rem">\u23F3</div>
+        <div><b>Fase finale non ancora sbloccata.</b><br>
+        <span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Completa i due gironi: mancano <b>\${gironiMancanti}</b> partite su \${gironiTot}. Poi quarti, semifinali e finali compaiono qui in automatico.\` : 'Gironi completati: la fase finale si sta generando, aggiorna la pagina.'}</span></div></div>\`;
+  const finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale \xB7 Coppa</h3><p class="muted" style="font-size:.76rem">Incroci dei due gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un risultato con un vincitore.</p>\${statoFinale}</div>\`;
   // Graduatoria finale con i punti Coppa (12/10/8/6 ai primi 4, 4 dal 5\xBA all'8\xBA), quando le finali sono decise.
   let gradHtml = '';
   if (t.graduatoria && t.graduatoria.length) {
@@ -10848,7 +10896,7 @@ function mountPwa(app2) {
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 09:00" : "online";
+var BUILD = true ? "2026-08-18 09:40" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
