@@ -2733,7 +2733,11 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .hero{position:relative; border-radius:18px; overflow:hidden; color:#fff; padding:18px; min-height:150px; display:flex; flex-direction:column; justify-content:flex-end; margin-top:14px;
   background:linear-gradient(180deg, rgba(18,50,79,.2), rgba(18,50,79,.9)), linear-gradient(135deg,#5f4f95,#256b65); cursor:pointer;}
 .hero .eyebrow{color:#ffe1ac;}
-.hero h2{font-family:Georgia,serif; font-size:1.5rem; margin:4px 0 2px;} .hero p{font-size:.82rem; opacity:.95;}
+.hero h2{font-family:Georgia,serif; font-size:1.5rem; margin:4px 0 2px;} /* Testo e bottone sulla stessa riga: il bottone sotto costava un'intera fascia di altezza. */
+.herorow{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+.herorow p{flex:1; min-width:130px; margin:0;}
+.herorow .btn{flex:0 0 auto;}
+.hero p{font-size:.82rem; opacity:.95;}
 .hero .btn{margin-top:12px; align-self:flex-start;}
 .pgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:8px;}
 .ptile{display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:13px; padding:9px 11px; cursor:pointer; box-shadow:0 2px 6px rgba(18,50,79,.05); min-height:var(--tap);}
@@ -3286,7 +3290,8 @@ function renderHome() {
   const first = evs.find(e => e.tipo !== 'libero' && e.chiave !== 'lun') || evs[0];
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
-    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
+    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2>
+      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div></div>
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
@@ -8232,7 +8237,8 @@ async function renderSalaCarta() {
     </div>\`;
   };
   box.innerHTML = \`<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
-      \${d.turni.map(t => \`<button class="btn \${t === d.turno ? 'gold' : 'ghost'} sm" data-carta-turno="\${esc(t)}">\u{1F557} \${esc(t)}</button>\`).join('')}
+      \${d.turni.map(t => { const v = typeof t === 'string' ? t : t.turno; const lab = typeof t === 'string' ? t : (t.etichetta || t.turno); const ico = (typeof t === 'object' && t.scopo === 'coworking') ? '\u{1F4BB}' : '\u{1F557}';
+        return \`<button class="btn \${v === d.turno ? 'gold' : 'ghost'} sm" data-carta-turno="\${esc(v)}">\${ico} \${esc(lab)}</button>\`; }).join('')}
       \${d.minimo ? \`<span class="muted" style="font-size:.76rem;align-self:center">minimo \${d.minimo} giocatori</span>\` : ''}
     </div>
     \${d.tavoli.map(chip).join('')}
@@ -8297,7 +8303,7 @@ VIEWS.pianta = async () => {
         <input type="date" id="p_data" value="\${PIANTA.data}">
         <button class="btn \${PIANTA.modo === 'servizio' ? 'gold' : 'ghost'} sm" data-pmodo="servizio">\u{1F37D}\uFE0F Servizio</button>
         <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" data-pmodo="disposizione">\u270B Disposizione</button>
-        <button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli di questa disposizione">\u{1F533} QR tavoli</button>
+        \${PIANTA.ambiente === 'stage' ? '' : '<button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli di questa disposizione">\u{1F533} QR tavoli</button>'}
       </div></div>
     <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
       \${turniBtn}
@@ -8316,6 +8322,7 @@ VIEWS.pianta = async () => {
         <button class="btn ghost sm" id="p_addt">+ Tavolo</button>
         <button class="btn ghost sm" id="p_nuovo">\u271A Nuova disposizione</button>
         <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>
+        <button class="btn ghost sm" id="p_reset">\u21BA Ripristina predefinita</button>
       </div><div id="p_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
 
   // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
@@ -8325,13 +8332,14 @@ VIEWS.pianta = async () => {
     const palco = (t.tipo || 'standard') === 'arredo' && t.numero === 99;
     const raggio = palco ? 30 : (t.tipo || 'standard') === 'arredo' ? 22 : 22 + Math.min(16, Number(t.posti) * 2);
     const arredo = (t.tipo || 'standard') === 'arredo';
+    const extra = (t.tipo || 'standard') === 'extra';
     const bg = arredo ? '#8d8477' : PIANTA.modo === 'disposizione'
-      ? (t.attivo === 0 ? '#d9d4c6' : 'var(--accent)')
-      : (occupato ? '#b14a35' : '#2e6b45');
+      ? (t.attivo === 0 ? '#d9d4c6' : extra ? '#b08b3e' : 'var(--accent)')
+      : (occupato ? '#b14a35' : extra ? '#b08b3e' : '#2e6b45');
     return \`<div class="tv" data-tv="\${t.numero}" style="position:absolute;left:\${t.x}%;top:\${t.y}%;transform:translate(-50%,-50%);
         width:\${palco ? 200 : raggio * 2}px;height:\${palco ? 44 : raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
         background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
-        font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none">
+        font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${arredo ? 'default' : PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none" \${(PIANTA.modo === 'servizio' && !arredo) ? \`data-pren="\${t.numero}"\` : ''}>
         <span>\${arredo ? (t.numero === 99 ? '\u{1F3AD}' : t.numero === 90 ? '\u{1F6CE}\uFE0F' : '\u2615') : t.numero + ((t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : '')}</span>
         <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 99 ? 'PALCO' : t.numero === 90 ? 'reception' : 'caff\xE8') : occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
       </div>\`;
@@ -8348,6 +8356,7 @@ VIEWS.pianta = async () => {
       </div><div id="p_msg2" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\` : '';
 
   $('#view').innerHTML = testa + stato + \`
+    \${PIANTA.modo === 'servizio' ? \`<p class="muted" style="font-size:.74rem;margin:0 0 6px">\u{1F7E9} libero \xB7 \u{1F7E8} \${PIANTA.ambiente === 'stage' ? 'seduta extra' : 'tavolo extra'} (si apre a pieno) \xB7 \u{1F7E5} occupato \xB7 \u2B1C arredo \u2014 <b>tocca \${PIANTA.ambiente === 'stage' ? 'una seduta' : 'un tavolo'} per prenotarlo al banco</b></p>\` : ''}
     <div class="panel"><div id="p_canvas" style="position:relative;width:100%;height:64vh;min-height:340px;border-radius:14px;
       background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:1px solid var(--line);overflow:hidden">
       <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
@@ -8377,6 +8386,50 @@ VIEWS.pianta = async () => {
     catch (e) { $('#p_msg2').textContent = e.message; }
   };
 
+  // In servizio il tocco su un tavolo (o su una seduta) apre la prenotazione al banco proprio
+  // su quello: serve a chi passa dal chiosco e non usa l'app.
+  if (PIANTA.modo === 'servizio') {
+    document.querySelectorAll('#p_canvas [data-pren]').forEach(el => el.onclick = () => {
+      const n = Number(el.dataset.pren);
+      const t = (turnoDati.tavoli || []).find(x => x.numero === n);
+      if (!t) return;
+      if (!t.libero) {
+        const p = (turnoDati.prenotazioni || []).find(x => (x.tavoli || []).includes(n));
+        openModal(\`<h3>\${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'} \${n}</h3>
+          <p>Occupato da <b>\${esc(t.nome || '\u2014')}</b>\${t.persone ? ' \xB7 ' + t.persone + ' persone' : ''}.</p>
+          <div class="row" style="gap:8px">\${p ? \`<button class="btn danger sm" id="pr_lib">Libera</button>\` : ''}<button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+        const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
+        if ($('#pr_lib')) $('#pr_lib').onclick = async () => {
+          await api('/tavoli/prenotazioni/' + p.id, { method: 'PUT', body: JSON.stringify({ stato: 'annullato' }) });
+          closeModal(); show('pianta');
+        };
+        return;
+      }
+      openModal(\`<h3>\${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'} \${n} \xB7 \${esc(PIANTA.turno)}</h3>
+        <p class="muted" style="font-size:.82rem">\${t.posti} \${t.posti === 1 ? 'posto' : 'posti'}\${(t.tipo === 'extra') ? ' \xB7 extra' : ''}</p>
+        <label style="display:block;font-size:.82rem;margin-bottom:6px">Nome o tessera <input id="pr_chi" placeholder="BR-2026-0001 oppure Sig. Rossi"></label>
+        <label style="display:block;font-size:.82rem;margin-bottom:10px">Persone <input id="pr_p" type="number" min="1" value="\${Math.min(2, t.posti)}" style="width:80px"></label>
+        <div class="row" style="gap:8px"><button class="btn gold sm" id="pr_ok">Prenota</button><button class="btn ghost sm" data-mclose>Annulla</button></div>
+        <div id="pr_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>\`);
+      const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
+      $('#pr_ok').onclick = async () => {
+        const v = ($('#pr_chi').value || '').trim();
+        const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#pr_p').value) || 1, tavoli: [n] };
+        if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+        const rotta = PIANTA.ambiente === 'carta' ? '/carta/prenota' : PIANTA.ambiente === 'stage' ? null : '/tavoli/prenota';
+        try {
+          if (rotta) await api(rotta, { method: 'POST', body: JSON.stringify(body) });
+          else {
+            const pr = (await api('/proiezioni').catch(() => [])).find(x => x.data === PIANTA.data && x.ora === PIANTA.turno);
+            if (!pr) throw new Error('Nessuna proiezione o spettacolo in questa fascia.');
+            await api('/proiezioni/' + pr.id + '/prenota', { method: 'POST', body: JSON.stringify({ ...body, persone: body.persone }) });
+          }
+          closeModal(); show('pianta');
+        } catch (e) { $('#pr_msg').textContent = e.message; }
+      };
+    });
+    return;
+  }
   if (PIANTA.modo !== 'disposizione') return;
 
   // --- trascinamento (pointer events: funziona con dito e mouse)
@@ -8431,6 +8484,11 @@ VIEWS.pianta = async () => {
     const r = await api('/tavoli/layout', { method: 'POST', body: JSON.stringify({ nome, copia_da: PIANTA.layoutId }) });
     await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: r.id }) });
     PIANTA.sporco = false; show('pianta');
+  };
+  $('#p_reset').onclick = async () => {
+    if (!confirm('Ridisegnare la pianta predefinita di questo ambiente dai parametri correnti? Le disposizioni personalizzate di questo ambiente vengono perse.')) return;
+    try { await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) }); PIANTA.sporco = false; show('pianta'); }
+    catch (e) { $('#p_msg').textContent = e.message; }
   };
   $('#p_giorno').onclick = async () => {
     await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: PIANTA.layoutId }) });
@@ -8539,23 +8597,20 @@ VIEWS.cinema = async () => {
   if (!CINE_SEL || !pr.some(p => p.id === CINE_SEL)) CINE_SEL = pr[0].id;
   const d = await api('/proiezioni/' + CINE_SEL + '/platea');
   const chips = pr.map(p => \`<button class="btn \${p.id === CINE_SEL ? 'gold' : 'ghost'} sm" data-cinesel="\${p.id}">\${esc(p.data.slice(8) + '/' + p.data.slice(5, 7))} \xB7 \${esc(p.titolo || '\u2014')}</button>\`).join('');
-  const posto = (t) => \`<span title="\${t.libero ? (t.tipo === 'extra' ? 'extra libero' : 'libero') : esc(t.nome || 'occupato')}" style="display:inline-block;width:26px;height:26px;margin:2px;border-radius:6px;font-size:11px;line-height:26px;text-align:center;color:#fff;background:\${t.libero ? (t.tipo === 'extra' ? '#b08b3e' : '#2e6b45') : '#b14a35'}">\${t.numero}</span>\`;
   $('#view').innerHTML = \`
     <div class="panel"><b style="color:var(--navy)">\u{1F3AD} Stage</b>
-      <p class="muted" style="font-size:.78rem;margin-top:4px">La platea dello stage e la pianta si gestiscono nella tab <b>Pianta</b> (ambiente Stage). Qui sotto il cinema, che dello stage \xE8 uno degli usi.</p></div>
-    <div class="panel"><b style="color:var(--navy)">\u{1F3AC} Proiezioni</b>
+      <p class="muted" style="font-size:.78rem;margin-top:4px">La <b>platea</b> \u2014 palco, sedute, chi \xE8 a sedere e prenotazione al banco toccando la seduta \u2014 sta nella tab <b>Pianta</b>. Qui il programma e il conto degli ingressi, senza ripetere la stessa mappa due volte.</p></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F3AC} Proiezioni e spettacoli</b>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
     <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
         <div><b style="color:var(--navy)">\${esc(d.proiezione.titolo || '')}</b>
           <div class="muted" style="font-size:.82rem">\${esc(d.proiezione.data)} \xB7 \${esc(d.proiezione.ora)}</div></div>
         <div style="text-align:right"><b>\${d.coperti_prenotati}</b> <span class="muted">in sala</span>
-          <div class="muted" style="font-size:.82rem">\${d.standard_liberi} standard \xB7 \${d.posti_liberi} liberi</div></div>
-      </div>
-      <div style="margin-top:10px">\${[...d.tavoli].sort((a, b) => a.numero - b.numero).map(posto).join('')}</div>
-      <p class="muted" style="font-size:.74rem;margin-top:6px">\u{1F7E9} libero \xB7 \u{1F7E8} extra (si apre a standard esauriti) \xB7 \u{1F7E5} occupato</p></div>
+          <div class="muted" style="font-size:.82rem">\${d.standard_liberi} standard liberi \xB7 \${d.posti_liberi} in tutto</div></div>
+      </div></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F39F}\uFE0F Ingressi</b>
       <div style="margin-top:8px">\${(d.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
-        <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 posti \${p.tavoli.join(', ')}</span></span>
+        <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 posti \${p.tavoli.join(', ')}\${/cena/i.test(p.note || '') ? ' \xB7 con cena' : ''}</span></span>
         <button class="btn ghost sm" data-cineann="\${p.id}">Annulla</button></div>\`).join('') || '<p class="muted">Nessun ingresso prenotato.</p>'}</div>
       <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
         <input id="cine_chi" placeholder="Tessera o nome" style="min-width:140px">
@@ -8891,7 +8946,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.86";
+var VERSION = "4.87";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13323,6 +13378,27 @@ adminRouter.put("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
   audit(req.adminUser.username, "articolo_capsule", "magazzino_articoli", id, "");
   res.json({ ok: true, articolo_id: id || null });
 });
+adminRouter.post("/tavoli/layout/rigenera", requireCap("comande"), async (req, res) => {
+  const amb = ["garden", "carta", "stage"].includes(String(req.body?.ambiente)) ? String(req.body.ambiente) : null;
+  if (!amb) return res.status(400).json({ error: "Ambiente non valido" });
+  const attive = await db.prepare(
+    "SELECT COUNT(*) n FROM prenotazioni_tavolo WHERE ambiente=? AND stato='prenotato' AND data>=date('now','-1 day')"
+  ).get(amb);
+  if (Number(attive?.n || 0) > 0) {
+    return res.status(409).json({ error: `Ci sono ${attive.n} prenotazioni attive in questo ambiente: liberale prima di ridisegnare la pianta.` });
+  }
+  const vecchie = await db.prepare("SELECT id FROM tavoli_layout WHERE ambiente=?").all(amb);
+  for (const l of vecchie) {
+    await db.prepare("UPDATE proiezioni SET layout_id=NULL WHERE layout_id=?").run(l.id);
+    await db.prepare("DELETE FROM tavoli WHERE layout_id=?").run(l.id);
+    await db.prepare("DELETE FROM tavoli_giorni WHERE layout_id=?").run(l.id);
+    await db.prepare("DELETE FROM tavoli_layout WHERE id=?").run(l.id);
+  }
+  const nuovo = await layoutPredefinito(amb);
+  if (amb === "stage") await db.prepare("UPDATE proiezioni SET layout_id=? WHERE layout_id IS NULL").run(nuovo.id);
+  audit(req.adminUser.username, "rigenera_pianta", "tavoli_layout", nuovo.id, amb);
+  res.json({ ok: true, layout: { id: nuovo.id, nome: nuovo.nome, ambiente: nuovo.ambiente } });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -14692,7 +14768,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 11:34" : "online";
+var BUILD = true ? "2026-08-19 13:03" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
