@@ -5237,10 +5237,6 @@ VIEWS.installa = async () => {
       <div class="grow"><div class="qrbox" style="max-width:200px;margin:12px auto">\${it.svg}</div></div>
       <div class="foot"><p class="muted brk" style="text-align:center;margin:0;font-size:12px">\${esc(it.url)}</p></div>
     </div>\`;
-  const tavoli = await api('/tavoli/sala').catch(() => null);
-  const optTav = tavoli && tavoli.tavoli.length
-    ? tavoli.tavoli.map(t => \`<option value="\${t.numero}">Tavolo \${t.numero}\${t.uniti && t.uniti.length ? ' (+' + t.uniti.join('+') + ')' : ''} \xB7 \${t.posti} p</option>\`).join('')
-    : '';
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F4F2} Installa le app</h3>
       <p class="muted">Inquadra il QR con la fotocamera del telefono per aprire l'app, poi usa <b>\u201CAggiungi a schermata Home\u201D</b> (Android: Chrome \xB7 iPhone/iPad: Safari) per installarla. Nessuno store, nessun account.</p>
@@ -5248,35 +5244,8 @@ VIEWS.installa = async () => {
     </div>
     <div class="cardgrid">\${d.items.map(card).join('')}</div>
     <div class="panel"><h3>\u{1F354} QR self-order al tavolo</h3>
-      <p class="muted" style="margin-bottom:10px">Il QR da mettere sul tavolo: il cliente inquadra, vede il men\xF9 del punto e ordina. La comanda entra nella stessa coda dello staff.\${tavoli ? \` I tavoli sono quelli della <b>disposizione \u201C\${esc(tavoli.layout.nome)}\u201D</b>.\` : ''}</p>
-      <div class="row">
-        <label>Punto <select id="qo_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label>
-        \${optTav ? \`<label>Tavolo <select id="qo_tav"><option value="">\u2014 nessuno \u2014</option>\${optTav}</select></label>\`
-                 : '<input id="qo_tav" placeholder="n\xB0 tavolo (facolt.)" style="width:150px">'}
-        <button class="btn gold sm" id="qo_go">Genera QR</button>
-        \${optTav ? '<button class="btn ghost sm" id="qo_all">\u{1F4C4} Tutti i tavoli</button>' : ''}
-      </div>
-      <div id="qo_out"></div></div>\`;
-  $('#qo_go').onclick = async () => {
-    const r = await api('/qr-ordina?punto=' + encodeURIComponent($('#qo_punto').value) + '&tavolo=' + encodeURIComponent($('#qo_tav').value || ''));
-    $('#qo_out').innerHTML = \`<div class="cardgrid" style="--cardmin:240px"><div class="panel">
-        <h3 style="margin-bottom:0;text-align:center">\${esc(r.punto)}\${r.tavolo ? ' \xB7 Tavolo ' + esc(r.tavolo) : ''}</h3>
-        <div class="grow"><div class="qrbox" style="max-width:200px;margin:12px auto">\${r.svg}</div></div>
-        <div class="foot"><p class="muted brk" style="text-align:center;font-size:12px">\${esc(r.url)}</p>
-          <button class="btn ghost sm" id="qo_print" style="width:100%">\u{1F5A8}\uFE0F Stampa</button></div></div></div>\`;
-    $('#qo_print').onclick = () => stampaQr([r]);
-  };
-  if ($('#qo_all')) $('#qo_all').onclick = async () => {
-    const punto = $('#qo_punto').value;
-    const out = [];
-    for (const t of tavoli.tavoli) out.push(await api(\`/qr-ordina?punto=\${encodeURIComponent(punto)}&tavolo=\${t.numero}\`));
-    $('#qo_out').innerHTML = \`<div class="cardgrid" style="--cardmin:180px">\${out.map(r => \`<div class="panel">
-        <h3 style="margin-bottom:0;text-align:center">Tavolo \${esc(String(r.tavolo))}</h3>
-        <div class="grow"><div class="qrbox" style="max-width:150px;margin:10px auto">\${r.svg}</div></div>
-        <div class="foot"><p class="muted" style="text-align:center;margin:0;font-size:11px">\${esc(r.punto)}</p></div></div>\`).join('')}</div>
-      <div class="row" style="margin-top:12px"><button class="btn gold sm" id="qo_printall">\u{1F5A8}\uFE0F Stampa tutti (uno per foglio)</button></div>\`;
-    $('#qo_printall').onclick = () => stampaQr(out);
-  };
+      <p class="muted">I QR dei tavoli si generano nell'app <b>Bussola Crew \xB7 tab Pianta</b>, dove ci sono i tavoli veri della disposizione: se ne aggiungi uno il QR c'\xE8, se ne unisci due sparisce quello assorbito. Qui non si duplica.</p>
+    </div>\`;
   $('#qr_print').onclick = () => {
     const w = window.open('', '_blank');
     if (!w) { alert('Consenti i popup per stampare.'); return; }
@@ -8145,29 +8114,16 @@ VIEWS.serate = async () => {
 
 // ===== MODULO CASA DI CARTA (cap 'cdc') \u2014 caff\xE8, giochi, prestiti ===========================
 VIEWS.cdc = async () => {
-  const [caffe, giochi, prestiti] = await Promise.all([
-    api('/cdc/caffe').catch(() => ({ config: {}, conte: [] })),
+  // Le capsule sono un articolo di magazzino come gli altri: la conta si fa con la rettifica
+  // nel modulo Magazzino, dove ci sono carico, scarico e rettifica per ogni articolo. Tenerne
+  // una copia qui significava due contabilita' che divergono, ed e' quello che e' successo.
+  const [giochi, prestiti] = await Promise.all([
     api('/cdc/giochi').catch(() => []),
     api('/cdc/prestiti').catch(() => [])
   ]);
-  const cfg = caffe.config || {};
   const fuori = prestiti.filter(p => !p.ora_fine);
   const gopts = giochi.map(g => \`<option value="\${g.id}">\${esc(g.nome)}</option>\`).join('');
   $('#view').innerHTML = \`
-    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <b style="color:var(--navy)">\u2615 \${cfg.articolo ? esc(cfg.articolo.nome) : 'Caff\xE8'} \xB7 <b style="font-size:1.2rem">\${esc(String(cfg.giacenza ?? 0))}</b> \${cfg.articolo ? esc(cfg.articolo.unita) : ''}</b>
-      \${caffe.da_riordinare ? \`<span class="tag no">da riordinare \xB7 suggerite \${esc(String(caffe.ordine_suggerito || 0))}</span>\` : '<span class="tag ok">scorta ok</span>'}
-    </div>
-    <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
-      <input id="cdc_g" type="number" inputmode="numeric" placeholder="capsule contate" style="width:150px">
-      <button class="btn gold sm" id="cdc_conta">Registra conta</button>
-    </div>
-    <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
-      <label class="muted" style="font-size:.78rem">Articolo di magazzino <select id="cdc_art"><option value="">\u2014 scegli l'articolo \u2014</option></select></label>
-      <button class="btn ghost sm" id="cdc_artsave">Salva</button>
-    </div>
-    <div id="cdc_artnota" class="muted" style="font-size:.74rem;margin-top:4px"></div>
-    <p class="muted" style="font-size:.76rem;margin-top:6px">La conta non tiene una contabilit\xE0 sua: la differenza rispetto alla conta precedente <b>esce dal magazzino</b> come scarico della zona Casa di Carta.</p></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F3B2} Prestiti in corso (\${fuori.length})</b>
       <div style="margin-top:8px">\${fuori.map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
         <span><b>\${esc(p.gioco_nome)}</b> <span class="muted">\xB7 \${esc(p.giocatore || '\u2014')}\${p.tavolo ? ' \xB7 tavolo ' + esc(String(p.tavolo)) : ''} \xB7 dalle \${esc(p.ora_inizio || '')}</span></span>
@@ -8185,24 +8141,6 @@ VIEWS.cdc = async () => {
       <div style="margin-top:8px">\${giochi.map(g => \`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
         <span>\${esc(g.nome)} <span class="muted">\xB7 \${esc(g.categoria || '')}</span></span>
         <span class="tag \${g.stato === 'ok' ? 'ok' : 'no'}">\${esc(g.stato)} \xB7 \${esc(String(g.quantita))}</span></div>\`).join('') || '<p class="muted">Inventario vuoto.</p>'}</div></div>\`;
-  api('/cdc/caffe/articolo').then((a) => {
-    const sel = $('#cdc_art'); if (!sel) return;
-    const attuale = a.articolo_id || (a.attuale ? a.attuale.id : 0);
-    sel.innerHTML = '<option value="">\u2014 scegli l\\'articolo \u2014</option>' + a.candidati.map(c => \`<option value="\${c.id}" \${c.id === attuale ? 'selected' : ''}>\${esc(c.nome)}\${c.zona ? ' \xB7 ' + esc(c.zona) : ''} (\${esc(String(c.giacenza))} \${esc(c.unita)})</option>\`).join('');
-    const nota = $('#cdc_artnota');
-    if (nota) nota.textContent = a.articolo_id ? '' : a.attuale ? \`Dedotto dal nome: "\${a.attuale.nome}". Confermalo con Salva, cos\xEC non cambia quando aggiungi altri prodotti.\` : 'Nessun articolo collegato: la conta non pu\xF2 scaricare il magazzino.';
-  }).catch(() => { });
-  if ($('#cdc_artsave')) $('#cdc_artsave').onclick = async () => {
-    await api('/cdc/caffe/articolo', { method: 'PUT', body: JSON.stringify({ articolo_id: Number($('#cdc_art').value) || 0 }) });
-    show('cdc');
-  };
-  $('#cdc_conta').onclick = async () => {
-    const g = Number($('#cdc_g').value);
-    if (!Number.isFinite(g) || g < 0) { alert('Indica le capsule contate.'); return; }
-    const r = await api('/cdc/caffe/conta', { method: 'POST', body: JSON.stringify({ giacenza: g }) });
-    if (r && r.scaricato) alert(\`Scaricate \${r.scaricato.quantita} capsule da "\${r.scaricato.articolo}" \xB7 restano \${r.scaricato.giacenza}.\`);
-    show('cdc');
-  };
   $('#cdc_presta').onclick = async () => {
     const sel = $('#cdc_gioco'); if (!sel || !sel.value) { alert('Nessun gioco in inventario.'); return; }
     const nome = sel.options[sel.selectedIndex].textContent;
@@ -8301,9 +8239,7 @@ VIEWS.pianta = async () => {
       <div class="row" style="gap:6px;align-items:center">
     <span class="tag" style="background:rgba(0,0,0,.06)">\${PIANTA.ambiente === 'garden' ? '\u{1F33F} Garden' : PIANTA.ambiente === 'carta' ? '\u{1F4DA} Casa di Carta' : '\u{1F3AD} Stage'}</span>
         <input type="date" id="p_data" value="\${PIANTA.data}">
-        <button class="btn \${PIANTA.modo === 'servizio' ? 'gold' : 'ghost'} sm" data-pmodo="servizio">\u{1F37D}\uFE0F Servizio</button>
-        <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" data-pmodo="disposizione">\u270B Disposizione</button>
-        \${PIANTA.ambiente === 'stage' ? '' : '<button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli di questa disposizione">\u{1F533} QR tavoli</button>'}
+        <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" id="p_edit" title="Sposta e modifica i tavoli">\${PIANTA.modo === 'disposizione' ? '\u2713 Sto modificando' : '\u270B Modifica pianta'}</button>
       </div></div>
     <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
       \${turniBtn}
@@ -8311,19 +8247,26 @@ VIEWS.pianta = async () => {
       <label class="muted" style="font-size:.78rem">Disposizione <select id="p_layout">\${layoutOpts}</select></label>
     </div></div>\`;
 
-  const stato = PIANTA.modo === 'servizio'
-    ? \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <span>Turno <b>\${esc(PIANTA.turno)}</b> \xB7 <b>\${turnoDati.coperti_prenotati}</b> coperti prenotati</span>
+  // Una sola videata. Lo stato del turno c'e' sempre; gli strumenti di disegno compaiono
+  // quando si sta modificando, ma la pagina e la mappa restano quelle: non serve una seconda
+  // schermata che mostra le stesse cose.
+  const stato = \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span>Turno <b>\${esc(PIANTA.turno)}</b> \xB7 <b>\${turnoDati.coperti_prenotati}</b> \${PIANTA.ambiente === 'stage' ? 'in sala' : 'coperti prenotati'}</span>
         <span class="muted">\${turnoDati.posti_liberi} posti liberi su \${turnoDati.posti_totali}</span>
-      </div></div>\`
-    : \`<div class="panel"><p class="muted" style="font-size:.8rem;margin:0">Trascina \${PIANTA.ambiente === 'stage' ? 'i posti' : 'i tavoli'} per riprodurre \${PIANTA.ambiente === 'carta' ? 'la sala' : PIANTA.ambiente === 'stage' ? 'la platea' : 'la sala di stasera'}. Tocca un tavolo per cambiarne i posti o toglierlo dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La prenotazione assegna sempre <b>dal centro verso l'esterno</b>, quindi la disposizione che disegni qui decide anche l'ordine di riempimento.</p>
+      </div>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
-        <button class="btn gold sm" id="p_salva">\u{1F4BE} Salva disposizione</button>
-        <button class="btn ghost sm" id="p_addt">+ Tavolo</button>
-        <button class="btn ghost sm" id="p_nuovo">\u271A Nuova disposizione</button>
-        <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>
+        \${PIANTA.modo === 'disposizione' ? \`
+          <button class="btn gold sm" id="p_salva">\u{1F4BE} Salva</button>
+          <button class="btn ghost sm" id="p_addt">+ \${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'}</button>
+          <button class="btn ghost sm" id="p_nuovo">\u271A Nuova disposizione</button>
+          <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>\` : ''}
+        \${PIANTA.ambiente === 'stage' ? '' : '<button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli disegnati">\u{1F533} QR tavoli</button>'}
         <button class="btn ghost sm" id="p_reset">\u21BA Ripristina predefinita</button>
-      </div><div id="p_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
+      </div>
+      <p class="muted" style="font-size:.76rem;margin-top:6px">\${PIANTA.modo === 'disposizione'
+        ? \`Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La disposizione decide anche l'ordine di riempimento, che va sempre <b>dal centro verso l'esterno</b>.\`
+        : \`\u{1F7E9} libero \xB7 \u{1F7E8} \${PIANTA.ambiente === 'stage' ? 'seduta extra' : 'tavolo extra'} (si apre a pieno) \xB7 \u{1F7E5} occupato \xB7 \u2B1C arredo \u2014 <b>tocca \${PIANTA.ambiente === 'stage' ? 'una seduta' : 'un tavolo'} per prenotarla al banco</b>\`}</p>
+      <div id="p_msg" class="muted" style="font-size:.8rem;margin-top:4px"></div></div>\`;
 
   // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
   const sorgente = (PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli).filter(t => PIANTA.modo === 'disposizione' || t.attivo !== 0);
@@ -8345,7 +8288,7 @@ VIEWS.pianta = async () => {
       </div>\`;
   }).join('');
 
-  const prenBox = PIANTA.modo === 'servizio' ? \`<div class="panel"><b style="color:var(--navy)">Prenotazioni del turno</b>
+  const prenBox = \`<div class="panel"><b style="color:var(--navy)">Prenotazioni del turno</b>
       <div style="margin-top:8px">\${(turnoDati.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
         <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 tavoli \${p.tavoli.join(', ')} \xB7 \${p.origine === 'crew' ? 'al banco' : 'app'}</span></span>
         <button class="btn ghost sm" data-pann="\${p.id}">Annulla</button></div>\`).join('') || '<p class="muted">Nessuna prenotazione per questo turno.</p>'}</div>
@@ -8353,10 +8296,9 @@ VIEWS.pianta = async () => {
         <input id="p_nome" placeholder="Nome o tessera" style="min-width:140px">
         <input id="p_pers" type="number" min="1" value="2" style="width:70px" title="Persone">
         <button class="btn gold sm" id="p_pren">+ Prenota al banco</button>
-      </div><div id="p_msg2" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\` : '';
+      </div><div id="p_msg2" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
 
   $('#view').innerHTML = testa + stato + \`
-    \${PIANTA.modo === 'servizio' ? \`<p class="muted" style="font-size:.74rem;margin:0 0 6px">\u{1F7E9} libero \xB7 \u{1F7E8} \${PIANTA.ambiente === 'stage' ? 'seduta extra' : 'tavolo extra'} (si apre a pieno) \xB7 \u{1F7E5} occupato \xB7 \u2B1C arredo \u2014 <b>tocca \${PIANTA.ambiente === 'stage' ? 'una seduta' : 'un tavolo'} per prenotarlo al banco</b></p>\` : ''}
     <div class="panel"><div id="p_canvas" style="position:relative;width:100%;height:64vh;min-height:340px;border-radius:14px;
       background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:1px solid var(--line);overflow:hidden">
       <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
@@ -8368,7 +8310,7 @@ VIEWS.pianta = async () => {
   // I QR si generano DAI TAVOLI DISEGNATI: se sono sei, sono sei. Nessun numero fisso.
   if ($('#p_qr')) $('#p_qr').onclick = () => stampaQrTavoli(sorgente.filter(t => (t.tipo || 'standard') !== 'arredo' && t.attivo !== 0), PIANTA.ambiente);
   document.querySelectorAll('[data-ptur]').forEach(b => b.onclick = () => { PIANTA.turno = b.dataset.ptur; show('pianta'); });
-  document.querySelectorAll('[data-pmodo]').forEach(b => b.onclick = () => { PIANTA.modo = b.dataset.pmodo; PIANTA.sporco = false; show('pianta'); });
+  $('#p_edit').onclick = () => { PIANTA.modo = PIANTA.modo === 'disposizione' ? 'servizio' : 'disposizione'; PIANTA.sporco = false; show('pianta'); };
   $('#p_layout').onchange = async () => {
     await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: Number($('#p_layout').value) }) });
     PIANTA.sporco = false; show('pianta');
@@ -8386,6 +8328,11 @@ VIEWS.pianta = async () => {
     catch (e) { $('#p_msg2').textContent = e.message; }
   };
 
+  $('#p_reset').onclick = async () => {
+    if (!confirm('Ridisegnare la pianta predefinita di questo ambiente dai parametri correnti? Le disposizioni personalizzate di questo ambiente vengono perse.')) return;
+    try { await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) }); PIANTA.sporco = false; show('pianta'); }
+    catch (e) { $('#p_msg').textContent = e.message; }
+  };
   // In servizio il tocco su un tavolo (o su una seduta) apre la prenotazione al banco proprio
   // su quello: serve a chi passa dal chiosco e non usa l'app.
   if (PIANTA.modo === 'servizio') {
@@ -8466,31 +8413,26 @@ VIEWS.pianta = async () => {
     el.addEventListener('pointercancel', fine);
   });
 
-  $('#p_addt').onclick = () => {
+  if ($('#p_addt')) $('#p_addt').onclick = () => {
     const n = PIANTA.tavoli.reduce((m, t) => Math.max(m, t.numero), 0) + 1;
     PIANTA.tavoli.push({ numero: n, posti: 4, forma: 'tondo', x: 50, y: 50, attivo: 1 });
     PIANTA.sporco = true; show('pianta');
   };
-  $('#p_salva').onclick = async () => {
+  if ($('#p_salva')) $('#p_salva').onclick = async () => {
     try {
       await api('/tavoli/layout/' + PIANTA.layoutId, { method: 'PUT', body: JSON.stringify({ tavoli: PIANTA.tavoli }) });
       PIANTA.sporco = false;
       $('#p_msg').textContent = '\u2713 Disposizione salvata.';
     } catch (e) { $('#p_msg').textContent = 'Salvataggio non riuscito: ' + e.message; }
   };
-  $('#p_nuovo').onclick = async () => {
+  if ($('#p_nuovo')) $('#p_nuovo').onclick = async () => {
     const nome = prompt('Nome della disposizione (es. "Concerto", "Cena unica")');
     if (!nome) return;
     const r = await api('/tavoli/layout', { method: 'POST', body: JSON.stringify({ nome, copia_da: PIANTA.layoutId }) });
     await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: r.id }) });
     PIANTA.sporco = false; show('pianta');
   };
-  $('#p_reset').onclick = async () => {
-    if (!confirm('Ridisegnare la pianta predefinita di questo ambiente dai parametri correnti? Le disposizioni personalizzate di questo ambiente vengono perse.')) return;
-    try { await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) }); PIANTA.sporco = false; show('pianta'); }
-    catch (e) { $('#p_msg').textContent = e.message; }
-  };
-  $('#p_giorno').onclick = async () => {
+  if ($('#p_giorno')) $('#p_giorno').onclick = async () => {
     await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: PIANTA.layoutId }) });
     $('#p_msg').textContent = '\u2713 Questa disposizione vale per il ' + PIANTA.data + '.';
   };
@@ -8946,7 +8888,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.87";
+var VERSION = "4.88";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13287,7 +13229,8 @@ adminRouter.get("/carta/sala", requireCap("cdc"), async (req, res) => {
     data,
     turno,
     turni: t.map((x) => ({ turno: x, etichetta: etichettaTurno(x), scopo: scopoTurno(x) })),
-    tavoli: st.tavoli.map((x) => ({ ...x, prestiti: perTavolo[x.numero] || [] })),
+    // Reception e angolo caffe' stanno sulla pianta, non nell'elenco dei tavoli prenotabili.
+    tavoli: st.tavoli.filter((x) => (x.tipo || "standard") !== "arredo").map((x) => ({ ...x, prestiti: perTavolo[x.numero] || [] })),
     prenotazioni: st.prenotazioni,
     prestiti_senza_tavolo: prestiti.filter((p) => !p.tavolo),
     minimo: await par("carta_numero_legale") ? Number(await par("carta_min_giocatori")) : null
@@ -14768,7 +14711,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 13:03" : "online";
+var BUILD = true ? "2026-08-19 13:27" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
