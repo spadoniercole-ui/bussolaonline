@@ -1603,6 +1603,18 @@ async function migrate() {
     }
   } catch (_) {
   }
+  await addIfMissing("rifiuti_calendario", "attivo", "attivo INTEGER NOT NULL DEFAULT 1");
+  try {
+    if (await getSetting("rifiuti_attivo_v1", "") !== "v1") {
+      const primo = await db.prepare("SELECT id FROM rifiuti_calendario ORDER BY ordine,id LIMIT 1").get();
+      if (primo) {
+        await db.prepare("UPDATE rifiuti_calendario SET attivo=0").run();
+        await db.prepare("UPDATE rifiuti_calendario SET attivo=1 WHERE id=?").run(primo.id);
+      }
+      await setSetting("rifiuti_attivo_v1", "v1");
+    }
+  } catch (_) {
+  }
   try {
     if (await getSetting("cdc_set_separati", "") !== "v1") {
       const vecchio = await db.prepare("SELECT * FROM cdc_giochi WHERE nome='Set di pedine e scacchi'").get();
@@ -2468,6 +2480,36 @@ var init_parametri = __esm({
         aiuto: "Cosi' i tavoli girano e non restano occupati dagli stessi dalla mattina alla sera."
       },
       // ---- Cinema ----
+      {
+        chiave: "stage_posti_standard",
+        gruppo: "Cinema",
+        tipo: "numero",
+        predefinito: 40,
+        min: 4,
+        max: 200,
+        etichetta: "Posti standard in platea",
+        aiuto: "Quante sedute davanti al palco. Cambiandolo qui, la disposizione predefinita della platea si ridisegna."
+      },
+      {
+        chiave: "stage_posti_extra_n",
+        gruppo: "Cinema",
+        tipo: "numero",
+        predefinito: 12,
+        min: 0,
+        max: 100,
+        etichetta: "Posti extra in platea",
+        aiuto: "Le sedute in fondo, che si aprono solo a standard esauriti."
+      },
+      {
+        chiave: "stage_contributo",
+        gruppo: "Cinema",
+        tipo: "numero",
+        predefinito: 2,
+        min: 0,
+        max: 20,
+        etichetta: "Contributo per il solo spettacolo (\u20AC)",
+        aiuto: "Chi cena al Garden ha gia' il suo posto davanti al palco. Chi viene solo per l'esibizione versa questo contributo all'ingresso. Zero = ingresso libero."
+      },
       {
         chiave: "cinema_posti_extra",
         gruppo: "Cinema",
@@ -5892,7 +5934,8 @@ VIEWS.bussola = async () => {
       </tr>\`).join('')}</tbody></table>\` : \`<p class="muted" style="font-size:.8rem">Prima aggiungi almeno un tipo di rifiuto nella legenda qui sopra.</p>\`;
     return \`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px">
       <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-        <b style="font-size:1rem;color:var(--navy)">\${esc(c.periodo)}</b>
+        <label class="check" style="margin:0" title="Solo i periodi accesi si vedono nell'app dei soci"><input type="checkbox" id="rc_on_\${esc(c.periodo)}" \${c.attivo === false ? '' : 'checked'}> <b style="font-size:1rem;color:var(--navy)">\${esc(c.periodo)}</b></label>
+        \${c.attivo === false ? '<span class="tag">non in corso</span>' : '<span class="tag ok">in corso</span>'}
         <span class="muted" style="font-size:.78rem;margin-left:6px">Conferimento</span>
         <input id="rc_ini_\${esc(c.periodo)}" value="\${esc(c.inizio_conf || '')}" style="width:64px" placeholder="18:30"><span class="muted">\u2013</span><input id="rc_fin_\${esc(c.periodo)}" value="\${esc(c.fine_conf || '')}" style="width:64px" placeholder="21:30">
         <span class="muted" style="font-size:.78rem">\xB7 Ritiro</span><input id="rc_rit_\${esc(c.periodo)}" value="\${esc(c.ora_ritiro || '')}" style="width:64px" placeholder="22:00">
@@ -5903,7 +5946,7 @@ VIEWS.bussola = async () => {
     </div>\`;
   }).join('');
   const calendario = \`<div class="panel"><h3>\u267B\uFE0F Rifiuti \xB7 calendario conferimento</h3>
-    <p class="muted" style="margin-bottom:12px">Per ogni periodo, imposta gli orari e <b>clicca le caselle</b>: ogni riga \xE8 un rifiuto, ogni colonna un giorno. Un giorno pu\xF2 avere pi\xF9 rifiuti (es. venerd\xEC: Carta <i>e</i> Vetro). La casella accesa mostra il colore della legenda.</p>
+    <p class="muted" style="margin-bottom:12px"><b>Nell'app dei soci si vede solo il periodo acceso</b>: spunta quello in corso e spegni gli altri, invece di mostrarli tutti uno sotto l'altro. Per ogni periodo imposta gli orari e <b>clicca le caselle</b>: ogni riga \xE8 un rifiuto, ogni colonna un giorno. Un giorno pu\xF2 avere pi\xF9 rifiuti (es. venerd\xEC: Carta <i>e</i> Vetro). La casella accesa mostra il colore della legenda.</p>
     \${periodBlocks || \`<p class="muted">Nessun periodo. Aggiungine uno qui sotto.</p>\`}
     <div class="row" style="margin-top:6px"><input id="rc_new_per" placeholder="Nuovo periodo (es. Invernale)" style="max-width:220px"><button class="btn gold sm" id="rc_add">+ Aggiungi periodo</button></div></div>\`;
   $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>Contenuti guida</h3>
@@ -5924,7 +5967,8 @@ VIEWS.bussola = async () => {
     const per = b.dataset.rcsave; const giorni = {};
     RIF_DAYS.forEach(([d]) => giorni[d] = [...document.querySelectorAll(\`.rc_tog.active[data-per="\${CSS.escape(per)}"][data-day="\${d}"]\`)].map(x => x.dataset.tipo));
     const gv = (p) => (document.getElementById('rc_' + p + '_' + per) || {}).value || '';
-    await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ inizio_conf: gv('ini'), fine_conf: gv('fin'), ora_ritiro: gv('rit'), giorni }) });
+    const on = document.getElementById('rc_on_' + per);
+    await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ inizio_conf: gv('ini'), fine_conf: gv('fin'), ora_ritiro: gv('rit'), giorni, attivo: on ? on.checked : true }) });
     b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000);
   });
   document.querySelectorAll('[data-rcdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il periodo?')) return; await api('/rifiuti/calendario/' + encodeURIComponent(b.dataset.rcdel), { method: 'DELETE' }); show('bussola'); });
@@ -6731,7 +6775,6 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="pianta">\u{1FA91} Pianta</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
-      <button data-v="scorte">\u{1F4CA} Giacenze</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
       <button data-v="sport">\u{1F3C6} Sport</button>
       <button data-v="campi">\u{1F3BE} Campi</button>
@@ -6739,7 +6782,6 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="cdc">\u{1F4DA} Casa di Carta</button>
       <button data-v="fitness">\u{1F9D8} Fitness</button>
       <button data-v="cinema">\u{1F3AC} Cinema</button>
-      <button data-v="scortecdc">\u{1F4CA} Scorte</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
     </div>
@@ -6981,7 +7023,7 @@ function applyZona() {
   tog('pianta', ['garden', 'cdc', 'cinema'].includes(ZONA));
   tog('bar', ZONA === 'bar');
   tog('kds', ZONA === 'cucina');
-  tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
+  tog('scorte', false);        // il magazzino si legge nel suo modulo, non da ogni zona
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
   tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
   tog('campi', ZONA === 'campi');
@@ -6989,7 +7031,7 @@ function applyZona() {
   tog('cdc', ZONA === 'cdc');
   tog('fitness', ZONA === 'fitness');
   tog('cinema', ZONA === 'cinema');
-  tog('scortecdc', hasMag && ZONA === 'cdc');                      // Casa di Carta: zona del magazzino Centrale
+  tog('scortecdc', false);     // idem per la Casa di Carta
   tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
@@ -7322,7 +7364,10 @@ VIEWS.tavoli = async () => {
   // un'unione spariscono ma le loro comande confluiscono sul tavolo che li ha assorbiti.
   const sala = await api('/tavoli/sala').catch(() => null);
   const render = async () => {
-    const comande = (await api('/comande').catch(() => [])).filter(c => c.zona !== 'bar');   // solo Garden
+    // Solo comande del GARDEN e ancora aperte: prima bastava "non del bar", e le comande
+    // senza zona o di altri punti finivano sui tavoli.
+    const APERTE = ['aperta', 'in_preparazione', 'pronta'];
+    const comande = (await api('/comande').catch(() => [])).filter(c => c.zona === 'garden' && APERTE.includes(c.stato));
     const verso = (sala && sala.verso) || {};
     const byTable = {};
     for (const c of comande) {
@@ -8222,10 +8267,11 @@ let PIANTA = { data: '', turno: '', modo: 'servizio', layoutId: null, tavoli: []
 VIEWS.pianta = async () => {
   if (!PIANTA.data) PIANTA.data = oggiISO();
   // La pianta segue il modulo da cui la si apre: Garden, Casa di Carta o Stage.
-  const ambDaZona = { garden: 'garden', cdc: 'carta', cinema: 'stage' }[ZONA];
-  if (ambDaZona && !PIANTA.forzato) PIANTA.ambiente = ambDaZona;
+  // L'ambiente e' quello del modulo da cui si entra, e non si cambia: chi ha il permesso dello
+  // Stage non deve poter spostare i tavoli del Garden. E' il senso stesso dei permessi.
+  PIANTA.ambiente = { garden: 'garden', cdc: 'carta', cinema: 'stage' }[ZONA] || 'garden';
   const [conf, turnoDati] = await Promise.all([
-    api('/tavoli/layout').catch(() => ({ layout: [], giorni: [], turni: ['20:00', '21:30'] })),
+    api('/tavoli/layout?ambiente=' + PIANTA.ambiente).catch(() => ({ layout: [], giorni: [], turni: ['20:00', '21:30'] })),
     api(\`/tavoli/turno?data=\${PIANTA.data}&ambiente=\${PIANTA.ambiente}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch(() => null)
   ]);
   if (!turnoDati) { $('#view').innerHTML = '<div class="panel"><p class="muted">Pianta non disponibile.</p></div>'; return; }
@@ -8247,7 +8293,7 @@ VIEWS.pianta = async () => {
   const testa = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <b style="color:var(--navy)">\u{1F5FA}\uFE0F \${PIANTA.ambiente === 'carta' ? 'Sala della Casa di Carta' : PIANTA.ambiente === 'stage' ? 'Platea dello Stage' : 'Pianta del Garden'}</b>
       <div class="row" style="gap:6px;align-items:center">
-        <select id="p_amb" title="Ambiente">\${['garden', 'carta', 'stage'].map(a => \`<option value="\${a}" \${PIANTA.ambiente === a ? 'selected' : ''}>\${a === 'garden' ? '\u{1F33F} Garden' : a === 'carta' ? '\u{1F4DA} Casa di Carta' : '\u{1F3AD} Stage'}</option>\`).join('')}</select>
+    <span class="tag" style="background:rgba(0,0,0,.06)">\${PIANTA.ambiente === 'garden' ? '\u{1F33F} Garden' : PIANTA.ambiente === 'carta' ? '\u{1F4DA} Casa di Carta' : '\u{1F3AD} Stage'}</span>
         <input type="date" id="p_data" value="\${PIANTA.data}">
         <button class="btn \${PIANTA.modo === 'servizio' ? 'gold' : 'ghost'} sm" data-pmodo="servizio">\u{1F37D}\uFE0F Servizio</button>
         <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" data-pmodo="disposizione">\u270B Disposizione</button>
@@ -8276,17 +8322,18 @@ VIEWS.pianta = async () => {
   const sorgente = (PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli).filter(t => PIANTA.modo === 'disposizione' || t.attivo !== 0);
   const box = sorgente.map(t => {
     const occupato = PIANTA.modo === 'servizio' && !t.libero;
-    const raggio = 22 + Math.min(16, Number(t.posti) * 2);
+    const palco = (t.tipo || 'standard') === 'arredo' && t.numero === 99;
+    const raggio = palco ? 30 : (t.tipo || 'standard') === 'arredo' ? 22 : 22 + Math.min(16, Number(t.posti) * 2);
     const arredo = (t.tipo || 'standard') === 'arredo';
     const bg = arredo ? '#8d8477' : PIANTA.modo === 'disposizione'
       ? (t.attivo === 0 ? '#d9d4c6' : 'var(--accent)')
       : (occupato ? '#b14a35' : '#2e6b45');
     return \`<div class="tv" data-tv="\${t.numero}" style="position:absolute;left:\${t.x}%;top:\${t.y}%;transform:translate(-50%,-50%);
-        width:\${raggio * 2}px;height:\${raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
+        width:\${palco ? 200 : raggio * 2}px;height:\${palco ? 44 : raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
         background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
         font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none">
-        <span>\${arredo ? (t.numero === 90 ? '\u{1F6CE}\uFE0F' : '\u2615') : t.numero + ((t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : '')}</span>
-        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 90 ? 'reception' : 'caff\xE8') : occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
+        <span>\${arredo ? (t.numero === 99 ? '\u{1F3AD}' : t.numero === 90 ? '\u{1F6CE}\uFE0F' : '\u2615') : t.numero + ((t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : '')}</span>
+        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 99 ? 'PALCO' : t.numero === 90 ? 'reception' : 'caff\xE8') : occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
       </div>\`;
   }).join('');
 
@@ -8311,7 +8358,6 @@ VIEWS.pianta = async () => {
   $('#p_data').onchange = () => { PIANTA.data = $('#p_data').value; PIANTA.sporco = false; show('pianta'); };
   // I QR si generano DAI TAVOLI DISEGNATI: se sono sei, sono sei. Nessun numero fisso.
   if ($('#p_qr')) $('#p_qr').onclick = () => stampaQrTavoli(sorgente.filter(t => (t.tipo || 'standard') !== 'arredo' && t.attivo !== 0), PIANTA.ambiente);
-  if ($('#p_amb')) $('#p_amb').onchange = () => { PIANTA.forzato = true; PIANTA.ambiente = $('#p_amb').value; PIANTA.turno = ''; PIANTA.sporco = false; show('pianta'); };
   document.querySelectorAll('[data-ptur]').forEach(b => b.onclick = () => { PIANTA.turno = b.dataset.ptur; show('pianta'); });
   document.querySelectorAll('[data-pmodo]').forEach(b => b.onclick = () => { PIANTA.modo = b.dataset.pmodo; PIANTA.sporco = false; show('pianta'); });
   $('#p_layout').onchange = async () => {
@@ -8845,7 +8891,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.85";
+var VERSION = "4.86";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -10959,19 +11005,20 @@ async function creaSalaCarta() {
   return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
 }
 async function creaPlateaIniziale() {
-  const std = Math.max(1, Number(await getSetting("stage_posti_standard", "40")) || 40);
-  const extra = Math.max(0, Number(await getSetting("stage_posti_extra", "12")) || 0);
+  const std = Math.max(1, Number(await par("stage_posti_standard")) || 40);
+  const extra = Math.max(0, Number(await par("stage_posti_extra_n")) || 0);
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'stage')").run("Platea");
   const id = Number(info.lastInsertRowid);
   const perFila = 10;
   const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,tipo) VALUES (?,?,?,?,?,?,?)");
+  await ins.run(id, 99, 0, "rettangolo", 50, 8, "arredo");
   const tot = std + extra;
   const file = Math.ceil(tot / perFila);
   for (let i = 0; i < tot; i++) {
     const col = i % perFila;
     const fila = Math.floor(i / perFila);
     const x = (col + 1) / (perFila + 1) * 100;
-    const y = 22 + fila / Math.max(1, file - 1) * 62;
+    const y = 24 + fila / Math.max(1, file - 1) * 68;
     await ins.run(id, i + 1, 1, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)), i < std ? "standard" : "extra");
   }
   return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
@@ -11503,7 +11550,7 @@ adminRouter.put("/luoghi/:id", requireCap("luoghi"), async (req, res) => {
 });
 adminRouter.get("/rifiuti", requireCap("guida"), async (req, res) => {
   const tipi = await db.prepare("SELECT id,nome,colore,ordine FROM rifiuti_tipi ORDER BY ordine,id").all();
-  const calendari = (await db.prepare("SELECT id,periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
+  const calendari = (await db.prepare("SELECT id,periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine,attivo FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {}, attivo: c.attivo !== 0 }));
   res.json({ tipi, calendari });
 });
 adminRouter.post("/rifiuti/tipo", requireCap("guida"), async (req, res) => {
@@ -11530,10 +11577,10 @@ adminRouter.put("/rifiuti/calendario/:periodo", requireCap("guida"), async (req,
   const per = req.params.periodo;
   const giorni = JSON.stringify(b.giorni || {});
   const ex = await db.prepare("SELECT id FROM rifiuti_calendario WHERE periodo=?").get(per);
-  if (ex) await db.prepare("UPDATE rifiuti_calendario SET inizio_conf=?,fine_conf=?,ora_ritiro=?,giorni=? WHERE periodo=?").run(b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, per);
+  if (ex) await db.prepare("UPDATE rifiuti_calendario SET inizio_conf=?,fine_conf=?,ora_ritiro=?,giorni=?,attivo=? WHERE periodo=?").run(b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, b.attivo === false ? 0 : 1, per);
   else {
     const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM rifiuti_calendario").get()).n;
-    await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine) VALUES (?,?,?,?,?,?)").run(per, b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, ord);
+    await db.prepare("INSERT INTO rifiuti_calendario (periodo,inizio_conf,fine_conf,ora_ritiro,giorni,ordine,attivo) VALUES (?,?,?,?,?,?,?)").run(per, b.inizio_conf || "", b.fine_conf || "", b.ora_ritiro || "", giorni, ord, b.attivo === false ? 0 : 1);
   }
   audit(req.adminUser.username, "modifica", "rifiuti_calendario", per);
   res.json({ ok: true });
@@ -12902,10 +12949,16 @@ adminRouter.put("/tavoli/giorno", requireCap("comande"), async (req, res) => {
 });
 adminRouter.get("/tavoli/turno", requireCap("comande"), async (req, res) => {
   const data = String(req.query.data || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const amb = ["garden", "carta"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : "garden";
-  const t = await turni(amb);
+  const amb = ["garden", "carta", "stage"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : "garden";
+  let t;
+  if (amb === "stage") {
+    const ev = await db.prepare("SELECT DISTINCT ora FROM proiezioni WHERE data=? AND stato='programmata' ORDER BY ora").all(data);
+    t = ev.length ? ev.map((x) => x.ora) : ["21:30"];
+  } else {
+    t = await turni(amb);
+  }
   const turno = t.includes(String(req.query.turno)) ? String(req.query.turno) : t[0];
-  res.json({ ...await statoTurno(data, turno, amb), turni: t.map((x) => ({ turno: x, etichetta: etichettaTurno(x), scopo: scopoTurno(x) })) });
+  res.json({ ...await statoTurno(data, turno, amb), turni: t.map((x) => ({ turno: x, etichetta: amb === "stage" ? "spettacolo " + x : etichettaTurno(x), scopo: amb === "stage" ? "stage" : scopoTurno(x) })) });
 });
 adminRouter.post("/tavoli/prenota", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
@@ -13305,6 +13358,13 @@ publicRouter.get("/menu", async (req, res) => {
   const rows = z === "bar" || z === "garden" ? await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z) : await db.prepare(base + " ORDER BY ordine,id").all();
   res.json(rows);
 });
+function zonaDaPunto(punto) {
+  const p = String(punto || "").toLowerCase();
+  if (p.includes("bar")) return "bar";
+  if (p.includes("carta")) return "carta";
+  if (p.includes("cucina")) return "cucina";
+  return "garden";
+}
 publicRouter.post("/self-order", async (req, res) => {
   const b = req.body || {};
   const st = await statoCompleto();
@@ -13320,7 +13380,7 @@ publicRouter.post("/self-order", async (req, res) => {
   const socio = chi ? await db.prepare("SELECT id FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(chi) : null;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", "garden", "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
+  const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", zonaDaPunto(punto), "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
   for (const r of righeIn) {
@@ -13398,7 +13458,7 @@ publicRouter.get("/albo", async (req, res) => {
 });
 publicRouter.get("/rifiuti", async (req, res) => {
   const tipi = await db.prepare("SELECT id,nome,colore FROM rifiuti_tipi ORDER BY ordine,id").all();
-  const cal = (await db.prepare("SELECT periodo,inizio_conf,fine_conf,ora_ritiro,giorni FROM rifiuti_calendario ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
+  const cal = (await db.prepare("SELECT periodo,inizio_conf,fine_conf,ora_ritiro,giorni FROM rifiuti_calendario WHERE attivo=1 ORDER BY ordine,id").all()).map((c) => ({ ...c, giorni: c.giorni ? JSON.parse(c.giorni) : {} }));
   res.json({ tipi, calendari: cal });
 });
 var COWO_MAX = 8;
@@ -13938,6 +13998,11 @@ publicRouter.get("/garden/turni", async (req, res) => {
   }
   res.json({ data, turni: out });
 });
+async function spettacoloDelGiorno(data) {
+  return await db.prepare(
+    "SELECT p.id,p.ora,f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.data=? AND p.stato='programmata' ORDER BY p.ora LIMIT 1"
+  ).get(data) || null;
+}
 publicRouter.post("/garden/prenota", async (req, res) => {
   if (!await par("garden_prenotazione_cena")) return res.status(409).json({ error: "La prenotazione della cena non e\u0300 attiva" });
   const b = req.body || {};
@@ -13950,7 +14015,29 @@ publicRouter.post("/garden/prenota", async (req, res) => {
   const r = await prenotaTavolo({ data, turno: String(b.turno || ""), persone: b.persone, socio, tessera_code: b.tessera_code, nome, origine: "app", note: b.note });
   if (r.error) return res.status(409).json({ error: r.error });
   audit(b.tessera_code, "prenota_tavolo", "prenotazioni_tavolo", r.id, `${data} ${r.turno} \xB7 ${r.persone}p`);
-  res.status(201).json({ ok: true, ...r });
+  let stage = null;
+  const sp = await spettacoloDelGiorno(data);
+  if (sp) {
+    const ps = await prenotaTavolo({
+      data,
+      turno: sp.ora,
+      persone: r.persone,
+      socio,
+      tessera_code: b.tessera_code,
+      nome,
+      origine: "app",
+      ambiente: "stage",
+      proiezione_id: sp.id
+    });
+    if (!ps.error) {
+      await db.prepare("UPDATE prenotazioni_tavolo SET note=? WHERE id=?").run("con cena al Garden", ps.id);
+      stage = { spettacolo: sp.titolo || "spettacolo", ora: sp.ora, posti: ps.tavoli, id: ps.id };
+      audit(b.tessera_code, "prenota_stage_con_cena", "prenotazioni_tavolo", ps.id, `${data} ${sp.ora} \xB7 ${r.persone}p`);
+    } else {
+      stage = { errore: ps.error, spettacolo: sp.titolo || "spettacolo", ora: sp.ora };
+    }
+  }
+  res.status(201).json({ ok: true, ...r, stage });
 });
 publicRouter.get("/garden/mie-prenotazioni", async (req, res) => {
   const t = String(req.query.tessera_code || "");
@@ -13963,6 +14050,9 @@ publicRouter.post("/garden/prenotazioni/:id/annulla", async (req, res) => {
   if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Prenotazione non trovata" });
   if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue prenotazioni" });
   await db.prepare("UPDATE prenotazioni_tavolo SET stato='annullato' WHERE id=?").run(p.id);
+  await db.prepare(
+    "UPDATE prenotazioni_tavolo SET stato='annullato' WHERE ambiente='stage' AND data=? AND tessera_code=? AND stato='prenotato' AND note='con cena al Garden'"
+  ).run(p.data, p.tessera_code || "");
   audit(req.body?.tessera_code || "socio", "annulla_tavolo", "prenotazioni_tavolo", p.id);
   res.json({ ok: true });
 });
@@ -13991,6 +14081,7 @@ publicRouter.get("/cinema", async (req, res) => {
     "SELECT p.id,p.data,p.ora,p.film_id,p.note,f.titolo,f.regia,f.durata_min,f.genere,f.vm FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora"
   ).all();
   const prenotabile = await par("cinema_prenotazione");
+  const contributo = Number(await par("stage_contributo")) || 0;
   const prossime = [];
   for (const p of rows) {
     const st = await statoTurno(p.data, p.ora, "stage", null);
@@ -14003,7 +14094,7 @@ publicRouter.get("/cinema", async (req, res) => {
       solo_extra: st.standard_liberi <= 0 && st.posti_liberi > 0
     });
   }
-  res.json({ film, prossime, prenotabile });
+  res.json({ film, prossime, prenotabile, contributo, nota_contributo: contributo > 0 ? `Chi cena al Garden ha gia\u0300 il suo posto davanti al palco. Per il solo spettacolo si versa un contributo di \u20AC ${contributo.toFixed(2)} all'ingresso.` : "Ingresso libero." });
 });
 publicRouter.post("/cinema/:id/prenota", async (req, res) => {
   if (!await par("cinema_prenotazione")) return res.status(409).json({ error: "La prenotazione dei posti non e\u0300 attiva" });
@@ -14601,7 +14692,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 10:46" : "online";
+var BUILD = true ? "2026-08-19 11:34" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
