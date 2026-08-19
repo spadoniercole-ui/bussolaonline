@@ -1604,6 +1604,17 @@ async function migrate() {
   } catch (_) {
   }
   try {
+    if (await getSetting("cdc_set_separati", "") !== "v1") {
+      const vecchio = await db.prepare("SELECT * FROM cdc_giochi WHERE nome='Set di pedine e scacchi'").get();
+      if (vecchio) {
+        await db.prepare("UPDATE cdc_giochi SET nome='Set di pedine (dama)' WHERE id=?").run(vecchio.id);
+        await db.prepare("INSERT INTO cdc_giochi (nome,categoria,quantita,stato,ordine) VALUES (?,?,?,?,?)").run("Set di scacchi", vecchio.categoria || "scacchi", vecchio.quantita || 2, "ok", (vecchio.ordine || 0) + 1);
+      }
+      await setSetting("cdc_set_separati", "v1");
+    }
+  } catch (_) {
+  }
+  try {
     await db.exec(`
   CREATE TABLE IF NOT EXISTS prenotazioni_sala (
     id          INTEGER PRIMARY KEY,
@@ -6709,7 +6720,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option><option value="cinema">\u{1F3AC} Cinema</option></select>
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option><option value="cinema">\u{1F3AD} Stage</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -6941,7 +6952,7 @@ function allowedZones() {
   return z;
 }
 // Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Cinema' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Stage (cinema e spettacoli)' };
 // Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
   const el = document.querySelector('#zonaSwitch');
@@ -6967,7 +6978,7 @@ function applyZona() {
   const hasMag = ME.gestore || (ME.caps || []).includes('magazzino');
   tog('comande', ZONA === 'garden' || ZONA === 'bar');
   tog('tavoli', ZONA === 'garden');
-  tog('pianta', ZONA === 'garden');
+  tog('pianta', ['garden', 'cdc', 'cinema'].includes(ZONA));
   tog('bar', ZONA === 'bar');
   tog('kds', ZONA === 'cucina');
   tog('scorte', hasMag && (ZONA === 'bar' || ZONA === 'garden'));  // "Giacenze": sotto-magazzino della zona
@@ -6997,7 +7008,7 @@ const ZONA_ACCENT = {
   serate:    { a: '#a0356b', g1: '#7d2853', g2: '#b8497f', nome: 'Serate' },
   cdc:       { a: '#7a5c2e', g1: '#5f4723', g2: '#96733d', nome: 'Casa di Carta' },
   fitness:   { a: '#2f7d8a', g1: '#245e68', g2: '#3f9daa', nome: 'Fitness' },
-  cinema:    { a: '#4a3f6b', g1: '#372f52', g2: '#5f5188', nome: 'Cinema' },
+  cinema:    { a: '#4a3f6b', g1: '#372f52', g2: '#5f5188', nome: 'Stage' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -8094,7 +8105,7 @@ VIEWS.cdc = async () => {
   const gopts = giochi.map(g => \`<option value="\${g.id}">\${esc(g.nome)}</option>\`).join('');
   $('#view').innerHTML = \`
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <b style="color:var(--navy)">\u2615 Caff\xE8 \xB7 giacenza <b style="font-size:1.2rem">\${esc(String(cfg.giacenza ?? 0))}</b></b>
+      <b style="color:var(--navy)">\u2615 \${cfg.articolo ? esc(cfg.articolo.nome) : 'Caff\xE8'} \xB7 <b style="font-size:1.2rem">\${esc(String(cfg.giacenza ?? 0))}</b> \${cfg.articolo ? esc(cfg.articolo.unita) : ''}</b>
       \${caffe.da_riordinare ? \`<span class="tag no">da riordinare \xB7 suggerite \${esc(String(caffe.ordine_suggerito || 0))}</span>\` : '<span class="tag ok">scorta ok</span>'}
     </div>
     <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
@@ -8102,9 +8113,10 @@ VIEWS.cdc = async () => {
       <button class="btn gold sm" id="cdc_conta">Registra conta</button>
     </div>
     <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
-      <label class="muted" style="font-size:.78rem">Articolo di magazzino <select id="cdc_art"><option value="">\u2014 non impostato \u2014</option></select></label>
+      <label class="muted" style="font-size:.78rem">Articolo di magazzino <select id="cdc_art"><option value="">\u2014 scegli l'articolo \u2014</option></select></label>
       <button class="btn ghost sm" id="cdc_artsave">Salva</button>
     </div>
+    <div id="cdc_artnota" class="muted" style="font-size:.74rem;margin-top:4px"></div>
     <p class="muted" style="font-size:.76rem;margin-top:6px">La conta non tiene una contabilit\xE0 sua: la differenza rispetto alla conta precedente <b>esce dal magazzino</b> come scarico della zona Casa di Carta.</p></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F3B2} Prestiti in corso (\${fuori.length})</b>
       <div style="margin-top:8px">\${fuori.map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
@@ -8125,7 +8137,10 @@ VIEWS.cdc = async () => {
         <span class="tag \${g.stato === 'ok' ? 'ok' : 'no'}">\${esc(g.stato)} \xB7 \${esc(String(g.quantita))}</span></div>\`).join('') || '<p class="muted">Inventario vuoto.</p>'}</div></div>\`;
   api('/cdc/caffe/articolo').then((a) => {
     const sel = $('#cdc_art'); if (!sel) return;
-    sel.innerHTML = '<option value="">\u2014 non impostato \u2014</option>' + a.candidati.map(c => \`<option value="\${c.id}" \${c.id === a.articolo_id ? 'selected' : ''}>\${esc(c.nome)} (\${esc(String(c.giacenza))} \${esc(c.unita)})</option>\`).join('');
+    const attuale = a.articolo_id || (a.attuale ? a.attuale.id : 0);
+    sel.innerHTML = '<option value="">\u2014 scegli l\\'articolo \u2014</option>' + a.candidati.map(c => \`<option value="\${c.id}" \${c.id === attuale ? 'selected' : ''}>\${esc(c.nome)}\${c.zona ? ' \xB7 ' + esc(c.zona) : ''} (\${esc(String(c.giacenza))} \${esc(c.unita)})</option>\`).join('');
+    const nota = $('#cdc_artnota');
+    if (nota) nota.textContent = a.articolo_id ? '' : a.attuale ? \`Dedotto dal nome: "\${a.attuale.nome}". Confermalo con Salva, cos\xEC non cambia quando aggiungi altri prodotti.\` : 'Nessun articolo collegato: la conta non pu\xF2 scaricare il magazzino.';
   }).catch(() => { });
   if ($('#cdc_artsave')) $('#cdc_artsave').onclick = async () => {
     await api('/cdc/caffe/articolo', { method: 'PUT', body: JSON.stringify({ articolo_id: Number($('#cdc_art').value) || 0 }) });
@@ -8206,6 +8221,9 @@ let PIANTA = { data: '', turno: '', modo: 'servizio', layoutId: null, tavoli: []
 
 VIEWS.pianta = async () => {
   if (!PIANTA.data) PIANTA.data = oggiISO();
+  // La pianta segue il modulo da cui la si apre: Garden, Casa di Carta o Stage.
+  const ambDaZona = { garden: 'garden', cdc: 'carta', cinema: 'stage' }[ZONA];
+  if (ambDaZona && !PIANTA.forzato) PIANTA.ambiente = ambDaZona;
   const [conf, turnoDati] = await Promise.all([
     api('/tavoli/layout').catch(() => ({ layout: [], giorni: [], turni: ['20:00', '21:30'] })),
     api(\`/tavoli/turno?data=\${PIANTA.data}&ambiente=\${PIANTA.ambiente}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch(() => null)
@@ -8218,16 +8236,22 @@ VIEWS.pianta = async () => {
     PIANTA.tavoli = (l ? l.tavoli : []).map(t => ({ ...t }));
   }
 
-  const turniBtn = (turnoDati.turni || []).map(t => \`<button class="btn \${t === PIANTA.turno ? 'gold' : 'ghost'} sm" data-ptur="\${t}">\u{1F557} \${esc(t)}</button>\`).join('');
+  const turniBtn = (turnoDati.turni || []).map(t => {
+    const v = typeof t === 'string' ? t : t.turno;
+    const lab = typeof t === 'string' ? t : (t.etichetta || t.turno);
+    const ico = (typeof t === 'object' && t.scopo === 'coworking') ? '\u{1F4BB}' : '\u{1F557}';
+    return \`<button class="btn \${v === PIANTA.turno ? 'gold' : 'ghost'} sm" data-ptur="\${esc(v)}">\${ico} \${esc(lab)}</button>\`;
+  }).join('');
   const layoutOpts = (conf.layout || []).map(l => \`<option value="\${l.id}" \${l.id === PIANTA.layoutId ? 'selected' : ''}>\${esc(l.nome)}\${l.predefinito ? ' \u2605' : ''}</option>\`).join('');
 
   const testa = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <b style="color:var(--navy)">\u{1F5FA}\uFE0F Pianta del Garden</b>
+      <b style="color:var(--navy)">\u{1F5FA}\uFE0F \${PIANTA.ambiente === 'carta' ? 'Sala della Casa di Carta' : PIANTA.ambiente === 'stage' ? 'Platea dello Stage' : 'Pianta del Garden'}</b>
       <div class="row" style="gap:6px;align-items:center">
-        <select id="p_amb" title="Ambiente"><option value="garden" \${PIANTA.ambiente !== 'carta' ? 'selected' : ''}>\u{1F33F} Garden</option><option value="carta" \${PIANTA.ambiente === 'carta' ? 'selected' : ''}>\u{1F4DA} Casa di Carta</option></select>
+        <select id="p_amb" title="Ambiente">\${['garden', 'carta', 'stage'].map(a => \`<option value="\${a}" \${PIANTA.ambiente === a ? 'selected' : ''}>\${a === 'garden' ? '\u{1F33F} Garden' : a === 'carta' ? '\u{1F4DA} Casa di Carta' : '\u{1F3AD} Stage'}</option>\`).join('')}</select>
         <input type="date" id="p_data" value="\${PIANTA.data}">
         <button class="btn \${PIANTA.modo === 'servizio' ? 'gold' : 'ghost'} sm" data-pmodo="servizio">\u{1F37D}\uFE0F Servizio</button>
         <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" data-pmodo="disposizione">\u270B Disposizione</button>
+        <button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli di questa disposizione">\u{1F533} QR tavoli</button>
       </div></div>
     <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
       \${turniBtn}
@@ -8240,7 +8264,7 @@ VIEWS.pianta = async () => {
         <span>Turno <b>\${esc(PIANTA.turno)}</b> \xB7 <b>\${turnoDati.coperti_prenotati}</b> coperti prenotati</span>
         <span class="muted">\${turnoDati.posti_liberi} posti liberi su \${turnoDati.posti_totali}</span>
       </div></div>\`
-    : \`<div class="panel"><p class="muted" style="font-size:.8rem;margin:0">Trascina i tavoli per riprodurre la sala di stasera. Tocca un tavolo per cambiarne i posti o toglierlo dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La prenotazione assegna sempre <b>dal centro verso l'esterno</b>, quindi la disposizione che disegni qui decide anche l'ordine di riempimento.</p>
+    : \`<div class="panel"><p class="muted" style="font-size:.8rem;margin:0">Trascina \${PIANTA.ambiente === 'stage' ? 'i posti' : 'i tavoli'} per riprodurre \${PIANTA.ambiente === 'carta' ? 'la sala' : PIANTA.ambiente === 'stage' ? 'la platea' : 'la sala di stasera'}. Tocca un tavolo per cambiarne i posti o toglierlo dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La prenotazione assegna sempre <b>dal centro verso l'esterno</b>, quindi la disposizione che disegni qui decide anche l'ordine di riempimento.</p>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
         <button class="btn gold sm" id="p_salva">\u{1F4BE} Salva disposizione</button>
         <button class="btn ghost sm" id="p_addt">+ Tavolo</button>
@@ -8285,7 +8309,9 @@ VIEWS.pianta = async () => {
 
   // --- interazioni
   $('#p_data').onchange = () => { PIANTA.data = $('#p_data').value; PIANTA.sporco = false; show('pianta'); };
-  if ($('#p_amb')) $('#p_amb').onchange = () => { PIANTA.ambiente = $('#p_amb').value; PIANTA.turno = ''; PIANTA.sporco = false; show('pianta'); };
+  // I QR si generano DAI TAVOLI DISEGNATI: se sono sei, sono sei. Nessun numero fisso.
+  if ($('#p_qr')) $('#p_qr').onclick = () => stampaQrTavoli(sorgente.filter(t => (t.tipo || 'standard') !== 'arredo' && t.attivo !== 0), PIANTA.ambiente);
+  if ($('#p_amb')) $('#p_amb').onchange = () => { PIANTA.forzato = true; PIANTA.ambiente = $('#p_amb').value; PIANTA.turno = ''; PIANTA.sporco = false; show('pianta'); };
   document.querySelectorAll('[data-ptur]').forEach(b => b.onclick = () => { PIANTA.turno = b.dataset.ptur; show('pianta'); });
   document.querySelectorAll('[data-pmodo]').forEach(b => b.onclick = () => { PIANTA.modo = b.dataset.pmodo; PIANTA.sporco = false; show('pianta'); });
   $('#p_layout').onchange = async () => {
@@ -8469,6 +8495,8 @@ VIEWS.cinema = async () => {
   const chips = pr.map(p => \`<button class="btn \${p.id === CINE_SEL ? 'gold' : 'ghost'} sm" data-cinesel="\${p.id}">\${esc(p.data.slice(8) + '/' + p.data.slice(5, 7))} \xB7 \${esc(p.titolo || '\u2014')}</button>\`).join('');
   const posto = (t) => \`<span title="\${t.libero ? (t.tipo === 'extra' ? 'extra libero' : 'libero') : esc(t.nome || 'occupato')}" style="display:inline-block;width:26px;height:26px;margin:2px;border-radius:6px;font-size:11px;line-height:26px;text-align:center;color:#fff;background:\${t.libero ? (t.tipo === 'extra' ? '#b08b3e' : '#2e6b45') : '#b14a35'}">\${t.numero}</span>\`;
   $('#view').innerHTML = \`
+    <div class="panel"><b style="color:var(--navy)">\u{1F3AD} Stage</b>
+      <p class="muted" style="font-size:.78rem;margin-top:4px">La platea dello stage e la pianta si gestiscono nella tab <b>Pianta</b> (ambiente Stage). Qui sotto il cinema, che dello stage \xE8 uno degli usi.</p></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F3AC} Proiezioni</b>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
     <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -8502,6 +8530,34 @@ VIEWS.cinema = async () => {
     catch (e) { $('#cine_msg').textContent = e.message; }
   };
 };
+
+// QR self-order dei tavoli realmente presenti nella disposizione: uno per foglio A4.
+async function stampaQrTavoli(tavoli, ambiente) {
+  if (!tavoli.length) { alert('Nessun tavolo nella disposizione.'); return; }
+  const punto = ambiente === 'carta' ? 'Casa di Carta' : 'Bussola Garden';
+  const out = [];
+  for (const t of tavoli) {
+    try { out.push(await api(\`/../qr-ordina?punto=\${encodeURIComponent(punto)}&tavolo=\${t.numero}\`)); } catch (e) { }
+  }
+  if (!out.length) { alert('QR non disponibili.'); return; }
+  const w = window.open('', '_blank');
+  if (!w) { alert('Consenti i popup per stampare.'); return; }
+  const pagina = (r) => \`<section><div class="k">Ordina qui</div><h1>\${esc(r.punto)}</h1>
+      <h2>Tavolo \${esc(String(r.tavolo))}</h2><div class="qr">\${r.svg}</div>
+      <p>Inquadra il QR con la fotocamera e ordina dal tuo telefono.</p></section>\`;
+  w.document.write(\`<html><head><title>QR tavoli</title><style>
+    @page{size:A4;margin:20mm}
+    body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
+    section{height:calc(297mm - 40mm);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;break-after:page}
+    section:last-child{break-after:auto}
+    .k{font-family:Arial,sans-serif;letter-spacing:4px;font-size:.8rem;color:#9a8a5f;text-transform:uppercase}
+    h1{font-size:2rem;margin:6px 0 0} h2{font-family:Arial,sans-serif;font-size:1.1rem;margin:4px 0 0;color:#5a6b75}
+    .qr{margin:22px 0} .qr svg{width:280px;height:280px}
+    p{font-family:Arial,sans-serif;font-size:.9rem;color:#5a6b75;max-width:70%}
+  </style></head><body>\${out.map(pagina).join('')}
+  <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script></body></html>\`);
+  w.document.close();
+}
 </script>
 </body>
 </html>
@@ -8789,7 +8845,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.84";
+var VERSION = "4.85";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -10849,7 +10905,11 @@ init_coppa();
 // server/tavoli.js
 init_db();
 init_parametri();
-var TURNI_DEFAULT = { garden: ["20:00", "21:30"], carta: ["16:00", "18:00"] };
+var TURNI_DEFAULT = { garden: ["20:00", "21:30"], carta: ["09:00", "13:00", "16:00", "18:00"] };
+var SCOPO_TURNO_CARTA = { "09:00": "coworking", "13:00": "coworking", "16:00": "gioco", "18:00": "gioco" };
+var ETICHETTA_TURNO_CARTA = { "09:00": "9-13 coworking", "13:00": "13-16 coworking", "16:00": "16-18 gioco", "18:00": "18-20 gioco" };
+var scopoTurno = (t) => SCOPO_TURNO_CARTA[t] || "gioco";
+var etichettaTurno = (t) => ETICHETTA_TURNO_CARTA[t] || t;
 async function turni(ambiente = "garden") {
   const amb = TURNI_DEFAULT[ambiente] ? ambiente : "garden";
   const raw = await getSetting(amb + "_turni", TURNI_DEFAULT[amb].join(","));
@@ -10984,6 +11044,22 @@ async function statoTurno(data, turno, ambiente = "garden", layoutId = null) {
   });
   const postiTot = tavoli.reduce((s, t) => s + Number(t.posti), 0);
   const postiOcc = tavoli.filter((t) => !t.libero).reduce((s, t) => s + Number(t.posti), 0);
+  const arredi = (await tavoliDi(layout.id)).filter((x) => (x.tipo || "standard") === "arredo").map((x) => ({
+    numero: x.numero,
+    posti: 0,
+    forma: x.forma,
+    x: x.x,
+    y: x.y,
+    distanza: 999,
+    tipo: "arredo",
+    uniti: [],
+    libero: true,
+    prenotazione_id: null,
+    nome: "",
+    persone: null,
+    origine: null
+  }));
+  tavoli.push(...arredi);
   const std = tavoli.filter((t) => t.tipo !== "extra" && t.tipo !== "arredo");
   return {
     layout: { id: layout.id, nome: layout.nome, ambiente: layout.ambiente || "garden" },
@@ -12595,9 +12671,26 @@ async function fetchCoworking() {
   return { max: 8, giorni: Object.keys(per).map((g) => ({ giorno: g, ...per[g] })) };
 }
 adminRouter.get("/cdc/coworking", async (req, res) => res.json(await fetchCoworking()));
+async function articoloCapsule() {
+  const scelto = Number(await getSetting("cdc_articolo_capsule", "")) || null;
+  if (scelto) {
+    const a = await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(scelto);
+    if (a) return a;
+  }
+  return await db.prepare(
+    "SELECT * FROM magazzino_articoli WHERE zona IN ('carta','cdc') AND (LOWER(nome) LIKE '%capsul%' OR LOWER(nome) LIKE '%caff%') ORDER BY id DESC LIMIT 1"
+  ).get() || null;
+}
 adminRouter.get("/cdc/caffe", async (req, res) => {
   const cfg = await db.prepare("SELECT * FROM cdc_caffe WHERE id=1").get() || { giacenza: 0, punto_riordino: 40, confezione: 100 };
   const conte = await db.prepare("SELECT * FROM cdc_caffe_conte ORDER BY id DESC LIMIT 30").all();
+  const art = await articoloCapsule();
+  if (art) {
+    cfg.giacenza = Number(art.giacenza);
+    cfg.punto_riordino = Number(art.punto_riordino) || cfg.punto_riordino;
+    cfg.articolo = { id: art.id, nome: art.nome, unita: art.unita };
+  }
+  cfg.articolo_impostato = !!art;
   const daRiordinare = cfg.giacenza <= cfg.punto_riordino;
   const suggerito = daRiordinare ? Math.max(cfg.confezione, Math.ceil((cfg.punto_riordino * 2 - cfg.giacenza) / Math.max(1, cfg.confezione)) * cfg.confezione) : 0;
   res.json({ config: cfg, conte, da_riordinare: daRiordinare, ordine_suggerito: suggerito });
@@ -12617,10 +12710,7 @@ adminRouter.post("/cdc/caffe/conta", requireCap("cdc"), async (req, res) => {
   await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
   let scaricato = null;
   if (consumo > 0) {
-    const scelto = Number(await getSetting("cdc_articolo_capsule", "")) || null;
-    const art = scelto ? await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(scelto) : await db.prepare(
-      "SELECT * FROM magazzino_articoli WHERE zona IN ('carta','cdc') AND (LOWER(nome) LIKE '%capsul%' OR LOWER(nome) LIKE '%caff%') ORDER BY id DESC LIMIT 1"
-    ).get();
+    const art = await articoloCapsule();
     if (art) {
       const nuova = Number(art.giacenza) - consumo;
       await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id);
@@ -12815,7 +12905,7 @@ adminRouter.get("/tavoli/turno", requireCap("comande"), async (req, res) => {
   const amb = ["garden", "carta"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : "garden";
   const t = await turni(amb);
   const turno = t.includes(String(req.query.turno)) ? String(req.query.turno) : t[0];
-  res.json({ ...await statoTurno(data, turno, amb), turni: t });
+  res.json({ ...await statoTurno(data, turno, amb), turni: t.map((x) => ({ turno: x, etichetta: etichettaTurno(x), scopo: scopoTurno(x) })) });
 });
 adminRouter.post("/tavoli/prenota", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
@@ -13088,7 +13178,7 @@ adminRouter.get("/carta/sala", requireCap("cdc"), async (req, res) => {
   res.json({
     data,
     turno,
-    turni: t,
+    turni: t.map((x) => ({ turno: x, etichetta: etichettaTurno(x), scopo: scopoTurno(x) })),
     tavoli: st.tavoli.map((x) => ({ ...x, prestiti: perTavolo[x.numero] || [] })),
     prenotazioni: st.prenotazioni,
     prestiti_senza_tavolo: prestiti.filter((p) => !p.tavolo),
@@ -13148,7 +13238,8 @@ adminRouter.post("/sala", requireCap("cdc"), async (req, res) => {
   if (b.esclusiva !== false) {
     const t = await turni("carta");
     for (const turno of t) {
-      const fine = String(Number(turno.slice(0, 2)) + 2).padStart(2, "0") + turno.slice(2);
+      const durata = scopoTurno(turno) === "coworking" ? turno === "09:00" ? 4 : 3 : 2;
+      const fine = String(Number(turno.slice(0, 2)) + durata).padStart(2, "0") + turno.slice(2);
       if (!sovrappone(da, a, turno, fine)) continue;
       const occupati = await db.prepare("SELECT COUNT(*) n FROM prenotazioni_tavolo WHERE ambiente='carta' AND data=? AND turno=? AND stato='prenotato'").get(data, turno);
       if (Number(occupati?.n || 0) > 0) {
@@ -13169,8 +13260,9 @@ adminRouter.delete("/sala/:id", requireCap("cdc"), async (req, res) => {
 });
 adminRouter.get("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
   const id = Number(await getSetting("cdc_articolo_capsule", "")) || null;
-  const candidati = await db.prepare("SELECT id,nome,giacenza,unita FROM magazzino_articoli WHERE zona IN ('carta','cdc','comune') ORDER BY nome").all();
-  res.json({ articolo_id: id, candidati });
+  const candidati = await db.prepare("SELECT id,nome,giacenza,unita,zona FROM magazzino_articoli ORDER BY (zona IN ('carta','cdc')) DESC, nome").all();
+  const att = await articoloCapsule();
+  res.json({ articolo_id: id, attuale: att ? { id: att.id, nome: att.nome, giacenza: att.giacenza } : null, dedotto: !id && !!att, candidati });
 });
 adminRouter.put("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
   const id = Number(req.body?.articolo_id) || 0;
@@ -14061,6 +14153,8 @@ publicRouter.get("/carta/turni", async (req, res) => {
     const st = await statoTurno(data, t, "carta");
     out.push({
       turno: t,
+      etichetta: etichettaTurno(t),
+      scopo: scopoTurno(t),
       posti_liberi: st.posti_liberi,
       posti_totali: st.posti_totali,
       tavoli_liberi: st.tavoli.filter((x) => x.libero).length,
@@ -14423,7 +14517,8 @@ async function seed({ verbose = false } = {}) {
     ["Risiko", "gioco_tavolo", 1, "ok"],
     ["Indovina Chi", "gioco_tavolo", 1, "ok"],
     ["Scacchiere", "scacchi", 2, "ok"],
-    ["Set di pedine e scacchi", "scacchi", 2, "ok"]
+    ["Set di pedine (dama)", "scacchi", 2, "ok"],
+    ["Set di scacchi", "scacchi", 2, "ok"]
   ];
   for (let i = 0; i < GIOCHI_INV.length; i++) {
     const g = GIOCHI_INV[i];
@@ -14477,6 +14572,17 @@ async function seed({ verbose = false } = {}) {
   await insAdmin.run("staff", hashPassword(process.env.STAFF_PASSWORD || "staff2026"), "staff", staffCaps);
   await insAdmin.run("lettura", hashPassword("lettura2026"), "sola_lettura", null);
   try {
+    const gia = await db.prepare("SELECT id FROM magazzino_articoli WHERE LOWER(nome) LIKE '%capsul%'").get();
+    let idArt = gia?.id;
+    if (!idArt) {
+      const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
+      const r = await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run("Capsule caff\xE8", "casa_di_carta", "carta", "pz", 120, 40, 60, ord, (/* @__PURE__ */ new Date()).toISOString());
+      idArt = Number(r.lastInsertRowid);
+    }
+    await setSetting("cdc_articolo_capsule", String(idArt));
+  } catch (_) {
+  }
+  try {
     const { ricalcolaCoppa: ricalcolaCoppa2 } = await Promise.resolve().then(() => (init_coppa(), coppa_exports));
     await ricalcolaCoppa2("seed");
   } catch (_) {
@@ -14495,7 +14601,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 09:46" : "online";
+var BUILD = true ? "2026-08-19 10:46" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
