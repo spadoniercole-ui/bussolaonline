@@ -1604,6 +1604,12 @@ async function migrate() {
   } catch (_) {
   }
   try {
+    await db.prepare("UPDATE magazzino_articoli SET zona='carta' WHERE zona='cdc'").run();
+    await db.prepare("UPDATE magazzino_richieste SET zona='carta' WHERE zona='cdc'").run();
+    await db.prepare("UPDATE magazzino_movimenti SET zona='carta' WHERE zona='cdc'").run();
+  } catch (_) {
+  }
+  try {
     await db.exec(`
   CREATE TABLE IF NOT EXISTS corsi_fitness (
     id             INTEGER PRIMARY KEY,
@@ -2552,7 +2558,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
     <div class="brandrow">
       <div style="display:flex; align-items:center; gap:10px;">
         <svg width="26" height="26" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="20" r="18" stroke="#e2b45a" stroke-width="1.5"/><path d="M20 4 L23 17 L36 20 L23 23 L20 36 L17 23 L4 20 L17 17 Z" fill="#e2b45a"/><circle cx="20" cy="20" r="2.4" fill="#12324F"/></svg>
-        <div class="brand">BUSSOLA<small>RESIDENCE<span class="byk"> \xB7 by KOIN\xC8</span></small></div>
+        <div class="brand">BUSSOLA<small>RESIDENCE</small></div>
       </div>
       <div class="topicons">
         <button class="iconbtn" id="helpBtn" aria-label="Aiuto e guida rapida"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7M12 17h.01"/></svg></button>
@@ -2978,7 +2984,6 @@ function renderHome() {
   const first = evs.find(e => e.tipo !== 'libero' && e.chiave !== 'lun') || evs[0];
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
-    <div class="welcome"><div class="wl"><div class="eyebrow">\${T('Benvenuti alla Bussola')}</div><h3>\${esc(first.giorno)} \xB7 \${esc(first.titolo)}</h3><p>\${esc(first.sottotitolo)}</p></div><button class="btn gold sm" data-open="\${first.chiave}">\${T('Vedi')}</button></div>
     <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
@@ -3003,8 +3008,7 @@ function serateSectionHTML() {
 }
 function renderEventi() {
   $('#s-eventi').innerHTML = \`
-    <div class="eyebrow" style="margin:4px 2px 2px">\${T('Il cartellone')}</div>
-    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:4px">\${T('Il programma')}</h2>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 4px">\${T('Il programma')}</h2>
     <p class="tiny muted" style="margin-bottom:12px">\${T('Tocca una serata per i dettagli e per prenotare.')}</p>
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
     \${serateSectionHTML()}
@@ -3089,6 +3093,12 @@ function rifiutiHTML(){
   }).join('');
   return \`<div>\${periods || \`<div class="card"><p class="tiny muted">\${T('Nessun periodo configurato.')}</p></div>\`}</div>\`;
 }
+// Dalla frase intera si tiene solo l'orario: le due righe stanno su una sola.
+function oreSilenzio(testo, fallback) {
+  const s = String(testo || '');
+  const m = s.match(/\\d{1,2}[:.]\\d{2}\\s*[\\u2013\\u2014-]\\s*\\d{1,2}[:.]\\d{2}/) || s.match(/(dopo|fino)\\s+le\\s+\\d{1,2}[:.]\\d{2}/i);
+  return m ? m[0] : fallback;
+}
 function renderBussola() {
   const b = state.data.bussola;
   const rows = (arr) => (arr||[]).map(x => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.8rem">\${esc(x.titolo)}</b>\${x.dettaglio?\`<div class="ct">\${esc(x.dettaglio)}</div>\`:''}</div>\${x.distanza?\`<span class="ct">\${esc(x.distanza)}</span>\`:''}</div>\`).join('');
@@ -3103,13 +3113,17 @@ function renderBussola() {
     return \`<div class="matchrow" \${has ? \`role="button" tabindex="0" data-map="\${l.lat},\${l.lng}" style="cursor:pointer"\` : ''}><div style="flex:1"><b style="font-size:.9rem">\${iconFor(l.chiave)} \${esc(label)}</b>\${has ? \`<div class="ct">\${esc(tr('apri_mappa'))}</div>\` : ''}</div>\${right}</div>\`;
   }).join('');
   $('#s-bussola').innerHTML = \`
-    <div class="eyebrow" style="margin:4px 2px 2px">\${T('Guida del residence')}</div>
-    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">Bussola Residence</h2>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 12px">\${T('Guida del residence')}</h2>
     <div class="sect-title" style="margin-top:2px">\${esc(tr('siamo_qui'))}</div>
     <div class="card" style="padding:4px 14px">\${siamoQui}</div>
-    <div class="card" style="background:#fbf4e6; border-color:#ecdcbd; margin-top:11px">
-      <div class="benefit" style="border-color:#ecdcbd"><span style="font-size:1.1rem">\u{1F92B}</span><div><b>\${T('Silenzio pomeridiano')}</b><p style="color:#5c4d2a">\${esc(b.orari?.[0]?.dettaglio||'14:00\u201317:00')}</p></div></div>
-      <div class="benefit"><span style="font-size:1.1rem">\u{1F319}</span><div><b>\${T('Silenzio notturno')}</b><p style="color:#5c4d2a">\${esc(b.orari?.[1]?.dettaglio||'dopo le 23:30')}</p></div></div>
+    <div class="card" style="background:#fbf4e6; border-color:#ecdcbd; margin-top:11px; padding:10px 14px">
+      <div style="display:flex; align-items:center; gap:12px">
+        <b style="font-size:.86rem; color:var(--navy); white-space:nowrap">\${T('Ore di silenzio')}</b>
+        <div style="display:flex; gap:14px; flex:1; justify-content:flex-end; flex-wrap:wrap">
+          <span style="color:#5c4d2a; font-size:.82rem">\u{1F92B} <b>\${esc(oreSilenzio(b.orari?.[0]?.dettaglio, '14:00\u201317:00'))}</b></span>
+          <span style="color:#5c4d2a; font-size:.82rem">\u{1F319} <b>\${esc(oreSilenzio(b.orari?.[1]?.dettaglio, 'dopo le 23:30'))}</b></span>
+        </div>
+      </div>
     </div>
     <div class="sect-title">\${T('Raccolta rifiuti')}</div>\${rifiutiHTML()}
     <div class="sect-title">\${T('Numeri utili & servizi')}</div><div class="card" style="padding:4px 14px">\${rows(b.servizi)}</div>
@@ -3119,12 +3133,19 @@ function renderBussola() {
 
 /* Sport & Giochi con convocazione */
 const DOMAINS = { sport: { cur: 0 }, giochi: { cur: 0 } };
+function wireDiscSel() {
+  document.querySelectorAll('[data-domsel]').forEach((sel) => sel.onchange = () => {
+    const dom = sel.dataset.domsel;
+    DOMAINS[dom].cur = Number(sel.value) || 0;
+    renderDom(dom);
+  });
+}
 function renderDom(dom) {
   const list = state.data[dom]; if (!list || !list.length) return;
   const D = DOMAINS[dom]; const s = list[D.cur];
   const key = dom + '/' + D.cur; const st = state.conv[key] || 'open';
   const el = document.getElementById('s-' + dom);
-  const disc = \`<div class="discrow" role="tablist">\${list.map((d,i)=>\`<button class="disc\${i===D.cur?' on':''}" data-dom="\${dom}" data-i="\${i}">\${esc(d.name)}</button>\`).join('')}</div>\`;
+  const disc = '';
   const conv = s.next[0] || { a: state.socio.casata, b: '\u2014', wh: T('prossimamente'), court: '' };
   const matchLabel = \`\${conv.a} vs \${conv.b}\`;
   const isOspite = state.socio.tipo_profilo === 'ospite_temporaneo';
@@ -3145,8 +3166,14 @@ function renderDom(dom) {
   const next = \`<div class="sect-title">\${T('Prossime partite')}</div><div class="card" style="padding:4px 14px">\${s.next.map(m=>\`<div class="matchrow"><div class="wh">\${esc(m.wh)}</div><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}<div class="ct">\${esc(m.court)}</div></div></div>\`).join('')||\`<p class="tiny muted" style="padding:8px 0">\${T('Calendario in aggiornamento.')}</p>\`}</div>\`;
   const res = \`<div class="sect-title">\${T('Risultati recenti')}</div><div class="card" style="padding:4px 14px">\${s.results.map(m=>\`<div class="matchrow"><div class="vs">\${esc(m.a)} <small>vs</small> \${esc(m.b)}</div><div class="sc">\${esc(m.s)}</div></div>\`).join('')||\`<p class="tiny muted" style="padding:8px 0">\${T('Nessun risultato ancora.')}</p>\`}</div>\`;
   const note = \`<div class="note">\${T('Ogni sfida aggiorna la classifica della Coppa. Formula: gironi, poi semifinali e finale.')}</div>\`;
-  const head = \`<div class="eyebrow" style="margin:4px 2px 2px">\${dom==='sport'?T('Campionati sociali'):T('Tornei')+' \xB7 Casa di Carta'}</div><h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${dom==='sport'?T('Sport & Tornei'):T('Giochi da Tavolo')}</h2>\`;
+  // La scelta della disciplina sta in una combo: con dieci sport le linguette non ci stavano.
+  const head = \`<div class="row" style="align-items:center; gap:10px; margin:6px 2px 12px">
+      <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:0; flex:0 0 auto">\${dom==='sport'?T('Sport & Tornei'):T('Giochi da Tavolo')}</h2>
+      <select class="discsel" data-domsel="\${dom}" aria-label="\${T('Scegli la disciplina')}" style="flex:1; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; font-weight:700; color:var(--navy)">
+        \${list.map((d,i)=>\`<option value="\${i}" \${i===D.cur?'selected':''}>\${esc(d.name)}</option>\`).join('')}
+      </select></div>\`;
   el.innerHTML = head + disc + personal + gironi + next + res + note;
+  wireDiscSel();
 }
 
 // ---- Overlay / sheet ------------------------------------------------------
@@ -3439,7 +3466,7 @@ function tesseraCardSvg(s) {
     <rect width="680" height="420" rx="28" fill="url(#bg)"/>
     <g transform="translate(44,44)"><circle cx="24" cy="24" r="23" fill="none" stroke="#E0B44A" stroke-width="3"/><path d="M24 6 L29 24 L24 42 L19 24 Z" fill="#E0B44A"/><path d="M6 24 L24 19 L42 24 L24 29 Z" fill="#fff" opacity="0.85"/></g>
     <text x="104" y="60" fill="#fff" font-family="Georgia,serif" font-size="26" font-weight="700">BUSSOLA</text>
-    <text x="104" y="82" fill="#E0B44A" font-family="Arial,sans-serif" font-size="13" letter-spacing="2">RESIDENCE \xB7 by KOIN\xC8</text>
+    <text x="104" y="82" fill="#E0B44A" font-family="Arial,sans-serif" font-size="13" letter-spacing="2">RESIDENCE</text>
     <text x="44" y="210" fill="#fff" font-family="Georgia,serif" font-size="40" font-weight="700">\${nome}</text>
     <text x="44" y="246" fill="#cfe0ee" font-family="Arial,sans-serif" font-size="17">\${ruolo}\${casata ? ' \xB7 Casata ' + casata : ''}</text>
     <text x="44" y="330" fill="#E0B44A" font-family="Arial,sans-serif" font-size="13" letter-spacing="1">TESSERA</text>
@@ -3607,7 +3634,7 @@ async function openTessera() {
     } catch {}
   }
   setSheet(\`<div class="grab"></div>
-    <div class="tessera"><div class="lab">BUSSOLA \xB7 by KOIN\xC8</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||T('Socio'))} \xB7 \${T('Casata')} \${esc(s.casata||'')}</div>
+    <div class="tessera"><div class="lab">BUSSOLA RESIDENCE</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||T('Socio'))} \xB7 \${T('Casata')} \${esc(s.casata||'')}</div>
       <div class="qr">\${qrSvg(s.tessera_code)}</div>
       <div class="foot"><span class="tiny" style="opacity:.85">\${T('Tessera')} \${esc(s.tessera_code)}</span><span class="tiny" style="opacity:.85">\${T('Valida fino al')} \${esc((s.valida_fino||'').split('-').reverse().join('/'))}</span></div></div>
     <div class="row" style="gap:8px; margin-top:10px">
@@ -5195,13 +5222,11 @@ function pickPhoto(onReady) {
 
 // ---- Casa di Carta: coworking + caff\xE8 (magazzino capsule) + inventario giochi + prelievi + check ----
 VIEWS.cdc = async () => {
-  const [cw, caffe, giochi, prestiti, checks] = await Promise.all([
-    api('/cdc/coworking'), api('/cdc/caffe'), api('/cdc/giochi'), api('/cdc/prestiti'), api('/cdc/check'),
+  const [cw, giochi, prestiti, checks] = await Promise.all([
+    api('/cdc/coworking'), api('/cdc/giochi'), api('/cdc/prestiti'), api('/cdc/check'),
   ]);
-  const cfg = caffe.config;
   const cell = (u, max) => \`<span class="tag \${u >= max ? 'no' : u >= max - 2 ? 'mid' : 'ok'}">\${u}/\${max}</span>\`;
   const cwRows = cw.giorni.map(g => \`<tr><td><b>\${esc(g.giorno)}</b></td><td>\${cell(g.mattina, cw.max)}</td><td>\${cell(g.pomeriggio, cw.max)}</td></tr>\`).join('');
-  const conteRows = caffe.conte.map(c => \`<tr><td>\${esc(c.data)} \${esc(c.ora || '')}</td><td>\${c.giacenza}</td><td>\${c.consumo == null ? '\u2014' : c.consumo}</td><td class="muted">\${esc(c.operatore || '')}</td></tr>\`).join('') || '<tr><td colspan="4" class="muted">Nessuna conta ancora.</td></tr>';
   const catLabel = { carte: 'Carte', gioco_tavolo: 'Gioco da tavolo', scacchi: 'Scacchi/Dama', altro: 'Altro' };
   const giochiRows = giochi.map(g => \`<tr>
       <td><input id="gnome_\${g.id}" value="\${esc(g.nome)}" style="min-width:150px"></td>
@@ -5215,23 +5240,8 @@ VIEWS.cdc = async () => {
   const checkRows = checks.map(c => \`<tr><td>\${esc(c.data)}</td><td>\${esc(c.operatore || '')}</td><td>\${c.caffe_giacenza ?? '\u2014'}</td><td>\${c.esito === 'ok' ? '<span class="tag ok">ok</span>' : '<span class="tag no">anomalie</span>'}</td><td class="muted">\${esc([c.strumenti_note, c.arredi_note].filter(Boolean).join(' \xB7 '))}</td><td>\${c.has_foto ? \`<button class="btn ghost sm" data-cfoto="\${c.id}">\u{1F4F7} Vedi</button>\` : '\u2014'}</td></tr>\`).join('') || '<tr><td colspan="6" class="muted">Nessun check registrato.</td></tr>';
 
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u2615 Caff\xE8 \u2014 magazzino capsule \${caffe.da_riordinare ? '<span class="tag no">DA RIORDINARE</span>' : '<span class="tag ok">scorta ok</span>'}</h3>
-      <div class="cards">
-        <div class="stat"><div class="n">\${cfg.giacenza}</div><div class="l">Capsule in magazzino</div></div>
-        <div class="stat"><div class="n">\${cfg.punto_riordino}</div><div class="l">Punto di riordino</div></div>
-        <div class="stat"><div class="n">\${cfg.confezione}</div><div class="l">Capsule / confezione</div></div>
-        \${caffe.da_riordinare ? \`<div class="stat" style="background:#f7e0da"><div class="n">\${caffe.ordine_suggerito}</div><div class="l">Ordine suggerito</div></div>\` : ''}
-      </div>
-      <div class="row" style="align-items:flex-end">
-        <div><label>Conta di oggi \xB7 capsule rimaste (rimozione macchina, ore 16:00)</label><input id="ca_g" type="number" min="0" placeholder="es. 55" style="width:180px"></div>
-        <button class="btn gold sm" id="ca_conta">Registra conta</button>
-      </div>
-      <div class="row" style="align-items:flex-end;margin-top:4px">
-        <div><label>Punto di riordino</label><input id="ca_pr" type="number" min="0" value="\${cfg.punto_riordino}" style="width:120px"></div>
-        <div><label>Capsule / confezione</label><input id="ca_cf" type="number" min="1" value="\${cfg.confezione}" style="width:120px"></div>
-        <button class="btn ghost sm" id="ca_cfg">Salva parametri</button>
-      </div>
-      <table style="margin-top:12px"><thead><tr><th>Conta</th><th>Giacenza</th><th>Consumo</th><th>Operatore</th></tr></thead><tbody>\${conteRows}</tbody></table>
+    <div class="panel"><h3>\u2615 Caff\xE8</h3>
+      <p class="muted">Le capsule sono <b>merce di magazzino</b> come tutto il resto: si gestiscono nella sezione <b>Magazzino</b>, zona <b>Casa di Carta</b>, con carico, scarico e punto di riordino uguali agli altri articoli. Qui non si duplica.</p>
     </div>
 
     <div class="panel"><h3>\u{1F4BB} Coworking \u2014 posti occupati (max \${cw.max} mattina + \${cw.max} pomeriggio)</h3>
@@ -5257,8 +5267,6 @@ VIEWS.cdc = async () => {
       <table><thead><tr><th>Data</th><th>Operatore</th><th>Caff\xE8</th><th>Esito</th><th>Note</th><th>Scheda</th></tr></thead><tbody>\${checkRows}</tbody></table>
     </div>\`;
 
-  $('#ca_conta').onclick = async () => { const v = $('#ca_g').value; if (v === '') return; await api('/cdc/caffe/conta', { method: 'POST', body: JSON.stringify({ giacenza: v }) }); show('cdc'); };
-  $('#ca_cfg').onclick = async () => { await api('/cdc/caffe', { method: 'PUT', body: JSON.stringify({ punto_riordino: $('#ca_pr').value, confezione: $('#ca_cf').value }) }); show('cdc'); };
   document.querySelectorAll('[data-gsave]').forEach(b => b.onclick = async () => { const id = b.dataset.gsave; await api('/cdc/giochi/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#gnome_' + id).value, categoria: $('#gcat_' + id).value, quantita: $('#gqta_' + id).value, stato: $('#gstato_' + id).value, note: $('#gnote_' + id).value }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 1000); });
   document.querySelectorAll('[data-gdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il gioco dall\\'inventario?')) return; await api('/cdc/giochi/' + b.dataset.gdel, { method: 'DELETE' }); show('cdc'); });
   $('#ng_add').onclick = async () => { if (!$('#ng_nome').value) return; await api('/cdc/giochi', { method: 'POST', body: JSON.stringify({ nome: $('#ng_nome').value, categoria: $('#ng_cat').value, quantita: $('#ng_qta').value }) }); show('cdc'); };
@@ -5922,7 +5930,7 @@ VIEWS.cinema = async () => {
       <div id="pr_out"></div></div>\`;
 
   const editFilm = (f) => {
-    openModal(\`<h3>\${f ? 'Modifica film' : 'Nuovo film'}</h3>
+    modal(\`<h3>\${f ? 'Modifica film' : 'Nuovo film'}</h3>
       <label>Titolo</label><input id="f_t" value="\${esc(f?.titolo || '')}">
       <div class="grid2"><div><label>Regia</label><input id="f_r" value="\${esc(f?.regia || '')}"></div>
         <div><label>Anno</label><input id="f_a" type="number" value="\${f?.anno || ''}"></div></div>
@@ -5931,7 +5939,7 @@ VIEWS.cinema = async () => {
       <label>Visione</label><input id="f_v" placeholder="es. per tutti \xB7 VM14" value="\${esc(f?.vm || '')}">
       <label>Sinossi</label><textarea id="f_s" rows="3">\${esc(f?.sinossi || '')}</textarea>
       <label class="check"><input type="checkbox" id="f_on" \${f && !f.attivo ? '' : 'checked'}> in cartellone</label>
-      <div class="row" style="margin-top:10px"><button class="btn gold" id="f_save">Salva</button><button class="btn ghost" data-mclose>Annulla</button></div>\`);
+      <div class="row" style="margin-top:10px"><button class="btn gold" id="f_save">Salva</button><button class="btn ghost" data-mchiudi>Annulla</button></div>\`);
     $('#f_save').onclick = async () => {
       const body = { titolo: $('#f_t').value, regia: $('#f_r').value, anno: $('#f_a').value, durata_min: $('#f_d').value, genere: $('#f_g').value, vm: $('#f_v').value, sinossi: $('#f_s').value, attivo: $('#f_on').checked };
       if (!body.titolo) { alert('Titolo?'); return; }
@@ -6039,7 +6047,7 @@ VIEWS.fitness = async () => {
       <p class="muted" style="margin-top:8px">Gli iscritti e l'incasso si gestiscono a bordo campo nell'app <b>Bussola Crew \xB7 modulo Fitness</b> (permesso \u201CFitness\u201D).</p></div>\`;
 
   const edit = (c) => {
-    openModal(\`<h3>\${c ? 'Modifica corso' : 'Nuovo corso'}</h3>
+    modal(\`<h3>\${c ? 'Modifica corso' : 'Nuovo corso'}</h3>
       <div class="grid2"><div><label>Disciplina</label><input id="cf_n" value="\${esc(c?.nome || '')}" placeholder="Pilates, Yoga, Zumba\u2026"></div>
         <div><label>Istruttore</label><input id="cf_i" value="\${esc(c?.istruttore || '')}"></div></div>
       <label>Descrizione</label><input id="cf_d" value="\${esc(c?.descrizione || '')}">
@@ -6056,7 +6064,7 @@ VIEWS.fitness = async () => {
       <label class="check"><input type="checkbox" id="cf_mc" \${c?.masterclass ? 'checked' : ''}> corso interamente masterclass (usa il prezzo vip)</label>
       <label class="check"><input type="checkbox" id="cf_on" \${c && !c.attivo ? '' : 'checked'}> attivo</label>
       <p class="muted">Salvando, le lezioni nei giorni scelti fra inizio e fine vengono <b>generate da sole</b>. Quelle gi\xE0 create non vengono toccate.</p>
-      <div class="row" style="margin-top:10px"><button class="btn gold" id="cf_save">Salva</button><button class="btn ghost" data-mclose>Annulla</button></div>\`);
+      <div class="row" style="margin-top:10px"><button class="btn gold" id="cf_save">Salva</button><button class="btn ghost" data-mchiudi>Annulla</button></div>\`);
     $('#cf_save').onclick = async () => {
       const body = {
         nome: $('#cf_n').value, istruttore: $('#cf_i').value, descrizione: $('#cf_d').value,
@@ -6080,7 +6088,7 @@ VIEWS.fitness = async () => {
   });
   document.querySelectorAll('[data-sedit]').forEach(b => b.onclick = () => {
     const s = sedute.find(x => x.id == b.dataset.sedit);
-    openModal(\`<h3>Lezione del \${esc(s.data)}</h3>
+    modal(\`<h3>Lezione del \${esc(s.data)}</h3>
       <div class="grid2"><div><label>Ora</label><input id="se_o" value="\${esc(s.ora)}"></div>
         <div><label>Istruttore</label><input id="se_i" value="\${esc(s.istruttore || '')}"></div></div>
       <div class="grid2"><div><label>Posti massimi</label><input id="se_p" type="number" value="\${s.posti_max}"></div>
@@ -6089,7 +6097,7 @@ VIEWS.fitness = async () => {
         <div><label>Titolo (se masterclass)</label><input id="se_t" value="\${esc(s.titolo || '')}"></div></div>
       <label class="check"><input type="checkbox" id="se_mc" \${s.masterclass ? 'checked' : ''}> questa lezione \xE8 una masterclass</label>
       <div class="row" style="margin-top:10px"><button class="btn gold" id="se_save">Salva</button>
-        <button class="btn danger" id="se_ann">Annulla la lezione</button><button class="btn ghost" data-mclose>Chiudi</button></div>\`);
+        <button class="btn danger" id="se_ann">Annulla la lezione</button><button class="btn ghost" data-mchiudi>Chiudi</button></div>\`);
     const salva = (extra) => api('/fitness/sedute/' + s.id, { method: 'PUT', body: JSON.stringify({ ora: $('#se_o').value, istruttore: $('#se_i').value, posti_max: Number($('#se_p').value), min_iscritti: Number($('#se_m').value), prezzo: Number($('#se_pr').value), masterclass: $('#se_mc').checked, titolo: $('#se_t').value, ...extra }) }).then(() => { closeModal(); show('fitness'); });
     $('#se_save').onclick = () => salva({});
     $('#se_ann').onclick = () => { if (confirm('Annullare questa lezione?')) salva({ stato: 'annullata' }); };
@@ -6262,7 +6270,12 @@ VIEWS.audit = async () => {
 };
 
 // ---- Modal helpers ----
-function modal(html) { $('#modalBox').innerHTML = html; $('#modal').classList.add('show'); }
+function modal(html) {
+  $('#modalBox').innerHTML = html;
+  $('#modal').classList.add('show');
+  // Chiusura dichiarativa: basta marcare un bottone con data-mchiudi.
+  $('#modalBox').querySelectorAll('[data-mchiudi]').forEach((b) => b.onclick = closeModal);
+}
 function closeModal() { $('#modal').classList.remove('show'); }
 
 // ---- Bind ----
@@ -7220,13 +7233,13 @@ async function fotoPartita(id) {
 const MAG_AREE = [['chiosco', 'Chiosco'], ['casa_di_carta', 'Casa di Carta'], ['serata_clan', 'Serata Clan'], ['serate_tema', 'Serate a tema']];
 const magAreaLabel = (a) => (MAG_AREE.find(x => x[0] === a) || [a, a])[1];
 const magBadge = (s) => s === 'da_riordinare' ? '<span class="tag no">Da riordinare</span>' : s === 'in_esaurimento' ? '<span class="tag mid">In esaurimento</span>' : '<span class="tag ok">OK</span>';
-const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : z === 'cdc' ? '<span class="tag" style="background:#f2ece0;color:#7a5c2e">\u{1F4DA} Casa di Carta</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
+const magZonaBadge = (z) => z === 'bar' ? '<span class="tag" style="background:#e7f0f6;color:#12324F">\u{1F378} Bar</span>' : z === 'garden' ? '<span class="tag" style="background:#eaf5ec;color:#2e6b3f">\u{1F33F} Garden</span>' : (z === 'carta' || z === 'cdc') ? '<span class="tag" style="background:#f2ece0;color:#7a5c2e">\u{1F4DA} Carta</span>' : '<span class="tag" style="background:#efe9dc;color:#6b5a2f">\u{1F501} Comune</span>';
 // ===== MAGAZZINO A DUE LIVELLI (v4.48): hub Centrale / Bar / Garden =====
 let MAG_SUB = 'centrale';
-const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', quadratura: '\u{1F4CA} Quadratura', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', cdc: '\u{1F4DA} Casa di Carta' };
+const MAG_SUB_LABEL = { centrale: '\u{1F3EC} Centrale', previsione: '\u{1F52E} Previsione', calendario: '\u{1F4C5} Calendario', quadratura: '\u{1F4CA} Quadratura', bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', carta: '\u{1F4DA} Casa di Carta' };
 const magSubbar = () => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
   <b style="color:var(--navy)">\u{1F4E6} Magazzino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 merce unica al Centrale</span></b>
-  <div class="row">\${['centrale', 'previsione', 'calendario', 'quadratura', 'bar', 'garden', 'cdc'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
+  <div class="row">\${['centrale', 'previsione', 'calendario', 'quadratura', 'bar', 'garden', 'carta'].map(k => \`<button class="btn \${MAG_SUB === k ? 'gold' : 'ghost'} sm" data-msub="\${k}">\${MAG_SUB_LABEL[k]}</button>\`).join('')}</div></div></div>\`;
 VIEWS.magazzino = async () => {
   if (MAG_SUB === 'centrale') await magCentrale();
   else if (MAG_SUB === 'previsione') await magPrevisione();
@@ -7368,7 +7381,7 @@ async function magCentrale() {
     <div id="mimp_prev" style="margin-top:10px"></div></div>\`;
   const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3><div class="row">
     <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select>
-    <select id="ma_z"><option value="comune">\u{1F501} Comune</option><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option><option value="cdc">\u{1F4DA} Casa di Carta</option></select>
+    <select id="ma_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F33F} Garden</option><option value="carta">\u{1F4DA} Casa di Carta</option><option value="comune">\u{1F501} Comune (a tutte le zone)</option></select>
     <input id="ma_u" value="pz" style="width:70px"><input id="ma_g" type="number" placeholder="Giac." style="width:90px"><input id="ma_pr" type="number" placeholder="Riordino" style="width:100px"><input id="ma_pa" type="number" placeholder="Preavviso" style="width:100px">
     <button class="btn gold sm" id="ma_add">+ Aggiungi</button></div></div>\`;
   $('#view').innerHTML = magSubbar() + alert + ricPanel + imp + (perArea || '<div class="panel"><p class="muted">Nessun articolo.</p></div>') + nuovo;
@@ -7399,9 +7412,19 @@ async function magCentrale() {
 async function magHubZona(zona) {
   const data = await api('/magazzino/zona/' + zona).catch(() => ({ articoli: [], riepilogo: {} }));
   const impegni = await api('/magazzino/richieste?zona=' + zona + '&stato=impegnata').catch(() => []);
-  const arts = (data.articoli || []).slice().sort((a, b) => (a.stato === 'da_riordinare' ? -1 : 0));
-  const rows = arts.map(a => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td><td>\${magBadge(a.stato)}</td></tr>\`).join('');
-  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\${zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden'} \xB7 disponibilit\xE0 <span class="muted" style="font-weight:400;font-size:.72rem">(sola lettura dal Centrale \xB7 merce unica)</span></h3>
+  const rank = { da_riordinare: 0, in_esaurimento: 1, ok: 2 };
+  const arts = (data.articoli || []).slice().sort((a, b) => (rank[a.stato] - rank[b.stato]) || String(a.nome).localeCompare(String(b.nome)));
+  // I prodotti "core" della zona stanno sopra; sotto, separata da una riga, la merce comune
+  // a tutte le zone: e' roba di appoggio, non il cuore di questo punto.
+  const core = arts.filter(a => (a.zona_art || a.zona) !== 'comune');
+  const comuni = arts.filter(a => (a.zona_art || a.zona) === 'comune');
+  const riga = (a) => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td><td>\${magBadge(a.stato)}</td></tr>\`;
+  const separatore = (core.length && comuni.length)
+    ? \`<tr><td colspan="5" style="border-top:2px solid var(--accent);padding-top:8px;font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Comune a tutte le zone</td></tr>\`
+    : '';
+  const rows = core.map(riga).join('') + separatore + comuni.map(riga).join('');
+  const ZLAB = { bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', carta: '\u{1F4DA} Casa di Carta' };
+  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\${ZLAB[zona] || esc(zona)} \xB7 disponibilit\xE0 <span class="muted" style="font-weight:400;font-size:.72rem">(sola lettura dal Centrale \xB7 merce unica)</span></h3>
     <p class="muted" style="font-size:.74rem"><b>Disp.</b> = giacenza effettiva del Centrale (fisica \u2212 impegni) per gli articoli abilitati a questa zona. <b>Imp.</b> = quanto ha impegnato questa zona.</p>
     <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Disp.</th><th>Imp.</th><th>Stato</th></tr></thead><tbody>\${rows || '<tr><td colspan="5" class="muted">Nessun articolo.</td></tr>'}</tbody></table></div>
     <div class="panel"><h3>\u{1F4CC} Impegni di questa zona</h3>\${impegni.length ? impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)}</span><button class="btn ghost sm" data-evno="\${x.id}">Rilascia</button></div>\`).join('') : '<p class="muted">Nessun impegno attivo.</p>'}</div>\`;
@@ -7410,14 +7433,18 @@ async function magHubZona(zona) {
 
 /* ---------- GIACENZE DI ZONA (Bar/Garden): sotto-magazzino operativo \u2014 scarico + richiesta di carico ---------- */
 VIEWS.scorte = async () => {
-  const zona = ZONA, zonaLabel = zona === 'bar' ? '\u{1F378} Bar' : '\u{1F33F} Garden';
+  const zona = ZONA === 'cdc' ? 'carta' : ZONA;
+  const zonaLabel = { bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', carta: '\u{1F4DA} Casa di Carta' }[zona] || zona;
   const render = async () => {
     const data = await api('/magazzino/zona/' + zona).catch(() => ({ articoli: [], riepilogo: {} }));
     const impegni = await api('/magazzino/richieste?zona=' + zona + '&stato=impegnata').catch(() => []);
     const r = data.riepilogo || {}; const arts = data.articoli || [];
     const rank = { da_riordinare: 0, in_esaurimento: 1, ok: 2 };
     arts.sort((a, b) => (rank[a.stato] - rank[b.stato]) || String(a.nome).localeCompare(String(b.nome)));
-    const rows = arts.map(a => \`<tr>
+    // Prima i prodotti core della zona, poi \u2014 sotto una linea \u2014 la merce comune.
+    const ordinati = [...arts.filter(a => (a.zona_art || a.zona) !== 'comune'), ...arts.filter(a => (a.zona_art || a.zona) === 'comune')];
+    const primoComune = arts.filter(a => (a.zona_art || a.zona) !== 'comune').length;
+    const rows = ordinati.map((a, i) => \`\${(i === primoComune && primoComune > 0 && i < ordinati.length) ? \`<tr><td colspan="6" style="border-top:2px solid var(--accent);padding-top:8px;font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Comune a tutte le zone</td></tr>\` : ''}<tr>
       <td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td>
       <td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td>
       <td>\${magBadge(a.stato)}</td>
@@ -7782,7 +7809,7 @@ VIEWS.cdc = async () => {
 };
 
 // Scorte della Casa di Carta: e' una zona del magazzino Centrale, come Bar e Garden.
-VIEWS.scortecdc = async () => { await magHubZona('cdc'); };
+VIEWS.scortecdc = async () => { await magHubZona('carta'); };
 
 // ===== PIANTA DEL GARDEN: disposizione trascinabile + prenotazioni per turno ===============
 // Due modalita' sullo stesso disegno:
@@ -8330,7 +8357,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.79";
+var VERSION = "4.80";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -11003,7 +11030,7 @@ function magStato(a) {
 adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   const area = req.query.area;
   const zona = req.query.zona;
-  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "cdc" ? "zona IN ('cdc','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
+  const zonaWhere = zona === "bar" ? "zona IN ('bar','comune')" : zona === "garden" ? "zona IN ('garden','comune')" : zona === "carta" || zona === "cdc" ? "zona IN ('carta','cdc','comune')" : zona === "comune" ? "zona='comune'" : zona ? "zona=?" : "";
   const conds = [];
   const args = [];
   if (area) {
@@ -11012,7 +11039,7 @@ adminRouter.get("/magazzino", requireCap("magazzino"), async (req, res) => {
   }
   if (zonaWhere) {
     conds.push(zonaWhere);
-    if (zona && !["bar", "garden", "cdc", "comune"].includes(zona)) args.push(zona);
+    if (zona && !["bar", "garden", "carta", "cdc", "comune"].includes(zona)) args.push(zona);
   }
   const where = conds.length ? "WHERE " + conds.join(" AND ") : "";
   const rows = await db.prepare(`SELECT * FROM magazzino_articoli ${where} ORDER BY area,ordine,id`).all(...args);
@@ -11083,8 +11110,12 @@ async function impegnoZona(articoloId, zona) {
   const r = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM magazzino_richieste WHERE articolo_id=? AND zona=? AND stato='impegnata'").get(articoloId, zona);
   return Number(r.q);
 }
-var ZONE_MAGAZZINO = ["bar", "garden", "cdc"];
-var zonaMag = (v) => ZONE_MAGAZZINO.includes(String(v)) ? String(v) : "garden";
+var ZONE_MAGAZZINO = ["bar", "garden", "carta"];
+var zonaMag = (v) => {
+  const z = String(v || "");
+  if (z === "cdc") return "carta";
+  return ZONE_MAGAZZINO.includes(z) ? z : "garden";
+};
 adminRouter.get("/magazzino/zona/:zona", requireCap("magazzino"), async (req, res) => {
   const zona = zonaMag(req.params.zona);
   const arts = await db.prepare("SELECT * FROM magazzino_articoli WHERE zona=? OR zona='comune' ORDER BY nome").all(zona);
@@ -11396,7 +11427,7 @@ function magNormZona(v) {
   const s = String(v || "").trim().toLowerCase();
   if (s.startsWith("bar")) return "bar";
   if (s.startsWith("gard") || s.startsWith("giard")) return "garden";
-  if (s.startsWith("cdc") || s.startsWith("casa")) return "cdc";
+  if (s.startsWith("cart") || s.startsWith("cdc") || s.startsWith("casa")) return "carta";
   return "comune";
 }
 function toNum(v) {
@@ -13621,7 +13652,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 06:31" : "online";
+var BUILD = true ? "2026-08-19 07:28" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
