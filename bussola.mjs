@@ -1603,6 +1603,27 @@ async function migrate() {
     }
   } catch (_) {
   }
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS prenotazioni_sala (
+    id          INTEGER PRIMARY KEY,
+    data        TEXT NOT NULL,
+    ora_inizio  TEXT NOT NULL,
+    ora_fine    TEXT NOT NULL,
+    scopo       TEXT NOT NULL DEFAULT 'riunione',   -- riunione | presentazione | corso | altro
+    titolo      TEXT,
+    richiedente TEXT,
+    tessera_code TEXT,
+    persone     INTEGER NOT NULL DEFAULT 1,
+    esclusiva   INTEGER NOT NULL DEFAULT 1,         -- occupa tutta la sala
+    note        TEXT,
+    stato       TEXT NOT NULL DEFAULT 'confermata', -- confermata | annullata
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_sala_data ON prenotazioni_sala(data, stato);
+  `);
+  } catch (_) {
+  }
   await addIfMissing("cdc_prestiti", "tavolo", "tavolo INTEGER");
   await addIfMissing("prenotazioni_tavolo", "gioco_id", "gioco_id INTEGER");
   await addIfMissing("campi", "min_giocatori", "min_giocatori INTEGER NOT NULL DEFAULT 2");
@@ -4983,13 +5004,14 @@ var admin_default = `<!DOCTYPE html>
 
         <div class="grp">Serate &amp; Eventi</div>
         <button data-v="eventi" data-cap="eventi">\u{1F3AD} Eventi</button>
-        <button data-v="cinema" data-cap="eventi">\u{1F3AC} Cinema</button>
+        <button data-v="cinema" data-cap="cinema">\u{1F3AC} Cinema</button>
         <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate &amp; cena</button>
         <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
         <button data-v="proposte" data-cap="proposte">\u{1F3B5} Proposte</button>
         <button data-v="avvisi" data-cap="eventi">\u{1F514} Avvisi push</button>
 
         <div class="grp">Operativit\xE0</div>
+        <button data-v="sala" data-cap="cdc">\u{1F4BB} Coworking & sala</button>
         <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
 
         <div class="grp">Guida &amp; luoghi</div>
@@ -5075,7 +5097,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', fitness:'Area fitness', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', fitness:'Area fitness', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -5214,7 +5236,7 @@ VIEWS.installa = async () => {
 };
 
 // ---- Operatori & permessi (solo gestore) ----
-const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', tabellone:'Sport \xB7 risultati (Crew) + tabellone', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', comande:'Crew \xB7 Comande e Cucina', campi:'Campi & prenotazioni' };
+const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', tabellone:'Sport \xB7 risultati (Crew) + tabellone', contest:'Contest', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', comande:'Crew \xB7 Comande e Cucina', campi:'Campi & prenotazioni' };
 VIEWS.operatori = async () => {
   const d = await api('/operatori');
   const caps = d.caps_delegabili;
@@ -5480,11 +5502,7 @@ function pickPhoto(onReady) {
 
 // ---- Casa di Carta: coworking + caff\xE8 (magazzino capsule) + inventario giochi + prelievi + check ----
 VIEWS.cdc = async () => {
-  const [cw, giochi, prestiti, checks] = await Promise.all([
-    api('/cdc/coworking'), api('/cdc/giochi'), api('/cdc/prestiti'), api('/cdc/check'),
-  ]);
-  const cell = (u, max) => \`<span class="tag \${u >= max ? 'no' : u >= max - 2 ? 'mid' : 'ok'}">\${u}/\${max}</span>\`;
-  const cwRows = cw.giorni.map(g => \`<tr><td><b>\${esc(g.giorno)}</b></td><td>\${cell(g.mattina, cw.max)}</td><td>\${cell(g.pomeriggio, cw.max)}</td></tr>\`).join('');
+  const [giochi, checks] = await Promise.all([api('/cdc/giochi'), api('/cdc/check')]);
   const catLabel = { carte: 'Carte', gioco_tavolo: 'Gioco da tavolo', scacchi: 'Scacchi/Dama', altro: 'Altro' };
   const giochiRows = giochi.map(g => \`<tr>
       <td><input id="gnome_\${g.id}" value="\${esc(g.nome)}" style="min-width:150px"></td>
@@ -5494,16 +5512,11 @@ VIEWS.cdc = async () => {
       <td><input id="gnote_\${g.id}" value="\${esc(g.note || '')}" placeholder="pezzi mancanti\u2026" style="min-width:140px"></td>
       <td style="white-space:nowrap"><button class="btn gold sm" data-gsave="\${g.id}">Salva</button> <button class="btn danger sm" data-gdel="\${g.id}">\u{1F5D1}</button></td>
     </tr>\`).join('');
-  const prestitiRows = prestiti.map(p => \`<tr><td>\${esc(p.data || '')}</td><td><b>\${esc(p.gioco_nome || '')}</b></td><td>\${esc(p.giocatore || '')}</td><td>\${esc(p.ora_inizio || '')}</td><td>\${p.ora_fine ? esc(p.ora_fine) : \`<button class="btn ghost sm" data-pfine="\${p.id}">Riconsegna ora</button>\`}</td></tr>\`).join('') || '<tr><td colspan="5" class="muted">Nessun prelievo registrato.</td></tr>';
   const checkRows = checks.map(c => \`<tr><td>\${esc(c.data)}</td><td>\${esc(c.operatore || '')}</td><td>\${c.caffe_giacenza ?? '\u2014'}</td><td>\${c.esito === 'ok' ? '<span class="tag ok">ok</span>' : '<span class="tag no">anomalie</span>'}</td><td class="muted">\${esc([c.strumenti_note, c.arredi_note].filter(Boolean).join(' \xB7 '))}</td><td>\${c.has_foto ? \`<button class="btn ghost sm" data-cfoto="\${c.id}">\u{1F4F7} Vedi</button>\` : '\u2014'}</td></tr>\`).join('') || '<tr><td colspan="6" class="muted">Nessun check registrato.</td></tr>';
 
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u2615 Caff\xE8</h3>
-      <p class="muted">Le capsule sono <b>merce di magazzino</b> come tutto il resto: si gestiscono nella sezione <b>Magazzino</b>, zona <b>Casa di Carta</b>, con carico, scarico e punto di riordino uguali agli altri articoli. Qui non si duplica.</p>
-    </div>
-
-    <div class="panel"><h3>\u{1F4BB} Coworking \u2014 posti occupati (max \${cw.max} mattina + \${cw.max} pomeriggio)</h3>
-      \${cwRows ? \`<table><thead><tr><th>Giorno</th><th>Mattina</th><th>Pomeriggio</th></tr></thead><tbody>\${cwRows}</tbody></table>\` : '<p class="muted">Nessuna prenotazione coworking.</p>'}
+    <div class="panel"><h3>\u{1F0CF} Casa di Carta</h3>
+      <p class="muted">Qui restano l'<b>inventario</b> e il <b>check attrezzature</b>. Il resto \xE8 operativit\xE0 e sta nell'app <b>Bussola Crew \xB7 modulo Casa di Carta</b>: conta capsule (che scarica il magazzino), prestito dei giochi con il tavolo, prenotazione dei tavoli. Le <b>capsule</b> sono merce di magazzino, zona Casa di Carta; il <b>coworking e le prenotazioni della sala</b> hanno la loro sezione.</p>
     </div>
 
     <div class="panel"><h3>\u{1F3B2} Inventario giochi (uso libero) <button class="btn ghost sm" id="g_print" style="float:right">\u{1F5A8}\uFE0F Stampa modulo prelievo</button></h3>
@@ -5516,10 +5529,6 @@ VIEWS.cdc = async () => {
       </div>
     </div>
 
-    <div class="panel"><h3>\u{1F4CB} Prelievi giochi (modulo) <button class="btn ghost sm" id="pr_new" style="float:right">+ Registra prelievo</button></h3>
-      <table><thead><tr><th>Data</th><th>Gioco</th><th>Giocatore</th><th>Inizio</th><th>Fine</th></tr></thead><tbody>\${prestitiRows}</tbody></table>
-    </div>
-
     <div class="panel"><h3>\u2705 Check strumenti & arredi (datati) <button class="btn gold sm" id="ck_new" style="float:right">+ Nuovo check</button></h3>
       <p class="muted" style="margin-bottom:8px">A ogni prelievo della macchina del caff\xE8: verifica magazzino caff\xE8, stato strumenti (mazzi, giochi, scacchiere) e arredi. Ogni check \xE8 datato; puoi allegare la foto della scheda cartacea.</p>
       <table><thead><tr><th>Data</th><th>Operatore</th><th>Caff\xE8</th><th>Esito</th><th>Note</th><th>Scheda</th></tr></thead><tbody>\${checkRows}</tbody></table>
@@ -5529,8 +5538,6 @@ VIEWS.cdc = async () => {
   document.querySelectorAll('[data-gdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il gioco dall\\'inventario?')) return; await api('/cdc/giochi/' + b.dataset.gdel, { method: 'DELETE' }); show('cdc'); });
   $('#ng_add').onclick = async () => { if (!$('#ng_nome').value) return; await api('/cdc/giochi', { method: 'POST', body: JSON.stringify({ nome: $('#ng_nome').value, categoria: $('#ng_cat').value, quantita: $('#ng_qta').value }) }); show('cdc'); };
   $('#g_print').onclick = () => stampaModuloPrelievo(giochi);
-  $('#pr_new').onclick = () => openPrestito(giochi);
-  document.querySelectorAll('[data-pfine]').forEach(b => b.onclick = async () => { const ora = new Date().toTimeString().slice(0, 5); await api('/cdc/prestiti/' + b.dataset.pfine, { method: 'PUT', body: JSON.stringify({ ora_fine: ora }) }); show('cdc'); });
   $('#ck_new').onclick = () => openCheck(cfg);
   document.querySelectorAll('[data-cfoto]').forEach(b => b.onclick = async () => { const r = await api('/cdc/check/' + b.dataset.cfoto + '/foto'); modal(\`<h3>Scheda check</h3><img src="\${r.foto}" style="max-width:100%;border-radius:8px"><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`); $('#mCancel').onclick = closeModal; });
 };
@@ -6363,6 +6370,61 @@ VIEWS.fitness = async () => {
   });
 };
 
+
+// ---- Coworking & sala: la Casa di Carta come spazio, non solo come giochi ----
+// Di mattina e' coworking, il pomeriggio si gioca, e ogni tanto serve tutta per una riunione
+// o una presentazione: quest'ultimo caso non era previsto da nessuna parte.
+VIEWS.sala = async () => {
+  const d = await api('/sala');
+  const oggi = new Date().toISOString().slice(0, 10);
+  const scopoLabel = { riunione: '\u{1F465} Riunione', presentazione: '\u{1F4CA} Presentazione', corso: '\u{1F393} Corso', altro: '\u{1F4CC} Altro' };
+  const righe = (d.prenotazioni || []).map(p => \`<tr>
+      <td><b>\${esc(p.data)}</b><div class="muted">\${esc(p.ora_inizio)}\u2013\${esc(p.ora_fine)}</div></td>
+      <td>\${scopoLabel[p.scopo] || esc(p.scopo)}<div class="muted">\${esc(p.titolo || '')}</div></td>
+      <td>\${esc(p.richiedente || '\u2014')}</td><td>\${p.persone}</td>
+      <td>\${p.esclusiva ? '<span class="tag mid">sala intera</span>' : '<span class="tag">parziale</span>'}</td>
+      <td><button class="btn danger sm" data-saladel="\${p.id}">\u{1F5D1}</button></td></tr>\`).join('');
+  const cw = d.coworking || { giorni: [], max: 8 };
+  const cell = (u, max) => \`<span class="tag \${u >= max ? 'no' : u >= max - 2 ? 'mid' : 'ok'}">\${u}/\${max}</span>\`;
+  const cwRows = (cw.giorni || []).map(g => \`<tr><td><b>\${esc(g.giorno)}</b></td><td>\${cell(g.mattina, cw.max)}</td><td>\${cell(g.pomeriggio, cw.max)}</td></tr>\`).join('');
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>\u{1F4BB} Coworking</h3>
+      <p class="muted">Posti occupati per giornata, mattina e pomeriggio (massimo \${cw.max} per fascia). Le postazioni si prenotano dall'app dei soci.</p>
+      \${cwRows ? \`<table class="fit"><thead><tr><th>Giorno</th><th>Mattina</th><th>Pomeriggio</th></tr></thead><tbody>\${cwRows}</tbody></table>\` : '<p class="muted">Nessuna prenotazione coworking.</p>'}
+    </div>
+    <div class="panel"><h3>\u{1F5D3}\uFE0F Prenotazione della sala</h3>
+      <p class="muted">Riunioni, presentazioni, corsi: occupano lo spazio per intero. Una prenotazione <b>esclusiva</b> non si sovrappone n\xE9 a un'altra riunione n\xE9 ai tavoli gi\xE0 prenotati per giocare \u2014 i turni di gioco sono \${(d.turni_gioco || []).join(' e ')}.</p>
+      <div class="row" style="flex-wrap:wrap;align-items:flex-end">
+        <div><label>Data</label><input type="date" id="sl_data" value="\${oggi}"></div>
+        <div><label>Dalle</label><input id="sl_da" value="09:00" style="width:80px"></div>
+        <div><label>Alle</label><input id="sl_a" value="11:00" style="width:80px"></div>
+        <div><label>Scopo</label><select id="sl_sc">\${(d.scopi || []).map(x => \`<option value="\${x}">\${scopoLabel[x] || x}</option>\`).join('')}</select></div>
+        <div style="flex:1;min-width:160px"><label>Titolo</label><input id="sl_t" placeholder="Assemblea condominiale\u2026"></div>
+        <div><label>Richiedente</label><input id="sl_r" style="width:150px"></div>
+        <div><label>Persone</label><input id="sl_p" type="number" min="1" value="6" style="width:80px"></div>
+        <button class="btn gold sm" id="sl_add">+ Prenota sala</button>
+      </div>
+      <div id="sl_msg" class="err"></div>
+      <table class="fit" style="margin-top:12px"><thead><tr><th>Quando</th><th>Scopo</th><th>Richiedente</th><th>Pers.</th><th>Spazio</th><th></th></tr></thead>
+        <tbody>\${righe || '<tr><td colspan="6" class="muted">Nessuna sala prenotata.</td></tr>'}</tbody></table>
+    </div>\`;
+  $('#sl_add').onclick = async () => {
+    $('#sl_msg').textContent = '';
+    try {
+      await api('/sala', { method: 'POST', body: JSON.stringify({
+        data: $('#sl_data').value, ora_inizio: $('#sl_da').value, ora_fine: $('#sl_a').value,
+        scopo: $('#sl_sc').value, titolo: $('#sl_t').value, richiedente: $('#sl_r').value,
+        persone: Number($('#sl_p').value) || 1
+      }) });
+      show('sala');
+    } catch (e) { $('#sl_msg').textContent = e.message; }
+  };
+  document.querySelectorAll('[data-saladel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Annullare la prenotazione della sala?')) return;
+    await api('/sala/' + b.dataset.saladel, { method: 'DELETE' }); show('sala');
+  });
+};
+
 // ---- Contest Serata dei Clan ----
 function contestForm(c) {
   const tipi = ['cocktail', 'karaoke', 'recitazione', 'sfilata', 'altro'];
@@ -6647,7 +6709,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option></select>
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option><option value="cinema">\u{1F3AC} Cinema</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -6665,6 +6727,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="serate">\u{1F37D}\uFE0F Serate</button>
       <button data-v="cdc">\u{1F4DA} Casa di Carta</button>
       <button data-v="fitness">\u{1F9D8} Fitness</button>
+      <button data-v="cinema">\u{1F3AC} Cinema</button>
       <button data-v="scortecdc">\u{1F4CA} Scorte</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
@@ -6874,10 +6937,11 @@ function allowedZones() {
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
   if (ME.gestore || caps.includes('fitness')) z.push('fitness');   // lezioni con istruttore
+  if (ME.gestore || caps.includes('cinema')) z.push('cinema');     // platea e ingressi
   return z;
 }
 // Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Cinema' };
 // Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
   const el = document.querySelector('#zonaSwitch');
@@ -6893,7 +6957,7 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  const PRIMA = { cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc', fitness: 'fitness' };
+  const PRIMA = { cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
   show(PRIMA[ZONA] || 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -6913,6 +6977,7 @@ function applyZona() {
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
   tog('fitness', ZONA === 'fitness');
+  tog('cinema', ZONA === 'cinema');
   tog('scortecdc', hasMag && ZONA === 'cdc');                      // Casa di Carta: zona del magazzino Centrale
   tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
@@ -6932,6 +6997,7 @@ const ZONA_ACCENT = {
   serate:    { a: '#a0356b', g1: '#7d2853', g2: '#b8497f', nome: 'Serate' },
   cdc:       { a: '#7a5c2e', g1: '#5f4723', g2: '#96733d', nome: 'Casa di Carta' },
   fitness:   { a: '#2f7d8a', g1: '#245e68', g2: '#3f9daa', nome: 'Fitness' },
+  cinema:    { a: '#4a3f6b', g1: '#372f52', g2: '#5f5188', nome: 'Cinema' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -8034,7 +8100,12 @@ VIEWS.cdc = async () => {
     <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
       <input id="cdc_g" type="number" inputmode="numeric" placeholder="capsule contate" style="width:150px">
       <button class="btn gold sm" id="cdc_conta">Registra conta</button>
-    </div></div>
+    </div>
+    <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
+      <label class="muted" style="font-size:.78rem">Articolo di magazzino <select id="cdc_art"><option value="">\u2014 non impostato \u2014</option></select></label>
+      <button class="btn ghost sm" id="cdc_artsave">Salva</button>
+    </div>
+    <p class="muted" style="font-size:.76rem;margin-top:6px">La conta non tiene una contabilit\xE0 sua: la differenza rispetto alla conta precedente <b>esce dal magazzino</b> come scarico della zona Casa di Carta.</p></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F3B2} Prestiti in corso (\${fuori.length})</b>
       <div style="margin-top:8px">\${fuori.map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
         <span><b>\${esc(p.gioco_nome)}</b> <span class="muted">\xB7 \${esc(p.giocatore || '\u2014')}\${p.tavolo ? ' \xB7 tavolo ' + esc(String(p.tavolo)) : ''} \xB7 dalle \${esc(p.ora_inizio || '')}</span></span>
@@ -8052,10 +8123,19 @@ VIEWS.cdc = async () => {
       <div style="margin-top:8px">\${giochi.map(g => \`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
         <span>\${esc(g.nome)} <span class="muted">\xB7 \${esc(g.categoria || '')}</span></span>
         <span class="tag \${g.stato === 'ok' ? 'ok' : 'no'}">\${esc(g.stato)} \xB7 \${esc(String(g.quantita))}</span></div>\`).join('') || '<p class="muted">Inventario vuoto.</p>'}</div></div>\`;
+  api('/cdc/caffe/articolo').then((a) => {
+    const sel = $('#cdc_art'); if (!sel) return;
+    sel.innerHTML = '<option value="">\u2014 non impostato \u2014</option>' + a.candidati.map(c => \`<option value="\${c.id}" \${c.id === a.articolo_id ? 'selected' : ''}>\${esc(c.nome)} (\${esc(String(c.giacenza))} \${esc(c.unita)})</option>\`).join('');
+  }).catch(() => { });
+  if ($('#cdc_artsave')) $('#cdc_artsave').onclick = async () => {
+    await api('/cdc/caffe/articolo', { method: 'PUT', body: JSON.stringify({ articolo_id: Number($('#cdc_art').value) || 0 }) });
+    show('cdc');
+  };
   $('#cdc_conta').onclick = async () => {
     const g = Number($('#cdc_g').value);
     if (!Number.isFinite(g) || g < 0) { alert('Indica le capsule contate.'); return; }
-    await api('/cdc/caffe/conta', { method: 'POST', body: JSON.stringify({ giacenza: g }) });
+    const r = await api('/cdc/caffe/conta', { method: 'POST', body: JSON.stringify({ giacenza: g }) });
+    if (r && r.scaricato) alert(\`Scaricate \${r.scaricato.quantita} capsule da "\${r.scaricato.articolo}" \xB7 restano \${r.scaricato.giacenza}.\`);
     show('cdc');
   };
   $('#cdc_presta').onclick = async () => {
@@ -8173,15 +8253,16 @@ VIEWS.pianta = async () => {
   const box = sorgente.map(t => {
     const occupato = PIANTA.modo === 'servizio' && !t.libero;
     const raggio = 22 + Math.min(16, Number(t.posti) * 2);
-    const bg = PIANTA.modo === 'disposizione'
+    const arredo = (t.tipo || 'standard') === 'arredo';
+    const bg = arredo ? '#8d8477' : PIANTA.modo === 'disposizione'
       ? (t.attivo === 0 ? '#d9d4c6' : 'var(--accent)')
       : (occupato ? '#b14a35' : '#2e6b45');
     return \`<div class="tv" data-tv="\${t.numero}" style="position:absolute;left:\${t.x}%;top:\${t.y}%;transform:translate(-50%,-50%);
         width:\${raggio * 2}px;height:\${raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
         background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
         font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none">
-        <span>\${t.numero}\${(t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : ''}</span>
-        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
+        <span>\${arredo ? (t.numero === 90 ? '\u{1F6CE}\uFE0F' : '\u2615') : t.numero + ((t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : '')}</span>
+        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 90 ? 'reception' : 'caff\xE8') : occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
       </div>\`;
   }).join('');
 
@@ -8376,6 +8457,50 @@ VIEWS.fitness = async () => {
     try { await api('/fitness/sedute/' + b.dataset.fitadd + '/iscrivi', { method: 'POST', body: JSON.stringify(body) }); show('fitness'); }
     catch (e) { alert(e.message); }
   });
+};
+
+// ===== MODULO CINEMA (cap 'cinema') \u2014 platea e ingressi ====================================
+let CINE_SEL = null;
+VIEWS.cinema = async () => {
+  const pr = (await api('/proiezioni').catch(() => [])).filter(p => p.stato !== 'annullata');
+  if (!pr.length) { $('#view').innerHTML = '<div class="panel"><p class="muted">Nessuna proiezione in programma. Il cartellone si compone nel back office.</p></div>'; return; }
+  if (!CINE_SEL || !pr.some(p => p.id === CINE_SEL)) CINE_SEL = pr[0].id;
+  const d = await api('/proiezioni/' + CINE_SEL + '/platea');
+  const chips = pr.map(p => \`<button class="btn \${p.id === CINE_SEL ? 'gold' : 'ghost'} sm" data-cinesel="\${p.id}">\${esc(p.data.slice(8) + '/' + p.data.slice(5, 7))} \xB7 \${esc(p.titolo || '\u2014')}</button>\`).join('');
+  const posto = (t) => \`<span title="\${t.libero ? (t.tipo === 'extra' ? 'extra libero' : 'libero') : esc(t.nome || 'occupato')}" style="display:inline-block;width:26px;height:26px;margin:2px;border-radius:6px;font-size:11px;line-height:26px;text-align:center;color:#fff;background:\${t.libero ? (t.tipo === 'extra' ? '#b08b3e' : '#2e6b45') : '#b14a35'}">\${t.numero}</span>\`;
+  $('#view').innerHTML = \`
+    <div class="panel"><b style="color:var(--navy)">\u{1F3AC} Proiezioni</b>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div><b style="color:var(--navy)">\${esc(d.proiezione.titolo || '')}</b>
+          <div class="muted" style="font-size:.82rem">\${esc(d.proiezione.data)} \xB7 \${esc(d.proiezione.ora)}</div></div>
+        <div style="text-align:right"><b>\${d.coperti_prenotati}</b> <span class="muted">in sala</span>
+          <div class="muted" style="font-size:.82rem">\${d.standard_liberi} standard \xB7 \${d.posti_liberi} liberi</div></div>
+      </div>
+      <div style="margin-top:10px">\${[...d.tavoli].sort((a, b) => a.numero - b.numero).map(posto).join('')}</div>
+      <p class="muted" style="font-size:.74rem;margin-top:6px">\u{1F7E9} libero \xB7 \u{1F7E8} extra (si apre a standard esauriti) \xB7 \u{1F7E5} occupato</p></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F39F}\uFE0F Ingressi</b>
+      <div style="margin-top:8px">\${(d.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+        <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 posti \${p.tavoli.join(', ')}</span></span>
+        <button class="btn ghost sm" data-cineann="\${p.id}">Annulla</button></div>\`).join('') || '<p class="muted">Nessun ingresso prenotato.</p>'}</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <input id="cine_chi" placeholder="Tessera o nome" style="min-width:140px">
+        <input id="cine_p" type="number" min="1" value="2" style="width:64px">
+        <button class="btn gold sm" id="cine_add">+ Metti a sedere</button>
+      </div><div id="cine_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
+  document.querySelectorAll('[data-cinesel]').forEach(b => b.onclick = () => { CINE_SEL = Number(b.dataset.cinesel); show('cinema'); });
+  document.querySelectorAll('[data-cineann]').forEach(b => b.onclick = async () => {
+    if (!confirm('Annullare l\\'ingresso?')) return;
+    await api('/proiezioni/prenotazioni/' + b.dataset.cineann, { method: 'PUT', body: '{}' });
+    show('cinema');
+  });
+  $('#cine_add').onclick = async () => {
+    const v = ($('#cine_chi').value || '').trim();
+    const body = { persone: Number($('#cine_p').value) || 1 };
+    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    try { await api('/proiezioni/' + CINE_SEL + '/prenota', { method: 'POST', body: JSON.stringify(body) }); show('cinema'); }
+    catch (e) { $('#cine_msg').textContent = e.message; }
+  };
 };
 </script>
 </body>
@@ -8664,7 +8789,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.83";
+var VERSION = "4.84";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -8885,8 +9010,10 @@ var CAPS_DELEGABILI = [
   // Chiosco: comande + KDS (cassa/cameriere/stazioni)
   "campi",
   // Prenotazione campi (config campi + regole + prospetto prenotazioni)
-  "fitness"
+  "fitness",
   // Area fitness: corsi, lezioni, iscritti e incassi
+  "cinema"
+  // Cinema: cartellone, proiezioni, platea
 ];
 var CAPS_GESTORE_ONLY = [
   "utenti_del",
@@ -10722,7 +10849,7 @@ init_coppa();
 // server/tavoli.js
 init_db();
 init_parametri();
-var TURNI_DEFAULT = { garden: ["20:00", "21:30"], carta: ["16:30", "18:30", "21:00"] };
+var TURNI_DEFAULT = { garden: ["20:00", "21:30"], carta: ["16:00", "18:00"] };
 async function turni(ambiente = "garden") {
   const amb = TURNI_DEFAULT[ambiente] ? ambiente : "garden";
   const raw = await getSetting(amb + "_turni", TURNI_DEFAULT[amb].join(","));
@@ -10762,23 +10889,13 @@ async function layoutDelGiorno(data, ambiente = "garden") {
   return await layoutPredefinito(ambiente);
 }
 async function creaSalaCarta() {
-  const n = Math.max(1, Number(await getSetting("carta_tavoli", "8")) || 8);
-  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'carta')").run("Sala giochi");
+  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'carta')").run("Sala 20 mq");
   const id = Number(info.lastInsertRowid);
-  const cols = Math.min(4, Math.ceil(Math.sqrt(n)));
-  const righe = Math.ceil(n / cols);
-  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y) VALUES (?,?,?,?,?,?)");
-  for (let i = 0; i < n; i++) {
-    const c = i % cols, r = Math.floor(i / cols);
-    await ins.run(
-      id,
-      i + 1,
-      4,
-      "quadrato",
-      Number(((c + 1) / (cols + 1) * 100).toFixed(1)),
-      Number(((r + 1) / (righe + 1) * 100).toFixed(1))
-    );
-  }
+  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,tipo) VALUES (?,?,?,?,?,?,?)");
+  await ins.run(id, 1, 4, "quadrato", 33, 58, "standard");
+  await ins.run(id, 2, 4, "quadrato", 67, 58, "standard");
+  await ins.run(id, 90, 0, "rettangolo", 50, 16, "arredo");
+  await ins.run(id, 91, 0, "quadrato", 12, 86, "arredo");
   return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
 }
 async function creaPlateaIniziale() {
@@ -10820,7 +10937,7 @@ async function mappaTavoli(data) {
   return { layout, tavoli: tav, verso };
 }
 function conDistanza(tavoli) {
-  const att = tavoli.filter((t) => t.attivo !== 0);
+  const att = tavoli.filter((t) => t.attivo !== 0 && (t.tipo || "standard") !== "arredo");
   if (!att.length) return [];
   const cx = att.reduce((s, t) => s + Number(t.x), 0) / att.length;
   const cy = att.reduce((s, t) => s + Number(t.y), 0) / att.length;
@@ -10867,7 +10984,7 @@ async function statoTurno(data, turno, ambiente = "garden", layoutId = null) {
   });
   const postiTot = tavoli.reduce((s, t) => s + Number(t.posti), 0);
   const postiOcc = tavoli.filter((t) => !t.libero).reduce((s, t) => s + Number(t.posti), 0);
-  const std = tavoli.filter((t) => t.tipo !== "extra");
+  const std = tavoli.filter((t) => t.tipo !== "extra" && t.tipo !== "arredo");
   return {
     layout: { id: layout.id, nome: layout.nome, ambiente: layout.ambiente || "garden" },
     data,
@@ -12460,7 +12577,7 @@ adminRouter.put("/serate-prenotazioni/:id", requireCap("serate"), async (req, re
   res.json({ ok: true });
 });
 var oggi = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-adminRouter.get("/cdc/coworking", async (req, res) => {
+async function fetchCoworking() {
   const rows = await db.prepare(`SELECT p.giorno, p.turno FROM prenotazioni p LEFT JOIN risorse r ON r.id=p.risorsa_id
     WHERE p.stato='confermata' AND (r.tipo='coworking' OR p.risorsa_nome LIKE '%oworking%')`).all();
   const periodi = (t) => {
@@ -12475,8 +12592,9 @@ adminRouter.get("/cdc/coworking", async (req, res) => {
     per[g] ??= { mattina: 0, pomeriggio: 0 };
     periodi(r.turno).forEach((k) => per[g][k]++);
   }
-  res.json({ max: 8, giorni: Object.keys(per).map((g) => ({ giorno: g, ...per[g] })) });
-});
+  return { max: 8, giorni: Object.keys(per).map((g) => ({ giorno: g, ...per[g] })) };
+}
+adminRouter.get("/cdc/coworking", async (req, res) => res.json(await fetchCoworking()));
 adminRouter.get("/cdc/caffe", async (req, res) => {
   const cfg = await db.prepare("SELECT * FROM cdc_caffe WHERE id=1").get() || { giacenza: 0, punto_riordino: 40, confezione: 100 };
   const conte = await db.prepare("SELECT * FROM cdc_caffe_conte ORDER BY id DESC LIMIT 30").all();
@@ -12497,8 +12615,21 @@ adminRouter.post("/cdc/caffe/conta", requireCap("cdc"), async (req, res) => {
   const consumo = prev && prev.giacenza >= g ? prev.giacenza - g : null;
   await db.prepare("INSERT INTO cdc_caffe_conte (data,ora,giacenza,consumo,operatore,note) VALUES (?,?,?,?,?,?)").run(b.data || oggi(), b.ora || "16:00", g, consumo, req.adminUser.username, b.note || "");
   await db.prepare("UPDATE cdc_caffe SET giacenza=?,aggiornato_at=datetime('now') WHERE id=1").run(g);
-  audit(req.adminUser.username, "conta_caffe", "cdc_caffe", 1, `giacenza ${g}`);
-  res.json({ ok: true, giacenza: g, consumo });
+  let scaricato = null;
+  if (consumo > 0) {
+    const scelto = Number(await getSetting("cdc_articolo_capsule", "")) || null;
+    const art = scelto ? await db.prepare("SELECT * FROM magazzino_articoli WHERE id=?").get(scelto) : await db.prepare(
+      "SELECT * FROM magazzino_articoli WHERE zona IN ('carta','cdc') AND (LOWER(nome) LIKE '%capsul%' OR LOWER(nome) LIKE '%caff%') ORDER BY id DESC LIMIT 1"
+    ).get();
+    if (art) {
+      const nuova = Number(art.giacenza) - consumo;
+      await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(nuova, (/* @__PURE__ */ new Date()).toISOString(), art.id);
+      await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", consumo, `conta capsule del ${b.data || oggi()}`, req.adminUser.username, "carta");
+      scaricato = { articolo: art.nome, quantita: consumo, giacenza: nuova };
+    }
+  }
+  audit(req.adminUser.username, "conta_caffe", "cdc_caffe", 1, `giacenza ${g}${consumo ? " \xB7 scarico " + consumo : ""}`);
+  res.json({ ok: true, giacenza: g, consumo, scaricato });
 });
 adminRouter.get("/cdc/giochi", async (req, res) => res.json(await db.prepare("SELECT * FROM cdc_giochi ORDER BY ordine,id").all()));
 adminRouter.post("/cdc/giochi", requireCap("cdc"), async (req, res) => {
@@ -12780,10 +12911,10 @@ adminRouter.get("/tavoli/sala", requireCap("comande"), async (req, res) => {
     verso: Object.fromEntries(verso)
   });
 });
-adminRouter.get("/film", requireCap("eventi"), async (req, res) => {
+adminRouter.get("/film", requireCap("cinema"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM film ORDER BY ordine,id").all());
 });
-adminRouter.post("/film", requireCap("eventi"), async (req, res) => {
+adminRouter.post("/film", requireCap("cinema"), async (req, res) => {
   const b = req.body || {};
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
   const ord = ((await db.prepare("SELECT MAX(ordine) m FROM film").get())?.m || 0) + 1;
@@ -12791,18 +12922,18 @@ adminRouter.post("/film", requireCap("eventi"), async (req, res) => {
   audit(req.adminUser.username, "crea", "film", Number(info.lastInsertRowid), b.titolo);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
-adminRouter.put("/film/:id", requireCap("eventi"), async (req, res) => {
+adminRouter.put("/film/:id", requireCap("cinema"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE film SET titolo=?,regia=?,anno=?,durata_min=?,genere=?,sinossi=?,vm=?,attivo=? WHERE id=?").run(b.titolo, b.regia || null, Number(b.anno) || null, Number(b.durata_min) || null, b.genere || null, b.sinossi || null, b.vm || null, b.attivo === false ? 0 : 1, req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/film/:id", requireCap("eventi"), async (req, res) => {
+adminRouter.delete("/film/:id", requireCap("cinema"), async (req, res) => {
   const n = await db.prepare("SELECT COUNT(*) c FROM proiezioni WHERE film_id=?").get(req.params.id);
   if (Number(n?.c || 0) > 0) return res.status(409).json({ error: `Non posso eliminare il film: e\u0300 in cartellone in ${n.c} proiezioni.` });
   await db.prepare("DELETE FROM film WHERE id=?").run(req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/proiezioni", requireCap("eventi"), async (req, res) => {
+adminRouter.get("/proiezioni", requireCap("cinema"), async (req, res) => {
   const rows = await db.prepare("SELECT p.*, f.titolo, f.regia, f.durata_min FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id ORDER BY p.data,p.ora").all();
   const out = [];
   for (const p of rows) {
@@ -12811,7 +12942,7 @@ adminRouter.get("/proiezioni", requireCap("eventi"), async (req, res) => {
   }
   res.json(out);
 });
-adminRouter.post("/proiezioni", requireCap("eventi"), async (req, res) => {
+adminRouter.post("/proiezioni", requireCap("cinema"), async (req, res) => {
   const b = req.body || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
   if (!b.film_id) return res.status(400).json({ error: "Scegli il film" });
@@ -12820,18 +12951,18 @@ adminRouter.post("/proiezioni", requireCap("eventi"), async (req, res) => {
   audit(req.adminUser.username, "crea", "proiezioni", Number(info.lastInsertRowid), `${b.data} ${b.ora || "21:30"}`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
-adminRouter.put("/proiezioni/:id", requireCap("eventi"), async (req, res) => {
+adminRouter.put("/proiezioni/:id", requireCap("cinema"), async (req, res) => {
   const b = req.body || {};
   await db.prepare("UPDATE proiezioni SET film_id=?,data=?,ora=?,note=?,stato=? WHERE id=?").run(Number(b.film_id) || null, b.data, b.ora || "21:30", b.note || null, b.stato === "annullata" ? "annullata" : "programmata", req.params.id);
   res.json({ ok: true });
 });
-adminRouter.delete("/proiezioni/:id", requireCap("eventi"), async (req, res) => {
+adminRouter.delete("/proiezioni/:id", requireCap("cinema"), async (req, res) => {
   const n = await db.prepare("SELECT COUNT(*) c FROM prenotazioni_tavolo WHERE proiezione_id=? AND stato='prenotato'").get(req.params.id);
   if (Number(n?.c || 0) > 0) return res.status(409).json({ error: `Non posso eliminare la proiezione: ci sono ${n.c} prenotazioni attive.` });
   await db.prepare("DELETE FROM proiezioni WHERE id=?").run(req.params.id);
   res.json({ ok: true });
 });
-adminRouter.get("/proiezioni/:id/platea", requireCap("eventi"), async (req, res) => {
+adminRouter.get("/proiezioni/:id/platea", requireCap("cinema"), async (req, res) => {
   const p = await db.prepare("SELECT p.*, f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.id=?").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
   res.json({ proiezione: p, ...await statoTurno(p.data, p.ora, "stage", p.layout_id) });
@@ -12974,6 +13105,78 @@ adminRouter.post("/carta/prenota", requireCap("cdc"), async (req, res) => {
   if (r.error) return res.status(409).json({ error: r.error });
   audit(req.adminUser.username, "prenota_tavolo_carta", "prenotazioni_tavolo", r.id, `${data} ${r.turno}`);
   res.status(201).json({ ok: true, ...r });
+});
+adminRouter.post("/proiezioni/:id/prenota", requireCap("cinema"), async (req, res) => {
+  const p = await db.prepare("SELECT * FROM proiezioni WHERE id=? AND stato='programmata'").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
+  const b = req.body || {};
+  const socio = b.tessera_code ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(b.tessera_code) : null;
+  const nome = b.nome || (socio ? (socio.nome + " " + (socio.cognome || "")).trim() : "Ospite");
+  const r = await prenotaTavolo({ data: p.data, turno: p.ora, persone: b.persone, socio, tessera_code: b.tessera_code, nome, origine: "crew", ambiente: "stage", proiezione_id: p.id, layout_id: p.layout_id });
+  if (r.error) return res.status(409).json({ error: r.error });
+  audit(req.adminUser.username, "prenota_cinema", "proiezioni", p.id, `${r.persone}p \xB7 posti ${r.tavoli.join(",")}`);
+  res.status(201).json({ ok: true, ...r, posti: r.tavoli });
+});
+adminRouter.put("/proiezioni/prenotazioni/:id", requireCap("cinema"), async (req, res) => {
+  await db.prepare("UPDATE prenotazioni_tavolo SET stato='annullato' WHERE id=? AND ambiente='stage'").run(req.params.id);
+  res.json({ ok: true });
+});
+var SCOPI_SALA = ["riunione", "presentazione", "corso", "altro"];
+function sovrappone(a1, a2, b1, b2) {
+  return String(a1) < String(b2) && String(b1) < String(a2);
+}
+adminRouter.get("/sala", requireCap("cdc"), async (req, res) => {
+  const da = String(req.query.da || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const righe = await db.prepare("SELECT * FROM prenotazioni_sala WHERE stato='confermata' AND data>=? ORDER BY data,ora_inizio").all(da);
+  let cw = { giorni: [], max: 8 };
+  try {
+    const r = await fetchCoworking();
+    cw = r;
+  } catch (_) {
+  }
+  res.json({ prenotazioni: righe, scopi: SCOPI_SALA, coworking: cw, turni_gioco: await turni("carta") });
+});
+adminRouter.post("/sala", requireCap("cdc"), async (req, res) => {
+  const b = req.body || {};
+  const data = String(b.data || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
+  const da = String(b.ora_inizio || "").slice(0, 5), a = String(b.ora_fine || "").slice(0, 5);
+  if (!/^\d{2}:\d{2}$/.test(da) || !/^\d{2}:\d{2}$/.test(a) || a <= da) return res.status(400).json({ error: "Orario non valido" });
+  const altre = await db.prepare("SELECT * FROM prenotazioni_sala WHERE data=? AND stato='confermata'").all(data);
+  const scontro = altre.find((x) => sovrappone(da, a, x.ora_inizio, x.ora_fine));
+  if (scontro) return res.status(409).json({ error: `La sala e\u0300 gi\xE0 impegnata dalle ${scontro.ora_inizio} alle ${scontro.ora_fine} (${scontro.titolo || scontro.scopo}).` });
+  if (b.esclusiva !== false) {
+    const t = await turni("carta");
+    for (const turno of t) {
+      const fine = String(Number(turno.slice(0, 2)) + 2).padStart(2, "0") + turno.slice(2);
+      if (!sovrappone(da, a, turno, fine)) continue;
+      const occupati = await db.prepare("SELECT COUNT(*) n FROM prenotazioni_tavolo WHERE ambiente='carta' AND data=? AND turno=? AND stato='prenotato'").get(data, turno);
+      if (Number(occupati?.n || 0) > 0) {
+        return res.status(409).json({ error: `Nel turno delle ${turno} ci sono gi\xE0 ${occupati.n} tavoli prenotati per giocare: liberali prima di riservare la sala.` });
+      }
+    }
+  }
+  const info = await db.prepare(
+    "INSERT INTO prenotazioni_sala (data,ora_inizio,ora_fine,scopo,titolo,richiedente,tessera_code,persone,esclusiva,note) VALUES (?,?,?,?,?,?,?,?,?,?)"
+  ).run(data, da, a, SCOPI_SALA.includes(b.scopo) ? b.scopo : "riunione", b.titolo || null, b.richiedente || null, b.tessera_code || null, Math.max(1, Number(b.persone) || 1), b.esclusiva === false ? 0 : 1, b.note || null);
+  audit(req.adminUser.username, "prenota_sala", "prenotazioni_sala", Number(info.lastInsertRowid), `${data} ${da}-${a} \xB7 ${b.scopo || "riunione"}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.delete("/sala/:id", requireCap("cdc"), async (req, res) => {
+  await db.prepare("UPDATE prenotazioni_sala SET stato='annullata' WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "annulla_sala", "prenotazioni_sala", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
+  const id = Number(await getSetting("cdc_articolo_capsule", "")) || null;
+  const candidati = await db.prepare("SELECT id,nome,giacenza,unita FROM magazzino_articoli WHERE zona IN ('carta','cdc','comune') ORDER BY nome").all();
+  res.json({ articolo_id: id, candidati });
+});
+adminRouter.put("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
+  const id = Number(req.body?.articolo_id) || 0;
+  await setSetting("cdc_articolo_capsule", id ? String(id) : "");
+  audit(req.adminUser.username, "articolo_capsule", "magazzino_articoli", id, "");
+  res.json({ ok: true, articolo_id: id || null });
 });
 
 // build/entry.mjs
@@ -14292,7 +14495,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 08:44" : "online";
+var BUILD = true ? "2026-08-19 09:46" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
