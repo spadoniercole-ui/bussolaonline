@@ -2001,16 +2001,17 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .hgreet{margin-top:12px; display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
 .hgreet h1{font-family:Georgia,serif; font-size:1.25rem; font-weight:600;}
 .hgreet .gsub{font-size:.72rem; color:#c9d6e2; margin-top:2px;}
-.hstack{display:flex; flex-direction:column; gap:7px; align-items:flex-end; flex:0 0 auto;}
-.tesschip{display:flex; align-items:center; gap:7px; background:linear-gradient(135deg,#caa24f,#8a5f18); color:#fff; padding:8px 12px; border-radius:20px; font-size:.72rem; font-weight:700; cursor:pointer; min-height:var(--tap); box-shadow:0 3px 8px rgba(0,0,0,.25);}
+.hstack{display:flex; flex-direction:column; gap:7px; align-items:stretch; flex:0 0 auto;}
+.tesschip{display:flex; align-items:center; justify-content:center; gap:7px; background:linear-gradient(135deg,#caa24f,#8a5f18); color:#fff; padding:8px 12px; border-radius:20px; font-size:.72rem; font-weight:700; cursor:pointer; min-height:var(--tap); box-shadow:0 3px 8px rgba(0,0,0,.25);}
 .tesschip svg{width:15px; height:15px;}
-.casatapill{display:flex; align-items:center; gap:7px; background:rgba(255,255,255,.14); padding:7px 10px; border-radius:20px; font-size:.72rem; cursor:pointer; color:#fff; min-height:var(--tap);}
+.casatapill{display:flex; align-items:center; justify-content:center; gap:7px; background:rgba(255,255,255,.14); padding:8px 12px; border-radius:20px; font-size:.72rem; cursor:pointer; color:#fff; min-height:var(--tap);}
 .casatapill .sh{width:15px;height:19px;border-radius:4px 4px 8px 8px; display:inline-block;}
 .iconbtn{display:inline-flex; align-items:center; justify-content:center; gap:5px; background:rgba(255,255,255,.14); border:none; color:#fff; padding:8px 11px; border-radius:20px; font-size:.7rem; font-weight:700; cursor:pointer; min-height:var(--tap);}
 .iconbtn svg{width:16px;height:16px;}
 .topicons{display:flex; gap:8px; align-items:center;}
 
 /* Barra accessibilit\xE0 */
+.a11y[hidden]{display:none;}
 .a11y{display:flex; gap:6px; align-items:center; margin-top:10px; background:rgba(255,255,255,.10); padding:6px; border-radius:14px;}
 .a11y button{flex:1; background:rgba(255,255,255,.14); border:none; color:#fff; border-radius:10px; padding:8px 4px; font-weight:700; cursor:pointer; font-size:.72rem; min-height:40px;}
 .a11y button.on{background:#e2b45a; color:#12324F;}
@@ -2168,6 +2169,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       </div>
       <div class="topicons">
         <button class="iconbtn" id="helpBtn" aria-label="Aiuto e guida rapida"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7M12 17h.01"/></svg></button>
+        <button class="iconbtn" id="a11yBtn" aria-label="Dimensione testo e contrasto" aria-expanded="false"><span style="font-weight:800;font-size:15px">A</span><span style="font-size:11px">\xB1</span></button>
         <button class="iconbtn" id="langBtn" aria-label="Cambia lingua"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.8 3.4 2.8 14.6 0 18M12 3c-2.8 3.4-2.8 14.6 0 18"/></svg><span id="langLbl">IT</span></button>
       </div>
     </div>
@@ -2178,7 +2180,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
         <button class="casatapill" id="casataBtn"><span class="sh" id="casataSh" style="background:#2E6DA4"></span><span id="casataNm">Aretusa</span></button>
       </div>
     </div>
-    <div class="a11y" role="group" aria-label="Dimensione testo e contrasto">
+    <div class="a11y" id="a11yBar" hidden role="group" aria-label="Dimensione testo e contrasto">
       <span class="lbl">Testo</span>
       <button data-scale="1" aria-label="Testo normale">A</button>
       <button data-scale="1.15" aria-label="Testo grande">A+</button>
@@ -2539,6 +2541,17 @@ function go(t) {
 }
 
 // ---- Rendering schermate --------------------------------------------------
+// La fascia "Testo / contrasto" resta utile ai soci anziani, ma non deve occupare una riga
+// fissa in cima: si apre dall'icona A\xB1 ed e' ricordata per la volta dopo.
+function initA11yToggle() {
+  const btn = document.getElementById('a11yBtn'), bar = document.getElementById('a11yBar');
+  if (!btn || !bar) return;
+  const apri = (v) => { bar.hidden = !v; btn.setAttribute('aria-expanded', v ? 'true' : 'false'); try { localStorage.setItem('koine_a11yopen', v ? '1' : '0'); } catch (e) { } };
+  let aperto = false;
+  try { aperto = localStorage.getItem('koine_a11yopen') === '1'; } catch (e) { }
+  apri(aperto);
+  btn.onclick = () => apri(bar.hidden);
+}
 function renderHeader() {
   const s = state.socio;
   $('#greetName').textContent = tr('ciao') + ', ' + (s.nome || '');
@@ -2571,7 +2584,7 @@ function renderHome() {
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
     <div class="welcome"><div class="wl"><div class="eyebrow">\${T('Benvenuti alla Bussola')}</div><h3>\${esc(first.giorno)} \xB7 \${esc(first.titolo)}</h3><p>\${esc(first.sottotitolo)}</p></div><button class="btn gold sm" data-open="\${first.chiave}">\${T('Vedi')}</button></div>
-    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera alla Bussola')}</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
+    <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div>
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
@@ -3261,6 +3274,7 @@ function showGate() { const g = $('#gate'); if (g) { g.classList.add('show'); co
 function hideGate() { const g = $('#gate'); if (g) g.classList.remove('show'); }
 async function enterApp() {
   await loadAll();
+  initA11yToggle();
   renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
   applyProfileGating();
   if (state.lang && state.lang !== 'it') applyLang(state.lang);
@@ -4221,6 +4235,21 @@ var admin_default = `<!DOCTYPE html>
   .tag.ok{background:#e2f0e0;color:#3f6b3d;} .tag.no{background:#f7e0da;color:#9c3f2c;} .tag.mid{background:#f3ead6;color:#6b5a33;}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  /* ===== Schede affiancate SENZA gradini =====
+     Il difetto nasce dal flex-wrap: schede con testi di lunghezza diversa finiscono a
+     altezze diverse e i contenuti interni si disallineano. Qui la griglia impone la stessa
+     altezza a tutta la riga, e dentro ogni scheda le parti stanno su righe fisse: titolo in
+     alto, corpo elastico, azioni ancorate in fondo. Cosi' le celle adiacenti si allineano. */
+  .cardgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--cardmin,240px),1fr));gap:14px;align-items:stretch;margin-bottom:18px;}
+  .cardgrid>.panel{margin-bottom:0;display:flex;flex-direction:column;min-width:0;}
+  .cardgrid>.panel>.grow{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;min-width:0;}
+  .cardgrid>.panel>.foot{margin-top:auto;padding-top:10px;}
+  .cardgrid .row:last-child{margin-bottom:0;}
+  /* Testi lunghi (URL, nomi file) non allargano la colonna e non sfondano la scheda */
+  .brk{overflow-wrap:anywhere;word-break:break-word;}
+  /* Il QR arriva come SVG senza dimensioni proprie: dentro un contenitore flex collasserebbe */
+  .qrbox{width:100%;}
+  .qrbox svg{width:100%;height:auto;display:block;}
   .modal{position:fixed;inset:0;background:rgba(9,20,33,.5);display:none;align-items:center;justify-content:center;padding:20px;z-index:50;}
   .modal.show{display:flex;}
   .modal .box{background:#fff;border-radius:16px;padding:24px;width:520px;max-width:100%;max-height:90vh;overflow:auto;}
@@ -4234,6 +4263,14 @@ var admin_default = `<!DOCTYPE html>
   .navToggle{display:none;background:var(--navy);color:#fff;border:none;border-radius:9px;padding:7px 12px;font-size:18px;line-height:1;}
   .scrim{display:none;position:fixed;inset:0;background:rgba(9,20,33,.45);z-index:40;}
   /* ===== Responsive: back office usabile da cellulare ===== */
+  /* Schermi molto stretti: si guadagna spazio togliendo i margini, non rimpicciolendo i tocchi */
+  @media (max-width:420px){
+    main{padding:10px 8px;}
+    .panel{padding:12px 10px;border-radius:12px;margin-bottom:12px;}
+    .stat{padding:12px;}
+    .stat .n{font-size:26px;}
+    .top h2{font-size:18px;}
+  }
   @media (max-width:820px){
     #app{grid-template-columns:1fr;}
     aside{position:fixed;top:0;left:0;bottom:0;width:240px;z-index:45;transform:translateX(-100%);transition:transform .22s ease;overflow-y:auto;-webkit-overflow-scrolling:touch;}
@@ -4245,8 +4282,14 @@ var admin_default = `<!DOCTYPE html>
     .navToggle{display:inline-block;order:1;}
     .who{order:3;width:100%;}
     .grid2{grid-template-columns:1fr;}
-    .panel{overflow-x:auto;padding:14px;}
+    .panel{overflow-x:auto;padding:14px 12px;}
+    .panel h3{font-size:16px;margin-bottom:9px;}
+    /* Le tabelle larghe scorrono, ma quelle marcate .fit stanno nello schermo */
     .panel table{min-width:520px;}
+    .panel table.fit{min-width:0;}
+    .panel table.fit th,.panel table.fit td{padding:7px 5px;font-size:13px;}
+    .cardgrid{--cardmin:100%;gap:12px;}
+    .muted{font-size:12.5px;}
     .modal{padding:10px;}
     .modal .box{width:100%;padding:18px;max-height:94vh;}
     .cards{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));}
@@ -4380,7 +4423,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -4424,28 +4467,83 @@ VIEWS.database = async () => {
   };
 };
 
+
+// Un QR per foglio, centrato e con margini uguali: si ritaglia e si mette sul tavolo.
+function stampaQr(lista) {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Consenti i popup per stampare.'); return; }
+  const pagina = (r) => \`<section>
+      <div class="k">Ordina qui</div>
+      <h1>\${esc(r.punto)}</h1>
+      \${r.tavolo ? \`<h2>Tavolo \${esc(String(r.tavolo))}</h2>\` : ''}
+      <div class="qr">\${r.svg}</div>
+      <p>Inquadra il QR con la fotocamera e ordina dal tuo telefono.</p>
+    </section>\`;
+  w.document.write(\`<html><head><title>QR self-order</title><style>
+    @page{size:A4;margin:20mm}
+    body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
+    section{height:calc(297mm - 40mm);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;break-after:page}
+    section:last-child{break-after:auto}
+    .k{font-family:Arial,sans-serif;letter-spacing:4px;font-size:.8rem;color:#9a8a5f;text-transform:uppercase}
+    h1{font-size:2rem;margin:6px 0 0}
+    h2{font-family:Arial,sans-serif;font-size:1.1rem;margin:4px 0 0;color:#5a6b75;font-weight:600}
+    .qr{margin:22px 0}
+    .qr svg{width:280px;height:280px}
+    p{font-family:Arial,sans-serif;font-size:.9rem;color:#5a6b75;max-width:70%}
+  </style></head><body>\${lista.map(pagina).join('')}
+  <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script></body></html>\`);
+  w.document.close();
+}
+
 // ---- Installa app (QR degli indirizzi PWA) ----
 VIEWS.installa = async () => {
   let d; try { d = await api('/pwa-qr'); } catch (e) { $('#view').innerHTML = \`<div class="panel"><p class="err">\${esc(e.message)}</p></div>\`; return; }
-  const card = (it) => \`<div class="panel" style="text-align:center;min-width:240px;flex:1">
-      <h3 style="margin-bottom:6px">\${esc(it.label)}</h3>
-      <div class="qrbox" style="max-width:220px;margin:0 auto">\${it.svg}</div>
-      <p class="muted" style="word-break:break-all;margin-top:8px">\${esc(it.url)}</p>
+  // Righe fisse dentro ogni scheda (titolo \xB7 QR \xB7 indirizzo): i QR restano sulla stessa linea
+  // anche quando i nomi o gli indirizzi hanno lunghezze diverse.
+  const card = (it) => \`<div class="panel">
+      <h3 style="margin-bottom:0;text-align:center">\${esc(it.label)}</h3>
+      <div class="grow"><div class="qrbox" style="max-width:200px;margin:12px auto">\${it.svg}</div></div>
+      <div class="foot"><p class="muted brk" style="text-align:center;margin:0;font-size:12px">\${esc(it.url)}</p></div>
     </div>\`;
+  const tavoli = await api('/tavoli/sala').catch(() => null);
+  const optTav = tavoli && tavoli.tavoli.length
+    ? tavoli.tavoli.map(t => \`<option value="\${t.numero}">Tavolo \${t.numero}\${t.uniti && t.uniti.length ? ' (+' + t.uniti.join('+') + ')' : ''} \xB7 \${t.posti} p</option>\`).join('')
+    : '';
   $('#view').innerHTML = \`
-    <div class="panel"><h2>\u{1F4F2} Installa le app</h2>
+    <div class="panel"><h3>\u{1F4F2} Installa le app</h3>
       <p class="muted">Inquadra il QR con la fotocamera del telefono per aprire l'app, poi usa <b>\u201CAggiungi a schermata Home\u201D</b> (Android: Chrome \xB7 iPhone/iPad: Safari) per installarla. Nessuno store, nessun account.</p>
-      <div class="row" style="justify-content:flex-end"><button class="btn gold sm" id="qr_print">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
+      <div class="row" style="justify-content:flex-end;margin-bottom:0"><button class="btn gold sm" id="qr_print">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
     </div>
-    <div style="display:flex;gap:14px;flex-wrap:wrap">\${d.items.map(card).join('')}</div>
-    <div class="panel" style="margin-top:14px"><h3>\u{1F354} QR self-order al tavolo</h3>
-      <p class="muted" style="margin-bottom:8px">Genera il QR da mettere sul tavolo: il cliente inquadra, vede il men\xF9 del punto e ordina. La comanda entra nella stessa coda dello staff (con priorit\xE0 staff).</p>
-      <div class="row"><label>Punto <select id="qo_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label><input id="qo_tav" placeholder="n\xB0 tavolo (facolt.)" style="width:150px"><button class="btn gold sm" id="qo_go">Genera QR</button></div>
-      <div id="qo_out" style="margin-top:10px"></div></div>\`;
+    <div class="cardgrid">\${d.items.map(card).join('')}</div>
+    <div class="panel"><h3>\u{1F354} QR self-order al tavolo</h3>
+      <p class="muted" style="margin-bottom:10px">Il QR da mettere sul tavolo: il cliente inquadra, vede il men\xF9 del punto e ordina. La comanda entra nella stessa coda dello staff.\${tavoli ? \` I tavoli sono quelli della <b>disposizione \u201C\${esc(tavoli.layout.nome)}\u201D</b>.\` : ''}</p>
+      <div class="row">
+        <label>Punto <select id="qo_punto"><option>Bussola Bar</option><option>Bussola Garden</option></select></label>
+        \${optTav ? \`<label>Tavolo <select id="qo_tav"><option value="">\u2014 nessuno \u2014</option>\${optTav}</select></label>\`
+                 : '<input id="qo_tav" placeholder="n\xB0 tavolo (facolt.)" style="width:150px">'}
+        <button class="btn gold sm" id="qo_go">Genera QR</button>
+        \${optTav ? '<button class="btn ghost sm" id="qo_all">\u{1F4C4} Tutti i tavoli</button>' : ''}
+      </div>
+      <div id="qo_out"></div></div>\`;
   $('#qo_go').onclick = async () => {
     const r = await api('/qr-ordina?punto=' + encodeURIComponent($('#qo_punto').value) + '&tavolo=' + encodeURIComponent($('#qo_tav').value || ''));
-    $('#qo_out').innerHTML = \`<div class="panel" style="text-align:center;max-width:280px"><b>\${esc(r.punto)}\${r.tavolo ? ' \xB7 Tavolo ' + esc(r.tavolo) : ''}</b><div style="max-width:220px;margin:8px auto">\${r.svg}</div><p class="muted" style="word-break:break-all;font-size:.72rem">\${esc(r.url)}</p><button class="btn ghost sm" id="qo_print">\u{1F5A8}\uFE0F Stampa</button></div>\`;
-    $('#qo_print').onclick = () => { const w = window.open('', '_blank'); if (!w) { alert('Consenti i popup.'); return; } w.document.write(\`<html><head><title>QR \${esc(r.punto)}</title><style>body{font-family:system-ui,Arial,sans-serif;color:#12324F;text-align:center;padding:30px}svg{width:320px;height:320px}h1{font-size:1.3rem}</style></head><body><h1>\u{1F354} Ordina qui</h1><h2>\${esc(r.punto)}\${r.tavolo ? ' \xB7 Tavolo ' + esc(r.tavolo) : ''}</h2>\${r.svg}<p>Inquadra il QR con la fotocamera e ordina dal tuo telefono.</p><script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script></body></html>\`); w.document.close(); };
+    $('#qo_out').innerHTML = \`<div class="cardgrid" style="--cardmin:240px"><div class="panel">
+        <h3 style="margin-bottom:0;text-align:center">\${esc(r.punto)}\${r.tavolo ? ' \xB7 Tavolo ' + esc(r.tavolo) : ''}</h3>
+        <div class="grow"><div class="qrbox" style="max-width:200px;margin:12px auto">\${r.svg}</div></div>
+        <div class="foot"><p class="muted brk" style="text-align:center;font-size:12px">\${esc(r.url)}</p>
+          <button class="btn ghost sm" id="qo_print" style="width:100%">\u{1F5A8}\uFE0F Stampa</button></div></div></div>\`;
+    $('#qo_print').onclick = () => stampaQr([r]);
+  };
+  if ($('#qo_all')) $('#qo_all').onclick = async () => {
+    const punto = $('#qo_punto').value;
+    const out = [];
+    for (const t of tavoli.tavoli) out.push(await api(\`/qr-ordina?punto=\${encodeURIComponent(punto)}&tavolo=\${t.numero}\`));
+    $('#qo_out').innerHTML = \`<div class="cardgrid" style="--cardmin:180px">\${out.map(r => \`<div class="panel">
+        <h3 style="margin-bottom:0;text-align:center">Tavolo \${esc(String(r.tavolo))}</h3>
+        <div class="grow"><div class="qrbox" style="max-width:150px;margin:10px auto">\${r.svg}</div></div>
+        <div class="foot"><p class="muted" style="text-align:center;margin:0;font-size:11px">\${esc(r.punto)}</p></div></div>\`).join('')}</div>
+      <div class="row" style="margin-top:12px"><button class="btn gold sm" id="qo_printall">\u{1F5A8}\uFE0F Stampa tutti (uno per foglio)</button></div>\`;
+    $('#qo_printall').onclick = () => stampaQr(out);
   };
   $('#qr_print').onclick = () => {
     const w = window.open('', '_blank');
@@ -7581,7 +7679,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.75";
+var VERSION = "4.76";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12730,7 +12828,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-18 13:39" : "online";
+var BUILD = true ? "2026-08-19 05:27" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
