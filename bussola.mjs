@@ -1604,6 +1604,23 @@ async function migrate() {
   } catch (_) {
   }
   try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS albo_casate (
+    id          INTEGER PRIMARY KEY,
+    stagione    TEXT NOT NULL,                        -- es. "2026"
+    posizione   INTEGER NOT NULL,
+    casata_id   INTEGER,
+    casata_nome TEXT NOT NULL,
+    punti       INTEGER NOT NULL DEFAULT 0,
+    ex_aequo    INTEGER NOT NULL DEFAULT 0,
+    chiuso_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    chiuso_da   TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_albo ON albo_casate(stagione, posizione, casata_nome);
+  `);
+  } catch (_) {
+  }
+  try {
     await db.prepare("UPDATE magazzino_articoli SET zona='carta' WHERE zona='cdc'").run();
     await db.prepare("UPDATE magazzino_richieste SET zona='carta' WHERE zona='cdc'").run();
     await db.prepare("UPDATE magazzino_movimenti SET zona='carta' WHERE zona='cdc'").run();
@@ -1947,10 +1964,15 @@ var init_auth = __esm({
 // server/coppa.js
 var coppa_exports = {};
 __export(coppa_exports, {
+  alboCasate: () => alboCasate,
+  campioneInCarica: () => campioneInCarica,
+  chiudiStagione: () => chiudiStagione,
   conPosizioni: () => conPosizioni,
   congelaPuntiEdizione: () => congelaPuntiEdizione,
   punteggiCoppa: () => punteggiCoppa,
-  ricalcolaCoppa: () => ricalcolaCoppa
+  ricalcolaCoppa: () => ricalcolaCoppa,
+  stagioneCorrente: () => stagioneCorrente,
+  statoChiusura: () => statoChiusura
 });
 function conPosizioni(righe) {
   const ord = [...righe].sort((a, b) => b.punti - a.punti || String(a.nome).localeCompare(String(b.nome)));
@@ -2040,6 +2062,80 @@ async function congelaPuntiEdizione(disciplinaId) {
   const grad = await graduatoriaFinale(disciplinaId).catch(() => null);
   if (!grad) return null;
   return JSON.stringify(grad.map((r) => ({ casata_id: r.id, nome: r.nome, posizione: r.posizione, punti: r.punti })));
+}
+function stagioneCorrente(d = /* @__PURE__ */ new Date()) {
+  return String(d.getFullYear());
+}
+function primatiDi(dati, casataId) {
+  let ori = 0, argenti = 0;
+  for (const d of dati.discipline) {
+    const v = (dati.celle[d.id] || {})[casataId] || 0;
+    if (v >= 12) ori++;
+    else if (v >= 10) argenti++;
+  }
+  return { ori, argenti };
+}
+async function statoChiusura(stagione = stagioneCorrente()) {
+  const dati = await punteggiCoppa();
+  const conclusa = (d) => dati.graduatoria.some((c) => (dati.celle[d.id] || {})[c.id] > 0);
+  const mancanti = dati.discipline.filter((d) => !conclusa(d));
+  const chiusa = await db.prepare("SELECT COUNT(*) n FROM albo_casate WHERE stagione=?").get(stagione);
+  const conPrimati = dati.graduatoria.map((c) => ({ ...c, ...primatiDi(dati, c.id) }));
+  conPrimati.sort((a, b) => b.punti - a.punti || b.ori - a.ori || b.argenti - a.argenti || String(a.nome).localeCompare(String(b.nome)));
+  let pos = 0, ultimo = null;
+  const finale = conPrimati.map((c, i) => {
+    const chiave = `${c.punti}|${c.ori}|${c.argenti}`;
+    if (chiave !== ultimo) {
+      pos = i + 1;
+      ultimo = chiave;
+    }
+    return { ...c, posizione: pos, exAequo: false };
+  }).map((c, i, arr) => ({ ...c, exAequo: arr.filter((x) => x.posizione === c.posizione).length > 1 }));
+  const primi = finale.filter((c) => c.posizione === 1);
+  return {
+    stagione,
+    graduatoria: finale,
+    spareggio: primi.length > 1 ? primi.map((c) => ({ id: c.id, nome: c.nome, punti: c.punti, ori: c.ori, argenti: c.argenti })) : null,
+    discipline: dati.discipline,
+    celle: dati.celle,
+    mancanti: mancanti.map((d) => ({ id: d.id, nome: d.nome })),
+    pronta: mancanti.length === 0 && dati.discipline.length > 0,
+    gia_chiusa: Number(chiusa?.n || 0) > 0
+  };
+}
+async function chiudiStagione(stagione, chi = "gestore", vincitrice2 = null) {
+  const st = await statoChiusura(stagione);
+  if (st.gia_chiusa) return { error: `La stagione ${stagione} risulta gi\xE0 chiusa.` };
+  if (!st.pronta) return { error: `Mancano i punteggi di: ${st.mancanti.map((m) => m.nome).join(", ")}.` };
+  if (st.spareggio && !vincitrice2) {
+    return { error: `Parita' assoluta al primo posto fra ${st.spareggio.map((c) => c.nome).join(" e ")}: stessi punti, stessi tornei vinti. Serve uno spareggio alla serata delle casate, poi indica qui la vincitrice.`, spareggio: st.spareggio };
+  }
+  let podio = st.graduatoria.filter((c) => c.posizione <= 3);
+  if (st.spareggio && vincitrice2) {
+    const vinc = st.graduatoria.find((c) => c.id === Number(vincitrice2));
+    if (!vinc) return { error: "La casata indicata come vincitrice non e' fra quelle in parita'." };
+    const resto = podio.filter((c) => c.id !== vinc.id);
+    podio = [{ ...vinc, posizione: 1, exAequo: false }, ...resto.map((c, i) => ({ ...c, posizione: i + 2 }))].filter((c) => c.posizione <= 3);
+  }
+  const ins = db.prepare("INSERT OR IGNORE INTO albo_casate (stagione,posizione,casata_id,casata_nome,punti,ex_aequo,chiuso_da) VALUES (?,?,?,?,?,?,?)");
+  for (const c of podio) await ins.run(stagione, c.posizione, c.id, c.nome, c.punti, c.exAequo ? 1 : 0, chi);
+  await db.prepare("UPDATE discipline SET stato='archiviato' WHERE stato<>'archiviato'").run();
+  await setSetting("coppa_chiusa_" + stagione, (/* @__PURE__ */ new Date()).toISOString());
+  audit(chi, "chiusura_coppa", "albo_casate", 0, `stagione ${stagione} \xB7 podio ${podio.map((c) => c.nome).join(", ")}`);
+  return { stagione, podio, graduatoria: st.graduatoria };
+}
+async function campioneInCarica() {
+  const r = await db.prepare("SELECT stagione,casata_id,casata_nome,punti FROM albo_casate WHERE posizione=1 ORDER BY stagione DESC LIMIT 1").get();
+  return r || null;
+}
+async function alboCasate() {
+  const righe = await db.prepare("SELECT * FROM albo_casate ORDER BY stagione DESC, posizione").all();
+  const per = /* @__PURE__ */ new Map();
+  for (const r of righe) {
+    if (!per.has(r.stagione)) per.set(r.stagione, []);
+    per.get(r.stagione).push(r);
+  }
+  return [...per.entries()].map(([stagione, podio]) => ({ stagione, podio }));
 }
 var init_coppa = __esm({
   "server/coppa.js"() {
@@ -2136,6 +2232,60 @@ var init_parametri = __esm({
         dipende_da: "campi_prenotazione_obbligatoria",
         etichetta: "Tempo massimo di utilizzo (minuti)",
         aiuto: "Durata oltre la quale il campo va liberato se c'e' chi aspetta."
+      },
+      {
+        chiave: "campi_quota_su_partecipanti",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Il tetto conta chi gioca, non chi prenota",
+        aiuto: "Senza questa regola il tetto si aggira facilmente: basta che a prenotare le fasce successive siano gli altri del gruppo. Con la regola accesa, una fascia pesa su tutti quelli che vi partecipano."
+      },
+      {
+        chiave: "campi_catena",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Le fasce attaccate contano insieme",
+        aiuto: "Fasce consecutive in cui gioca la stessa persona valgono come una sola occupazione lunga, anche se le prenota qualcun altro: cosi' un gruppo non pu\xF2 tenere il campo tutto il pomeriggio passandosi il testimone."
+      },
+      {
+        chiave: "campi_max_giorno",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Tetto giornaliero per socio",
+        aiuto: "Oltre al tetto settimanale: quante volte al giorno lo stesso socio pu\xF2 giocare su uno stesso campo."
+      },
+      {
+        chiave: "campi_max_giorno_n",
+        gruppo: "Campi",
+        tipo: "numero",
+        predefinito: 1,
+        min: 1,
+        max: 6,
+        dipende_da: "campi_max_giorno",
+        etichetta: "Prenotazioni al giorno per socio",
+        aiuto: "Su ciascun campo. Uno significa: una volta al giorno per campo, poi il campo passa ad altri."
+      },
+      {
+        chiave: "campi_finestra",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Finestra di prenotazione",
+        aiuto: "Impedisce che qualcuno si prenoti mezza stagione il primo giorno: la finestra scorre in avanti, e tutti trovano lo stesso spazio libero."
+      },
+      {
+        chiave: "campi_finestra_giorni",
+        gruppo: "Campi",
+        tipo: "numero",
+        predefinito: 7,
+        min: 1,
+        max: 60,
+        dipende_da: "campi_finestra",
+        etichetta: "Giorni di anticipo",
+        aiuto: "Quanti giorni prima si pu\xF2 prenotare una fascia."
       },
       {
         chiave: "campi_unisciti",
@@ -3040,9 +3190,9 @@ function renderCoppa() {
   $('#s-coppa').innerHTML = \`
     <div class="eyebrow" style="margin:4px 2px 2px">\${T('La comunit\xE0')}</div>
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${T('Coppa delle Casate')}</h2>
-    <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}</h3><p>\${T('La tua casata')} \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">\${T('posto')}</div></div></div>
+    <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}\${myClan.campione ? ' <span style="color:var(--gold)" title="' + T('Migliore casata') + ' ' + esc(myClan.campione_stagione || '') + '">\u2727</span>' : ''}</h3><p>\${T('La tua casata')} \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">\${T('posto')}</div></div></div>
     \${contestCard}\${capCard}
-    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank" role="button" tabindex="0" data-casatamembri="\${c.id}" style="cursor:pointer"><div class="rn">\${posizioneDi(c,sorted,i)}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
+    <div class="card" style="margin-top:12px"><div class="eyebrow" style="color:var(--navy)">\${T('Classifica generale')}</div><div style="margin-top:6px">\${sorted.map((c,i)=>\`<div class="rank" role="button" tabindex="0" data-casatamembri="\${c.id}" style="cursor:pointer"><div class="rn">\${posizioneDi(c,sorted,i)}</div><div class="sh" style="background:\${c.colore}"></div><div class="nm">\${esc(c.nome)}\${c.campione ? \` <span title="\${T('Migliore casata')} \${esc(c.campione_stagione || '')}" style="color:var(--gold)">\u2727</span>\` : ''}</div><div class="bar"><span style="width:\${Math.round(c.punti/max*100)}%; background:\${c.colore}"></span></div><div class="pt">\${c.punti}</div></div>\`).join('')}</div></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--teal); font-size:1.4rem">\u{1F3BE}</div><div style="flex:1"><b>\${T('Campionati sport')}</b><p class="tiny muted">\${T('Gironi, calendario e risultati.')}</p></div><button class="btn navy sm" data-go="sport">\${T('Apri')}</button></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--plum); font-size:1.4rem">\u{1F0CF}</div><div style="flex:1"><b>\${T('Giochi da Tavolo')}</b><p class="tiny muted">\${T('Burraco, scala 40, briscola, scacchi.')}</p></div><button class="btn navy sm" data-go="giochi">\${T('Apri')}</button></div>
     <div class="card" style="display:flex; align-items:center; gap:12px"><div style="color:var(--gold); font-size:1.4rem">\u{1F4DC}</div><div style="flex:1"><b>\${T("Regolamenti & Albo d'Oro")}</b><p class="tiny muted">\${T('Regole di Coppa, Contest e Proposte; le edizioni passate.')}</p></div><button class="btn navy sm" data-sheet="regolamenti">\${T('Apri')}</button></div>\`;
@@ -5170,7 +5320,37 @@ VIEWS.casate = async () => {
       <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
         <button class="btn gold" id="ca_recalc">\u21BB Ricalcola e riordina</button>
         <span class="muted" id="ca_msg" style="font-size:13px">Il ricalcolo avviene gi\xE0 da solo a ogni risultato, archiviazione ed esito di contest.</span>
-      </div></div>\`;
+      </div></div><div id="ca_chiusura"></div>\`;
+    // Chiusura della stagione: il sistema la propone quando ogni disciplina ha espresso i suoi
+    // punti, e manda i primi tre nell'Albo d'Oro.
+    api('/coppa/chiusura').then((ch) => {
+      const box = $('#ca_chiusura'); if (!box) return;
+      const podio = (ch.graduatoria || []).filter(c => c.posizione <= 3);
+      const albo = (ch.albo || []).map(a => \`<tr><td><b>\${esc(a.stagione)}</b></td>\${[1, 2, 3].map(pos => { const r = a.podio.find(x => x.posizione === pos); return \`<td>\${r ? (pos === 1 ? '\u{1F947} ' : pos === 2 ? '\u{1F948} ' : '\u{1F949} ') + esc(r.casata_nome) + \` <span class="muted">\${r.punti}</span>\` : '\u2014'}</td>\`; }).join('')}</tr>\`).join('');
+      box.innerHTML = \`<div class="panel"><h3>\u{1F3DB}\uFE0F Chiusura stagione e Albo d'Oro</h3>
+        \${ch.gia_chiusa
+          ? \`<p class="muted">La stagione <b>\${esc(ch.stagione)}</b> \xE8 gi\xE0 chiusa. La graduatoria resta visibile fino alla prossima.</p>\`
+          : ch.spareggio
+            ? \`<p><b>Parit\xE0 assoluta al primo posto</b> fra \${ch.spareggio.map(c => \`<b>\${esc(c.nome)}</b>\`).join(' e ')}: stessi punti (\${ch.spareggio[0].punti}), stessi tornei vinti (\${ch.spareggio[0].ori}). Il sistema non sceglie a caso il simbolo del residence: serve uno <b>spareggio alla serata delle casate</b>.</p>
+               <div class="row" style="margin-top:8px;align-items:center"><label>Vincitrice dello spareggio <select id="ca_vinc">\${ch.spareggio.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('')}</select></label>
+                 <button class="btn gold" id="ca_chiudi">\u{1F3DB}\uFE0F Chiudi la stagione \${esc(ch.stagione)}</button></div>\`
+          : ch.pronta
+            ? \`<p><b>Tutte le discipline hanno espresso il loro punteggio.</b> La stagione pu\xF2 chiudersi: la graduatoria si congela, il tabellone si chiude e questi tre entrano nell'Albo d'Oro.</p>
+               <div class="row" style="gap:14px;flex-wrap:wrap">\${podio.map(c => \`<div class="stat" style="flex:1;min-width:150px"><div class="n">\${c.posizione === 1 ? '\u{1F947}' : c.posizione === 2 ? '\u{1F948}' : '\u{1F949}'} \${esc(c.nome)}</div><div class="l">\${c.punti} punti\${c.exAequo ? ' \xB7 a pari merito' : ''}</div></div>\`).join('')}</div>
+               <p class="muted" style="margin-top:8px">La prima classificata avr\xE0 diritto, la stagione successiva, a fregiarsi del <b>simbolo del residence</b> come migliore casata dell'anno.</p>
+               <div class="row" style="margin-top:10px"><button class="btn gold" id="ca_chiudi">\u{1F3DB}\uFE0F Chiudi la stagione \${esc(ch.stagione)}</button>
+                 <span class="muted">Operazione definitiva: archivia i tornei e congela la graduatoria.</span></div>\`
+            : \`<p class="muted">La stagione non \xE8 ancora chiudibile: mancano i punteggi di <b>\${ch.mancanti.map(m => esc(m.nome)).join(', ')}</b>. Il tasto comparir\xE0 da solo quando ogni disciplina avr\xE0 espresso il suo punteggio.</p>\`}
+        \${albo ? \`<table class="fit" style="margin-top:12px"><thead><tr><th>Stagione</th><th>1\xAA</th><th>2\xAA</th><th>3\xAA</th></tr></thead><tbody>\${albo}</tbody></table>\` : ''}
+        \${ch.campione ? \`<p class="muted" style="margin-top:8px">Campione in carica: <b>\${esc(ch.campione.casata_nome)}</b> (stagione \${esc(ch.campione.stagione)}) \u2014 nell'app porta il simbolo del residence.</p>\` : ''}
+      </div>\`;
+      const btn = $('#ca_chiudi');
+      if (btn) btn.onclick = async () => {
+        if (!confirm(\`Chiudere la stagione \${ch.stagione}? La graduatoria viene congelata e i tornei archiviati. Non si torna indietro.\`)) return;
+        try { const r = await api('/coppa/chiudi', { method: 'POST', body: JSON.stringify({ stagione: ch.stagione, vincitrice: ($('#ca_vinc') || {}).value || null }) }); alert('Stagione chiusa. Nell\\'Albo d\\'Oro: ' + r.podio.map(x => x.nome).join(', ')); show('casate'); }
+        catch (e) { alert(e.message); }
+      };
+    }).catch(() => { });
     $('#ca_recalc').onclick = async () => {
       const b = $('#ca_recalc'); b.disabled = true; b.textContent = 'Ricalcolo\u2026';
       try {
@@ -8357,7 +8537,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.80";
+var VERSION = "4.81";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12605,6 +12785,16 @@ adminRouter.post("/fitness/sedute/:id/iscrivi", requireCap("fitness"), async (re
   if (r.error) return res.status(409).json({ error: r.error });
   res.status(201).json({ ok: true, ...r });
 });
+adminRouter.get("/coppa/chiusura", requireCap("casate"), async (req, res) => {
+  const stagione = String(req.query.stagione || stagioneCorrente());
+  res.json({ ...await statoChiusura(stagione), albo: await alboCasate(), campione: await campioneInCarica() });
+});
+adminRouter.post("/coppa/chiudi", requireCap("casate"), async (req, res) => {
+  const stagione = String(req.body?.stagione || stagioneCorrente());
+  const r = await chiudiStagione(stagione, req.adminUser.username, req.body?.vincitrice || null);
+  if (r.error) return res.status(409).json(r);
+  res.json({ ok: true, ...r, albo: await alboCasate() });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -12624,7 +12814,15 @@ publicRouter.get("/self-order/stato", async (req, res) => {
 });
 publicRouter.get("/casate", async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,colore,motto,punti FROM casate").all();
-  res.json(conPosizioni(rows));
+  const camp = await campioneInCarica();
+  res.json(conPosizioni(rows).map((c) => ({
+    ...c,
+    campione: !!(camp && (camp.casata_id === c.id || camp.casata_nome === c.nome)),
+    campione_stagione: camp && (camp.casata_id === c.id || camp.casata_nome === c.nome) ? camp.stagione : null
+  })));
+});
+publicRouter.get("/albo-casate", async (req, res) => {
+  res.json({ albo: await alboCasate(), campione: await campioneInCarica() });
 });
 publicRouter.get("/menu", async (req, res) => {
   const z = String(req.query.zona || "");
@@ -12907,13 +13105,54 @@ async function slotBloccati(campoId, data) {
 function slotDentroBlocco(slot, b) {
   return String(slot) >= String(b.slot_da || "00:00") && String(slot) <= String(b.slot_a || "23:59");
 }
+async function occupazioniDelSocio(campoId, socioId, da, a) {
+  if (!socioId) return [];
+  return await db.prepare(
+    `SELECT DISTINCT pc.partita_id, pc.data, pc.slot
+     FROM prenotazioni_campo pc
+     LEFT JOIN partita_iscritti pi ON pi.partita_id = pc.partita_id
+     WHERE pc.campo_id=? AND pc.stato='prenotato' AND pc.data BETWEEN ? AND ?
+       AND (pc.titolare_socio_id=? OR pi.socio_id=?)
+     ORDER BY pc.data, pc.slot`
+  ).all(campoId, da, a, socioId, socioId);
+}
+async function quotaUsata(campoId, socioId, da, a) {
+  const righe = await occupazioniDelSocio(campoId, socioId, da, a);
+  return new Set(righe.map((r) => r.partita_id || `${r.data}-${r.slot}`)).size;
+}
 async function prenSettimana(campoId, socioId, dataISO) {
-  if (!socioId) return 0;
   const w = settimanaDi(dataISO);
-  const r = await db.prepare(
-    "SELECT COUNT(DISTINCT partita_id) n FROM prenotazioni_campo WHERE campo_id=? AND titolare_socio_id=? AND stato='prenotato' AND data BETWEEN ? AND ?"
-  ).get(campoId, socioId, w.da, w.a);
-  return Number(r?.n || 0);
+  if (!await par("campi_quota_su_partecipanti")) {
+    if (!socioId) return 0;
+    const r = await db.prepare(
+      "SELECT COUNT(DISTINCT partita_id) n FROM prenotazioni_campo WHERE campo_id=? AND titolare_socio_id=? AND stato='prenotato' AND data BETWEEN ? AND ?"
+    ).get(campoId, socioId, w.da, w.a);
+    return Number(r?.n || 0);
+  }
+  return await quotaUsata(campoId, socioId, w.da, w.a);
+}
+async function slotDelSocioNelGiorno(campoId, socioId, data) {
+  const righe = await occupazioniDelSocio(campoId, socioId, data, data);
+  return righe.map((r) => r.slot);
+}
+async function catenaTroppoLunga(campo, data, sceltiSlot, socioId) {
+  if (!await par("campi_catena")) return null;
+  const maxSlot = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
+  if (!await par("campi_limita_durata")) return null;
+  const tutti = slotDiCampo(campo);
+  const miei = new Set(await slotDelSocioNelGiorno(campo.id, socioId, data));
+  for (const s of sceltiSlot) miei.add(s);
+  const idx = sceltiSlot.map((s) => tutti.indexOf(s)).filter((i2) => i2 >= 0);
+  if (!idx.length) return null;
+  let i = Math.min(...idx);
+  let j = Math.max(...idx);
+  while (i - 1 >= 0 && miei.has(tutti[i - 1])) i--;
+  while (j + 1 < tutti.length && miei.has(tutti[j + 1])) j++;
+  const lunghezza = j - i + 1;
+  if (lunghezza > maxSlot) {
+    return `Con questa prenotazione occuperesti ${lunghezza} fasce di fila su ${campo.nome}, ma il massimo \xE8 ${maxSlot}. Le fasce attaccate in cui giochi contano insieme, anche se le prenota qualcun altro del gruppo.`;
+  }
+  return null;
 }
 publicRouter.get("/campi", async (req, res) => {
   const rows = await db.prepare(`SELECT ${CAMPI_COLS} FROM campi WHERE attivo=1 ORDER BY ordine,id`).all();
@@ -13022,8 +13261,25 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
   if (await par("campi_limita_settimana") && usate >= campo.max_pren_settimana) {
     return res.status(409).json({ error: `Hai gi\xE0 ${usate} prenotazioni questa settimana su ${campo.nome} (massimo ${campo.max_pren_settimana})` });
   }
+  if (await par("campi_max_giorno")) {
+    const maxG = Math.max(1, Number(await par("campi_max_giorno_n")) || 1);
+    const oggi2 = await quotaUsata(campo.id, socio.id, data, data);
+    if (oggi2 >= maxG) {
+      return res.status(409).json({ error: `Hai gi\xE0 ${oggi2 === 1 ? "una prenotazione" : oggi2 + " prenotazioni"} oggi su ${campo.nome}: per oggi il campo passa ad altri.` });
+    }
+  }
+  const finestra = await par("campi_finestra") ? Number(await par("campi_finestra_giorni")) || 0 : 0;
+  if (finestra > 0) {
+    const giorniAvanti = Math.round((/* @__PURE__ */ new Date(data + "T12:00:00Z") - /* @__PURE__ */ new Date((/* @__PURE__ */ new Date()).toISOString().slice(0, 10) + "T12:00:00Z")) / 864e5);
+    if (giorniAvanti > finestra) {
+      return res.status(409).json({ error: `Si prenota fino a ${finestra} giorni in anticipo: riprova pi\xF9 avanti.` });
+    }
+    if (giorniAvanti < 0) return res.status(409).json({ error: "Non si prenota nel passato" });
+  }
   const chk = await slotConsecutiviLiberi(campo, data, slot, nSlot);
   if (chk.error) return res.status(409).json({ error: chk.error });
+  const catena = await catenaTroppoLunga(campo, data, chk.scelti, socio.id);
+  if (catena) return res.status(409).json({ error: catena });
   const unisciti = await par("campi_unisciti");
   const aperta = unisciti && (req.body?.aperta_ai_soci == null ? apertaDiDefault : !!req.body.aperta_ai_soci);
   if (unisciti && await par("campi_unisciti_modo") === "solo_unisciti" && usate > 0) {
@@ -13115,6 +13371,21 @@ publicRouter.post("/partite-aperte/:id/unisciti", async (req, res) => {
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const gia = await db.prepare("SELECT id FROM partita_iscritti WHERE partita_id=? AND tessera_code=?").get(p.id, tessera_code);
   if (gia) return res.status(409).json({ error: "Sei gi\xE0 iscritto a questa partita" });
+  const campo = await db.prepare("SELECT * FROM campi WHERE id=?").get(p.campo_id);
+  const slotPartita = (await db.prepare("SELECT slot FROM prenotazioni_campo WHERE partita_id=? AND stato='prenotato' ORDER BY slot").all(p.id)).map((x) => x.slot);
+  if (campo) {
+    if (await par("campi_max_giorno")) {
+      const maxG = Math.max(1, Number(await par("campi_max_giorno_n")) || 1);
+      const oggi2 = await quotaUsata(campo.id, socio.id, p.data, p.data);
+      if (oggi2 >= maxG) return res.status(409).json({ error: `Hai gi\xE0 ${oggi2 === 1 ? "una prenotazione" : oggi2 + " prenotazioni"} oggi su ${campo.nome}: per oggi il campo passa ad altri.` });
+    }
+    if (await par("campi_limita_settimana")) {
+      const usate = await prenSettimana(campo.id, socio.id, p.data);
+      if (usate >= campo.max_pren_settimana) return res.status(409).json({ error: `Hai gi\xE0 ${usate} prenotazioni questa settimana su ${campo.nome} (massimo ${campo.max_pren_settimana})` });
+    }
+    const catena = await catenaTroppoLunga(campo, p.data, slotPartita, socio.id);
+    if (catena) return res.status(409).json({ error: catena });
+  }
   const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
   if (n >= p.posti_totali) return res.status(409).json({ error: "Partita gi\xE0 al completo" });
   const nome = (socio.nome + " " + (socio.cognome || "")).trim();
@@ -13652,7 +13923,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 07:28" : "online";
+var BUILD = true ? "2026-08-19 07:50" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
