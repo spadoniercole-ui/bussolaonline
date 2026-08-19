@@ -1603,6 +1603,59 @@ async function migrate() {
     }
   } catch (_) {
   }
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS corsi_fitness (
+    id             INTEGER PRIMARY KEY,
+    nome           TEXT NOT NULL,                     -- pilates, yoga, zumba...
+    istruttore     TEXT,
+    descrizione    TEXT,
+    data_inizio    TEXT,
+    data_fine      TEXT,
+    giorni         TEXT NOT NULL DEFAULT '[]',        -- JSON: 1=lun ... 7=dom
+    ora            TEXT NOT NULL DEFAULT '09:00',
+    durata_min     INTEGER NOT NULL DEFAULT 60,
+    posti_max      INTEGER NOT NULL DEFAULT 20,
+    min_iscritti   INTEGER NOT NULL DEFAULT 10,       -- sotto questo la lezione non si apre
+    prezzo         REAL NOT NULL DEFAULT 0,
+    masterclass    INTEGER NOT NULL DEFAULT 0,        -- corso interamente "vip"
+    prezzo_master  REAL NOT NULL DEFAULT 0,
+    attivo         INTEGER NOT NULL DEFAULT 1,
+    ordine         INTEGER NOT NULL DEFAULT 0
+  );
+  -- La singola lezione. Il flag masterclass sta QUI e non solo sul corso: capita che un
+  -- istruttore piu' noto tenga una sera sola, e dev'essere rappresentabile senza inventare
+  -- un corso apposta.
+  CREATE TABLE IF NOT EXISTS fitness_sedute (
+    id           INTEGER PRIMARY KEY,
+    corso_id     INTEGER NOT NULL REFERENCES corsi_fitness(id) ON DELETE CASCADE,
+    data         TEXT NOT NULL,
+    ora          TEXT NOT NULL,
+    durata_min   INTEGER NOT NULL DEFAULT 60,
+    istruttore   TEXT,
+    posti_max    INTEGER NOT NULL DEFAULT 20,
+    min_iscritti INTEGER NOT NULL DEFAULT 10,
+    prezzo       REAL NOT NULL DEFAULT 0,
+    masterclass  INTEGER NOT NULL DEFAULT 0,
+    titolo       TEXT,                                -- nome della masterclass, se diverso
+    stato        TEXT NOT NULL DEFAULT 'programmata', -- programmata | annullata
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_sedute ON fitness_sedute(corso_id, data, ora);
+  CREATE TABLE IF NOT EXISTS fitness_prenotazioni (
+    id           INTEGER PRIMARY KEY,
+    seduta_id    INTEGER NOT NULL REFERENCES fitness_sedute(id) ON DELETE CASCADE,
+    socio_id     INTEGER,
+    tessera_code TEXT,
+    nome         TEXT,
+    stato        TEXT NOT NULL DEFAULT 'prenotato',   -- prenotato | annullato
+    pagato       INTEGER NOT NULL DEFAULT 0,          -- si incassa in contanti a fine lezione
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_fitpren ON fitness_prenotazioni(seduta_id, stato);
+  `);
+  } catch (_) {
+  }
   await addIfMissing("tavoli_layout", "ambiente", "ambiente TEXT NOT NULL DEFAULT 'garden'");
   await addIfMissing("tavoli", "tipo", "tipo TEXT NOT NULL DEFAULT 'standard'");
   await addIfMissing("prenotazioni_tavolo", "ambiente", "ambiente TEXT NOT NULL DEFAULT 'garden'");
@@ -1986,6 +2039,303 @@ var init_coppa = __esm({
   "server/coppa.js"() {
     init_db();
     init_tournament();
+  }
+});
+
+// server/parametri.js
+function normalizza(def, raw) {
+  if (raw == null) return def.predefinito;
+  if (def.tipo === "bool") return raw === "1" || raw === "true" || raw === true;
+  if (def.tipo === "numero") {
+    let n = Number(raw);
+    if (!Number.isFinite(n)) return def.predefinito;
+    if (def.min != null) n = Math.max(def.min, n);
+    if (def.max != null) n = Math.min(def.max, n);
+    return n;
+  }
+  const ok = (def.opzioni || []).some((o) => o.valore === raw);
+  return ok ? raw : def.predefinito;
+}
+async function par(chiave) {
+  const def = perChiave.get(chiave);
+  if (!def) return null;
+  if (def.dipende_da) {
+    const acceso = await par(def.dipende_da);
+    if (!acceso) return def.tipo === "bool" ? false : null;
+  }
+  return normalizza(def, await getSetting("par_" + chiave, null));
+}
+async function tuttiParametri() {
+  const out = [];
+  for (const def of REGISTRO) {
+    const grezzo = await getSetting("par_" + def.chiave, null);
+    out.push({
+      ...def,
+      valore: normalizza(def, grezzo),
+      personalizzato: grezzo != null,
+      // se il genitore e' spento la voce resta visibile ma disattivata, per capire perche'
+      attivo: def.dipende_da ? !!await par(def.dipende_da) : true
+    });
+  }
+  return out;
+}
+async function salvaParametri(patch) {
+  const cambiati = [];
+  for (const [chiave, valore] of Object.entries(patch || {})) {
+    const def = perChiave.get(chiave);
+    if (!def) continue;
+    const v = def.tipo === "bool" ? valore ? "1" : "0" : String(normalizza(def, valore));
+    await setSetting("par_" + chiave, v);
+    cambiati.push(chiave);
+  }
+  return cambiati;
+}
+var REGISTRO, perChiave;
+var init_parametri = __esm({
+  "server/parametri.js"() {
+    init_db();
+    REGISTRO = [
+      // ---- Campi ----
+      {
+        chiave: "campi_limita_durata",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Limite di durata per prenotazione",
+        aiuto: "Se spento, un socio puo' prenotare quante fasce consecutive vuole. Il numero massimo resta quello indicato sulla scheda del singolo campo."
+      },
+      {
+        chiave: "campi_limita_settimana",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Tetto di prenotazioni a settimana",
+        aiuto: "Se spento, nessun limite settimanale. Serve a evitare che siano sempre gli stessi a occupare il campo; il numero e' sulla scheda del campo."
+      },
+      {
+        chiave: "campi_prenotazione_obbligatoria",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "Prenotazione obbligatoria anche per il gioco libero",
+        aiuto: "Se acceso, il campo si usa solo se prenotato: in app compare la regola e la crew puo' verificare a chi e' assegnata la fascia."
+      },
+      {
+        chiave: "campi_durata_max_minuti",
+        gruppo: "Campi",
+        tipo: "numero",
+        predefinito: 90,
+        min: 15,
+        max: 300,
+        dipende_da: "campi_prenotazione_obbligatoria",
+        etichetta: "Tempo massimo di utilizzo (minuti)",
+        aiuto: "Durata oltre la quale il campo va liberato se c'e' chi aspetta."
+      },
+      {
+        chiave: "campi_unisciti",
+        gruppo: "Campi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Partite aperte: gli altri si uniscono",
+        aiuto: "Se spento, ogni prenotazione e' riservata al titolare e nessuno puo' aggiungersi."
+      },
+      {
+        chiave: "campi_unisciti_modo",
+        gruppo: "Campi",
+        tipo: "scelta",
+        predefinito: "unisciti_o_nuova",
+        dipende_da: "campi_unisciti",
+        opzioni: [
+          { valore: "unisciti_o_nuova", etichetta: "Ci si unisce oppure si prenota una fascia nuova" },
+          { valore: "solo_unisciti", etichetta: "Solo unendosi: niente seconda prenotazione nello stesso giorno" }
+        ],
+        etichetta: "Come si partecipa",
+        aiuto: `Con "solo unendosi", chi ha gia' una prenotazione quel giorno su quel campo deve aggregarsi a una partita aperta invece di aprirne un'altra.`
+      },
+      // ---- Sport ----
+      {
+        chiave: "sport_foglio_gara",
+        gruppo: "Sport",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Foglio gara stampabile dal Crew",
+        aiuto: "Mostra il bottone di stampa nel modulo Sport. Spegnilo se i risultati si prendono solo dal telefono."
+      },
+      // ---- Eventi ----
+      {
+        chiave: "eventi_onerosi",
+        gruppo: "Eventi",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Eventi a pagamento",
+        aiuto: "Se spento, tutti gli eventi sono liberi e nella scheda evento non compare nessun costo."
+      },
+      {
+        chiave: "eventi_modo_costo",
+        gruppo: "Eventi",
+        tipo: "scelta",
+        predefinito: "entrambi",
+        dipende_da: "eventi_onerosi",
+        opzioni: [
+          { valore: "prezzo", etichetta: "Solo prezzo d'ingresso" },
+          { valore: "consumazione", etichetta: "Solo consumazione obbligatoria" },
+          { valore: "entrambi", etichetta: "Si sceglie evento per evento" }
+        ],
+        etichetta: "Come si paga l'ingresso",
+        aiuto: "La consumazione obbligatoria sostituisce il biglietto: si entra consumando."
+      },
+      // ---- Fitness ----
+      {
+        chiave: "fitness_minimo",
+        gruppo: "Fitness",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Minimo di iscritti per aprire la lezione",
+        aiuto: 'Se acceso, sotto il minimo indicato sulla scheda del corso la lezione resta "in attesa" e non parte. Se spento, ogni lezione si tiene comunque.'
+      },
+      {
+        chiave: "fitness_prenotazione_obbligatoria",
+        gruppo: "Fitness",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Prenotazione obbligatoria",
+        aiuto: "Le attivit\xE0 con istruttore hanno posti contati: senza prenotazione non si entra."
+      },
+      // ---- Cinema ----
+      {
+        chiave: "cinema_posti_extra",
+        gruppo: "Cinema",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Posti extra in platea",
+        aiuto: "Se acceso, quando i posti standard sono esauriti si aprono anche i posti extra della platea. Se spento, a standard finiti la proiezione risulta al completo."
+      },
+      {
+        chiave: "cinema_prenotazione",
+        gruppo: "Cinema",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Prenotazione del posto",
+        aiuto: "Se spento, il cinema resta a ingresso libero: il cartellone si vede ma non si prenota."
+      },
+      // ---- Garden ----
+      {
+        chiave: "garden_prenotazione_cena",
+        gruppo: "Garden",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Prenotazione della cena a turni",
+        aiuto: "Se spento, il Garden non accetta prenotazioni: ci si siede e basta."
+      }
+    ];
+    perChiave = new Map(REGISTRO.map((p) => [p.chiave, p]));
+  }
+});
+
+// server/fitness.js
+var fitness_exports = {};
+__export(fitness_exports, {
+  GIORNI: () => GIORNI,
+  conStato: () => conStato,
+  generaSedute: () => generaSedute,
+  iscrittiDi: () => iscrittiDi,
+  isoDay: () => isoDay,
+  parseGiorni: () => parseGiorni,
+  prenotaSeduta: () => prenotaSeduta,
+  sedute: () => sedute
+});
+function parseGiorni(v) {
+  try {
+    const a = JSON.parse(v || "[]");
+    return Array.isArray(a) ? a.map(Number).filter((n) => n >= 1 && n <= 7) : [];
+  } catch (_) {
+    return [];
+  }
+}
+function isoDay(dataISO) {
+  const d = (/* @__PURE__ */ new Date(dataISO + "T12:00:00Z")).getUTCDay();
+  return d === 0 ? 7 : d;
+}
+async function generaSedute(corsoId) {
+  const c = await db.prepare("SELECT * FROM corsi_fitness WHERE id=?").get(corsoId);
+  if (!c) return { error: "Corso non trovato" };
+  if (!c.data_inizio || !c.data_fine) return { error: "Servono le date di inizio e fine corso" };
+  const giorni = parseGiorni(c.giorni);
+  if (!giorni.length) return { error: "Scegli almeno un giorno della settimana" };
+  const ins = db.prepare(
+    "INSERT OR IGNORE INTO fitness_sedute (corso_id,data,ora,durata_min,istruttore,posti_max,min_iscritti,prezzo,masterclass) VALUES (?,?,?,?,?,?,?,?,?)"
+  );
+  let creati = 0;
+  const fine = (/* @__PURE__ */ new Date(c.data_fine + "T12:00:00Z")).getTime();
+  let cur = (/* @__PURE__ */ new Date(c.data_inizio + "T12:00:00Z")).getTime();
+  let guardia = 0;
+  while (cur <= fine && guardia++ < 400) {
+    const data = new Date(cur).toISOString().slice(0, 10);
+    if (giorni.includes(isoDay(data))) {
+      const r = await ins.run(c.id, data, c.ora, c.durata_min, c.istruttore || null, c.posti_max, c.min_iscritti, c.masterclass ? c.prezzo_master || c.prezzo : c.prezzo, c.masterclass ? 1 : 0);
+      if (r.changes) creati++;
+    }
+    cur += 864e5;
+  }
+  return { creati };
+}
+async function iscrittiDi(sedutaId) {
+  const r = await db.prepare("SELECT COUNT(*) n FROM fitness_prenotazioni WHERE seduta_id=? AND stato='prenotato'").get(sedutaId);
+  return Number(r?.n || 0);
+}
+async function conStato(s) {
+  const iscritti = await iscrittiDi(s.id);
+  const minimoAttivo = await par("fitness_minimo");
+  const minimo = minimoAttivo ? Number(s.min_iscritti) || 0 : 0;
+  return {
+    ...s,
+    masterclass: !!s.masterclass,
+    iscritti,
+    posti_liberi: Math.max(0, Number(s.posti_max) - iscritti),
+    minimo,
+    mancano: Math.max(0, minimo - iscritti),
+    confermata: iscritti >= minimo,
+    completa: iscritti >= Number(s.posti_max)
+  };
+}
+async function sedute({ corsoId = null, da = null, soloFuture = true } = {}) {
+  const cond = ["s.stato='programmata'"];
+  const args = [];
+  if (corsoId) {
+    cond.push("s.corso_id=?");
+    args.push(corsoId);
+  }
+  if (soloFuture) cond.push("s.data >= date('now','-1 day')");
+  if (da) {
+    cond.push("s.data>=?");
+    args.push(da);
+  }
+  const rows = await db.prepare(
+    `SELECT s.*, c.nome AS corso_nome, c.descrizione, c.attivo AS corso_attivo
+     FROM fitness_sedute s JOIN corsi_fitness c ON c.id=s.corso_id
+     WHERE ${cond.join(" AND ")} ORDER BY s.data, s.ora`
+  ).all(...args);
+  const out = [];
+  for (const s of rows.filter((r) => r.corso_attivo)) out.push(await conStato(s));
+  return out;
+}
+async function prenotaSeduta({ sedutaId, socio, tessera_code, nome, origine }) {
+  const s = await db.prepare("SELECT * FROM fitness_sedute WHERE id=? AND stato='programmata'").get(sedutaId);
+  if (!s) return { error: "Lezione non disponibile" };
+  const gia = await db.prepare("SELECT id FROM fitness_prenotazioni WHERE seduta_id=? AND tessera_code=? AND stato='prenotato'").get(s.id, tessera_code);
+  if (gia) return { error: "Sei gi\xE0 iscritto a questa lezione" };
+  const iscritti = await iscrittiDi(s.id);
+  if (iscritti >= Number(s.posti_max)) return { error: "Lezione al completo" };
+  const info = await db.prepare("INSERT INTO fitness_prenotazioni (seduta_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(s.id, socio?.id ?? null, tessera_code || null, nome || null);
+  const stato = await conStato(s);
+  return { id: Number(info.lastInsertRowid), ...stato, origine: origine || "app" };
+}
+var GIORNI;
+var init_fitness = __esm({
+  "server/fitness.js"() {
+    init_db();
+    init_parametri();
+    GIORNI = ["", "lun", "mar", "mer", "gio", "ven", "sab", "dom"];
   }
 });
 
@@ -2611,8 +2961,10 @@ function evCardHTML(e, withAction) {
   const costo = Number(e.costo || 0);
   if (e.costo_tipo === 'consumazione') meta.push(\`<span class="ev-co">\u{1F942} \${esc(e.consumazione || T('consumazione obbligatoria'))}</span>\`);
   else if (costo > 0) meta.push(\`<span class="ev-co">\u{1F39F}\uFE0F \u20AC \${costo.toFixed(2)}</span>\`);
+  // Serata cinema: al posto del sottotitolo fisso, il film in programma.
+  const sotto = e.film ? \`\u{1F3AC} <b>\${esc(e.film.titolo)}</b>\${e.film.regia ? ' \xB7 ' + esc(e.film.regia) : ''}\${e.film.durata_min ? " \xB7 " + e.film.durata_min + "'" : ''}\` : esc(e.sottotitolo);
   const metaHTML = meta.length ? \`<div class="ev-meta">\${meta.join('')}</div>\` : '';
-  return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${dl}</div><h4>\${esc(e.titolo)}</h4><p>\${esc(e.sottotitolo)}</p>\${metaHTML}</div><div class="cta">\${action}</div></div>\`;
+  return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${dl}</div><h4>\${esc(e.titolo)}</h4><p>\${sotto}</p>\${metaHTML}</div><div class="cta">\${action}</div></div>\`;
 }
 // Tessera compatta: icona a sinistra, titolo e descrizione a destra. Occupa un terzo
 // dell'altezza della versione quadrata a parita' di leggibilita' e di area di tocco.
@@ -4371,6 +4723,7 @@ var admin_default = `<!DOCTYPE html>
         <button data-v="casate" data-cap="casate">\u{1F6E1}\uFE0F Casate &amp; punti</button>
         <button data-v="discipline" data-cap="discipline">\u{1F3C5} Discipline</button>
         <button data-v="tabellone" data-cap="tabellone">\u{1F3C6} Tornei</button>
+        <button data-v="fitness" data-cap="fitness">\u{1F9D8} Area fitness</button>
         <button data-v="campi" data-cap="campi">\u{1F3BE} Campi &amp; prenotazioni</button>
 
         <div class="grp">Serate &amp; Eventi</div>
@@ -4467,7 +4820,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', fitness:'Area fitness', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -5646,6 +5999,103 @@ function stampaCartellone(film, proiezioni) {
   w.document.close();
 }
 
+
+// ---- Area fitness: corsi con istruttore, lezioni, iscritti, incassi ----
+// Non e' una disciplina della Coppa ne' un campo: ha istruttore, prezzo e un minimo di
+// iscritti sotto il quale la lezione non parte. Si paga la singola lezione, in contanti.
+const FIT_GIORNI = [[1,'lun'],[2,'mar'],[3,'mer'],[4,'gio'],[5,'ven'],[6,'sab'],[7,'dom']];
+VIEWS.fitness = async () => {
+  const [corsi, sedute] = await Promise.all([api('/fitness/corsi'), api('/fitness/sedute').catch(() => [])]);
+  const eur2 = (v) => '\u20AC ' + Number(v || 0).toFixed(2);
+  const righe = corsi.map(c => \`<tr>
+      <td><b>\${esc(c.nome)}</b>\${c.masterclass ? ' <span class="tag mid">masterclass</span>' : ''}<div class="muted">\${esc(c.descrizione || '')}</div></td>
+      <td>\${esc(c.istruttore || '\u2014')}</td>
+      <td>\${esc(c.data_inizio || '\u2014')}<div class="muted">\${esc(c.data_fine || '')}</div></td>
+      <td>\${c.giorni.map(g => (FIT_GIORNI.find(x => x[0] === g) || [0, '?'])[1]).join(' ') || '\u2014'}<div class="muted">\${esc(c.ora)} \xB7 \${c.durata_min}\u2032</div></td>
+      <td>\${c.posti_max}<div class="muted">min \${c.min_iscritti}</div></td>
+      <td>\${eur2(c.prezzo)}\${c.masterclass ? \`<div class="muted">vip \${eur2(c.prezzo_master)}</div>\` : ''}</td>
+      <td>\${c.lezioni}</td>
+      <td>\${c.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag">no</span>'}</td>
+      <td class="row" style="margin:0"><button class="btn ghost sm" data-cfedit="\${c.id}">\u270E</button><button class="btn danger sm" data-cfdel="\${c.id}">\u{1F5D1}</button></td></tr>\`).join('');
+  const lez = sedute.map(s => {
+    const stato = s.completa ? '<span class="tag no">al completo</span>'
+      : s.confermata ? '<span class="tag ok">confermata</span>'
+      : \`<span class="tag mid">in attesa \xB7 mancano \${s.mancano}</span>\`;
+    return \`<tr><td><b>\${esc(s.data)}</b> \xB7 \${esc(s.ora)}</td>
+      <td>\${esc(s.titolo || s.corso_nome)}\${s.masterclass ? ' <span class="tag mid">masterclass</span>' : ''}<div class="muted">\${esc(s.istruttore || '')}</div></td>
+      <td>\${s.iscritti}/\${s.posti_max}\${s.minimo ? \`<div class="muted">min \${s.minimo}</div>\` : ''}</td>
+      <td>\${stato}</td><td>\${eur2(s.prezzo)}<div class="muted">da incassare \${eur2(s.da_incassare)}</div></td>
+      <td class="row" style="margin:0"><button class="btn ghost sm" data-sedit="\${s.id}">\u270E</button></td></tr>\`;
+  }).join('');
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>\u{1F9D8} Corsi</h3>
+      <p class="muted">Pilates, yoga, zumba: corsi brevi con istruttore, spesso di una sola settimana. Si paga <b>la singola lezione</b>, in contanti a fine lezione. Sotto il <b>minimo di iscritti</b> la lezione non parte \u2014 la regola si spegne da <b>Regole & parametri</b>. La <b>masterclass</b> \xE8 una lezione con un nome che tira e un prezzo pi\xF9 alto: si pu\xF2 marcare anche una singola lezione, senza creare un corso apposta.</p>
+      <table class="fit"><thead><tr><th>Disciplina</th><th>Istruttore</th><th>Periodo</th><th>Giorni</th><th>Posti</th><th>Prezzo</th><th>Lezioni</th><th>Attivo</th><th></th></tr></thead>
+        <tbody>\${righe || '<tr><td colspan="9" class="muted">Nessun corso.</td></tr>'}</tbody></table>
+      <div class="row" style="margin-top:12px"><button class="btn gold sm" id="cf_new">+ Nuovo corso</button></div></div>
+    <div class="panel"><h3>\u{1F4C6} Lezioni in programma</h3>
+      <table class="fit"><thead><tr><th>Quando</th><th>Lezione</th><th>Iscritti</th><th>Stato</th><th>Prezzo</th><th></th></tr></thead>
+        <tbody>\${lez || '<tr><td colspan="6" class="muted">Nessuna lezione. Crea un corso con periodo e giorni: le lezioni si generano da sole.</td></tr>'}</tbody></table>
+      <p class="muted" style="margin-top:8px">Gli iscritti e l'incasso si gestiscono a bordo campo nell'app <b>Bussola Crew \xB7 modulo Fitness</b> (permesso \u201CFitness\u201D).</p></div>\`;
+
+  const edit = (c) => {
+    openModal(\`<h3>\${c ? 'Modifica corso' : 'Nuovo corso'}</h3>
+      <div class="grid2"><div><label>Disciplina</label><input id="cf_n" value="\${esc(c?.nome || '')}" placeholder="Pilates, Yoga, Zumba\u2026"></div>
+        <div><label>Istruttore</label><input id="cf_i" value="\${esc(c?.istruttore || '')}"></div></div>
+      <label>Descrizione</label><input id="cf_d" value="\${esc(c?.descrizione || '')}">
+      <div class="grid2"><div><label>Inizio corso</label><input type="date" id="cf_da" value="\${esc(c?.data_inizio || '')}"></div>
+        <div><label>Fine corso</label><input type="date" id="cf_a" value="\${esc(c?.data_fine || '')}"></div></div>
+      <label>Giorni della settimana</label>
+      <div class="row">\${FIT_GIORNI.map(([n, l]) => \`<label class="check" style="margin:0"><input type="checkbox" class="cf_g" value="\${n}" \${c && c.giorni.includes(n) ? 'checked' : ''}> \${l}</label>\`).join('')}</div>
+      <div class="grid2"><div><label>Ora</label><input id="cf_o" value="\${esc(c?.ora || '09:00')}"></div>
+        <div><label>Durata lezione (min)</label><input id="cf_du" type="number" value="\${c?.durata_min || 60}"></div></div>
+      <div class="grid2"><div><label>Posti massimi per seduta</label><input id="cf_pm" type="number" value="\${c?.posti_max || 20}"></div>
+        <div><label>Minimo iscritti</label><input id="cf_mi" type="number" value="\${c?.min_iscritti ?? 10}"></div></div>
+      <div class="grid2"><div><label>Prezzo a lezione \u20AC</label><input id="cf_pr" type="number" step="0.01" value="\${Number(c?.prezzo || 0)}"></div>
+        <div><label>Prezzo masterclass \u20AC</label><input id="cf_pv" type="number" step="0.01" value="\${Number(c?.prezzo_master || 0)}"></div></div>
+      <label class="check"><input type="checkbox" id="cf_mc" \${c?.masterclass ? 'checked' : ''}> corso interamente masterclass (usa il prezzo vip)</label>
+      <label class="check"><input type="checkbox" id="cf_on" \${c && !c.attivo ? '' : 'checked'}> attivo</label>
+      <p class="muted">Salvando, le lezioni nei giorni scelti fra inizio e fine vengono <b>generate da sole</b>. Quelle gi\xE0 create non vengono toccate.</p>
+      <div class="row" style="margin-top:10px"><button class="btn gold" id="cf_save">Salva</button><button class="btn ghost" data-mclose>Annulla</button></div>\`);
+    $('#cf_save').onclick = async () => {
+      const body = {
+        nome: $('#cf_n').value, istruttore: $('#cf_i').value, descrizione: $('#cf_d').value,
+        data_inizio: $('#cf_da').value, data_fine: $('#cf_a').value,
+        giorni: [...document.querySelectorAll('.cf_g:checked')].map(x => Number(x.value)),
+        ora: $('#cf_o').value, durata_min: Number($('#cf_du').value), posti_max: Number($('#cf_pm').value),
+        min_iscritti: Number($('#cf_mi').value), prezzo: Number($('#cf_pr').value),
+        prezzo_master: Number($('#cf_pv').value), masterclass: $('#cf_mc').checked, attivo: $('#cf_on').checked
+      };
+      if (!body.nome) { alert('Indica la disciplina.'); return; }
+      const r = await api(c ? '/fitness/corsi/' + c.id : '/fitness/corsi', { method: c ? 'PUT' : 'POST', body: JSON.stringify(body) });
+      closeModal(); show('fitness');
+      if (r && r.error) alert(r.error);
+    };
+  };
+  $('#cf_new').onclick = () => edit(null);
+  document.querySelectorAll('[data-cfedit]').forEach(b => b.onclick = () => edit(corsi.find(x => x.id == b.dataset.cfedit)));
+  document.querySelectorAll('[data-cfdel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Eliminare il corso e le sue lezioni?')) return;
+    try { await api('/fitness/corsi/' + b.dataset.cfdel, { method: 'DELETE' }); show('fitness'); } catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-sedit]').forEach(b => b.onclick = () => {
+    const s = sedute.find(x => x.id == b.dataset.sedit);
+    openModal(\`<h3>Lezione del \${esc(s.data)}</h3>
+      <div class="grid2"><div><label>Ora</label><input id="se_o" value="\${esc(s.ora)}"></div>
+        <div><label>Istruttore</label><input id="se_i" value="\${esc(s.istruttore || '')}"></div></div>
+      <div class="grid2"><div><label>Posti massimi</label><input id="se_p" type="number" value="\${s.posti_max}"></div>
+        <div><label>Minimo iscritti</label><input id="se_m" type="number" value="\${s.min_iscritti}"></div></div>
+      <div class="grid2"><div><label>Prezzo \u20AC</label><input id="se_pr" type="number" step="0.01" value="\${Number(s.prezzo)}"></div>
+        <div><label>Titolo (se masterclass)</label><input id="se_t" value="\${esc(s.titolo || '')}"></div></div>
+      <label class="check"><input type="checkbox" id="se_mc" \${s.masterclass ? 'checked' : ''}> questa lezione \xE8 una masterclass</label>
+      <div class="row" style="margin-top:10px"><button class="btn gold" id="se_save">Salva</button>
+        <button class="btn danger" id="se_ann">Annulla la lezione</button><button class="btn ghost" data-mclose>Chiudi</button></div>\`);
+    const salva = (extra) => api('/fitness/sedute/' + s.id, { method: 'PUT', body: JSON.stringify({ ora: $('#se_o').value, istruttore: $('#se_i').value, posti_max: Number($('#se_p').value), min_iscritti: Number($('#se_m').value), prezzo: Number($('#se_pr').value), masterclass: $('#se_mc').checked, titolo: $('#se_t').value, ...extra }) }).then(() => { closeModal(); show('fitness'); });
+    $('#se_save').onclick = () => salva({});
+    $('#se_ann').onclick = () => { if (confirm('Annullare questa lezione?')) salva({ stato: 'annullata' }); };
+  });
+};
+
 // ---- Contest Serata dei Clan ----
 function contestForm(c) {
   const tipi = ['cocktail', 'karaoke', 'recitazione', 'sfilata', 'altro'];
@@ -5925,7 +6375,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option></select>
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -5942,6 +6392,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="campi">\u{1F3BE} Campi</button>
       <button data-v="serate">\u{1F37D}\uFE0F Serate</button>
       <button data-v="cdc">\u{1F4DA} Casa di Carta</button>
+      <button data-v="fitness">\u{1F9D8} Fitness</button>
       <button data-v="scortecdc">\u{1F4CA} Scorte</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
@@ -6150,10 +6601,11 @@ function allowedZones() {
   if (ME.gestore || caps.includes('campi')) z.push('campi');       // prenotazioni campi al banco
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
+  if (ME.gestore || caps.includes('fitness')) z.push('fitness');   // lezioni con istruttore
   return z;
 }
 // Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness' };
 // Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
   const el = document.querySelector('#zonaSwitch');
@@ -6169,7 +6621,7 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  const PRIMA = { cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc' };
+  const PRIMA = { cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc', fitness: 'fitness' };
   show(PRIMA[ZONA] || 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -6188,6 +6640,7 @@ function applyZona() {
   tog('campi', ZONA === 'campi');
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
+  tog('fitness', ZONA === 'fitness');
   tog('scortecdc', hasMag && ZONA === 'cdc');                      // Casa di Carta: zona del magazzino Centrale
   tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
@@ -6206,6 +6659,7 @@ const ZONA_ACCENT = {
   campi:     { a: '#2e6b45', g1: '#245437', g2: '#3d8a5a', nome: 'Campi' },
   serate:    { a: '#a0356b', g1: '#7d2853', g2: '#b8497f', nome: 'Serate' },
   cdc:       { a: '#7a5c2e', g1: '#5f4723', g2: '#96733d', nome: 'Casa di Carta' },
+  fitness:   { a: '#2f7d8a', g1: '#245e68', g2: '#3f9daa', nome: 'Fitness' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -7551,6 +8005,44 @@ function apriTavolo(numero) {
   };
   $('#tv_no').onclick = closeModal;
 }
+
+// ===== MODULO FITNESS (cap 'fitness') \u2014 iscritti e incasso a fine lezione ==================
+VIEWS.fitness = async () => {
+  const sedute = await api('/fitness/sedute').catch(() => []);
+  if (!sedute.length) { $('#view').innerHTML = '<div class="panel"><p class="muted">Nessuna lezione in programma. I corsi si creano nel back office.</p></div>'; return; }
+  const eur2 = (v) => '\u20AC ' + Number(v || 0).toFixed(2);
+  $('#view').innerHTML = sedute.map(s => {
+    const stato = s.completa ? '<span class="tag no">al completo</span>'
+      : s.confermata ? '<span class="tag ok">confermata</span>'
+      : \`<span class="tag" style="background:#f4ead6;color:#8a5a12">in attesa \xB7 mancano \${s.mancano}</span>\`;
+    const righe = (s.elenco || []).map(i => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+        <span>\${esc(i.nome || i.tessera_code || '\u2014')}</span>
+        <button class="btn \${i.pagato ? 'ghost' : 'gold'} sm" data-fitpag="\${i.id}|\${i.pagato ? 0 : 1}">\${i.pagato ? '\u2713 pagato' : '\u{1F4B6} incassa'}</button>
+      </div>\`).join('');
+    return \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div><b style="color:var(--navy)">\${esc(s.titolo || s.corso_nome)}</b>\${s.masterclass ? ' \u{1F31F}' : ''}
+          <div class="muted" style="font-size:.82rem">\${esc(s.data)} \xB7 \${esc(s.ora)} \xB7 \${s.durata_min}\u2032\${s.istruttore ? ' \xB7 ' + esc(s.istruttore) : ''}</div></div>
+        <div style="text-align:right">\${stato}<div class="muted" style="font-size:.82rem">\${s.iscritti}/\${s.posti_max} \xB7 \${eur2(s.prezzo)}</div></div>
+      </div>
+      <div style="margin-top:8px">\${righe || '<p class="muted">Nessun iscritto.</p>'}</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <input id="fit_t_\${s.id}" placeholder="Tessera o nome" style="min-width:150px">
+        <button class="btn gold sm" data-fitadd="\${s.id}">+ Iscrivi al banco</button>
+        <span class="muted" style="font-size:.82rem">da incassare <b>\${eur2(s.da_incassare)}</b></span>
+      </div></div>\`;
+  }).join('');
+  document.querySelectorAll('[data-fitpag]').forEach(b => b.onclick = async () => {
+    const [id, v] = b.dataset.fitpag.split('|');
+    await api('/fitness/prenotazioni/' + id, { method: 'PUT', body: JSON.stringify({ pagato: v === '1' }) });
+    show('fitness');
+  });
+  document.querySelectorAll('[data-fitadd]').forEach(b => b.onclick = async () => {
+    const v = ($('#fit_t_' + b.dataset.fitadd) || {}).value || '';
+    const body = /^BR-/i.test(v.trim()) ? { tessera_code: v.trim().toUpperCase() } : { nome: v.trim() || 'Ospite' };
+    try { await api('/fitness/sedute/' + b.dataset.fitadd + '/iscrivi', { method: 'POST', body: JSON.stringify(body) }); show('fitness'); }
+    catch (e) { alert(e.message); }
+  });
+};
 </script>
 </body>
 </html>
@@ -7838,7 +8330,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.78";
+var VERSION = "4.79";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -8057,8 +8549,10 @@ var CAPS_DELEGABILI = [
   // Magazzino unificato (aree + alert)
   "comande",
   // Chiosco: comande + KDS (cassa/cameriere/stazioni)
-  "campi"
+  "campi",
   // Prenotazione campi (config campi + regole + prospetto prenotazioni)
+  "fitness"
+  // Area fitness: corsi, lezioni, iscritti e incassi
 ];
 var CAPS_GESTORE_ONLY = [
   "utenti_del",
@@ -9893,176 +10387,7 @@ init_coppa();
 
 // server/tavoli.js
 init_db();
-
-// server/parametri.js
-init_db();
-var REGISTRO = [
-  // ---- Campi ----
-  {
-    chiave: "campi_limita_durata",
-    gruppo: "Campi",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Limite di durata per prenotazione",
-    aiuto: "Se spento, un socio puo' prenotare quante fasce consecutive vuole. Il numero massimo resta quello indicato sulla scheda del singolo campo."
-  },
-  {
-    chiave: "campi_limita_settimana",
-    gruppo: "Campi",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Tetto di prenotazioni a settimana",
-    aiuto: "Se spento, nessun limite settimanale. Serve a evitare che siano sempre gli stessi a occupare il campo; il numero e' sulla scheda del campo."
-  },
-  {
-    chiave: "campi_prenotazione_obbligatoria",
-    gruppo: "Campi",
-    tipo: "bool",
-    predefinito: false,
-    etichetta: "Prenotazione obbligatoria anche per il gioco libero",
-    aiuto: "Se acceso, il campo si usa solo se prenotato: in app compare la regola e la crew puo' verificare a chi e' assegnata la fascia."
-  },
-  {
-    chiave: "campi_durata_max_minuti",
-    gruppo: "Campi",
-    tipo: "numero",
-    predefinito: 90,
-    min: 15,
-    max: 300,
-    dipende_da: "campi_prenotazione_obbligatoria",
-    etichetta: "Tempo massimo di utilizzo (minuti)",
-    aiuto: "Durata oltre la quale il campo va liberato se c'e' chi aspetta."
-  },
-  {
-    chiave: "campi_unisciti",
-    gruppo: "Campi",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Partite aperte: gli altri si uniscono",
-    aiuto: "Se spento, ogni prenotazione e' riservata al titolare e nessuno puo' aggiungersi."
-  },
-  {
-    chiave: "campi_unisciti_modo",
-    gruppo: "Campi",
-    tipo: "scelta",
-    predefinito: "unisciti_o_nuova",
-    dipende_da: "campi_unisciti",
-    opzioni: [
-      { valore: "unisciti_o_nuova", etichetta: "Ci si unisce oppure si prenota una fascia nuova" },
-      { valore: "solo_unisciti", etichetta: "Solo unendosi: niente seconda prenotazione nello stesso giorno" }
-    ],
-    etichetta: "Come si partecipa",
-    aiuto: `Con "solo unendosi", chi ha gia' una prenotazione quel giorno su quel campo deve aggregarsi a una partita aperta invece di aprirne un'altra.`
-  },
-  // ---- Sport ----
-  {
-    chiave: "sport_foglio_gara",
-    gruppo: "Sport",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Foglio gara stampabile dal Crew",
-    aiuto: "Mostra il bottone di stampa nel modulo Sport. Spegnilo se i risultati si prendono solo dal telefono."
-  },
-  // ---- Eventi ----
-  {
-    chiave: "eventi_onerosi",
-    gruppo: "Eventi",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Eventi a pagamento",
-    aiuto: "Se spento, tutti gli eventi sono liberi e nella scheda evento non compare nessun costo."
-  },
-  {
-    chiave: "eventi_modo_costo",
-    gruppo: "Eventi",
-    tipo: "scelta",
-    predefinito: "entrambi",
-    dipende_da: "eventi_onerosi",
-    opzioni: [
-      { valore: "prezzo", etichetta: "Solo prezzo d'ingresso" },
-      { valore: "consumazione", etichetta: "Solo consumazione obbligatoria" },
-      { valore: "entrambi", etichetta: "Si sceglie evento per evento" }
-    ],
-    etichetta: "Come si paga l'ingresso",
-    aiuto: "La consumazione obbligatoria sostituisce il biglietto: si entra consumando."
-  },
-  // ---- Cinema ----
-  {
-    chiave: "cinema_posti_extra",
-    gruppo: "Cinema",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Posti extra in platea",
-    aiuto: "Se acceso, quando i posti standard sono esauriti si aprono anche i posti extra della platea. Se spento, a standard finiti la proiezione risulta al completo."
-  },
-  {
-    chiave: "cinema_prenotazione",
-    gruppo: "Cinema",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Prenotazione del posto",
-    aiuto: "Se spento, il cinema resta a ingresso libero: il cartellone si vede ma non si prenota."
-  },
-  // ---- Garden ----
-  {
-    chiave: "garden_prenotazione_cena",
-    gruppo: "Garden",
-    tipo: "bool",
-    predefinito: true,
-    etichetta: "Prenotazione della cena a turni",
-    aiuto: "Se spento, il Garden non accetta prenotazioni: ci si siede e basta."
-  }
-];
-var perChiave = new Map(REGISTRO.map((p) => [p.chiave, p]));
-function normalizza(def, raw) {
-  if (raw == null) return def.predefinito;
-  if (def.tipo === "bool") return raw === "1" || raw === "true" || raw === true;
-  if (def.tipo === "numero") {
-    let n = Number(raw);
-    if (!Number.isFinite(n)) return def.predefinito;
-    if (def.min != null) n = Math.max(def.min, n);
-    if (def.max != null) n = Math.min(def.max, n);
-    return n;
-  }
-  const ok = (def.opzioni || []).some((o) => o.valore === raw);
-  return ok ? raw : def.predefinito;
-}
-async function par(chiave) {
-  const def = perChiave.get(chiave);
-  if (!def) return null;
-  if (def.dipende_da) {
-    const acceso = await par(def.dipende_da);
-    if (!acceso) return def.tipo === "bool" ? false : null;
-  }
-  return normalizza(def, await getSetting("par_" + chiave, null));
-}
-async function tuttiParametri() {
-  const out = [];
-  for (const def of REGISTRO) {
-    const grezzo = await getSetting("par_" + def.chiave, null);
-    out.push({
-      ...def,
-      valore: normalizza(def, grezzo),
-      personalizzato: grezzo != null,
-      // se il genitore e' spento la voce resta visibile ma disattivata, per capire perche'
-      attivo: def.dipende_da ? !!await par(def.dipende_da) : true
-    });
-  }
-  return out;
-}
-async function salvaParametri(patch) {
-  const cambiati = [];
-  for (const [chiave, valore] of Object.entries(patch || {})) {
-    const def = perChiave.get(chiave);
-    if (!def) continue;
-    const v = def.tipo === "bool" ? valore ? "1" : "0" : String(normalizza(def, valore));
-    await setSetting("par_" + chiave, v);
-    cambiati.push(chiave);
-  }
-  return cambiati;
-}
-
-// server/tavoli.js
+init_parametri();
 var TURNI_DEFAULT = ["20:00", "21:30"];
 async function turni() {
   const raw = await getSetting("garden_turni", TURNI_DEFAULT.join(","));
@@ -10253,6 +10578,9 @@ async function turnoSuccessivo(ora) {
   return null;
 }
 
+// server/routes/admin.js
+init_parametri();
+
 // server/referenze.js
 init_db();
 var VINCOLI = {
@@ -10315,6 +10643,7 @@ async function bloccaSeCollegato(res, entita, id, cosa) {
 }
 
 // server/routes/admin.js
+init_fitness();
 function menuZona(v) {
   const s = String(v || "").trim().toLowerCase();
   return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
@@ -12145,6 +12474,106 @@ adminRouter.get("/proiezioni/:id/platea", requireCap("eventi"), async (req, res)
   if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
   res.json({ proiezione: p, ...await statoTurno(p.data, p.ora, "stage", p.layout_id) });
 });
+adminRouter.get("/fitness/corsi", requireCap("fitness"), async (req, res) => {
+  const corsi = await db.prepare("SELECT * FROM corsi_fitness ORDER BY ordine,id").all();
+  const out = [];
+  for (const c of corsi) {
+    const n = await db.prepare("SELECT COUNT(*) n FROM fitness_sedute WHERE corso_id=? AND stato='programmata'").get(c.id);
+    out.push({ ...c, giorni: JSON.parse(c.giorni || "[]"), masterclass: !!c.masterclass, lezioni: Number(n?.n || 0) });
+  }
+  res.json(out);
+});
+function corpoCorso(b) {
+  return [
+    b.nome,
+    b.istruttore || null,
+    b.descrizione || null,
+    b.data_inizio || null,
+    b.data_fine || null,
+    JSON.stringify((Array.isArray(b.giorni) ? b.giorni : []).map(Number).filter((n) => n >= 1 && n <= 7)),
+    b.ora || "09:00",
+    Math.max(15, Number(b.durata_min) || 60),
+    Math.max(1, Number(b.posti_max) || 20),
+    Math.max(0, Number(b.min_iscritti) || 0),
+    Math.max(0, Number(b.prezzo) || 0),
+    b.masterclass ? 1 : 0,
+    Math.max(0, Number(b.prezzo_master) || 0),
+    b.attivo === false ? 0 : 1
+  ];
+}
+adminRouter.post("/fitness/corsi", requireCap("fitness"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Indica la disciplina" });
+  const ord = ((await db.prepare("SELECT MAX(ordine) m FROM corsi_fitness").get())?.m || 0) + 1;
+  const info = await db.prepare(
+    "INSERT INTO corsi_fitness (nome,istruttore,descrizione,data_inizio,data_fine,giorni,ora,durata_min,posti_max,min_iscritti,prezzo,masterclass,prezzo_master,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  ).run(...corpoCorso(b), ord);
+  const id = Number(info.lastInsertRowid);
+  const g = await generaSedute(id);
+  audit(req.adminUser.username, "crea", "corsi_fitness", id, `${b.nome}${g.creati ? " \xB7 " + g.creati + " lezioni" : ""}`);
+  res.status(201).json({ ok: true, id, ...g });
+});
+adminRouter.put("/fitness/corsi/:id", requireCap("fitness"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare(
+    "UPDATE corsi_fitness SET nome=?,istruttore=?,descrizione=?,data_inizio=?,data_fine=?,giorni=?,ora=?,durata_min=?,posti_max=?,min_iscritti=?,prezzo=?,masterclass=?,prezzo_master=?,attivo=? WHERE id=?"
+  ).run(...corpoCorso(b), req.params.id);
+  const g = await generaSedute(Number(req.params.id));
+  res.json({ ok: true, ...g });
+});
+adminRouter.post("/fitness/corsi/:id/genera", requireCap("fitness"), async (req, res) => {
+  const g = await generaSedute(Number(req.params.id));
+  if (g.error) return res.status(400).json(g);
+  audit(req.adminUser.username, "genera_lezioni", "corsi_fitness", req.params.id, `${g.creati} nuove`);
+  res.json({ ok: true, ...g });
+});
+adminRouter.delete("/fitness/corsi/:id", requireCap("fitness"), async (req, res) => {
+  const n = await db.prepare(
+    "SELECT COUNT(*) c FROM fitness_prenotazioni p JOIN fitness_sedute s ON s.id=p.seduta_id WHERE s.corso_id=? AND p.stato='prenotato'"
+  ).get(req.params.id);
+  if (Number(n?.c || 0) > 0) return res.status(409).json({ error: `Non posso eliminare il corso: ci sono ${n.c} iscrizioni attive.` });
+  await db.prepare("DELETE FROM fitness_sedute WHERE corso_id=?").run(req.params.id);
+  await db.prepare("DELETE FROM corsi_fitness WHERE id=?").run(req.params.id);
+  audit(req.adminUser.username, "cancella", "corsi_fitness", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/fitness/sedute", requireCap("fitness"), async (req, res) => {
+  const list = await sedute({ corsoId: req.query.corso ? Number(req.query.corso) : null, soloFuture: req.query.tutte !== "1" });
+  const out = [];
+  for (const s of list) {
+    const iscritti = await db.prepare(
+      "SELECT id,nome,tessera_code,pagato FROM fitness_prenotazioni WHERE seduta_id=? AND stato='prenotato' ORDER BY id"
+    ).all(s.id);
+    out.push({ ...s, elenco: iscritti, incassato: iscritti.filter((x) => x.pagato).length * Number(s.prezzo), da_incassare: iscritti.filter((x) => !x.pagato).length * Number(s.prezzo) });
+  }
+  res.json(out);
+});
+adminRouter.put("/fitness/sedute/:id", requireCap("fitness"), async (req, res) => {
+  const b = req.body || {};
+  const s = await db.prepare("SELECT * FROM fitness_sedute WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Lezione non trovata" });
+  await db.prepare("UPDATE fitness_sedute SET ora=?,istruttore=?,posti_max=?,min_iscritti=?,prezzo=?,masterclass=?,titolo=?,stato=? WHERE id=?").run(b.ora || s.ora, b.istruttore ?? s.istruttore, Math.max(1, Number(b.posti_max) || s.posti_max), Math.max(0, Number(b.min_iscritti ?? s.min_iscritti)), Math.max(0, Number(b.prezzo ?? s.prezzo)), b.masterclass ? 1 : 0, b.titolo ?? s.titolo, b.stato === "annullata" ? "annullata" : "programmata", s.id);
+  audit(req.adminUser.username, "modifica", "fitness_sedute", s.id, b.stato === "annullata" ? "annullata" : "");
+  res.json({ ok: true, ...await conStato(await db.prepare("SELECT * FROM fitness_sedute WHERE id=?").get(s.id)) });
+});
+adminRouter.put("/fitness/prenotazioni/:id", requireCap("fitness"), async (req, res) => {
+  const b = req.body || {};
+  if (b.stato === "annullato") {
+    await db.prepare("UPDATE fitness_prenotazioni SET stato='annullato' WHERE id=?").run(req.params.id);
+  } else {
+    await db.prepare("UPDATE fitness_prenotazioni SET pagato=? WHERE id=?").run(b.pagato ? 1 : 0, req.params.id);
+  }
+  res.json({ ok: true });
+});
+adminRouter.post("/fitness/sedute/:id/iscrivi", requireCap("fitness"), async (req, res) => {
+  const b = req.body || {};
+  const socio = b.tessera_code ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(b.tessera_code) : null;
+  const nome = b.nome || (socio ? (socio.nome + " " + (socio.cognome || "")).trim() : "Ospite");
+  const { prenotaSeduta: prenotaSeduta2 } = await Promise.resolve().then(() => (init_fitness(), fitness_exports));
+  const r = await prenotaSeduta2({ sedutaId: Number(req.params.id), socio, tessera_code: b.tessera_code, nome, origine: "crew" });
+  if (r.error) return res.status(409).json({ error: r.error });
+  res.status(201).json({ ok: true, ...r });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -12153,6 +12582,8 @@ init_authuser();
 init_asyncroute();
 init_coppa();
 import { Router as Router2 } from "express";
+init_parametri();
+init_fitness();
 init_db();
 init_push();
 var publicRouter = asyncify(Router2());
@@ -12203,17 +12634,24 @@ publicRouter.get("/push/pubkey", async (req, res) => {
   const { pushEnabled: pushEnabled2, publicKey: publicKey2 } = await Promise.resolve().then(() => (init_push(), push_exports));
   res.json({ enabled: pushEnabled2(), key: publicKey2() });
 });
+async function filmDellaSettimana(e) {
+  if (e.tipo !== "cinema" && !/cinema/i.test(String(e.titolo || "") + String(e.chiave || ""))) return {};
+  const p = await db.prepare(
+    "SELECT p.id,p.data,p.ora,f.titolo,f.regia,f.durata_min,f.vm FROM proiezioni p JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora LIMIT 1"
+  ).get();
+  return p ? { film: { proiezione_id: p.id, titolo: p.titolo, regia: p.regia, durata_min: p.durata_min, vm: p.vm, data: p.data, ora: p.ora } } : {};
+}
 publicRouter.get("/eventi", async (req, res) => {
   const rows = await db.prepare("SELECT chiave,giorno,titolo,ambiente,colore,sottotitolo,descrizione,cta,azione,tipo,ora_inizio,tipologia,artista,prezzo,costo_tipo,consumazione,serata_id FROM eventi WHERE attivo=1 ORDER BY ordine").all();
   const onerosi = await par("eventi_onerosi");
   const out = [];
   for (const e of rows) {
     if (!onerosi) {
-      out.push({ ...e, costo: 0, costo_tipo: "nessuno", consumazione: null });
+      out.push({ ...e, costo: 0, costo_tipo: "nessuno", consumazione: null, ...await filmDellaSettimana(e) });
       continue;
     }
     if (e.costo_tipo === "consumazione") {
-      out.push({ ...e, costo: 0 });
+      out.push({ ...e, costo: 0, ...await filmDellaSettimana(e) });
       continue;
     }
     let costo = Number(e.prezzo || 0);
@@ -12221,7 +12659,7 @@ publicRouter.get("/eventi", async (req, res) => {
       const s = await db.prepare("SELECT quota FROM serate WHERE id=?").get(e.serata_id);
       if (s && Number(s.quota) > 0) costo = Number(s.quota);
     }
-    out.push({ ...e, costo, costo_tipo: costo > 0 ? "prezzo" : "nessuno" });
+    out.push({ ...e, costo, costo_tipo: costo > 0 ? "prezzo" : "nessuno", ...await filmDellaSettimana(e) });
   }
   res.json(out);
 });
@@ -12766,6 +13204,42 @@ publicRouter.get("/cinema/mie-prenotazioni", async (req, res) => {
   ).all(t);
   res.json(rows.map((r) => ({ ...r, posti: JSON.parse(r.tavoli || "[]") })));
 });
+publicRouter.get("/fitness", async (req, res) => {
+  const corsi = await db.prepare("SELECT id,nome,istruttore,descrizione,data_inizio,data_fine,ora,durata_min,prezzo,masterclass,prezzo_master FROM corsi_fitness WHERE attivo=1 ORDER BY ordine,id").all();
+  res.json({
+    corsi: corsi.map((c) => ({ ...c, masterclass: !!c.masterclass })),
+    lezioni: await sedute({}),
+    prenotazione_obbligatoria: await par("fitness_prenotazione_obbligatoria"),
+    minimo_attivo: await par("fitness_minimo")
+  });
+});
+publicRouter.post("/fitness/sedute/:id/prenota", async (req, res) => {
+  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per iscriverti" });
+  if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const nome = (socio.nome + " " + (socio.cognome || "")).trim();
+  const r = await prenotaSeduta({ sedutaId: Number(req.params.id), socio, tessera_code: req.body.tessera_code, nome, origine: "app" });
+  if (r.error) return res.status(409).json({ error: r.error });
+  audit(req.body.tessera_code, "iscrizione_fitness", "fitness_sedute", req.params.id, `${r.data} ${r.ora}`);
+  res.status(201).json({ ok: true, ...r });
+});
+publicRouter.get("/fitness/mie-iscrizioni", async (req, res) => {
+  const t = String(req.query.tessera_code || "");
+  if (!t) return res.json([]);
+  const rows = await db.prepare(
+    `SELECT p.id, s.data, s.ora, s.prezzo, s.masterclass, s.titolo, s.istruttore, c.nome AS corso_nome
+     FROM fitness_prenotazioni p JOIN fitness_sedute s ON s.id=p.seduta_id JOIN corsi_fitness c ON c.id=s.corso_id
+     WHERE p.tessera_code=? AND p.stato='prenotato' AND s.data>=date('now','-1 day') ORDER BY s.data,s.ora`
+  ).all(t);
+  res.json(rows.map((r) => ({ ...r, masterclass: !!r.masterclass })));
+});
+publicRouter.post("/fitness/iscrizioni/:id/annulla", async (req, res) => {
+  const p = await db.prepare("SELECT * FROM fitness_prenotazioni WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Iscrizione non trovata" });
+  if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue iscrizioni" });
+  await db.prepare("UPDATE fitness_prenotazioni SET stato='annullato' WHERE id=?").run(p.id);
+  res.json({ ok: true });
+});
 
 // server/seed.js
 init_auth();
@@ -13147,7 +13621,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 06:22" : "online";
+var BUILD = true ? "2026-08-19 06:31" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
