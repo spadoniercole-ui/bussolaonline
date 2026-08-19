@@ -1603,6 +1603,40 @@ async function migrate() {
     }
   } catch (_) {
   }
+  await addIfMissing("tavoli_layout", "ambiente", "ambiente TEXT NOT NULL DEFAULT 'garden'");
+  await addIfMissing("tavoli", "tipo", "tipo TEXT NOT NULL DEFAULT 'standard'");
+  await addIfMissing("prenotazioni_tavolo", "ambiente", "ambiente TEXT NOT NULL DEFAULT 'garden'");
+  await addIfMissing("prenotazioni_tavolo", "proiezione_id", "proiezione_id INTEGER");
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS film (
+    id         INTEGER PRIMARY KEY,
+    titolo     TEXT NOT NULL,
+    regia      TEXT,
+    anno       INTEGER,
+    durata_min INTEGER,
+    genere     TEXT,
+    sinossi    TEXT,
+    vm         TEXT,                                   -- eta' consigliata / visione
+    attivo     INTEGER NOT NULL DEFAULT 1,
+    ordine     INTEGER NOT NULL DEFAULT 0
+  );
+  -- Una proiezione e' un film in una data: e' quella che l'app mostra nel cartellone
+  -- settimanale e quella su cui si prenotano i posti in platea.
+  CREATE TABLE IF NOT EXISTS proiezioni (
+    id         INTEGER PRIMARY KEY,
+    film_id    INTEGER REFERENCES film(id),
+    data       TEXT NOT NULL,                          -- YYYY-MM-DD
+    ora        TEXT NOT NULL DEFAULT '21:30',
+    layout_id  INTEGER REFERENCES tavoli_layout(id),   -- disposizione della platea
+    note       TEXT,
+    stato      TEXT NOT NULL DEFAULT 'programmata',    -- programmata | annullata
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_proiezioni_data ON proiezioni(data);
+  `);
+  } catch (_) {
+  }
   await addIfMissing("tavoli", "uniti", "uniti TEXT");
   await addIfMissing("eventi", "costo_tipo", "costo_tipo TEXT NOT NULL DEFAULT 'nessuno'");
   await addIfMissing("eventi", "consumazione", "consumazione TEXT");
@@ -4341,6 +4375,7 @@ var admin_default = `<!DOCTYPE html>
 
         <div class="grp">Serate &amp; Eventi</div>
         <button data-v="eventi" data-cap="eventi">\u{1F3AD} Eventi</button>
+        <button data-v="cinema" data-cap="eventi">\u{1F3AC} Cinema</button>
         <button data-v="serate" data-cap="serate">\u{1F37D}\uFE0F Serate &amp; cena</button>
         <button data-v="contest" data-cap="contest">\u{1F3AC} Contest Serata Clan</button>
         <button data-v="proposte" data-cap="proposte">\u{1F3B5} Proposte</button>
@@ -4432,7 +4467,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
 }
@@ -5495,6 +5530,121 @@ VIEWS.parametri = async () => {
     const b = el.closest('div').querySelector('b'); if (b) b.textContent = el.checked ? 'S\xCC' : 'NO';
   });
 };
+
+
+// ---- Cinema: film, cartellone stampabile, proiezioni, platea ----
+// La platea usa lo stesso motore della sala del Garden: posti su una pianta, assegnati dal
+// centro verso l'esterno. Cambiano le etichette (posti invece di tavoli, proiezione invece
+// di turno), non la logica.
+VIEWS.cinema = async () => {
+  const [film, proiezioni] = await Promise.all([api('/film'), api('/proiezioni').catch(() => [])]);
+  const oggi = new Date().toISOString().slice(0, 10);
+  const rows = film.map(f => \`<tr>
+      <td><b>\${esc(f.titolo)}</b>\${f.vm ? \` <span class="tag mid">\${esc(f.vm)}</span>\` : ''}<div class="muted">\${esc(f.sinossi || '')}</div></td>
+      <td>\${esc(f.regia || '\u2014')}</td><td>\${f.anno || '\u2014'}</td><td>\${f.durata_min ? f.durata_min + "'" : '\u2014'}</td><td>\${esc(f.genere || '\u2014')}</td>
+      <td>\${f.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag">no</span>'}</td>
+      <td class="row" style="margin:0"><button class="btn ghost sm" data-fedit="\${f.id}">\u270E</button><button class="btn danger sm" data-fdel="\${f.id}">\u{1F5D1}</button></td></tr>\`).join('');
+  const opts = film.filter(f => f.attivo).map(f => \`<option value="\${f.id}">\${esc(f.titolo)}</option>\`).join('');
+  const pr = proiezioni.map(p => \`<tr>
+      <td><b>\${esc(p.data)}</b> \xB7 \${esc(p.ora)}</td>
+      <td>\${esc(p.titolo || '\u2014')}</td>
+      <td>\${p.prenotati}/\${p.posti_totali}\${p.standard_liberi <= 0 && p.posti_liberi > 0 ? ' <span class="tag mid">solo extra</span>' : ''}</td>
+      <td>\${p.stato === 'annullata' ? '<span class="tag no">annullata</span>' : '<span class="tag ok">in programma</span>'}</td>
+      <td class="row" style="margin:0"><button class="btn ghost sm" data-pplatea="\${p.id}">\u{1F39F}\uFE0F Platea</button><button class="btn danger sm" data-pdel="\${p.id}">\u{1F5D1}</button></td></tr>\`).join('');
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>\u{1F3AC} Cartellone film</h3>
+      <p class="muted">L'elenco dei film della stagione. Quelli attivi si possono mettere in programmazione qui sotto, e il titolo della proiezione pi\xF9 vicina compare nel cartellone settimanale dell'app.</p>
+      <div class="row" style="justify-content:flex-end"><button class="btn gold sm" id="cin_print">\u{1F5A8}\uFE0F Stampa cartellone (PDF)</button></div>
+      <table class="fit"><thead><tr><th>Film</th><th>Regia</th><th>Anno</th><th>Durata</th><th>Genere</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="7" class="muted">Nessun film in cartellone.</td></tr>'}</tbody></table>
+      <div class="row" style="margin-top:12px"><button class="btn gold sm" id="f_new">+ Aggiungi film</button></div>
+    </div>
+    <div class="panel"><h3>\u{1F4C5} Proiezioni</h3>
+      <div class="row">
+        <input type="date" id="pr_data" value="\${oggi}"><input id="pr_ora" value="21:30" style="width:80px">
+        <select id="pr_film">\${opts || '<option value="">\u2014 nessun film attivo \u2014</option>'}</select>
+        <button class="btn gold sm" id="pr_add">+ Programma</button>
+      </div>
+      <table class="fit"><thead><tr><th>Quando</th><th>Film</th><th>Posti</th><th>Stato</th><th></th></tr></thead><tbody>\${pr || '<tr><td colspan="5" class="muted">Nessuna proiezione programmata.</td></tr>'}</tbody></table>
+      <p class="muted" style="margin-top:8px">La <b>platea</b> si disegna come la sala del Garden, nell'app Crew: i posti si trascinano e si marcano come <b>standard</b> o <b>extra</b>. I posti extra si aprono solo quando gli standard sono esauriti, e si spengono del tutto da <b>Regole & parametri</b>.</p>
+      <div id="pr_out"></div></div>\`;
+
+  const editFilm = (f) => {
+    openModal(\`<h3>\${f ? 'Modifica film' : 'Nuovo film'}</h3>
+      <label>Titolo</label><input id="f_t" value="\${esc(f?.titolo || '')}">
+      <div class="grid2"><div><label>Regia</label><input id="f_r" value="\${esc(f?.regia || '')}"></div>
+        <div><label>Anno</label><input id="f_a" type="number" value="\${f?.anno || ''}"></div></div>
+      <div class="grid2"><div><label>Durata (min)</label><input id="f_d" type="number" value="\${f?.durata_min || ''}"></div>
+        <div><label>Genere</label><input id="f_g" value="\${esc(f?.genere || '')}"></div></div>
+      <label>Visione</label><input id="f_v" placeholder="es. per tutti \xB7 VM14" value="\${esc(f?.vm || '')}">
+      <label>Sinossi</label><textarea id="f_s" rows="3">\${esc(f?.sinossi || '')}</textarea>
+      <label class="check"><input type="checkbox" id="f_on" \${f && !f.attivo ? '' : 'checked'}> in cartellone</label>
+      <div class="row" style="margin-top:10px"><button class="btn gold" id="f_save">Salva</button><button class="btn ghost" data-mclose>Annulla</button></div>\`);
+    $('#f_save').onclick = async () => {
+      const body = { titolo: $('#f_t').value, regia: $('#f_r').value, anno: $('#f_a').value, durata_min: $('#f_d').value, genere: $('#f_g').value, vm: $('#f_v').value, sinossi: $('#f_s').value, attivo: $('#f_on').checked };
+      if (!body.titolo) { alert('Titolo?'); return; }
+      await api(f ? '/film/' + f.id : '/film', { method: f ? 'PUT' : 'POST', body: JSON.stringify(body) });
+      closeModal(); show('cinema');
+    };
+  };
+  $('#f_new').onclick = () => editFilm(null);
+  document.querySelectorAll('[data-fedit]').forEach(b => b.onclick = () => editFilm(film.find(x => x.id == b.dataset.fedit)));
+  document.querySelectorAll('[data-fdel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Eliminare il film?')) return;
+    try { await api('/film/' + b.dataset.fdel, { method: 'DELETE' }); show('cinema'); } catch (e) { alert(e.message); }
+  });
+  $('#pr_add').onclick = async () => {
+    if (!$('#pr_film').value) { alert('Serve almeno un film attivo.'); return; }
+    await api('/proiezioni', { method: 'POST', body: JSON.stringify({ data: $('#pr_data').value, ora: $('#pr_ora').value, film_id: Number($('#pr_film').value) }) });
+    show('cinema');
+  };
+  document.querySelectorAll('[data-pdel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Eliminare la proiezione?')) return;
+    try { await api('/proiezioni/' + b.dataset.pdel, { method: 'DELETE' }); show('cinema'); } catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-pplatea]').forEach(b => b.onclick = async () => {
+    const d = await api('/proiezioni/' + b.dataset.pplatea + '/platea');
+    const posto = (t) => \`<span title="\${t.libero ? 'libero' : esc(t.nome || 'prenotato')}" style="display:inline-block;width:22px;height:22px;margin:2px;border-radius:5px;font-size:10px;line-height:22px;text-align:center;color:#fff;background:\${t.libero ? (t.tipo === 'extra' ? '#b08b3e' : '#2e6b45') : '#b14a35'}">\${t.numero}</span>\`;
+    $('#pr_out').innerHTML = \`<div class="panel" style="margin-top:12px"><b>\u{1F39F}\uFE0F \${esc(d.proiezione.titolo || '')} \xB7 \${esc(d.proiezione.data)} \${esc(d.proiezione.ora)}</b>
+      <p class="muted" style="margin:6px 0">\${d.coperti_prenotati} prenotati \xB7 \${d.standard_liberi} standard liberi \xB7 \${d.posti_liberi} liberi in tutto
+      &nbsp;<span class="tag ok">standard</span> <span class="tag mid">extra</span> <span class="tag no">occupato</span></p>
+      <div>\${[...d.tavoli].sort((a, b) => a.numero - b.numero).map(posto).join('')}</div>
+      \${d.prenotazioni.length ? \`<table class="fit" style="margin-top:10px"><thead><tr><th>Chi</th><th>Persone</th><th>Posti</th></tr></thead><tbody>\${d.prenotazioni.map(p => \`<tr><td>\${esc(p.nome || '\u2014')}</td><td>\${p.persone}</td><td>\${p.tavoli.join(', ')}</td></tr>\`).join('')}</tbody></table>\` : ''}</div>\`;
+  });
+  $('#cin_print').onclick = () => stampaCartellone(film.filter(f => f.attivo), proiezioni);
+};
+
+// Cartellone da appendere o da mandare: A4, i film in scheda, le date sotto.
+function stampaCartellone(film, proiezioni) {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Consenti i popup per stampare.'); return; }
+  const quando = (f) => proiezioni.filter(p => p.film_id === f.id && p.stato !== 'annullata').map(p => \`\${p.data.split('-').reverse().slice(0, 2).join('/')} \xB7 \${p.ora}\`).join(' \u2014 ');
+  const scheda = (f) => \`<article>
+      <h3>\${esc(f.titolo)}</h3>
+      <div class="meta">\${[f.regia ? 'di ' + esc(f.regia) : '', f.anno || '', f.durata_min ? f.durata_min + "'" : '', esc(f.genere || ''), esc(f.vm || '')].filter(Boolean).join(' \xB7 ')}</div>
+      \${f.sinossi ? \`<p>\${esc(f.sinossi)}</p>\` : ''}
+      <div class="data">\${quando(f) || 'data da definire'}</div>
+    </article>\`;
+  w.document.write(\`<html><head><title>Cinema sotto le stelle \u2014 cartellone</title><style>
+    @page{size:A4;margin:16mm}
+    body{font-family:Georgia,'Times New Roman',serif;color:#12324F;margin:0}
+    header{text-align:center;border-bottom:2px solid #E0B44A;padding-bottom:10px;margin-bottom:14px}
+    header .k{font-family:Arial,sans-serif;letter-spacing:5px;font-size:.7rem;color:#9a8a5f;text-transform:uppercase}
+    header h1{margin:6px 0 0;font-size:1.8rem}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
+    article{break-inside:avoid;border-bottom:1px solid #e6ddc7;padding:8px 0}
+    article h3{margin:0;font-size:1.05rem}
+    .meta{font-family:Arial,sans-serif;font-size:.72rem;color:#5a6b75;margin-top:2px}
+    article p{font-size:.8rem;margin:5px 0 0;color:#333}
+    .data{font-family:Arial,sans-serif;font-size:.75rem;font-weight:bold;color:#8a5f18;margin-top:5px}
+    footer{margin-top:16px;text-align:center;font-family:Arial,sans-serif;font-size:.74rem;color:#777}
+  </style></head><body>
+    <header><div class="k">Bussola Residence</div><h1>Cinema d'autore sotto le stelle</h1></header>
+    <div class="grid">\${film.map(scheda).join('')}</div>
+    <footer>Proiezioni allo Stage \xB7 posto prenotabile dall'app \xB7 in caso di maltempo la serata slitta.</footer>
+    <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
+  </body></html>\`);
+  w.document.close();
+}
 
 // ---- Contest Serata dei Clan ----
 function contestForm(c) {
@@ -7688,7 +7838,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.77";
+var VERSION = "4.78";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -9743,162 +9893,6 @@ init_coppa();
 
 // server/tavoli.js
 init_db();
-var TURNI_DEFAULT = ["20:00", "21:30"];
-async function turni() {
-  const raw = await getSetting("garden_turni", TURNI_DEFAULT.join(","));
-  const t = String(raw).split(",").map((x) => x.trim()).filter(Boolean);
-  return t.length ? t : TURNI_DEFAULT;
-}
-async function layoutPredefinito() {
-  let l = await db.prepare("SELECT * FROM tavoli_layout WHERE predefinito=1").get();
-  if (l) return l;
-  l = await db.prepare("SELECT * FROM tavoli_layout ORDER BY id LIMIT 1").get();
-  if (l) {
-    await db.prepare("UPDATE tavoli_layout SET predefinito=1 WHERE id=?").run(l.id);
-    return l;
-  }
-  const n = Math.max(1, Number(await getSetting("garden_tavoli", "12")) || 12);
-  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito) VALUES (?,1)").run("Standard");
-  const id = Number(info.lastInsertRowid);
-  const cols = Math.ceil(Math.sqrt(n));
-  const righe = Math.ceil(n / cols);
-  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y) VALUES (?,?,?,?,?,?)");
-  for (let i = 0; i < n; i++) {
-    const c = i % cols;
-    const r = Math.floor(i / cols);
-    const x = (c + 1) / (cols + 1) * 100;
-    const y = (r + 1) / (righe + 1) * 100;
-    await ins.run(id, i + 1, 4, "tondo", Number(x.toFixed(1)), Number(y.toFixed(1)));
-  }
-  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
-}
-async function layoutDelGiorno(data) {
-  if (data) {
-    const g = await db.prepare("SELECT l.* FROM tavoli_giorni g JOIN tavoli_layout l ON l.id=g.layout_id WHERE g.data=?").get(data);
-    if (g) return g;
-  }
-  return await layoutPredefinito();
-}
-async function tavoliDi(layoutId) {
-  const rows = await db.prepare("SELECT * FROM tavoli WHERE layout_id=? ORDER BY numero").all(layoutId);
-  return rows.map((t) => ({ ...t, uniti: parseNumeri(t.uniti) }));
-}
-function parseNumeri(v) {
-  try {
-    const a = JSON.parse(v || "[]");
-    return Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : [];
-  } catch (_) {
-    return [];
-  }
-}
-async function mappaTavoli(data) {
-  const layout = await layoutDelGiorno(data);
-  const tav = await tavoliDi(layout.id);
-  const verso = /* @__PURE__ */ new Map();
-  for (const t of tav) if (t.attivo !== 0) verso.set(t.numero, t.numero);
-  for (const t of tav) if (t.attivo !== 0) for (const n of t.uniti) verso.set(n, t.numero);
-  return { layout, tavoli: tav, verso };
-}
-function conDistanza(tavoli) {
-  const att = tavoli.filter((t) => t.attivo !== 0);
-  if (!att.length) return [];
-  const cx = att.reduce((s, t) => s + Number(t.x), 0) / att.length;
-  const cy = att.reduce((s, t) => s + Number(t.y), 0) / att.length;
-  return att.map((t) => ({
-    ...t,
-    distanza: Math.round(Math.hypot(Number(t.x) - cx, Number(t.y) - cy) * 100) / 100
-  })).sort((a, b) => a.distanza - b.distanza || a.numero - b.numero);
-}
-async function prenotazioniDi(data, turno) {
-  const q = turno ? await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE data=? AND turno=? AND stato='prenotato' ORDER BY id").all(data, turno) : await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE data=? AND stato='prenotato' ORDER BY turno,id").all(data);
-  return q.map((p) => ({ ...p, tavoli: parseTavoli(p.tavoli) }));
-}
-function parseTavoli(v) {
-  try {
-    const a = JSON.parse(v || "[]");
-    return Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : [];
-  } catch (_) {
-    return [];
-  }
-}
-async function statoTurno(data, turno) {
-  const layout = await layoutDelGiorno(data);
-  const tav = conDistanza(await tavoliDi(layout.id));
-  const pren = await prenotazioniDi(data, turno);
-  const occupanti = /* @__PURE__ */ new Map();
-  for (const p of pren) for (const n of p.tavoli) occupanti.set(n, p);
-  const tavoli = tav.map((t) => {
-    const p = occupanti.get(t.numero);
-    return {
-      numero: t.numero,
-      posti: t.posti,
-      forma: t.forma,
-      x: t.x,
-      y: t.y,
-      distanza: t.distanza,
-      uniti: t.uniti || [],
-      libero: !p,
-      prenotazione_id: p ? p.id : null,
-      nome: p ? p.nome || "" : "",
-      persone: p ? p.persone : null,
-      origine: p ? p.origine : null
-    };
-  });
-  const postiTot = tavoli.reduce((s, t) => s + Number(t.posti), 0);
-  const postiOcc = tavoli.filter((t) => !t.libero).reduce((s, t) => s + Number(t.posti), 0);
-  return {
-    layout: { id: layout.id, nome: layout.nome },
-    data,
-    turno,
-    tavoli,
-    prenotazioni: pren,
-    posti_totali: postiTot,
-    posti_occupati: postiOcc,
-    posti_liberi: postiTot - postiOcc,
-    coperti_prenotati: pren.reduce((s, p) => s + Number(p.persone || 0), 0)
-  };
-}
-function assegnaTavoli(tavoliLiberi, persone) {
-  const ord = [...tavoliLiberi].sort((a, b) => a.distanza - b.distanza || a.numero - b.numero);
-  const adatti = ord.filter((t) => Number(t.posti) >= persone);
-  if (adatti.length) {
-    const minPosti = Math.min(...adatti.map((t) => Number(t.posti)));
-    const stretti = adatti.filter((t) => Number(t.posti) === minPosti);
-    return [stretti[0].numero];
-  }
-  const scelti = [];
-  let somma = 0;
-  for (const t of ord) {
-    scelti.push(t.numero);
-    somma += Number(t.posti);
-    if (somma >= persone) return scelti;
-  }
-  return null;
-}
-async function prenotaTavolo({ data, turno, persone, socio, tessera_code, nome, origine, note, tavoli: forzati }) {
-  const t = await turni();
-  if (!t.includes(turno)) return { error: `Turno non valido (${t.join(" o ")})` };
-  const n = Math.max(1, Number(persone) || 1);
-  const stato = await statoTurno(data, turno);
-  let numeri = Array.isArray(forzati) && forzati.length ? forzati.map(Number) : null;
-  if (numeri) {
-    const occupati = numeri.filter((x) => !stato.tavoli.find((tt) => tt.numero === x && tt.libero));
-    if (occupati.length) return { error: `Tavoli gi\xE0 occupati: ${occupati.join(", ")}` };
-  } else {
-    numeri = assegnaTavoli(stato.tavoli.filter((x) => x.libero), n);
-    if (!numeri) return { error: `Non ci sono abbastanza posti liberi nel turno delle ${turno}` };
-  }
-  const info = await db.prepare(
-    "INSERT INTO prenotazioni_tavolo (data,turno,persone,tavoli,socio_id,tessera_code,nome,origine,note) VALUES (?,?,?,?,?,?,?,?,?)"
-  ).run(data, turno, n, JSON.stringify(numeri), socio?.id ?? null, tessera_code || null, nome || null, origine === "crew" ? "crew" : "app", note || null);
-  return { id: Number(info.lastInsertRowid), tavoli: numeri, persone: n, turno, data };
-}
-async function turnoSuccessivo(ora) {
-  const t = await turni();
-  const hhmm = String(ora || "").slice(0, 5);
-  for (const x of t) if (x > hhmm) return x;
-  return null;
-}
 
 // server/parametri.js
 init_db();
@@ -9992,6 +9986,23 @@ var REGISTRO = [
     etichetta: "Come si paga l'ingresso",
     aiuto: "La consumazione obbligatoria sostituisce il biglietto: si entra consumando."
   },
+  // ---- Cinema ----
+  {
+    chiave: "cinema_posti_extra",
+    gruppo: "Cinema",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Posti extra in platea",
+    aiuto: "Se acceso, quando i posti standard sono esauriti si aprono anche i posti extra della platea. Se spento, a standard finiti la proiezione risulta al completo."
+  },
+  {
+    chiave: "cinema_prenotazione",
+    gruppo: "Cinema",
+    tipo: "bool",
+    predefinito: true,
+    etichetta: "Prenotazione del posto",
+    aiuto: "Se spento, il cinema resta a ingresso libero: il cartellone si vede ma non si prenota."
+  },
   // ---- Garden ----
   {
     chiave: "garden_prenotazione_cena",
@@ -10049,6 +10060,197 @@ async function salvaParametri(patch) {
     cambiati.push(chiave);
   }
   return cambiati;
+}
+
+// server/tavoli.js
+var TURNI_DEFAULT = ["20:00", "21:30"];
+async function turni() {
+  const raw = await getSetting("garden_turni", TURNI_DEFAULT.join(","));
+  const t = String(raw).split(",").map((x) => x.trim()).filter(Boolean);
+  return t.length ? t : TURNI_DEFAULT;
+}
+async function layoutPredefinito(ambiente = "garden") {
+  let l = await db.prepare("SELECT * FROM tavoli_layout WHERE predefinito=1 AND ambiente=?").get(ambiente);
+  if (l) return l;
+  l = await db.prepare("SELECT * FROM tavoli_layout WHERE ambiente=? ORDER BY id LIMIT 1").get(ambiente);
+  if (l) {
+    await db.prepare("UPDATE tavoli_layout SET predefinito=1 WHERE id=?").run(l.id);
+    return l;
+  }
+  if (ambiente === "stage") return await creaPlateaIniziale();
+  const n = Math.max(1, Number(await getSetting("garden_tavoli", "12")) || 12);
+  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'garden')").run("Standard");
+  const id = Number(info.lastInsertRowid);
+  const cols = Math.ceil(Math.sqrt(n));
+  const righe = Math.ceil(n / cols);
+  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y) VALUES (?,?,?,?,?,?)");
+  for (let i = 0; i < n; i++) {
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    const x = (c + 1) / (cols + 1) * 100;
+    const y = (r + 1) / (righe + 1) * 100;
+    await ins.run(id, i + 1, 4, "tondo", Number(x.toFixed(1)), Number(y.toFixed(1)));
+  }
+  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
+}
+async function layoutDelGiorno(data, ambiente = "garden") {
+  if (data && ambiente === "garden") {
+    const g = await db.prepare("SELECT l.* FROM tavoli_giorni g JOIN tavoli_layout l ON l.id=g.layout_id WHERE g.data=?").get(data);
+    if (g) return g;
+  }
+  return await layoutPredefinito(ambiente);
+}
+async function creaPlateaIniziale() {
+  const std = Math.max(1, Number(await getSetting("stage_posti_standard", "40")) || 40);
+  const extra = Math.max(0, Number(await getSetting("stage_posti_extra", "12")) || 0);
+  const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'stage')").run("Platea");
+  const id = Number(info.lastInsertRowid);
+  const perFila = 10;
+  const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,tipo) VALUES (?,?,?,?,?,?,?)");
+  const tot = std + extra;
+  const file = Math.ceil(tot / perFila);
+  for (let i = 0; i < tot; i++) {
+    const col = i % perFila;
+    const fila = Math.floor(i / perFila);
+    const x = (col + 1) / (perFila + 1) * 100;
+    const y = 22 + fila / Math.max(1, file - 1) * 62;
+    await ins.run(id, i + 1, 1, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)), i < std ? "standard" : "extra");
+  }
+  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
+}
+async function tavoliDi(layoutId) {
+  const rows = await db.prepare("SELECT * FROM tavoli WHERE layout_id=? ORDER BY numero").all(layoutId);
+  return rows.map((t) => ({ ...t, uniti: parseNumeri(t.uniti) }));
+}
+function parseNumeri(v) {
+  try {
+    const a = JSON.parse(v || "[]");
+    return Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : [];
+  } catch (_) {
+    return [];
+  }
+}
+async function mappaTavoli(data) {
+  const layout = await layoutDelGiorno(data);
+  const tav = await tavoliDi(layout.id);
+  const verso = /* @__PURE__ */ new Map();
+  for (const t of tav) if (t.attivo !== 0) verso.set(t.numero, t.numero);
+  for (const t of tav) if (t.attivo !== 0) for (const n of t.uniti) verso.set(n, t.numero);
+  return { layout, tavoli: tav, verso };
+}
+function conDistanza(tavoli) {
+  const att = tavoli.filter((t) => t.attivo !== 0);
+  if (!att.length) return [];
+  const cx = att.reduce((s, t) => s + Number(t.x), 0) / att.length;
+  const cy = att.reduce((s, t) => s + Number(t.y), 0) / att.length;
+  return att.map((t) => ({
+    ...t,
+    distanza: Math.round(Math.hypot(Number(t.x) - cx, Number(t.y) - cy) * 100) / 100
+  })).sort((a, b) => a.distanza - b.distanza || a.numero - b.numero);
+}
+async function prenotazioniDi(data, turno, ambiente = "garden") {
+  const q = turno ? await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE data=? AND turno=? AND ambiente=? AND stato='prenotato' ORDER BY id").all(data, turno, ambiente) : await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE data=? AND ambiente=? AND stato='prenotato' ORDER BY turno,id").all(data, ambiente);
+  return q.map((p) => ({ ...p, tavoli: parseTavoli(p.tavoli) }));
+}
+function parseTavoli(v) {
+  try {
+    const a = JSON.parse(v || "[]");
+    return Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : [];
+  } catch (_) {
+    return [];
+  }
+}
+async function statoTurno(data, turno, ambiente = "garden", layoutId = null) {
+  const layout = layoutId ? await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(layoutId) || await layoutDelGiorno(data, ambiente) : await layoutDelGiorno(data, ambiente);
+  const tav = conDistanza(await tavoliDi(layout.id));
+  const pren = await prenotazioniDi(data, turno, ambiente);
+  const occupanti = /* @__PURE__ */ new Map();
+  for (const p of pren) for (const n of p.tavoli) occupanti.set(n, p);
+  const tavoli = tav.map((t) => {
+    const p = occupanti.get(t.numero);
+    return {
+      numero: t.numero,
+      posti: t.posti,
+      forma: t.forma,
+      x: t.x,
+      y: t.y,
+      distanza: t.distanza,
+      tipo: t.tipo || "standard",
+      uniti: t.uniti || [],
+      libero: !p,
+      prenotazione_id: p ? p.id : null,
+      nome: p ? p.nome || "" : "",
+      persone: p ? p.persone : null,
+      origine: p ? p.origine : null
+    };
+  });
+  const postiTot = tavoli.reduce((s, t) => s + Number(t.posti), 0);
+  const postiOcc = tavoli.filter((t) => !t.libero).reduce((s, t) => s + Number(t.posti), 0);
+  const std = tavoli.filter((t) => t.tipo !== "extra");
+  return {
+    layout: { id: layout.id, nome: layout.nome, ambiente: layout.ambiente || "garden" },
+    data,
+    turno,
+    ambiente,
+    standard_liberi: std.filter((t) => t.libero).reduce((s2, t) => s2 + Number(t.posti), 0),
+    tavoli,
+    prenotazioni: pren,
+    posti_totali: postiTot,
+    posti_occupati: postiOcc,
+    posti_liberi: postiTot - postiOcc,
+    coperti_prenotati: pren.reduce((s, p) => s + Number(p.persone || 0), 0)
+  };
+}
+function assegnaTavoli(tavoliLiberi, persone, extraAmmessi = true) {
+  const standard = tavoliLiberi.filter((t) => (t.tipo || "standard") !== "extra");
+  const extra = extraAmmessi ? tavoliLiberi.filter((t) => (t.tipo || "standard") === "extra") : [];
+  const capStandard = standard.reduce((s2, t) => s2 + Number(t.posti), 0);
+  const disponibili = capStandard >= persone ? standard : [...standard, ...extra];
+  const ord = [...disponibili].sort((a, b) => a.distanza - b.distanza || a.numero - b.numero);
+  const adatti = ord.filter((t) => Number(t.posti) >= persone);
+  if (adatti.length) {
+    const minPosti = Math.min(...adatti.map((t) => Number(t.posti)));
+    const stretti = adatti.filter((t) => Number(t.posti) === minPosti);
+    return [stretti[0].numero];
+  }
+  const scelti = [];
+  let somma = 0;
+  for (const t of ord) {
+    scelti.push(t.numero);
+    somma += Number(t.posti);
+    if (somma >= persone) return scelti;
+  }
+  return null;
+}
+async function prenotaTavolo({ data, turno, persone, socio, tessera_code, nome, origine, note, tavoli: forzati, ambiente = "garden", proiezione_id = null, layout_id = null }) {
+  if (ambiente === "garden") {
+    const t = await turni();
+    if (!t.includes(turno)) return { error: `Turno non valido (${t.join(" o ")})` };
+  }
+  const n = Math.max(1, Number(persone) || 1);
+  const stato = await statoTurno(data, turno, ambiente, layout_id);
+  let numeri = Array.isArray(forzati) && forzati.length ? forzati.map(Number) : null;
+  if (numeri) {
+    const occupati = numeri.filter((x) => !stato.tavoli.find((tt) => tt.numero === x && tt.libero));
+    if (occupati.length) return { error: `Tavoli gi\xE0 occupati: ${occupati.join(", ")}` };
+  } else {
+    const extraAmmessi = ambiente !== "stage" || await par("cinema_posti_extra") !== false;
+    numeri = assegnaTavoli(stato.tavoli.filter((x) => x.libero), n, extraAmmessi);
+    if (!numeri) {
+      return { error: ambiente === "stage" ? "Non ci sono abbastanza posti liberi per questa proiezione" : `Non ci sono abbastanza posti liberi nel turno delle ${turno}` };
+    }
+  }
+  const info = await db.prepare(
+    "INSERT INTO prenotazioni_tavolo (data,turno,persone,tavoli,socio_id,tessera_code,nome,origine,note,ambiente,proiezione_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+  ).run(data, turno, n, JSON.stringify(numeri), socio?.id ?? null, tessera_code || null, nome || null, origine === "crew" ? "crew" : "app", note || null, ambiente, proiezione_id);
+  const usaExtra = numeri.some((x) => (stato.tavoli.find((t) => t.numero === x) || {}).tipo === "extra");
+  return { id: Number(info.lastInsertRowid), tavoli: numeri, persone: n, turno, data, ambiente, extra: usaExtra };
+}
+async function turnoSuccessivo(ora) {
+  const t = await turni();
+  const hhmm = String(ora || "").slice(0, 5);
+  for (const x of t) if (x > hhmm) return x;
+  return null;
 }
 
 // server/referenze.js
@@ -11887,6 +12089,62 @@ adminRouter.get("/tavoli/sala", requireCap("comande"), async (req, res) => {
     verso: Object.fromEntries(verso)
   });
 });
+adminRouter.get("/film", requireCap("eventi"), async (req, res) => {
+  res.json(await db.prepare("SELECT * FROM film ORDER BY ordine,id").all());
+});
+adminRouter.post("/film", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const ord = ((await db.prepare("SELECT MAX(ordine) m FROM film").get())?.m || 0) + 1;
+  const info = await db.prepare("INSERT INTO film (titolo,regia,anno,durata_min,genere,sinossi,vm,ordine) VALUES (?,?,?,?,?,?,?,?)").run(b.titolo, b.regia || null, Number(b.anno) || null, Number(b.durata_min) || null, b.genere || null, b.sinossi || null, b.vm || null, ord);
+  audit(req.adminUser.username, "crea", "film", Number(info.lastInsertRowid), b.titolo);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.put("/film/:id", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE film SET titolo=?,regia=?,anno=?,durata_min=?,genere=?,sinossi=?,vm=?,attivo=? WHERE id=?").run(b.titolo, b.regia || null, Number(b.anno) || null, Number(b.durata_min) || null, b.genere || null, b.sinossi || null, b.vm || null, b.attivo === false ? 0 : 1, req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/film/:id", requireCap("eventi"), async (req, res) => {
+  const n = await db.prepare("SELECT COUNT(*) c FROM proiezioni WHERE film_id=?").get(req.params.id);
+  if (Number(n?.c || 0) > 0) return res.status(409).json({ error: `Non posso eliminare il film: e\u0300 in cartellone in ${n.c} proiezioni.` });
+  await db.prepare("DELETE FROM film WHERE id=?").run(req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/proiezioni", requireCap("eventi"), async (req, res) => {
+  const rows = await db.prepare("SELECT p.*, f.titolo, f.regia, f.durata_min FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id ORDER BY p.data,p.ora").all();
+  const out = [];
+  for (const p of rows) {
+    const st = await statoTurno(p.data, p.ora, "stage", p.layout_id);
+    out.push({ ...p, posti_totali: st.posti_totali, posti_liberi: st.posti_liberi, standard_liberi: st.standard_liberi, prenotati: st.coperti_prenotati });
+  }
+  res.json(out);
+});
+adminRouter.post("/proiezioni", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
+  if (!b.film_id) return res.status(400).json({ error: "Scegli il film" });
+  const lay = b.layout_id ? Number(b.layout_id) : (await layoutPredefinito("stage")).id;
+  const info = await db.prepare("INSERT INTO proiezioni (film_id,data,ora,layout_id,note) VALUES (?,?,?,?,?)").run(Number(b.film_id), b.data, b.ora || "21:30", lay, b.note || null);
+  audit(req.adminUser.username, "crea", "proiezioni", Number(info.lastInsertRowid), `${b.data} ${b.ora || "21:30"}`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.put("/proiezioni/:id", requireCap("eventi"), async (req, res) => {
+  const b = req.body || {};
+  await db.prepare("UPDATE proiezioni SET film_id=?,data=?,ora=?,note=?,stato=? WHERE id=?").run(Number(b.film_id) || null, b.data, b.ora || "21:30", b.note || null, b.stato === "annullata" ? "annullata" : "programmata", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.delete("/proiezioni/:id", requireCap("eventi"), async (req, res) => {
+  const n = await db.prepare("SELECT COUNT(*) c FROM prenotazioni_tavolo WHERE proiezione_id=? AND stato='prenotato'").get(req.params.id);
+  if (Number(n?.c || 0) > 0) return res.status(409).json({ error: `Non posso eliminare la proiezione: ci sono ${n.c} prenotazioni attive.` });
+  await db.prepare("DELETE FROM proiezioni WHERE id=?").run(req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/proiezioni/:id/platea", requireCap("eventi"), async (req, res) => {
+  const p = await db.prepare("SELECT p.*, f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
+  res.json({ proiezione: p, ...await statoTurno(p.data, p.ora, "stage", p.layout_id) });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -12456,6 +12714,58 @@ publicRouter.get("/casate/:id/appartenenti", async (req, res) => {
     quanti: membri.length
   });
 });
+publicRouter.get("/cinema", async (req, res) => {
+  const film = await db.prepare("SELECT id,titolo,regia,anno,durata_min,genere,sinossi,vm FROM film WHERE attivo=1 ORDER BY ordine,id").all();
+  const rows = await db.prepare(
+    "SELECT p.id,p.data,p.ora,p.film_id,p.note,f.titolo,f.regia,f.durata_min,f.genere,f.vm FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora"
+  ).all();
+  const prenotabile = await par("cinema_prenotazione");
+  const prossime = [];
+  for (const p of rows) {
+    const st = await statoTurno(p.data, p.ora, "stage", null);
+    prossime.push({
+      ...p,
+      prenotabile,
+      posti_liberi: st.posti_liberi,
+      standard_liberi: st.standard_liberi,
+      // Gli extra si aprono solo a standard esauriti: al socio si dice quello che vede.
+      solo_extra: st.standard_liberi <= 0 && st.posti_liberi > 0
+    });
+  }
+  res.json({ film, prossime, prenotabile });
+});
+publicRouter.post("/cinema/:id/prenota", async (req, res) => {
+  if (!await par("cinema_prenotazione")) return res.status(409).json({ error: "La prenotazione dei posti non e\u0300 attiva" });
+  const p = await db.prepare("SELECT * FROM proiezioni WHERE id=? AND stato='programmata'").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
+  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
+  if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const nome = (socio.nome + " " + (socio.cognome || "")).trim();
+  const r = await prenotaTavolo({
+    data: p.data,
+    turno: p.ora,
+    persone: req.body?.persone,
+    socio,
+    tessera_code: req.body.tessera_code,
+    nome,
+    origine: "app",
+    ambiente: "stage",
+    proiezione_id: p.id,
+    layout_id: p.layout_id
+  });
+  if (r.error) return res.status(409).json({ error: r.error });
+  audit(req.body.tessera_code, "prenota_cinema", "proiezioni", p.id, `${p.data} ${p.ora} \xB7 ${r.persone}p`);
+  res.status(201).json({ ok: true, ...r, posti: r.tavoli });
+});
+publicRouter.get("/cinema/mie-prenotazioni", async (req, res) => {
+  const t = String(req.query.tessera_code || "");
+  if (!t) return res.json([]);
+  const rows = await db.prepare(
+    "SELECT pt.id,pt.data,pt.turno,pt.persone,pt.tavoli,f.titolo FROM prenotazioni_tavolo pt LEFT JOIN proiezioni p ON p.id=pt.proiezione_id LEFT JOIN film f ON f.id=p.film_id WHERE pt.tessera_code=? AND pt.ambiente='stage' AND pt.stato='prenotato' AND pt.data>=date('now','-1 day') ORDER BY pt.data"
+  ).all(t);
+  res.json(rows.map((r) => ({ ...r, posti: JSON.parse(r.tavoli || "[]") })));
+});
 
 // server/seed.js
 init_auth();
@@ -12837,7 +13147,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 06:06" : "online";
+var BUILD = true ? "2026-08-19 06:22" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
