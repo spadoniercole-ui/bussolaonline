@@ -2001,7 +2001,7 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .hgreet{margin-top:12px; display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
 .hgreet h1{font-family:Georgia,serif; font-size:1.25rem; font-weight:600;}
 .hgreet .gsub{font-size:.72rem; color:#c9d6e2; margin-top:2px;}
-.hstack{display:flex; flex-direction:column; gap:7px; align-items:stretch; flex:0 0 auto;}
+.hstack{display:flex; flex-direction:row; gap:7px; align-items:center; flex:0 0 auto; flex-wrap:wrap; justify-content:flex-end;}
 .tesschip{display:flex; align-items:center; justify-content:center; gap:7px; background:linear-gradient(135deg,#caa24f,#8a5f18); color:#fff; padding:8px 12px; border-radius:20px; font-size:.72rem; font-weight:700; cursor:pointer; min-height:var(--tap); box-shadow:0 3px 8px rgba(0,0,0,.25);}
 .tesschip svg{width:15px; height:15px;}
 .casatapill{display:flex; align-items:center; justify-content:center; gap:7px; background:rgba(255,255,255,.14); padding:8px 12px; border-radius:20px; font-size:.72rem; cursor:pointer; color:#fff; min-height:var(--tap);}
@@ -2043,9 +2043,12 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .hero .eyebrow{color:#ffe1ac;}
 .hero h2{font-family:Georgia,serif; font-size:1.5rem; margin:4px 0 2px;} .hero p{font-size:.82rem; opacity:.95;}
 .hero .btn{margin-top:12px; align-self:flex-start;}
-.pgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px;}
-.ptile{background:var(--card); border:1px solid var(--line); border-radius:15px; padding:16px 10px; text-align:center; cursor:pointer; box-shadow:0 3px 9px rgba(18,50,79,.05); min-height:calc(var(--tap) * 2);}
-.ptile .ic{font-size:2rem; line-height:1.1;} .ptile b{display:block; font-size:.86rem; color:var(--navy); margin-top:7px;} .ptile span{display:block; font-size:.68rem; color:var(--mute); margin-top:2px; line-height:1.25;}
+.pgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:8px;}
+.ptile{display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:13px; padding:9px 11px; cursor:pointer; box-shadow:0 2px 6px rgba(18,50,79,.05); min-height:var(--tap);}
+.ptile .ic{font-size:1.5rem; line-height:1; flex:0 0 auto;}
+.ptile .tx{min-width:0; display:block;}
+.ptile .tx b{display:block; font-size:.82rem; color:var(--navy); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ptile .tx span{display:block; font-size:.66rem; color:var(--mute); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
 .evcard .stripe{width:6px; flex:0 0 6px;}
 .evcard .body{flex:1; padding:12px 4px 12px 13px; min-width:0;}
@@ -2577,6 +2580,12 @@ function evCardHTML(e, withAction) {
   const metaHTML = meta.length ? \`<div class="ev-meta">\${meta.join('')}</div>\` : '';
   return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${dl}</div><h4>\${esc(e.titolo)}</h4><p>\${esc(e.sottotitolo)}</p>\${metaHTML}</div><div class="cta">\${action}</div></div>\`;
 }
+// Tessera compatta: icona a sinistra, titolo e descrizione a destra. Occupa un terzo
+// dell'altezza della versione quadrata a parita' di leggibilita' e di area di tocco.
+function ptile(attr, icona, titolo, sotto) {
+  const a = attr.includes('=') ? 'data-' + attr : \`data-\${attr}=""\`;
+  return \`<div class="ptile" role="button" tabindex="0" \${a}><span class="ic">\${icona}</span><span class="tx"><b>\${titolo}</b><span>\${sotto}</span></span></div>\`;
+}
 function renderHome() {
   const evs = state.data.eventi;
   // Il "benvenuto" salta il luned\xEC vuoto: mostra la prima serata con attivit\xE0.
@@ -2588,20 +2597,19 @@ function renderHome() {
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
-      <div class="ptile" role="button" tabindex="0" data-campi=""><div class="ic">\u{1F3BE}</div><b>\${T('Campi')}</b><span>\${T('prenota o partita')}</span></div>
-      <div class="ptile" role="button" tabindex="0" data-partite=""><div class="ic">\u{1F465}</div><b>\${T('Partite aperte')}</b><span>\${T('unisciti')}</span></div>
-      <div class="ptile" role="button" tabindex="0" data-book="cowo"><div class="ic">\u{1F4BB}</div><b>\${T('Coworking')}</b><span>\${T('postazione')}</span></div>
-      <div class="ptile" role="button" tabindex="0" data-ordina="bar"><div class="ic">\u{1F378}</div><b>\${T('Bar')}</b><span>\${T('ordina e ritira')}</span></div>
-      <div class="ptile" role="button" tabindex="0" data-ordina="garden"><div class="ic">\u{1F37D}\uFE0F</div><b>\${T('Garden')}</b><span>\${T('cena e tavolo')}</span></div>
+      \${ptile('campi', '\u{1F3BE}', T('Campi'), T('prenota o partita'))}
+      \${ptile('partite', '\u{1F465}', T('Partite aperte'), T('unisciti'))}
+      \${ptile('book="cowo"', '\u{1F4BB}', T('Coworking'), T('postazione'))}
+      \${ptile('ordina="bar"', '\u{1F378}', T('Bar'), T('ordina e ritira'))}
+      \${ptile('ordina="garden"', '\u{1F37D}\uFE0F', T('Garden'), T('cena e tavolo'))}
     </div>
-    \${serateSectionHTML()}
     <div class="sect-title">\${T('Questa settimana')}</div>
     <div>\${evs.map(e => evCardHTML(e, true)).join('')}</div><div style="height:6px"></div>\`;
 }
 function serateSectionHTML() {
   const list = state.data.serate || [];
   if (!list.length) return '';
-  return \`<div class="sect-title">\${T('Serate su prenotazione')}</div>
+  return \`<div class="sect-title" style="margin-top:14px">\${T('Serate su prenotazione')}</div>
     <div>\${list.map(s => \`<div class="evcard" role="button" tabindex="0" data-serata="\${s.id}">
       <span class="stripe" style="background:#b14a35"></span>
       <div class="body"><div class="dl">\${esc(s.quando || '')}</div><h4>\${esc(s.titolo)}</h4><p>\u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti')}\` : ''}</p></div>
@@ -2613,6 +2621,7 @@ function renderEventi() {
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:4px">\${T('Il programma')}</h2>
     <p class="tiny muted" style="margin-bottom:12px">\${T('Tocca una serata per i dettagli e per prenotare.')}</p>
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
+    \${serateSectionHTML()}
     <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}</div>\`;
 }
 // La posizione arriva dal server: a parita' di punti le casate condividono l'indice.
@@ -7679,7 +7688,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.76";
+var VERSION = "4.77";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12828,7 +12837,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 05:27" : "online";
+var BUILD = true ? "2026-08-19 06:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
