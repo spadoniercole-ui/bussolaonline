@@ -2957,15 +2957,20 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 
   <div class="ov" id="ov"><div class="bg" id="ovBg"></div><div class="sheet" id="sheetbox" role="dialog" aria-modal="true"></div></div>
 
+  <!-- Guida rapida: si apre dal "?" in alto. Al primo accesso compare da sola, poi resta
+       disponibile come promemoria. Ogni voce dice DOVE si trova la cosa, non solo cos'e'. -->
   <div class="onb" id="onb" role="dialog" aria-modal="true" aria-label="Guida rapida">
     <div class="box">
-      <div class="eyebrow" style="color:var(--coral)">Benvenuto</div>
+      <div class="eyebrow" style="color:var(--coral)">Guida rapida</div>
       <h2 class="serif">Come funziona</h2>
-      <p>Tre passi e sei pronto. Puoi ingrandire il testo dai pulsanti <b>A / A+</b> in alto.</p>
+      <p>Tutto si fa con un tocco. Il testo si ingrandisce dal pulsante <b>A\xB1</b> in alto.</p>
       <ul>
-        <li><span>\u{1F3E0}</span><div><b>Home & Eventi:</b> il programma della settimana, prenoti con un tocco.</div></li>
-        <li><span>\u{1F3C6}</span><div><b>Sport & Giochi:</b> tornei e Coppa delle Casate della tua squadra.</div></li>
-        <li><span>\u{1F9ED}</span><div><b>Guida:</b> orari, servizi vicini, cosa vedere e i numeri utili.</div></li>
+        <li><span>\u{1F3BE}</span><div><b>Prenotare un campo:</b> <i>Home \u2192 Campi</i>. Scegli campo, giorno e ora: <b>Solo io</b> tiene la fascia per te, <b>Apri ai soci</b> lascia che altri si uniscano. Servono i giocatori dichiarati, altrimenti la fascia si libera.</div></li>
+        <li><span>\u{1F37D}\uFE0F</span><div><b>Cenare al Garden:</b> <i>Home \u2192 Garden</i>. Indica giorno, persone e turno (20:00 o 21:30): il tavolo lo assegniamo noi. Nelle sere con spettacolo hai anche i posti davanti al palco.</div></li>
+        <li><span>\u{1F378}</span><div><b>Ordinare al Bar:</b> <i>Home \u2192 Bar</i>, oppure inquadra il QR sul tavolo.</div></li>
+        <li><span>\u{1F5D3}\uFE0F</span><div><b>Il programma:</b> <i>Eventi</i>. Le serate su prenotazione sono in fondo alla stessa pagina.</div></li>
+        <li><span>\u{1F3C6}</span><div><b>La tua casata:</b> <i>Sport</i>. Tocca una riga della classifica per vedere chi ne fa parte e il capitano.</div></li>
+        <li><span>\u{1F9ED}</span><div><b>Guida:</b> orari, raccolta rifiuti, numeri utili e cosa vedere. Le voci con la freccia \u2197 aprono le mappe del telefono.</div></li>
       </ul>
       <button class="btn gold block" id="onbClose">Ho capito, inizia</button>
       <button class="sos" id="onbSos"><b>Numeri utili & emergenze</b><p>Guardia medica, farmacia, spiaggia \u2014 sempre a portata di mano.</p></button>
@@ -9093,7 +9098,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.90";
+var VERSION = "4.91";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14997,7 +15002,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-20 09:59" : "online";
+var BUILD = true ? "2026-08-20 13:56" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
