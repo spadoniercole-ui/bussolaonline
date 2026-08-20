@@ -1603,6 +1603,16 @@ async function migrate() {
     }
   } catch (_) {
   }
+  await addIfMissing("bussola", "lat", "lat REAL");
+  await addIfMissing("bussola", "lng", "lng REAL");
+  try {
+    if (await getSetting("comande_zona_fix", "") !== "v1") {
+      await db.prepare("UPDATE comande SET zona='bar' WHERE LOWER(punto) LIKE '%bar%' AND zona<>'bar'").run();
+      await db.prepare("UPDATE comande SET zona='carta' WHERE LOWER(punto) LIKE '%carta%' AND zona<>'carta'").run();
+      await setSetting("comande_zona_fix", "v1");
+    }
+  } catch (_) {
+  }
   await addIfMissing("rifiuti_calendario", "attivo", "attivo INTEGER NOT NULL DEFAULT 1");
   try {
     if (await getSetting("rifiuti_attivo_v1", "") !== "v1") {
@@ -3291,7 +3301,7 @@ function renderHome() {
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
     <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2>
-      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-book="tavolo">\${esc(hero.cta)}</button></div></div>
+      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-gard-oggi="1">\${esc(hero.cta)}</button></div></div>
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
@@ -3408,7 +3418,20 @@ function oreSilenzio(testo, fallback) {
 }
 function renderBussola() {
   const b = state.data.bussola;
-  const rows = (arr) => (arr||[]).map(x => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.8rem">\${esc(x.titolo)}</b>\${x.dettaglio?\`<div class="ct">\${esc(x.dettaglio)}</div>\`:''}</div>\${x.distanza?\`<span class="ct">\${esc(x.distanza)}</span>\`:''}</div>\`).join('');
+  // Una riga sola: nome, luogo e distanza sulla stessa linea. Con le coordinate la voce
+  // diventa un collegamento che apre le mappe del telefono (Apple Maps su iPhone, Google
+  // Maps su Android): "geo:" con fallback universale.
+  const mappaHref = (x) => x.lat != null && x.lng != null
+    ? \`https://www.google.com/maps/search/?api=1&query=\${x.lat},\${x.lng}\`
+    : null;
+  const rows = (arr) => (arr || []).map(x => {
+    const href = mappaHref(x);
+    const dentro = \`<b style="font-size:.84rem">\${esc(x.titolo)}</b>\${x.dettaglio ? \`<span class="ct" style="margin-left:6px">\${esc(x.dettaglio)}</span>\` : ''}\`;
+    const dist = \`\${x.distanza ? \`<span class="ct" style="white-space:nowrap;margin-left:8px">\${esc(x.distanza)}</span>\` : ''}\${href ? '<span class="ct" style="margin-left:6px">\u2197</span>' : ''}\`;
+    return href
+      ? \`<a class="matchrow" href="\${href}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</a>\`
+      : \`<div class="matchrow"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`;
+  }).join('');
   const luoghi = state.data.luoghi || SEED.luoghi;
   const iconFor = (k) => k === 'isola' ? '\u267B\uFE0F' : '\u{1F4CD}';
   const siamoQui = luoghi.map(l => {
@@ -3692,7 +3715,7 @@ async function openCampi(campoId) {
   }).join('');
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Prenotazione campi')}</div><h2>\${sportIcon(sel.sport)} \${esc(sel.nome)}</h2>
     <div class="field"><label>\${T('Campo')}</label><div class="chips">\${courtChips}</div></div>
-    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    \${soloOggi ? \`<div class="note" style="margin-top:0">\${T('Stai prenotando per stasera')} \xB7 <b>\${esc(dataBella(data))}</b>. \${T('Per gli altri giorni usa la sezione Eventi.')}</div>\` : \`<div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>\`}
     \${fasceChips}
     <div class="sect-title" style="margin-top:6px">\${T('Fasce orarie')}</div>
     <div class="card" style="padding:4px 14px">\${slotHTML || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessuno slot per questa data.')}</p>\`}</div>
@@ -3852,7 +3875,8 @@ function gardenGiorni() {
   for (let i = 0; i < 7; i++) { const d = new Date(base.getTime() + i * 86400000); const iso = d.toISOString().slice(0, 10); out.push({ iso, label: i === 0 ? T('Oggi') : i === 1 ? T('Domani') : \`\${T(g[d.getDay()])} \${d.getDate()}\` }); }
   return out;
 }
-async function openGarden() {
+async function openGarden(opz) {
+  const soloOggi = !!(opz && opz.soloOggi);
   const giorni = gardenGiorni();
   if (!state._gardData || !giorni.some(d => d.iso === state._gardData)) state._gardData = giorni[0].iso;
   const data = state._gardData;
@@ -3860,6 +3884,7 @@ async function openGarden() {
   try { turni = await api(\`/garden/turni?data=\${data}\`); } catch { }
   if (state.tessera) { try { mie = await api('/garden/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera)); } catch { } }
   const dayChips = giorni.map(d => \`<button class="chip\${d.iso === data ? ' sel' : ''}" data-gard-date="\${d.iso}">\${esc(d.label)}</button>\`).join('');
+  state._gardSoloOggi = soloOggi ? 1 : 0;
   const persone = state._gardPers || 2;
   const turnoBox = (t) => {
     const pieno = t.posti_liberi <= 0;
@@ -3872,7 +3897,7 @@ async function openGarden() {
   const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:10px">\${T('Le mie prenotazioni')}</div>
     <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)}</b><div class="ct">\${m.persone} \${T('persone')} \xB7 \${T('tavolo')} \${m.tavoli.join(', ')}</div></div><button class="btn ghost sm" data-gard-ann="\${m.id}">\${T('Annulla')}</button></div>\`).join('')}</div>\` : '';
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Cena al tavolo')}</h2>
-    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    \${soloOggi ? \`<div class="note" style="margin-top:0">\${T('Stai prenotando per stasera')} \xB7 <b>\${esc(dataBella(data))}</b>. \${T('Per gli altri giorni usa la sezione Eventi.')}</div>\` : \`<div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>\`}
     <div class="field"><label>\${T('Quante persone')}</label><div class="chips">\${[1, 2, 3, 4, 5, 6, 8].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-gard-pers="\${n}">\${n}</button>\`).join('')}</div></div>
     <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
     <div class="card" style="padding:4px 14px">\${turni && turni.turni ? turni.turni.map(turnoBox).join('') : \`<p class="tiny muted" style="padding:8px 0">\${T('Prenotazione non disponibile.')}</p>\`}</div>
@@ -3891,7 +3916,7 @@ async function gardenPrenota(turno) {
     if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; }
     okThen(\`\${T('Tavolo')} \${j.tavoli.join(', ')} \xB7 \${dataBella(state._gardData)} \${turno}\`);
   } catch { okThen(T('Errore di rete'), false); return; }
-  openGarden();
+  openGarden({ soloOggi: !!state._gardSoloOggi });
 }
 async function gardenAnnulla(id) {
   try { await api('/garden/prenotazioni/' + id + '/annulla', { method: 'POST', body: JSON.stringify({ tessera_code: state.tessera }) }); }
@@ -4797,7 +4822,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-ordina],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-gard-oggi],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -4834,8 +4859,11 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.opencasata != null) return openCasata(false);
   if (t.dataset.casata) return scegliCasata(t.dataset.casata);
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
+  // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
+  // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
+  if (t.dataset.gardOggi) { state._gardData = new Date().toISOString().slice(0, 10); return openGarden({ soloOggi: true }); }
   if (t.dataset.gardDate) { state._gardData = t.dataset.gardDate; return openGarden(); }
-  if (t.dataset.gardPers) { state._gardPers = Number(t.dataset.gardPers); return openGarden(); }
+  if (t.dataset.gardPers) { state._gardPers = Number(t.dataset.gardPers); return openGarden({ soloOggi: !!state._gardSoloOggi }); }
   if (t.dataset.gardPren) return gardenPrenota(t.dataset.gardPren);
   if (t.dataset.gardAnn) return gardenAnnulla(t.dataset.gardAnn);
   if (t.dataset.gardMenu != null) return openMenuGarden();
@@ -5161,18 +5189,72 @@ async function show(v) {
 }
 
 // ---- Cruscotto ----
+// ---- Cruscotto: cosa succede adesso, e cosa chiede una mano ----
+// Prima erano sei totali storici quasi sempre a zero. Un cruscotto serve a decidere: qui c'e'
+// il servizio in corso, la giornata di oggi area per area, e le cose che richiedono un
+// intervento \u2014 ognuna con la scorciatoia al posto giusto, back office o Crew.
 VIEWS.dashboard = async () => {
-  const s = await api('/stats');
-  const cards = [
-    ['Soci attivi', s.soci], ['Consenso marketing', s.soci_marketing], ['Prenotazioni', s.prenotazioni],
-    ['Oggi', s.prenotazioni_oggi], ['Proposte da leggere', s.proposte], ['Convocazioni aperte', s.convocazioni_aperte],
-  ];
-  const max = Math.max(...s.per_casata.map(c => c.punti), 1);
+  const [c, s] = await Promise.all([api('/cruscotto'), api('/stats').catch(() => null)]);
+  const CREW = (window.KOINE_API || '') + '/chiosco/';
+  const box = (n, l, col, extra) => \`<div class="stat"\${extra || ''}><div class="n" \${col ? \`style="color:\${col}"\` : ''}>\${n}</div><div class="l">\${l}</div></div>\`;
+  const g = c.giornata;
+
+  const avvisi = c.attenzione.length
+    ? \`<div class="panel" style="border-left:4px solid var(--gold)"><h3>\u26A0\uFE0F Richiede una mano</h3>
+        \${c.attenzione.map(a => \`<div class="row" style="justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">
+          <span>\${esc(a.testo)}</span>
+          \${a.vai === 'chiosco' ? \`<a class="btn ghost sm" href="\${CREW}" target="_blank">Apri il Crew \u2197</a>\`
+            : \`<button class="btn ghost sm" data-vai="\${esc(a.vai)}">Vai</button>\`}
+        </div>\`).join('')}
+      </div>\`
+    : \`<div class="panel"><h3>\u2705 Tutto in ordine</h3><p class="muted">Nessuna comanda in ritardo, nessun articolo sotto scorta, niente in attesa di risposta.</p></div>\`;
+
+  const riga = (etichetta, valore, nota) => \`<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">
+      <span>\${etichetta}</span><span><b>\${valore}</b>\${nota ? \` <span class="muted">\${nota}</span>\` : ''}</span></div>\`;
+
+  const lez = g.lezioni.map(l => \`<div class="row" style="justify-content:space-between;padding:5px 0">
+      <span>\${esc(l.ora)} \xB7 <b>\${esc(l.nome)}</b></span>
+      <span>\${l.iscritti}/\${l.posti_max} \${l.confermata ? '<span class="tag ok">confermata</span>' : \`<span class="tag mid">mancano \${Math.max(0, l.min_iscritti - l.iscritti)}</span>\`}</span></div>\`).join('');
+  const spet = [...g.proiezioni.map(p => \`\u{1F3AC} \${esc(p.ora)} \xB7 \${esc(p.titolo || 'proiezione')}\`),
+                ...g.sala.map(p => \`\u{1F5D3}\uFE0F \${esc(p.ora_inizio)}\u2013\${esc(p.ora_fine)} \xB7 \${esc(p.titolo || p.scopo)}\`)].join('<br>');
+
   $('#view').innerHTML = \`
-    <div class="cards">\${cards.map(c => \`<div class="stat"><div class="n">\${c[1]}</div><div class="l">\${c[0]}</div></div>\`).join('')}</div>
-    <div class="panel"><h3>Coppa delle Casate & soci per casata</h3><table><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
-      \${s.per_casata.map(c => \`<tr><td><b>\${esc(c.nome)}</b></td><td>\${c.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(c.punti/max*100)}%;background:\${c.colore}"></span></span></td><td>\${c.soci}</td></tr>\`).join('')}
-    </tbody></table></div>\`;
+    <div class="cards">
+      \${box(c.servizio.comande_aperte, 'comande aperte', c.servizio.in_ritardo ? 'var(--danger)' : null)}
+      \${box(c.servizio.in_ritardo, 'in ritardo', c.servizio.in_ritardo ? 'var(--danger)' : 'var(--ok)')}
+      \${box(g.garden_coperti, 'coperti Garden oggi')}
+      \${box(g.campi, 'campi prenotati oggi')}
+      \${box(g.stage_posti, 'posti Stage oggi')}
+      \${box(c.soci, 'soci attivi')}
+    </div>
+    \${avvisi}
+    <div class="grid2">
+      <div class="panel"><h3>\u{1F37D}\uFE0F Servizio ora <span class="muted" style="font-weight:400;font-size:13px">\xB7 \${esc(c.ora)}</span></h3>
+        \${c.servizio.per_zona.map(z => riga(esc(z.zona), z.n, z.n ? 'comande aperte' : '\u2014')).join('')}
+        <div class="row" style="margin-top:10px"><a class="btn gold sm" href="\${CREW}" target="_blank">Apri Bussola Crew \u2197</a></div>
+      </div>
+      <div class="panel"><h3>\u{1F4C5} Oggi</h3>
+        \${riga('Coperti al Garden', g.garden_coperti)}
+        \${riga('Tavoli Casa di Carta', g.carta_tavoli)}
+        \${riga('Posti allo Stage', g.stage_posti)}
+        \${riga('Prenotazioni campi', g.campi)}
+        \${spet ? \`<p style="margin-top:8px;font-size:13px">\${spet}</p>\` : '<p class="muted" style="margin-top:8px">Nessuno spettacolo o riunione in programma.</p>'}
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h3>\u{1F9D8} Lezioni di oggi</h3>\${lez || '<p class="muted">Nessuna lezione.</p>'}</div>
+      <div class="panel"><h3>\u{1F4E6} Sotto scorta</h3>
+        \${c.scorte.length ? c.scorte.map(a => riga(esc(a.nome), a.giacenza, \`punto di riordino \${a.punto_riordino}\`)).join('') : '<p class="muted">Nessun articolo sotto il punto di riordino.</p>'}
+        \${c.scorte.length ? '<div class="row" style="margin-top:10px"><button class="btn ghost sm" data-vai="magazzino">Vai al magazzino</button></div>' : ''}
+      </div>
+    </div>
+    \${s ? \`<div class="panel"><h3>\u{1F3C6} Coppa delle Casate</h3>
+      <p class="muted" style="font-size:13px">\${c.coppa.partite_da_giocare ? \`<b>\${c.coppa.partite_da_giocare}</b> partite ancora da giocare.\` : 'Tutte le partite sono state giocate: la stagione si pu\xF2 chiudere.'}</p>
+      <table class="fit"><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
+      \${s.per_casata.map(x => \`<tr><td><b>\${esc(x.nome)}</b></td><td>\${x.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(x.punti / Math.max(1, Math.max(...s.per_casata.map(y => y.punti))) * 100)}%;background:\${x.colore}"></span></span></td><td>\${x.soci}</td></tr>\`).join('')}
+      </tbody></table>
+      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-vai="casate">Cartellone e chiusura stagione</button></div></div>\` : ''}\`;
+  document.querySelectorAll('[data-vai]').forEach(b => b.onclick = () => show(b.dataset.vai));
 };
 
 // ---- Database (voce dedicata, solo gestore): stato persistenza + backup ----
@@ -6307,6 +6389,7 @@ function stampaCartellone(film, proiezioni) {
 // Non e' una disciplina della Coppa ne' un campo: ha istruttore, prezzo e un minimo di
 // iscritti sotto il quale la lezione non parte. Si paga la singola lezione, in contanti.
 const FIT_GIORNI = [[1,'lun'],[2,'mar'],[3,'mer'],[4,'gio'],[5,'ven'],[6,'sab'],[7,'dom']];
+let FIT_SETT = null;
 VIEWS.fitness = async () => {
   const [corsi, sedute] = await Promise.all([api('/fitness/corsi'), api('/fitness/sedute').catch(() => [])]);
   const eur2 = (v) => '\u20AC ' + Number(v || 0).toFixed(2);
@@ -6320,25 +6403,50 @@ VIEWS.fitness = async () => {
       <td>\${c.lezioni}</td>
       <td>\${c.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag">no</span>'}</td>
       <td class="row" style="margin:0"><button class="btn ghost sm" data-cfedit="\${c.id}">\u270E</button><button class="btn danger sm" data-cfdel="\${c.id}">\u{1F5D1}</button></td></tr>\`).join('');
-  const lez = sedute.map(s => {
-    const stato = s.completa ? '<span class="tag no">al completo</span>'
-      : s.confermata ? '<span class="tag ok">confermata</span>'
-      : \`<span class="tag mid">in attesa \xB7 mancano \${s.mancano}</span>\`;
-    return \`<tr><td><b>\${esc(s.data)}</b> \xB7 \${esc(s.ora)}</td>
-      <td>\${esc(s.titolo || s.corso_nome)}\${s.masterclass ? ' <span class="tag mid">masterclass</span>' : ''}<div class="muted">\${esc(s.istruttore || '')}</div></td>
-      <td>\${s.iscritti}/\${s.posti_max}\${s.minimo ? \`<div class="muted">min \${s.minimo}</div>\` : ''}</td>
-      <td>\${stato}</td><td>\${eur2(s.prezzo)}<div class="muted">da incassare \${eur2(s.da_incassare)}</div></td>
-      <td class="row" style="margin:0"><button class="btn ghost sm" data-sedit="\${s.id}">\u270E</button></td></tr>\`;
-  }).join('');
+  // Calendario a griglia: giorni in colonna, ore in riga, e all'incrocio il corso. Un elenco
+  // di ottanta lezioni una sotto l'altra non si legge; una griglia si guarda.
+  const oreUsate = [...new Set(sedute.map(s => s.ora))].sort();
+  const settimane = [...new Set(sedute.map(s => {
+    const d = new Date(s.data + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    return d.toISOString().slice(0, 10);
+  }))].sort();
+  if (!FIT_SETT || !settimane.includes(FIT_SETT)) FIT_SETT = settimane[0] || null;
+  const giorniSett = FIT_SETT ? Array.from({ length: 7 }, (_, i) => new Date(new Date(FIT_SETT + 'T12:00:00Z').getTime() + i * 864e5).toISOString().slice(0, 10)) : [];
+  const perCella = {};
+  for (const s2 of sedute) (perCella[s2.data + '|' + s2.ora] ??= []).push(s2);
+  const cella = (giorno, ora) => {
+    const list = perCella[giorno + '|' + ora] || [];
+    if (!list.length) return '<td></td>';
+    return \`<td style="padding:3px">\${list.map(s2 => {
+      const col = s2.completa ? '#b14a35' : s2.confermata ? '#2e6b45' : '#b08b3e';
+      return \`<div data-sedit="\${s2.id}" title="\${esc(s2.istruttore || '')}" style="cursor:pointer;background:\${col};color:#fff;border-radius:8px;padding:5px 7px;margin-bottom:3px;line-height:1.2">
+        <div style="font-weight:800;font-size:.76rem">\${esc(s2.titolo || s2.corso_nome)}\${s2.masterclass ? ' \u{1F31F}' : ''}</div>
+        <div style="font-size:.66rem;opacity:.92">\${s2.iscritti}/\${s2.posti_max}\${s2.minimo && !s2.confermata ? \` \xB7 mancano \${s2.mancano}\` : ''} \xB7 \u20AC \${Number(s2.prezzo || 0).toFixed(2)}</div>
+      </div>\`;
+    }).join('')}</td>\`;
+  };
+  const GG = ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'];
+  const griglia = FIT_SETT ? \`<table class="fit" style="table-layout:fixed"><thead><tr><th style="width:56px"></th>
+      \${giorniSett.map((g, i) => \`<th style="text-align:center">\${GG[i]}<div class="muted" style="font-weight:400">\${g.slice(8)}/\${g.slice(5, 7)}</div></th>\`).join('')}</tr></thead>
+    <tbody>\${oreUsate.map(o => \`<tr><td style="vertical-align:top;font-weight:700;color:var(--muted)">\${esc(o)}</td>\${giorniSett.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>\`
+    : '<p class="muted">Nessuna lezione in programma.</p>';
+  const navSett = settimane.map(w => \`<button class="btn \${w === FIT_SETT ? 'gold' : 'ghost'} sm" data-fitsett="\${w}">\${w.slice(8)}/\${w.slice(5, 7)}</button>\`).join('');
+
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F9D8} Corsi</h3>
       <p class="muted">Pilates, yoga, zumba: corsi brevi con istruttore, spesso di una sola settimana. Si paga <b>la singola lezione</b>, in contanti a fine lezione. Sotto il <b>minimo di iscritti</b> la lezione non parte \u2014 la regola si spegne da <b>Regole & parametri</b>. La <b>masterclass</b> \xE8 una lezione con un nome che tira e un prezzo pi\xF9 alto: si pu\xF2 marcare anche una singola lezione, senza creare un corso apposta.</p>
       <table class="fit"><thead><tr><th>Disciplina</th><th>Istruttore</th><th>Periodo</th><th>Giorni</th><th>Posti</th><th>Prezzo</th><th>Lezioni</th><th>Attivo</th><th></th></tr></thead>
         <tbody>\${righe || '<tr><td colspan="9" class="muted">Nessun corso.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:12px"><button class="btn gold sm" id="cf_new">+ Nuovo corso</button></div></div>
-    <div class="panel"><h3>\u{1F4C6} Lezioni in programma</h3>
-      <table class="fit"><thead><tr><th>Quando</th><th>Lezione</th><th>Iscritti</th><th>Stato</th><th>Prezzo</th><th></th></tr></thead>
-        <tbody>\${lez || '<tr><td colspan="6" class="muted">Nessuna lezione. Crea un corso con periodo e giorni: le lezioni si generano da sole.</td></tr>'}</tbody></table>
+    <div class="panel"><h3>\u{1F4C6} Calendario delle lezioni</h3>
+      <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <span class="muted" style="font-size:13px">Settimana dal</span>\${navSett}
+        <span style="flex:1"></span>
+        <span class="tag ok">confermata</span><span class="tag mid">in attesa</span><span class="tag no">al completo</span>
+      </div>
+      \${griglia}
+      <p class="muted" style="font-size:13px;margin-top:8px">Tocca una lezione per cambiarne ora, istruttore, posti, prezzo o per marcarla come masterclass.</p>
       <p class="muted" style="margin-top:8px">Gli iscritti e l'incasso si gestiscono a bordo campo nell'app <b>Bussola Crew \xB7 modulo Fitness</b> (permesso \u201CFitness\u201D).</p></div>\`;
 
   const edit = (c) => {
@@ -6381,6 +6489,7 @@ VIEWS.fitness = async () => {
     if (!confirm('Eliminare il corso e le sue lezioni?')) return;
     try { await api('/fitness/corsi/' + b.dataset.cfdel, { method: 'DELETE' }); show('fitness'); } catch (e) { alert(e.message); }
   });
+  document.querySelectorAll('[data-fitsett]').forEach(b => b.onclick = () => { FIT_SETT = b.dataset.fitsett; show('fitness'); });
   document.querySelectorAll('[data-sedit]').forEach(b => b.onclick = () => {
     const s = sedute.find(x => x.id == b.dataset.sedit);
     modal(\`<h3>Lezione del \${esc(s.data)}</h3>
@@ -6582,6 +6691,7 @@ VIEWS.serate = async () => {
     try { await api('/serate', { method: 'POST', body: JSON.stringify(serataBody($('#view'))) }); show('serate'); }
     catch (e) { $('#s_err').textContent = e.message; }
   };
+  document.querySelectorAll('[data-fitsett]').forEach(b => b.onclick = () => { FIT_SETT = b.dataset.fitsett; show('fitness'); });
   document.querySelectorAll('[data-sedit]').forEach(b => b.onclick = () => {
     const s = list.find(x => x.id == b.dataset.sedit);
     modal(\`<h3>Modifica serata</h3>\${serataForm(s)}<div class="err" id="s_merr"></div><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
@@ -8216,9 +8326,19 @@ VIEWS.pianta = async () => {
   PIANTA.ambiente = { garden: 'garden', cdc: 'carta', cinema: 'stage' }[ZONA] || 'garden';
   const [conf, turnoDati] = await Promise.all([
     api('/tavoli/layout?ambiente=' + PIANTA.ambiente).catch(() => ({ layout: [], giorni: [], turni: ['20:00', '21:30'] })),
-    api(\`/tavoli/turno?data=\${PIANTA.data}&ambiente=\${PIANTA.ambiente}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch(() => null)
+    api(\`/tavoli/turno?data=\${PIANTA.data}&ambiente=\${PIANTA.ambiente}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch((e) => ({ __errore: e.message }))
   ]);
-  if (!turnoDati) { $('#view').innerHTML = '<div class="panel"><p class="muted">Pianta non disponibile.</p></div>'; return; }
+  if (!turnoDati || turnoDati.__errore) {
+    // Un messaggio muto non aiuta nessuno: si dice cosa e' andato storto e si offre la via d'uscita.
+    $('#view').innerHTML = \`<div class="panel"><p class="err">Pianta non disponibile: \${esc((turnoDati && turnoDati.__errore) || 'errore sconosciuto')}</p>
+      <p class="muted" style="font-size:.8rem">Puoi ridisegnarla dai parametri correnti.</p>
+      <button class="btn gold sm" id="p_reset0">\u21BA Ripristina predefinita</button></div>\`;
+    $('#p_reset0').onclick = async () => {
+      try { await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) }); show('pianta'); }
+      catch (e) { alert(e.message); }
+    };
+    return;
+  }
   PIANTA.turno = turnoDati.turno;
   PIANTA.layoutId = turnoDati.layout.id;
   if (PIANTA.modo === 'disposizione' && !PIANTA.sporco) {
@@ -8888,7 +9008,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.88";
+var VERSION = "4.89";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -10986,7 +11106,9 @@ async function layoutPredefinito(ambiente = "garden") {
 }
 async function layoutDelGiorno(data, ambiente = "garden") {
   if (data && (ambiente === "garden" || ambiente === "carta")) {
-    const g = await db.prepare("SELECT l.* FROM tavoli_giorni g JOIN tavoli_layout l ON l.id=g.layout_id WHERE g.data=?").get(data);
+    const g = await db.prepare(
+      "SELECT l.* FROM tavoli_giorni g JOIN tavoli_layout l ON l.id=g.layout_id WHERE g.data=? AND l.ambiente=?"
+    ).get(data, ambiente);
     if (g) return g;
   }
   return await layoutPredefinito(ambiente);
@@ -11527,9 +11649,17 @@ adminRouter.get("/bussola", requireCap("guida"), async (req, res) => {
 });
 adminRouter.post("/bussola", requireCap("guida"), async (req, res) => {
   const b = req.body || {};
-  const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0);
+  const num = (v) => v === "" || v == null ? null : Number(v);
+  const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine,lat,lng) VALUES (?,?,?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0, num(b.lat), num(b.lng));
   audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/bussola/:id", requireCap("guida"), async (req, res) => {
+  const b = req.body || {};
+  const num = (v) => v === "" || v == null ? null : Number(v);
+  await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", num(b.lat), num(b.lng), req.params.id);
+  audit(req.adminUser.username, "modifica", "bussola", req.params.id);
+  res.json({ ok: true });
 });
 adminRouter.delete("/bussola/:id", requireCap("guida"), async (req, res) => {
   await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
@@ -13342,6 +13472,62 @@ adminRouter.post("/tavoli/layout/rigenera", requireCap("comande"), async (req, r
   audit(req.adminUser.username, "rigenera_pianta", "tavoli_layout", nuovo.id, amb);
   res.json({ ok: true, layout: { id: nuovo.id, nome: nuovo.nome, ambiente: nuovo.ambiente } });
 });
+adminRouter.get("/cruscotto", async (req, res) => {
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const ora = (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5);
+  const n = async (sql, ...a) => Number((await db.prepare(sql).get(...a))?.n || 0);
+  const comandeAperte = await db.prepare("SELECT id,numero,zona,riferimento,stato,created_at FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') ORDER BY id").all();
+  const inRitardo = comandeAperte.filter((c) => Date.now() - /* @__PURE__ */ new Date(String(c.created_at).replace(" ", "T") + "Z") > 10 * 6e4).length;
+  const campiOggi = await db.prepare(
+    "SELECT COUNT(DISTINCT partita_id) n FROM prenotazioni_campo WHERE data=? AND stato='prenotato'"
+  ).get(oggi2);
+  const gardenOggi = await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM prenotazioni_tavolo WHERE ambiente='garden' AND data=? AND stato='prenotato'").get(oggi2);
+  const cartaOggi = await db.prepare("SELECT COUNT(*) n FROM prenotazioni_tavolo WHERE ambiente='carta' AND data=? AND stato='prenotato'").get(oggi2);
+  const stageOggi = await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM prenotazioni_tavolo WHERE ambiente='stage' AND data=? AND stato='prenotato'").get(oggi2);
+  const lezioniOggi = await db.prepare(
+    "SELECT s.id,s.ora,s.posti_max,s.min_iscritti,c.nome FROM fitness_sedute s JOIN corsi_fitness c ON c.id=s.corso_id WHERE s.data=? AND s.stato='programmata' ORDER BY s.ora"
+  ).all(oggi2);
+  const lezioni = [];
+  for (const l of lezioniOggi) {
+    const isc = await n("SELECT COUNT(*) n FROM fitness_prenotazioni WHERE seduta_id=? AND stato='prenotato'", l.id);
+    lezioni.push({ ...l, iscritti: isc, confermata: isc >= l.min_iscritti });
+  }
+  const proiezioniOggi = await db.prepare("SELECT p.ora,f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.data=? AND p.stato='programmata' ORDER BY p.ora").all(oggi2);
+  const salaOggi = await db.prepare("SELECT ora_inizio,ora_fine,scopo,titolo FROM prenotazioni_sala WHERE data=? AND stato='confermata' ORDER BY ora_inizio").all(oggi2);
+  const daRiordinare = await db.prepare(
+    "SELECT id,nome,giacenza,punto_riordino FROM magazzino_articoli WHERE punto_riordino>0 AND giacenza<=punto_riordino ORDER BY giacenza LIMIT 8"
+  ).all();
+  const attenzione = [];
+  if (inRitardo) attenzione.push({ tipo: "comande", testo: `${inRitardo} comande oltre i 10 minuti`, vai: "chiosco" });
+  if (daRiordinare.length) attenzione.push({ tipo: "magazzino", testo: `${daRiordinare.length} articoli sotto il punto di riordino`, vai: "magazzino" });
+  const propNuove = await n("SELECT COUNT(*) n FROM proposte WHERE stato='nuova'");
+  if (propNuove) attenzione.push({ tipo: "proposte", testo: `${propNuove} proposte da leggere`, vai: "proposte" });
+  const lezDeboli = lezioni.filter((l) => !l.confermata).length;
+  if (lezDeboli) attenzione.push({ tipo: "fitness", testo: `${lezDeboli} lezioni di oggi sotto il minimo`, vai: "fitness" });
+  const partiteDaGiocare = await n("SELECT COUNT(*) n FROM partite WHERE stato<>'giocata'");
+  res.json({
+    oggi: oggi2,
+    ora,
+    servizio: {
+      comande_aperte: comandeAperte.length,
+      in_ritardo: inRitardo,
+      per_zona: ["garden", "bar", "cucina", "carta"].map((z) => ({ zona: z, n: comandeAperte.filter((c) => c.zona === z).length }))
+    },
+    giornata: {
+      campi: Number(campiOggi?.n || 0),
+      garden_coperti: Number(gardenOggi?.n || 0),
+      carta_tavoli: Number(cartaOggi?.n || 0),
+      stage_posti: Number(stageOggi?.n || 0),
+      lezioni,
+      proiezioni: proiezioniOggi,
+      sala: salaOggi
+    },
+    attenzione,
+    scorte: daRiordinare,
+    coppa: { partite_da_giocare: partiteDaGiocare },
+    soci: await n("SELECT COUNT(*) n FROM soci WHERE attivo=1")
+  });
+});
 
 // build/entry.mjs
 init_authuser();
@@ -13451,7 +13637,7 @@ publicRouter.get("/risorse", async (req, res) => {
   res.json(rows);
 });
 publicRouter.get("/bussola", async (req, res) => {
-  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza FROM bussola ORDER BY sezione,ordine").all();
+  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza,lat,lng FROM bussola ORDER BY sezione,ordine").all();
   const out = {};
   for (const r of rows) (out[r.sezione] ??= []).push(r);
   res.json(out);
@@ -14491,16 +14677,17 @@ async function seed({ verbose = false } = {}) {
     }
   }
   const BUSSOLA = [
-    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1],
-    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2],
-    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3],
-    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4],
-    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5],
-    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1],
-    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2],
-    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3],
-    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4],
-    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5],
+    // Le coordinate rendono la voce un collegamento: si tocca e si apre la mappa del telefono.
+    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1, 36.9186, 15.1706],
+    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2, 36.9906, 15.2178],
+    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3, 36.9169, 15.1731],
+    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4, 36.9203, 15.169],
+    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5, 36.9192, 15.1712],
+    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1, 37.0596, 15.2933],
+    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2, 37.0759, 15.2743],
+    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3, 37.0594, 15.2933],
+    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4, 37.0035, 15.3037],
+    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5, 36.9906, 15.0447],
     ["rifiuti", "Lun \xB7 Organico", "", "", 1],
     ["rifiuti", "Mar \xB7 Plastica", "", "", 2],
     ["rifiuti", "Mer \xB7 Carta", "", "", 3],
@@ -14510,8 +14697,8 @@ async function seed({ verbose = false } = {}) {
     ["orari", "Silenzio pomeridiano", "Dalle 14:00 alle 17:00 \u2014 riposo per tutti.", "", 1],
     ["orari", "Silenzio notturno", "Dopo le 23:30 \u2014 si abbassano voci e musica.", "", 2]
   ];
-  const insBus = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine) VALUES (?,?,?,?,?)");
-  for (const b of BUSSOLA) await insBus.run(...b);
+  const insBus = db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine,lat,lng) VALUES (?,?,?,?,?,?,?)");
+  for (const b of BUSSOLA) await insBus.run(b[0], b[1], b[2], b[3], b[4], b[5] ?? null, b[6] ?? null);
   const insContest = db.prepare("INSERT INTO contest (titolo,tipo,settimana,brief,stato,vincitore,punti_scala,esito_assegnato,attivo) VALUES (?,?,?,?,?,?,?,?,1)");
   await insContest.run(
     "Apertura di stagione \u2014 Sfilata dei Clan",
@@ -14711,7 +14898,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-19 13:27" : "online";
+var BUILD = true ? "2026-08-20 06:36" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
