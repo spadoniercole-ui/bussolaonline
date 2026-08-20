@@ -1603,6 +1603,26 @@ async function migrate() {
     }
   } catch (_) {
   }
+  try {
+    if (await getSetting("bussola_geo_v1", "") !== "v1") {
+      const COORD = [
+        ["Farmacia", 36.9186, 15.1706],
+        ["Guardia medica", 36.9906, 15.2178],
+        ["Spiaggia", 36.9169, 15.1731],
+        ["Market", 36.9203, 15.169],
+        ["Bar & tabacchi", 36.9192, 15.1712],
+        ["Ortigia", 37.0596, 15.2933],
+        ["Neapolis", 37.0759, 15.2743],
+        ["Duomo", 37.0594, 15.2933],
+        ["Plemmirio", 37.0035, 15.3037],
+        ["Cavagrande", 36.9906, 15.0447]
+      ];
+      const upd = db.prepare("UPDATE bussola SET lat=?, lng=? WHERE lat IS NULL AND titolo LIKE ?");
+      for (const [nome, la, ln] of COORD) await upd.run(la, ln, "%" + nome + "%");
+      await setSetting("bussola_geo_v1", "v1");
+    }
+  } catch (_) {
+  }
   await addIfMissing("bussola", "lat", "lat REAL");
   await addIfMissing("bussola", "lng", "lng REAL");
   try {
@@ -2388,6 +2408,26 @@ var init_parametri = __esm({
         ],
         etichetta: "Come si partecipa",
         aiuto: `Con "solo unendosi", chi ha gia' una prenotazione quel giorno su quel campo deve aggregarsi a una partita aperta invece di aprirne un'altra.`
+      },
+      // ---- Comande ----
+      {
+        chiave: "comande_chiusura_automatica",
+        gruppo: "Comande",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Chiudi da sola una comanda dimenticata",
+        aiuto: "Una comanda lasciata aperta tiene il tavolo occupato all'infinito: dopo le ore indicate viene chiusa da sola, cosi' il tavolo torna pulito il giorno dopo."
+      },
+      {
+        chiave: "comande_ore_abbandono",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 6,
+        min: 1,
+        max: 48,
+        dipende_da: "comande_chiusura_automatica",
+        etichetta: "Dopo quante ore",
+        aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
       },
       // ---- Sport ----
       {
@@ -6855,8 +6895,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     </div>
     <div id="tabs">
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
-      <button data-v="tavoli">\u{1F5FA}\uFE0F Tavoli</button>
-      <button data-v="pianta">\u{1FA91} Pianta</button>
+      <button data-v="pianta">\u{1F5FA}\uFE0F Tavoli & pianta</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
@@ -7103,7 +7142,7 @@ function applyZona() {
   const tog = (v, show) => { const el = document.querySelector('#tabs [data-v="' + v + '"]'); if (el) el.classList.toggle('hide', !show); };
   const hasMag = ME.gestore || (ME.caps || []).includes('magazzino');
   tog('comande', ZONA === 'garden' || ZONA === 'bar');
-  tog('tavoli', ZONA === 'garden');
+  tog('tavoli', false);        // fusa nella Pianta: stesso tavolo, un posto solo dove guardarlo
   tog('pianta', ['garden', 'cdc', 'cinema'].includes(ZONA));
   tog('bar', ZONA === 'bar');
   tog('kds', ZONA === 'cucina');
@@ -8324,9 +8363,13 @@ VIEWS.pianta = async () => {
   // L'ambiente e' quello del modulo da cui si entra, e non si cambia: chi ha il permesso dello
   // Stage non deve poter spostare i tavoli del Garden. E' il senso stesso dei permessi.
   PIANTA.ambiente = { garden: 'garden', cdc: 'carta', cinema: 'stage' }[ZONA] || 'garden';
-  const [conf, turnoDati] = await Promise.all([
+  const [conf, turnoDati, comandeZona] = await Promise.all([
     api('/tavoli/layout?ambiente=' + PIANTA.ambiente).catch(() => ({ layout: [], giorni: [], turni: ['20:00', '21:30'] })),
-    api(\`/tavoli/turno?data=\${PIANTA.data}&ambiente=\${PIANTA.ambiente}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch((e) => ({ __errore: e.message }))
+    api(\`/tavoli/turno?data=\${PIANTA.data}&ambiente=\${PIANTA.ambiente}\${PIANTA.turno ? '&turno=' + encodeURIComponent(PIANTA.turno) : ''}\`).catch((e) => ({ __errore: e.message })),
+    // Le comande aperte del punto: sulla pianta un tavolo puo' essere prenotato, servito o
+    // entrambe le cose. Tenerle in una tab separata voleva dire guardare due volte lo stesso
+    // tavolo in due posti diversi.
+    api('/comande').catch(() => [])
   ]);
   if (!turnoDati || turnoDati.__errore) {
     // Un messaggio muto non aiuta nessuno: si dice cosa e' andato storto e si offre la via d'uscita.
@@ -8367,6 +8410,18 @@ VIEWS.pianta = async () => {
       <label class="muted" style="font-size:.78rem">Disposizione <select id="p_layout">\${layoutOpts}</select></label>
     </div></div>\`;
 
+  // Comande aperte su questo punto, indicizzate per tavolo.
+  const zonaComande = PIANTA.ambiente === 'carta' ? 'carta' : 'garden';
+  const APERTE = ['aperta', 'in_preparazione', 'pronta'];
+  const perTavolo = {};
+  for (const c of (Array.isArray(comandeZona) ? comandeZona : [])) {
+    if (c.zona !== zonaComande || !APERTE.includes(c.stato)) continue;
+    const rif = String(c.riferimento || '').trim();
+    if (!/^\\d+$/.test(rif)) continue;
+    (perTavolo[Number(rif)] ??= []).push(c);
+  }
+  const rossoMin = Number((conf.map_rosso_min ?? 10));
+
   // Una sola videata. Lo stato del turno c'e' sempre; gli strumenti di disegno compaiono
   // quando si sta modificando, ma la pagina e la mappa restano quelle: non serve una seconda
   // schermata che mostra le stesse cose.
@@ -8385,7 +8440,7 @@ VIEWS.pianta = async () => {
       </div>
       <p class="muted" style="font-size:.76rem;margin-top:6px">\${PIANTA.modo === 'disposizione'
         ? \`Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La disposizione decide anche l'ordine di riempimento, che va sempre <b>dal centro verso l'esterno</b>.\`
-        : \`\u{1F7E9} libero \xB7 \u{1F7E8} \${PIANTA.ambiente === 'stage' ? 'seduta extra' : 'tavolo extra'} (si apre a pieno) \xB7 \u{1F7E5} occupato \xB7 \u2B1C arredo \u2014 <b>tocca \${PIANTA.ambiente === 'stage' ? 'una seduta' : 'un tavolo'} per prenotarla al banco</b>\`}</p>
+        : \`\u{1F7E9} libero \xB7 \u{1F7EA} prenotato \xB7 \u{1F7E7} comanda in corso \xB7 \u{1F7E5} oltre \${rossoMin}\u2032 \xB7 \u{1F7E8} extra \xB7 \u2B1C arredo \u2014 <b>tocca \${PIANTA.ambiente === 'stage' ? 'una seduta' : 'un tavolo'}</b>: se e' servito chiudi la comanda, se e' libero lo prenoti\`}</p>
       <div id="p_msg" class="muted" style="font-size:.8rem;margin-top:4px"></div></div>\`;
 
   // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
@@ -8395,16 +8450,22 @@ VIEWS.pianta = async () => {
     const palco = (t.tipo || 'standard') === 'arredo' && t.numero === 99;
     const raggio = palco ? 30 : (t.tipo || 'standard') === 'arredo' ? 22 : 22 + Math.min(16, Number(t.posti) * 2);
     const arredo = (t.tipo || 'standard') === 'arredo';
+    const cs = perTavolo[t.numero] || [];
+    const st = cs.length ? statoGruppo(cs, rossoMin, Date.now()) : null;
     const extra = (t.tipo || 'standard') === 'extra';
+    // Il colore racconta prima il servizio (comanda in corso o in ritardo), poi la prenotazione.
     const bg = arredo ? '#8d8477' : PIANTA.modo === 'disposizione'
       ? (t.attivo === 0 ? '#d9d4c6' : extra ? '#b08b3e' : 'var(--accent)')
-      : (occupato ? '#b14a35' : extra ? '#b08b3e' : '#2e6b45');
+      : st ? (st.key === 'rosso' ? '#b14a35' : st.key === 'giallo' ? '#c88a2e' : '#2e6b45')
+      : (occupato ? '#7a4f9a' : extra ? '#b08b3e' : '#2e6b45');
     return \`<div class="tv" data-tv="\${t.numero}" style="position:absolute;left:\${t.x}%;top:\${t.y}%;transform:translate(-50%,-50%);
         width:\${palco ? 200 : raggio * 2}px;height:\${palco ? 44 : raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
         background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
         font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${arredo ? 'default' : PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none" \${(PIANTA.modo === 'servizio' && !arredo) ? \`data-pren="\${t.numero}"\` : ''}>
         <span>\${arredo ? (t.numero === 99 ? '\u{1F3AD}' : t.numero === 90 ? '\u{1F6CE}\uFE0F' : '\u2615') : t.numero + ((t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : '')}</span>
-        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 99 ? 'PALCO' : t.numero === 90 ? 'reception' : 'caff\xE8') : occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
+        <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 99 ? 'PALCO' : t.numero === 90 ? 'reception' : 'caff\xE8')
+          : st ? (st.mins != null ? st.mins + '\u2032' : 'in corso')
+          : occupato ? esc((t.nome || '').split(' ')[0]) : t.posti + ' p'}</span>
       </div>\`;
   }).join('');
 
@@ -8460,6 +8521,30 @@ VIEWS.pianta = async () => {
       const n = Number(el.dataset.pren);
       const t = (turnoDati.tavoli || []).find(x => x.numero === n);
       if (!t) return;
+      const cs = perTavolo[n] || [];
+      if (cs.length) {
+        // Tavolo servito: da qui si chiude o si annulla la comanda, cosi' il tavolo torna
+        // pulito senza andare a cercarla altrove.
+        const righe = cs.map(c => \`<div style="border-bottom:1px solid var(--line);padding:6px 0">
+            <div class="row" style="justify-content:space-between"><b>#\${esc(String(c.numero))}</b><span class="muted">\${esc(c.stato)}</span></div>
+            <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`).join(' \xB7 ') || esc(c.punto || '')}</div>
+            <div class="row" style="gap:6px;margin-top:6px">
+              <button class="btn gold sm" data-cchiudi="\${c.id}">\u2713 Chiudi</button>
+              <button class="btn danger sm" data-cann="\${c.id}">Annulla</button>
+            </div></div>\`).join('');
+        openModal(\`<h3>Tavolo \${n} \xB7 comande in corso</h3>\${righe}
+          <div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost sm" id="c_tutte">\u{1F9F9} Libera il tavolo</button><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+        const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
+        const agisci = async (id, stato) => { await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato }) }); };
+        document.querySelectorAll('[data-cchiudi]').forEach(x => x.onclick = async () => { await agisci(x.dataset.cchiudi, 'chiusa'); closeModal(); show('pianta'); });
+        document.querySelectorAll('[data-cann]').forEach(x => x.onclick = async () => { await agisci(x.dataset.cann, 'annullata'); closeModal(); show('pianta'); });
+        $('#c_tutte').onclick = async () => {
+          if (!confirm('Chiudere tutte le comande di questo tavolo?')) return;
+          for (const c of cs) await agisci(c.id, 'chiusa');
+          closeModal(); show('pianta');
+        };
+        return;
+      }
       if (!t.libero) {
         const p = (turnoDati.prenotazioni || []).find(x => (x.tavoli || []).includes(n));
         openModal(\`<h3>\${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'} \${n}</h3>
@@ -9008,7 +9093,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.89";
+var VERSION = "4.90";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12333,7 +12418,21 @@ async function comandaConRighe(id) {
   c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(id);
   return c;
 }
+async function chiudiComandeAbbandonate() {
+  if (!await par("comande_chiusura_automatica")) return 0;
+  const ore = Math.max(1, Number(await par("comande_ore_abbandono")) || 6);
+  const limite = new Date(Date.now() - ore * 36e5).toISOString();
+  const vecchie = await db.prepare(
+    "SELECT id,numero,riferimento FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') AND created_at < ?"
+  ).all(limite);
+  for (const c of vecchie) {
+    await db.prepare("UPDATE comande SET stato='chiusa',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), c.id);
+    audit("sistema", "chiusura_abbandono", "comande", c.id, `#${c.numero} \xB7 tavolo ${c.riferimento || "-"} \xB7 oltre ${ore}h`);
+  }
+  return vecchie.length;
+}
 adminRouter.get("/comande", requireCap("comande"), async (req, res) => {
+  await chiudiComandeAbbandonate();
   const stato = req.query.stato;
   let rows;
   if (stato === "tutte") rows = await db.prepare("SELECT * FROM comande ORDER BY id DESC LIMIT 100").all();
@@ -14898,7 +14997,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-20 06:36" : "online";
+var BUILD = true ? "2026-08-20 09:59" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
