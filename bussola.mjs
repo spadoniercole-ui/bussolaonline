@@ -1606,6 +1606,8 @@ async function migrate() {
   await addIfMissing("menu_articoli", "magazzino_id", "magazzino_id INTEGER");
   await addIfMissing("menu_articoli", "consumo", "consumo REAL NOT NULL DEFAULT 1");
   await addIfMissing("comande", "scaricata", "scaricata INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("bussola", "mappa_embed", "mappa_embed TEXT");
+  await addIfMissing("luoghi", "mappa_embed", "mappa_embed TEXT");
   await addIfMissing("eventi", "luogo", "luogo TEXT");
   await addIfMissing("eventi", "occupa_stage", "occupa_stage INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("serate", "luogo", "luogo TEXT");
@@ -3607,12 +3609,14 @@ function renderBussola() {
   // La mappa incorporata (senza chiave) fa vedere DOV'E' invece di far immaginare: si tocca
   // per aprire le indicazioni nell'app di mappe del telefono.
 
+  // Le voci con posizione restano a portata: la mappa si apre a tutto foglio al tocco.
+  for (const v of [...(b.servizi || []), ...(b.vedere || [])]) MAPPE[String(v.titolo)] = v;
   const rows = (arr) => (arr || []).map(x => {
     const href = mappaHref(x);
     const dentro = \`<b style="font-size:.84rem">\${esc(x.titolo)}</b>\${x.dettaglio ? \`<span class="ct" style="margin-left:6px">\${esc(x.dettaglio)}</span>\` : ''}\`;
     const dist = \`\${x.distanza ? \`<span class="ct" style="white-space:nowrap;margin-left:8px">\${esc(x.distanza)}</span>\` : ''}\${href ? '<span class="ct" style="margin-left:6px">\u2197</span>' : ''}\`;
     return href
-      ? \`<div class="matchrow" role="button" tabindex="0" data-mappa="\${x.lat},\${x.lng}|\${esc(x.titolo)}" style="cursor:pointer"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`
+      ? \`<div class="matchrow" role="button" tabindex="0" data-mappa="\${esc(String(x.titolo))}" style="cursor:pointer"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`
       : \`<div class="matchrow"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`;
   }).join('');
   const luoghi = state.data.luoghi || SEED.luoghi;
@@ -3971,13 +3975,19 @@ function openSerateSpeciali() {
 
 // La mappa si apre a tutto foglio con il codice di Google (senza chiavi), non dentro l'elenco:
 // l'anteprima delle voci resta compatta com'era.
-function openMappa(coord, nome) {
-  const [lat, lng] = String(coord).split(',');
+const MAPPE = {};
+function openMappa(nome) {
+  const v = MAPPE[nome] || {};
+  // Se il gestore ha incollato il codice di Google, la mappa e' esattamente quella che ha
+  // inquadrato lui; altrimenti si ricava dalle coordinate.
+  const src = v.mappa_embed
+    ? v.mappa_embed
+    : \`https://maps.google.com/maps?q=\${encodeURIComponent(v.lat + ',' + v.lng)}&z=16&hl=it&output=embed\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Dove si trova')}</div>
     <h2>\${esc(nome || '')}</h2>
-    <div class="mapbox"><iframe title="\${esc(nome || '')}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
-      src="https://maps.google.com/maps?q=\${encodeURIComponent(lat + ',' + lng)}&z=16&hl=it&output=embed"></iframe></div>
-    <a class="btn navy block" style="margin-top:10px" href="https://www.google.com/maps/dir/?api=1&destination=\${lat},\${lng}" target="_blank" rel="noopener">\u{1F9ED} \${T('Portami l\xEC')}</a>
+    \${v.dettaglio ? \`<p class="sub">\${esc(v.dettaglio)}\${v.distanza ? ' \xB7 ' + esc(v.distanza) : ''}</p>\` : ''}
+    <div class="mapbox"><iframe title="\${esc(nome || '')}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" src="\${esc(src)}"></iframe></div>
+    \${v.lat != null ? \`<a class="btn navy block" style="margin-top:10px" href="https://www.google.com/maps/dir/?api=1&destination=\${v.lat},\${v.lng}" target="_blank" rel="noopener">\u{1F9ED} \${T('Portami l\xEC')}</a>\` : ''}
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
@@ -5265,7 +5275,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
-  if (t.dataset.mappa) { const [c, nome] = t.dataset.mappa.split('|'); return openMappa(c, nome); }
+  if (t.dataset.mappa) return openMappa(t.dataset.mappa);
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
   if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
@@ -6488,13 +6498,20 @@ VIEWS.bussola = async () => {
         \${geo ? \`<a class="btn ghost sm" href="https://www.google.com/maps/search/?api=1&query=\${b.lat},\${b.lng}" target="_blank" rel="noopener">\u{1F50E} Verifica sulla mappa</a>\`
               : '<span class="tag mid">senza posizione</span>'}
       </div>
-      <div id="bv_nota_\${b.id}" class="muted" style="font-size:.74rem;margin-top:4px"></div>\`}
+      <div id="bv_nota_\${b.id}" class="muted" style="font-size:.74rem;margin-top:4px"></div>
+      <div class="row" style="gap:8px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
+        <label class="muted" style="flex:1;min-width:260px;font-size:.78rem">Codice mappa di Google <i>(Condividi \u2192 Incorpora una mappa \u2192 Copia HTML)</i>
+          <textarea id="bv_emb_\${b.id}" rows="2" placeholder="&lt;iframe src=&quot;https://www.google.com/maps/embed?pb=\u2026&quot;&gt;&lt;/iframe&gt;" style="width:100%;font-family:monospace;font-size:11px">\${esc(b.mappa_embed || '')}</textarea></label>
+        \${b.mappa_embed ? \`<div style="flex:0 0 220px"><iframe src="\${esc(b.mappa_embed)}" style="width:220px;height:130px;border:1px solid var(--line);border-radius:8px" loading="lazy"></iframe>
+          <div class="muted" style="font-size:.72rem;text-align:center">mappa impostata</div></div>\` : ''}
+      </div>\`}
     </div>\`;
   };
   $('#view').innerHTML = legenda + calendario + \`<div class="panel" data-fold="guida"><h3>\u{1F9ED} Contenuti della guida</h3>
     <p class="muted">Ogni voce pu\xF2 avere una <b>posizione</b>: con le coordinate, nell'app dei soci diventa un collegamento che apre le mappe del telefono.<br>
     <b>Come si indica la posizione:</b> incolla quello che hai e premi <b>Leggi</b>. Vanno bene le <b>coordinate</b> copiate da Google Maps (tasto destro sul punto \u2192 clic sulle coordinate), il <b>link della mappa</b>, il link <b>condiviso dal telefono</b> anche se accorciato, e i link di <b>Waze</b>, <b>Apple Maps</b> e <b>OpenStreetMap</b>. Riconosce anche i gradi (36\xB055'07.0"N 15\xB010'14.2"E) e la virgola decimale italiana.<br>
-    Dopo aver salvato, usa <b>Verifica sulla mappa</b>: se il segnaposto non cade sul posto giusto, la posizione \xE8 sbagliata.</p>
+    Dopo aver salvato, usa <b>Verifica sulla mappa</b>: se il segnaposto non cade sul posto giusto, la posizione \xE8 sbagliata.<br>
+    <b>Mappa esatta:</b> su Google Maps scegli l'inquadratura che vuoi, poi <b>Condividi \u2192 Incorpora una mappa \u2192 Copia HTML</b> e incolla il codice nel riquadro della voce. \xC8 quella mappa che vedranno i soci; le coordinate per le indicazioni si ricavano da sola.</p>
     \${senzaGeo ? \`<div class="row" style="background:#fdf6e6;border-left:4px solid var(--gold);padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:12px"><b>\${senzaGeo} voci senza posizione.</b> <span class="muted">Finch\xE9 non hanno le coordinate restano righe di testo, senza collegamento alla mappa.</span></div>\` : ''}
     \${voci.map(scheda).join('') || '<p class="muted">Nessuna voce.</p>'}
     <h3 style="margin-top:18px">Aggiungi una voce</h3>
@@ -6568,9 +6585,11 @@ VIEWS.bussola = async () => {
     const c = incollato ? parseCoords(incollato) : null;   // se ha incollato senza premere Leggi
     const lat = c ? c.lat : ($('#bv_lat_' + id) || {}).value;
     const lng = c ? c.lng : ($('#bv_lng_' + id) || {}).value;
+    const emb = $('#bv_emb_' + id);
     await api('/bussola/' + id, { method: 'PUT', body: JSON.stringify({
       titolo: $('#bv_t_' + id).value, dettaglio: $('#bv_d_' + id).value,
-      distanza: $('#bv_km_' + id).value, lat, lng
+      distanza: $('#bv_km_' + id).value, lat, lng,
+      ...(emb ? { mappa_embed: emb.value } : {})
     }) });
     show('bussola');
   });
@@ -9931,7 +9950,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.02";
+var VERSION = "5.03";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12414,6 +12433,20 @@ function leggiCoordinate(input) {
   }
   return null;
 }
+function leggiEmbed(input) {
+  const testo = String(input || "").trim();
+  if (!testo) return null;
+  const m = testo.match(/src\s*=\s*["']([^"']+)["']/i);
+  const url2 = (m ? m[1] : testo).trim();
+  if (!/^https:\/\/(www\.)?google\.[a-z.]+\/maps\/embed\?/i.test(url2)) return null;
+  const lng = url2.match(/!2d(-?\d+(?:\.\d+)?)/);
+  const lat = url2.match(/!3d(-?\d+(?:\.\d+)?)/);
+  return {
+    src: url2,
+    lat: lat ? Number(Number(lat[1]).toFixed(6)) : null,
+    lng: lng ? Number(Number(lng[1]).toFixed(6)) : null
+  };
+}
 async function risolviPosizione(input) {
   const diretto = leggiCoordinate(input);
   if (diretto) return { ...diretto, origine: "testo" };
@@ -12759,13 +12792,30 @@ adminRouter.put("/bussola/:id", requireCap("guida"), async (req, res) => {
       if (pieno(grezzoLng) && lng0 == null) return res.status(400).json({ error: `Non riesco a leggere la longitudine "${String(grezzoLng).slice(0, 30)}". Vanno bene 15.2933, 15,2933 oppure 15\xB017'26.3"E.` });
     }
   }
+  let embed = null;
+  if (b.mappa_embed !== void 0) {
+    const e = b.mappa_embed ? leggiEmbed(b.mappa_embed) : null;
+    if (b.mappa_embed && !e) {
+      return res.status(400).json({ error: "Questo non e\u0300 il codice di una mappa Google. Su Google Maps: Condividi \u2192 Incorpora una mappa \u2192 Copia HTML." });
+    }
+    embed = e;
+    if (e && lat0 == null && e.lat != null) {
+      lat0 = e.lat;
+      lng0 = e.lng;
+    }
+  }
   const valide = lat0 != null && lng0 != null && Math.abs(lat0) <= 90 && Math.abs(lng0) <= 180;
   if (lat0 != null !== (lng0 != null)) {
     return res.status(400).json({ error: "Servono tutte e due le coordinate: con una sola il punto non esiste." });
   }
-  await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", valide ? lat0 : null, valide ? lng0 : null, req.params.id);
+  const srcEmbed = b.mappa_embed === void 0 ? void 0 : embed ? embed.src : null;
+  if (srcEmbed === void 0) {
+    await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", valide ? lat0 : null, valide ? lng0 : null, req.params.id);
+  } else {
+    await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=?,mappa_embed=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", valide ? lat0 : null, valide ? lng0 : null, srcEmbed, req.params.id);
+  }
   audit(req.adminUser.username, "modifica", "bussola", req.params.id, valide ? `${lat0},${lng0}` : "senza posizione");
-  res.json({ ok: true, lat: valide ? lat0 : null, lng: valide ? lng0 : null });
+  res.json({ ok: true, lat: valide ? lat0 : null, lng: valide ? lng0 : null, mappa_embed: srcEmbed ?? void 0 });
 });
 adminRouter.delete("/bussola/:id", requireCap("guida"), async (req, res) => {
   await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
@@ -14902,7 +14952,7 @@ publicRouter.get("/risorse", async (req, res) => {
   res.json(rows);
 });
 publicRouter.get("/bussola", async (req, res) => {
-  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza,lat,lng FROM bussola ORDER BY sezione,ordine").all();
+  const rows = await db.prepare("SELECT sezione,titolo,dettaglio,distanza,lat,lng,mappa_embed FROM bussola ORDER BY sezione,ordine").all();
   const out = {};
   for (const r of rows) (out[r.sezione] ??= []).push(r);
   res.json(out);
@@ -16210,7 +16260,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 11:28" : "online";
+var BUILD = true ? "2026-08-21 12:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
