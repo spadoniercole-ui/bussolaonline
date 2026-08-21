@@ -6370,6 +6370,26 @@ VIEWS.bussola = async () => {
     const nota = $('#bv_nota_' + id);
     if (nota) nota.textContent = c.origine === 'testo' ? '' : \`Letto seguendo il link. Controlla con \u201CVerifica sulla mappa\u201D.\`;
   });
+  // Conversione al volo: incollando i gradi nel campo, uscendo si legge il decimale. E se
+  // per sbaglio la coppia intera finisce in Lat, si divide da sola nei due campi.
+  const convertiCampo = (id, asse) => {
+    const el = $(\`#bv_\${asse}_\${id}\`); if (!el) return;
+    el.onblur = () => {
+      const v = (el.value || '').trim(); if (!v) return;
+      if (asse === 'lat') {
+        const coppia = parseCoords(v);
+        const soloUno = /^[\\d.,\\s\xB0'"NSEWOnsewo-]+$/.test(v) && !/[,;]\\s*-?\\d+[.,]\\d/.test(v);
+        if (coppia && !soloUno) {
+          el.value = coppia.lat.toFixed(5);
+          const l = $(\`#bv_lng_\${id}\`); if (l) l.value = coppia.lng.toFixed(5);
+          return;
+        }
+      }
+      const n = gradiADecimale(v, asse);
+      if (n != null) el.value = n.toFixed(5);
+    };
+  };
+  document.querySelectorAll('[data-bvsave]').forEach(b => { convertiCampo(b.dataset.bvsave, 'lat'); convertiCampo(b.dataset.bvsave, 'lng'); });
   document.querySelectorAll('[data-bvsave]').forEach(b => b.onclick = async () => {
     const id = b.dataset.bvsave;
     const incollato = ($('#bv_inc_' + id) || {}).value;
@@ -6408,6 +6428,21 @@ function parseCoords(s) {
   return { lat, lng };
 }
 function corto(v) { return v == null ? '' : Number(v).toFixed(5); }
+// Un solo valore: decimale (punto o virgola) oppure grado singolo 37\xB003'34.6"N.
+function gradiADecimale(t, asse) {
+  const s = String(t || '').trim();
+  const g = s.match(/^(\\d{1,3})\\s*\xB0\\s*(\\d{1,2})?\\s*['\\u2032]?\\s*([\\d.,]+)?\\s*["\\u2033]?\\s*([NSEWOnsewo])?$/);
+  if (g) {
+    const v = Number(g[1]) + Number(g[2] || 0) / 60 + Number(String(g[3] || 0).replace(',', '.')) / 3600;
+    const d = (g[4] || '').toUpperCase();
+    return Number.isFinite(v) ? (d === 'S' || d === 'W' || d === 'O' ? -v : v) : null;
+  }
+  const n = Number(s.replace(',', '.'));
+  if (!Number.isFinite(n)) return null;
+  if (asse === 'lat' && Math.abs(n) > 90) return null;
+  if (asse === 'lng' && Math.abs(n) > 180) return null;
+  return n;
+}
 VIEWS.luoghi = async () => {
   const list = await api('/luoghi');
   $('#view').innerHTML = \`
@@ -9429,7 +9464,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.96";
+var VERSION = "4.97";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -11849,6 +11884,22 @@ function daGradi(testo) {
   const lng = trovati.find((t) => "EWO".includes(t.dir)) || trovati[1];
   return { lat: lat.val, lng: lng.val };
 }
+function leggiSingola(input, asse) {
+  if (input == null || String(input).trim() === "") return null;
+  const t = String(input).trim();
+  const g = t.match(/^(\d{1,3})\s*[\u00b0]\s*(\d{1,2})?\s*['\u2032]?\s*([\d.,]+)?\s*["\u2033]?\s*([NSEWOnsewo])?$/);
+  if (g) {
+    const val = Number(g[1]) + Number(g[2] || 0) / 60 + Number(String(g[3] || 0).replace(",", ".")) / 3600;
+    const dir = (g[4] || "").toUpperCase();
+    const segno = dir === "S" || dir === "W" || dir === "O" ? -1 : 1;
+    return Number.isFinite(val) ? Number((val * segno).toFixed(6)) : null;
+  }
+  const n = Number(t.replace(",", "."));
+  if (!Number.isFinite(n)) return null;
+  if (asse === "lat" && Math.abs(n) > 90) return null;
+  if (asse === "lng" && Math.abs(n) > 180) return null;
+  return n;
+}
 function valida(lat, lng) {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
   if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
@@ -12222,20 +12273,32 @@ adminRouter.post("/bussola", requireCap("guida"), async (req, res) => {
 });
 adminRouter.put("/bussola/:id", requireCap("guida"), async (req, res) => {
   const b = req.body || {};
-  const num = (v) => {
-    if (v === "" || v == null) return null;
-    const n = Number(String(v).replace(",", "."));
-    return Number.isFinite(n) ? n : null;
-  };
   const daTesto = (b.lat == null || b.lat === "") && b.geo ? leggiCoordinate(b.geo) : null;
-  const lat0 = daTesto ? daTesto.lat : num(b.lat), lng0 = daTesto ? daTesto.lng : num(b.lng);
+  let lat0, lng0;
+  if (daTesto) {
+    lat0 = daTesto.lat;
+    lng0 = daTesto.lng;
+  } else {
+    const grezzoLat = b.lat, grezzoLng = b.lng;
+    const coppia = grezzoLat ? leggiCoordinate(String(grezzoLat)) : null;
+    if (coppia && (grezzoLng == null || grezzoLng === "")) {
+      lat0 = coppia.lat;
+      lng0 = coppia.lng;
+    } else {
+      lat0 = leggiSingola(grezzoLat, "lat");
+      lng0 = leggiSingola(grezzoLng, "lng");
+      const pieno = (v) => v != null && String(v).trim() !== "";
+      if (pieno(grezzoLat) && lat0 == null) return res.status(400).json({ error: `Non riesco a leggere la latitudine "${String(grezzoLat).slice(0, 30)}". Vanno bene 37.0596, 37,0596 oppure 37\xB003'34.6"N.` });
+      if (pieno(grezzoLng) && lng0 == null) return res.status(400).json({ error: `Non riesco a leggere la longitudine "${String(grezzoLng).slice(0, 30)}". Vanno bene 15.2933, 15,2933 oppure 15\xB017'26.3"E.` });
+    }
+  }
   const valide = lat0 != null && lng0 != null && Math.abs(lat0) <= 90 && Math.abs(lng0) <= 180;
-  if ((b.lat || b.lng) && !valide && (lat0 != null || lng0 != null)) {
-    return res.status(400).json({ error: "Coordinate non valide: la latitudine sta fra -90 e 90, la longitudine fra -180 e 180." });
+  if (lat0 != null !== (lng0 != null)) {
+    return res.status(400).json({ error: "Servono tutte e due le coordinate: con una sola il punto non esiste." });
   }
   await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", valide ? lat0 : null, valide ? lng0 : null, req.params.id);
-  audit(req.adminUser.username, "modifica", "bussola", req.params.id);
-  res.json({ ok: true });
+  audit(req.adminUser.username, "modifica", "bussola", req.params.id, valide ? `${lat0},${lng0}` : "senza posizione");
+  res.json({ ok: true, lat: valide ? lat0 : null, lng: valide ? lng0 : null });
 });
 adminRouter.delete("/bussola/:id", requireCap("guida"), async (req, res) => {
   await db.prepare("DELETE FROM bussola WHERE id=?").run(req.params.id);
@@ -15631,7 +15694,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 06:14" : "online";
+var BUILD = true ? "2026-08-21 06:39" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
