@@ -2345,7 +2345,18 @@ var init_parametri = __esm({
         tipo: "bool",
         predefinito: true,
         etichetta: "Limite di durata per prenotazione",
-        aiuto: "Se spento, un socio puo' prenotare quante fasce consecutive vuole. Il numero massimo resta quello indicato sulla scheda del singolo campo."
+        aiuto: "Se spento, un socio puo' prenotare quante fasce consecutive vuole."
+      },
+      {
+        chiave: "campi_durata_massima_minuti",
+        gruppo: "Campi",
+        tipo: "numero",
+        predefinito: 120,
+        min: 30,
+        max: 300,
+        dipende_da: "campi_limita_durata",
+        etichetta: "Durata massima di una prenotazione (minuti)",
+        aiuto: "Il limite vero e' il TEMPO, non il numero di fasce: su un campo da 90 minuti due fasce fanno tre ore, e il tetto sulle fasce non serviva a niente. Da qui si ricava quante fasce si possono prendere su ciascun campo."
       },
       {
         chiave: "campi_limita_settimana",
@@ -2941,6 +2952,10 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .gtable td.team{text-align:left; font-weight:600; white-space:nowrap;}
 .gtable td.team .gpos{color:var(--mute); font-family:Georgia,serif; font-weight:700; margin-right:6px;}
 .gtable td.team .d{display:inline-block; width:9px;height:9px;border-radius:50%; margin-right:6px; vertical-align:middle;}
+.mapwrap{padding:0 0 10px;}
+.mapbox{position:relative; border-radius:12px; overflow:hidden; border:1px solid var(--line);}
+.mapbox iframe{width:100%; height:190px; border:0; display:block;}
+.mapopen{display:block; text-align:center; padding:8px; font-size:.78rem; background:var(--card); color:var(--navy); text-decoration:none; border-top:1px solid var(--line);}
 .matchrow{display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line);} .matchrow:last-child{border-bottom:none;}
 .matchrow .wh{width:58px; text-align:center; font-size:.68rem; color:var(--navy); font-weight:700;}
 .matchrow .vs{flex:1; font-size:.8rem;} .matchrow .vs small{color:var(--mute);} .matchrow .ct{font-size:.68rem; color:var(--mute); margin-top:1px;}
@@ -3590,12 +3605,19 @@ function renderBussola() {
   const mappaHref = (x) => x.lat != null && x.lng != null
     ? \`https://www.google.com/maps/search/?api=1&query=\${x.lat},\${x.lng}\`
     : null;
+  // La mappa incorporata (senza chiave) fa vedere DOV'E' invece di far immaginare: si tocca
+  // per aprire le indicazioni nell'app di mappe del telefono.
+  const mappaHTML = (x, alt) => x.lat == null || x.lng == null ? '' :
+    \`<div class="mapbox"><iframe title="\${esc(alt || x.titolo || '')}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+        src="https://maps.google.com/maps?q=\${x.lat},\${x.lng}&z=16&output=embed"></iframe>
+      <a class="mapopen" href="\${mappaHref(x)}" target="_blank" rel="noopener">\${T('Apri nelle mappe')} \u2197</a></div>\`;
   const rows = (arr) => (arr || []).map(x => {
     const href = mappaHref(x);
     const dentro = \`<b style="font-size:.84rem">\${esc(x.titolo)}</b>\${x.dettaglio ? \`<span class="ct" style="margin-left:6px">\${esc(x.dettaglio)}</span>\` : ''}\`;
     const dist = \`\${x.distanza ? \`<span class="ct" style="white-space:nowrap;margin-left:8px">\${esc(x.distanza)}</span>\` : ''}\${href ? '<span class="ct" style="margin-left:6px">\u2197</span>' : ''}\`;
     return href
-      ? \`<a class="matchrow" href="\${href}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</a>\`
+      ? \`<div><div class="matchrow" role="button" tabindex="0" data-mappa="\${esc(x.titolo)}" style="cursor:pointer"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>
+          <div class="mapwrap hide" id="map_\${esc(String(x.titolo).replace(/[^a-z0-9]/gi, ''))}">\${mappaHTML(x)}</div></div>\`
       : \`<div class="matchrow"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`;
   }).join('');
   const luoghi = state.data.luoghi || SEED.luoghi;
@@ -3978,7 +4000,8 @@ async function openCowo() {
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4BB} \${T('Coworking')}</div>
     <h2>\${T('La tua postazione')}</h2>
     <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
-    <div class="field"><label>\${T('Quante postazioni')}</label><div class="chips">\${[1, 2, 3].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-cowo-pers="\${n}">\${n}</button>\`).join('')}</div></div>
+    <div class="field"><label>\${T('Quante postazioni')}</label><div class="chips">\${[1, 2, 3, 4, 6, 8].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-cowo-pers="\${n}">\${n}</button>\`).join('')}</div>
+      <p class="tiny muted" style="margin-top:4px">\${T('Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.')}</p></div>
     <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
     <div class="card" style="padding:4px 14px">\${turni.map(riga).join('') || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessun turno di coworking.')}</p>\`}</div>
     \${mieHTML}
@@ -5190,7 +5213,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -5229,6 +5252,11 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
+  if (t.dataset.mappa) {
+    const el = document.getElementById('map_' + String(t.dataset.mappa).replace(/[^a-z0-9]/gi, ''));
+    if (el) el.classList.toggle('hide');
+    return;
+  }
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
   if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
@@ -5387,6 +5415,14 @@ var admin_default = `<!DOCTYPE html>
   .cardgrid .row:last-child{margin-bottom:0;}
   /* Testi lunghi (URL, nomi file) non allargano la colonna e non sfondano la scheda */
   .brk{overflow-wrap:anywhere;word-break:break-word;}
+  /* Sezioni comprimibili: le pagine di gestione sono lunghe, e su un portatile o un tablet
+     si perde il filo. Il titolo diventa un interruttore e lo stato viene ricordato. */
+  .panel[data-fold] > h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;}
+  .panel[data-fold] > h3::before{content:'\u25BE';font-size:.8em;color:var(--muted);transition:transform .15s;}
+  .panel[data-fold].chiuso > h3::before{transform:rotate(-90deg);}
+  .panel[data-fold].chiuso > *:not(h3){display:none;}
+  .panel[data-fold].chiuso{padding-bottom:12px;}
+  .foldbar{display:flex;gap:8px;justify-content:flex-end;margin:-4px 0 10px;}
   /* Il QR arriva come SVG senza dimensioni proprie: dentro un contenitore flex collasserebbe */
   .qrbox{width:100%;}
   .qrbox svg{width:100%;height:auto;display:block;}
@@ -5568,7 +5604,9 @@ async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', fitness:'Area fitness', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
+  window.__view = v;
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
+  try { abilitaFold(); } catch (e) { }
 }
 
 // ---- Cruscotto ----
@@ -5601,6 +5639,14 @@ VIEWS.dashboard = async () => {
   const spet = [...g.proiezioni.map(p => \`\u{1F3AC} \${esc(p.ora)} \xB7 \${esc(p.titolo || 'proiezione')}\`),
                 ...g.sala.map(p => \`\u{1F5D3}\uFE0F \${esc(p.ora_inizio)}\u2013\${esc(p.ora_fine)} \xB7 \${esc(p.titolo || p.scopo)}\`)].join('<br>');
 
+  // Il cartellone della Coppa non sta piu' qui: si guarda in "Casate & punti". Al suo posto
+  // cio' che serve a chi apre il servizio: chi e' atteso, dove, e cosa e' rimasto indietro.
+  const listaOspiti = (arr) => arr.length
+    ? arr.map(o => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)">
+        <span><b>\${esc(o.nome || '\u2014')}</b> <span class="muted">\xB7 \${o.persone} p</span></span>
+        <span class="muted">\${(o.tavoli || []).length ? 'tav. ' + o.tavoli.join(', ') : ''}</span></div>\`).join('')
+    : '<p class="muted">Nessuno atteso.</p>';
+
   $('#view').innerHTML = \`
     <div class="cards">
       \${box(c.servizio.comande_aperte, 'comande aperte', c.servizio.in_ritardo ? 'var(--danger)' : null)}
@@ -5611,13 +5657,19 @@ VIEWS.dashboard = async () => {
       \${box(c.soci, 'soci attivi')}
     </div>
     \${avvisi}
-    <div class="grid2">
-      <div class="panel"><h3>\u{1F37D}\uFE0F Servizio ora <span class="muted" style="font-weight:400;font-size:13px">\xB7 \${esc(c.ora)}</span></h3>
-        \${c.servizio.per_zona.map(z => riga(esc(z.zona), z.n, z.n ? 'comande aperte' : '\u2014')).join('')}
-        <div class="row" style="margin-top:10px"><a class="btn gold sm" href="\${CREW}" target="_blank">Apri Bussola Crew \u2197</a></div>
+    <div class="panel" data-fold="attesi"><h3>\u{1F37D}\uFE0F Chi \xE8 atteso stasera al Garden</h3>
+      <div class="grid2">
+        \${(c.turni_garden || []).map(t => \`<div>
+          <b style="color:var(--navy)">Turno \${esc(t.turno)}</b> <span class="muted">\xB7 \${t.coperti}/\${t.posti} coperti</span>
+          <div style="margin-top:6px">\${listaOspiti(t.ospiti)}</div></div>\`).join('')}
       </div>
-      <div class="panel"><h3>\u{1F4C5} Oggi</h3>
-        \${riga('Coperti al Garden', g.garden_coperti)}
+      <div class="row" style="margin-top:10px"><a class="btn gold sm" href="\${CREW}" target="_blank">Apri Bussola Crew \u2197</a></div>
+    </div>
+    <div class="grid2">
+      <div class="panel" data-fold="servizio"><h3>\u{1F378} Servizio ora <span class="muted" style="font-weight:400;font-size:13px">\xB7 \${esc(c.ora)}</span></h3>
+        \${c.servizio.per_zona.map(z => riga(esc(z.zona), z.n, z.n ? 'comande aperte' : '\u2014')).join('')}
+      </div>
+      <div class="panel" data-fold="giornata"><h3>\u{1F4C5} Il resto della giornata</h3>
         \${riga('Tavoli Casa di Carta', g.carta_tavoli)}
         \${riga('Posti allo Stage', g.stage_posti)}
         \${riga('Prenotazioni campi', g.campi)}
@@ -5625,18 +5677,15 @@ VIEWS.dashboard = async () => {
       </div>
     </div>
     <div class="grid2">
-      <div class="panel"><h3>\u{1F9D8} Lezioni di oggi</h3>\${lez || '<p class="muted">Nessuna lezione.</p>'}</div>
-      <div class="panel"><h3>\u{1F4E6} Sotto scorta</h3>
+      <div class="panel" data-fold="lezioni"><h3>\u{1F9D8} Lezioni di oggi</h3>\${lez || '<p class="muted">Nessuna lezione.</p>'}</div>
+      <div class="panel" data-fold="scorte"><h3>\u{1F4E6} Sotto scorta</h3>
         \${c.scorte.length ? c.scorte.map(a => riga(esc(a.nome), a.giacenza, \`punto di riordino \${a.punto_riordino}\`)).join('') : '<p class="muted">Nessun articolo sotto il punto di riordino.</p>'}
         \${c.scorte.length ? '<div class="row" style="margin-top:10px"><button class="btn ghost sm" data-vai="magazzino">Vai al magazzino</button></div>' : ''}
       </div>
     </div>
-    \${s ? \`<div class="panel"><h3>\u{1F3C6} Coppa delle Casate</h3>
-      <p class="muted" style="font-size:13px">\${c.coppa.partite_da_giocare ? \`<b>\${c.coppa.partite_da_giocare}</b> partite ancora da giocare.\` : 'Tutte le partite sono state giocate: la stagione si pu\xF2 chiudere.'}</p>
-      <table class="fit"><thead><tr><th>Casata</th><th>Punti</th><th></th><th>Soci</th></tr></thead><tbody>
-      \${s.per_casata.map(x => \`<tr><td><b>\${esc(x.nome)}</b></td><td>\${x.punti}</td><td><span class="barwrap"><span style="width:\${Math.round(x.punti / Math.max(1, Math.max(...s.per_casata.map(y => y.punti))) * 100)}%;background:\${x.colore}"></span></span></td><td>\${x.soci}</td></tr>\`).join('')}
-      </tbody></table>
-      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-vai="casate">Cartellone e chiusura stagione</button></div></div>\` : ''}\`;
+    \${(c.campi_oggi || []).length ? \`<div class="panel" data-fold="campioggi"><h3>\u{1F3BE} Campi di oggi</h3>
+      \${c.campi_oggi.map(x => riga(\`\${esc(x.slot)} \xB7 \${esc(x.campo)}\`, esc(x.nome || '\u2014'))).join('')}</div>\` : ''}
+    \${c.coppa.partite_da_giocare ? \`<div class="panel"><p class="muted">\u{1F3C6} Coppa: <b>\${c.coppa.partite_da_giocare}</b> partite ancora da giocare. <button class="btn ghost sm" data-vai="casate">Vai al cartellone</button></p></div>\` : ''}\`;
   document.querySelectorAll('[data-vai]').forEach(b => b.onclick = () => show(b.dataset.vai));
 };
 
@@ -5703,12 +5752,12 @@ VIEWS.installa = async () => {
       <div class="foot"><p class="muted brk" style="text-align:center;margin:0;font-size:12px">\${esc(it.url)}</p></div>
     </div>\`;
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F4F2} Installa le app</h3>
+    <div class="panel" data-fold="installa"><h3>\u{1F4F2} Installa le app</h3>
       <p class="muted">Inquadra il QR con la fotocamera del telefono per aprire l'app, poi usa <b>\u201CAggiungi a schermata Home\u201D</b> (Android: Chrome \xB7 iPhone/iPad: Safari) per installarla. Nessuno store, nessun account.</p>
       <div class="row" style="justify-content:flex-end;margin-bottom:0"><button class="btn gold sm" id="qr_print">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
     </div>
     <div class="cardgrid">\${d.items.map(card).join('')}</div>
-    <div class="panel"><h3>\u{1F354} QR self-order al tavolo</h3>
+    <div class="panel" data-fold="qr"><h3>\u{1F354} QR self-order al tavolo</h3>
       <p class="muted">I QR dei tavoli si generano nell'app <b>Bussola Crew \xB7 tab Pianta</b>, dove ci sono i tavoli veri della disposizione: se ne aggiungi uno il QR c'\xE8, se ne unisci due sparisce quello assorbito. Qui non si duplica.</p>
     </div>\`;
   $('#qr_print').onclick = () => {
@@ -5919,7 +5968,7 @@ VIEWS.casate = async () => {
       const box = $('#ca_chiusura'); if (!box) return;
       const podio = (ch.graduatoria || []).filter(c => c.posizione <= 3);
       const albo = (ch.albo || []).map(a => \`<tr><td><b>\${esc(a.stagione)}</b></td>\${[1, 2, 3].map(pos => { const r = a.podio.find(x => x.posizione === pos); return \`<td>\${r ? (pos === 1 ? '\u{1F947} ' : pos === 2 ? '\u{1F948} ' : '\u{1F949} ') + esc(r.casata_nome) + \` <span class="muted">\${r.punti}</span>\` : '\u2014'}</td>\`; }).join('')}</tr>\`).join('');
-      box.innerHTML = \`<div class="panel"><h3>\u{1F3DB}\uFE0F Chiusura stagione e Albo d'Oro</h3>
+      box.innerHTML = \`<div class="panel" data-fold="chiusura"><h3>\u{1F3DB}\uFE0F Chiusura stagione e Albo d'Oro</h3>
         \${ch.gia_chiusa
           ? \`<p class="muted">La stagione <b>\${esc(ch.stagione)}</b> \xE8 gi\xE0 chiusa. La graduatoria resta visibile fino alla prossima.</p>\`
           : ch.spareggio
@@ -6010,7 +6059,7 @@ VIEWS.cdc = async () => {
   const checkRows = checks.map(c => \`<tr><td>\${esc(c.data)}</td><td>\${esc(c.operatore || '')}</td><td>\${c.caffe_giacenza ?? '\u2014'}</td><td>\${c.esito === 'ok' ? '<span class="tag ok">ok</span>' : '<span class="tag no">anomalie</span>'}</td><td class="muted">\${esc([c.strumenti_note, c.arredi_note].filter(Boolean).join(' \xB7 '))}</td><td>\${c.has_foto ? \`<button class="btn ghost sm" data-cfoto="\${c.id}">\u{1F4F7} Vedi</button>\` : '\u2014'}</td></tr>\`).join('') || '<tr><td colspan="6" class="muted">Nessun check registrato.</td></tr>';
 
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F0CF} Casa di Carta</h3>
+    <div class="panel" data-fold="cdc"><h3>\u{1F0CF} Casa di Carta</h3>
       <p class="muted">Qui restano l'<b>inventario</b> e il <b>check attrezzature</b>. Il resto \xE8 operativit\xE0 e sta nell'app <b>Bussola Crew \xB7 modulo Casa di Carta</b>: conta capsule (che scarica il magazzino), prestito dei giochi con il tavolo, prenotazione dei tavoli. Le <b>capsule</b> sono merce di magazzino, zona Casa di Carta; il <b>coworking e le prenotazioni della sala</b> hanno la loro sezione.</p>
     </div>
 
@@ -6428,7 +6477,7 @@ VIEWS.bussola = async () => {
       <div id="bv_nota_\${b.id}" class="muted" style="font-size:.74rem;margin-top:4px"></div>\`}
     </div>\`;
   };
-  $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>\u{1F9ED} Contenuti della guida</h3>
+  $('#view').innerHTML = legenda + calendario + \`<div class="panel" data-fold="guida"><h3>\u{1F9ED} Contenuti della guida</h3>
     <p class="muted">Ogni voce pu\xF2 avere una <b>posizione</b>: con le coordinate, nell'app dei soci diventa un collegamento che apre le mappe del telefono.<br>
     <b>Come si indica la posizione:</b> incolla quello che hai e premi <b>Leggi</b>. Vanno bene le <b>coordinate</b> copiate da Google Maps (tasto destro sul punto \u2192 clic sulle coordinate), il <b>link della mappa</b>, il link <b>condiviso dal telefono</b> anche se accorciato, e i link di <b>Waze</b>, <b>Apple Maps</b> e <b>OpenStreetMap</b>. Riconosce anche i gradi (36\xB055'07.0"N 15\xB010'14.2"E) e la virgola decimale italiana.<br>
     Dopo aver salvato, usa <b>Verifica sulla mappa</b>: se il segnaposto non cade sul posto giusto, la posizione \xE8 sbagliata.</p>
@@ -6683,7 +6732,7 @@ VIEWS.tabellone = async () => {
           Di solito succede quando il calendario \xE8 stato generato da una versione precedente: premi <b>\u201CGenera / azzera calendario\u201D</b> per rifarlo con il motore attuale. <i>Attenzione: azzera i risultati di questa disciplina.</i></p></div>\`
       : '';
     const avanzamento = t.gironi.length
-      ? avviso + \`<div class="panel"><h3>Avanzamento</h3>
+      ? avviso + \`<div class="panel" data-fold="avanzamento"><h3>Avanzamento</h3>
           <div class="row" style="gap:18px;flex-wrap:wrap;align-items:center">
             <div><b style="font-size:1.4rem">\${t.gironi.length}</b> <span class="muted">gironi</span></div>
             <div><b style="font-size:1.4rem">\${giornate.length}</b> <span class="muted">giornate per girone</span></div>
@@ -6802,13 +6851,13 @@ VIEWS.cinema = async () => {
       <td>\${p.stato === 'annullata' ? '<span class="tag no">annullata</span>' : '<span class="tag ok">in programma</span>'}</td>
       <td class="row" style="margin:0"><button class="btn ghost sm" data-pplatea="\${p.id}">\u{1F39F}\uFE0F Platea</button><button class="btn danger sm" data-pdel="\${p.id}">\u{1F5D1}</button></td></tr>\`).join('');
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F3AC} Cartellone film</h3>
+    <div class="panel" data-fold="film"><h3>\u{1F3AC} Cartellone film</h3>
       <p class="muted">L'elenco dei film della stagione. Quelli attivi si possono mettere in programmazione qui sotto, e il titolo della proiezione pi\xF9 vicina compare nel cartellone settimanale dell'app.</p>
       <div class="row" style="justify-content:flex-end"><button class="btn gold sm" id="cin_print">\u{1F5A8}\uFE0F Stampa cartellone (PDF)</button></div>
       <table class="fit"><thead><tr><th>Film</th><th>Regia</th><th>Anno</th><th>Durata</th><th>Genere</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="7" class="muted">Nessun film in cartellone.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:12px"><button class="btn gold sm" id="f_new">+ Aggiungi film</button></div>
     </div>
-    <div class="panel"><h3>\u{1F4C5} Proiezioni</h3>
+    <div class="panel" data-fold="proiezioni"><h3>\u{1F4C5} Proiezioni</h3>
       <div class="row">
         <input type="date" id="pr_data" value="\${oggi}"><input id="pr_ora" value="21:30" style="width:80px">
         <select id="pr_film">\${opts || '<option value="">\u2014 nessun film attivo \u2014</option>'}</select>
@@ -6946,12 +6995,12 @@ VIEWS.fitness = async () => {
   const navSett = settimane.map(w => \`<button class="btn \${w === FIT_SETT ? 'gold' : 'ghost'} sm" data-fitsett="\${w}">\${w.slice(8)}/\${w.slice(5, 7)}</button>\`).join('');
 
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F9D8} Corsi</h3>
+    <div class="panel" data-fold="corsi"><h3>\u{1F9D8} Corsi</h3>
       <p class="muted">Pilates, yoga, zumba: corsi brevi con istruttore, spesso di una sola settimana. Si paga <b>la singola lezione</b>, in contanti a fine lezione. Sotto il <b>minimo di iscritti</b> la lezione non parte \u2014 la regola si spegne da <b>Regole & parametri</b>. La <b>masterclass</b> \xE8 una lezione con un nome che tira e un prezzo pi\xF9 alto: si pu\xF2 marcare anche una singola lezione, senza creare un corso apposta.</p>
       <table class="fit"><thead><tr><th>Disciplina</th><th>Istruttore</th><th>Periodo</th><th>Giorni</th><th>Posti</th><th>Prezzo</th><th>Lezioni</th><th>Attivo</th><th></th></tr></thead>
         <tbody>\${righe || '<tr><td colspan="9" class="muted">Nessun corso.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:12px"><button class="btn gold sm" id="cf_new">+ Nuovo corso</button></div></div>
-    <div class="panel"><h3>\u{1F4C6} Calendario delle lezioni</h3>
+    <div class="panel" data-fold="lezioni"><h3>\u{1F4C6} Calendario delle lezioni</h3>
       <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <span class="muted" style="font-size:13px">Settimana dal</span>\${navSett}
         <span style="flex:1"></span>
@@ -7038,11 +7087,11 @@ VIEWS.sala = async () => {
   const cell = (u, max) => \`<span class="tag \${u >= max ? 'no' : u >= max - 2 ? 'mid' : 'ok'}">\${u}/\${max}</span>\`;
   const cwRows = (cw.giorni || []).map(g => \`<tr><td><b>\${esc(g.giorno)}</b></td><td>\${cell(g.mattina, cw.max)}</td><td>\${cell(g.pomeriggio, cw.max)}</td></tr>\`).join('');
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F4BB} Coworking</h3>
+    <div class="panel" data-fold="coworking"><h3>\u{1F4BB} Coworking</h3>
       <p class="muted">Posti occupati per giornata, mattina e pomeriggio (massimo \${cw.max} per fascia). Le postazioni si prenotano dall'app dei soci.</p>
       \${cwRows ? \`<table class="fit"><thead><tr><th>Giorno</th><th>Mattina</th><th>Pomeriggio</th></tr></thead><tbody>\${cwRows}</tbody></table>\` : '<p class="muted">Nessuna prenotazione coworking.</p>'}
     </div>
-    <div class="panel"><h3>\u{1F5D3}\uFE0F Prenotazione della sala</h3>
+    <div class="panel" data-fold="sala"><h3>\u{1F5D3}\uFE0F Prenotazione della sala</h3>
       <p class="muted">Riunioni, presentazioni, corsi: occupano lo spazio per intero. Una prenotazione <b>esclusiva</b> non si sovrappone n\xE9 a un'altra riunione n\xE9 ai tavoli gi\xE0 prenotati per giocare \u2014 i turni di gioco sono \${(d.turni_gioco || []).join(' e ')}.</p>
       <div class="row" style="flex-wrap:wrap;align-items:flex-end">
         <div><label>Data</label><input type="date" id="sl_data" value="\${oggi}"></div>
@@ -7242,6 +7291,32 @@ VIEWS.audit = async () => {
 };
 
 // ---- Modal helpers ----
+// Rende comprimibili i pannelli marcati con data-fold, ricordando cosa era chiuso.
+function abilitaFold() {
+  const chiave = 'koine_fold_' + (window.__view || '');
+  let chiusi = [];
+  try { chiusi = JSON.parse(localStorage.getItem(chiave) || '[]'); } catch (e) { }
+  const pannelli = [...document.querySelectorAll('.panel[data-fold]')];
+  pannelli.forEach((p) => {
+    const nome = p.dataset.fold;
+    if (chiusi.includes(nome)) p.classList.add('chiuso');
+    const h = p.querySelector('h3');
+    if (!h) return;
+    h.onclick = () => {
+      p.classList.toggle('chiuso');
+      const ora = pannelli.filter((x) => x.classList.contains('chiuso')).map((x) => x.dataset.fold);
+      try { localStorage.setItem(chiave, JSON.stringify(ora)); } catch (e) { }
+    };
+  });
+  if (pannelli.length > 2 && !document.querySelector('.foldbar')) {
+    const bar = document.createElement('div');
+    bar.className = 'foldbar';
+    bar.innerHTML = '<button class="btn ghost sm" id="fold_tutti">Comprimi tutto</button><button class="btn ghost sm" id="fold_apri">Espandi tutto</button>';
+    $('#view').prepend(bar);
+    $('#fold_tutti').onclick = () => { pannelli.forEach((p) => p.classList.add('chiuso')); try { localStorage.setItem(chiave, JSON.stringify(pannelli.map((x) => x.dataset.fold))); } catch (e) { } };
+    $('#fold_apri').onclick = () => { pannelli.forEach((p) => p.classList.remove('chiuso')); try { localStorage.setItem(chiave, '[]'); } catch (e) { } };
+  }
+}
 function modal(html) {
   $('#modalBox').innerHTML = html;
   $('#modal').classList.add('show');
@@ -7782,6 +7857,24 @@ VIEWS.comande = async () => {
           <button class="btn ghost sm" id="co_scan" title="Inquadra il QR della tessera" style="padding:6px 10px;font-size:1.1rem">\u{1F4F7}</button>
         </span></label>\`;
 
+  if (garden) {
+    // Niente compositore qui: al Garden si ordina toccando il tavolo nella Pianta.
+    $('#view').innerHTML = soPanel + \`
+      <div class="panel"><h3>\u{1F9FE} Comande del Garden</h3>
+        <p class="muted">Le comande si prendono <b>dal tavolo</b>: apri la tab <b>\u{1F5FA}\uFE0F Tavoli & pianta</b>, tocca il tavolo e premi <b>Ordina</b>. Cosi' il numero del tavolo non si digita e non si sbaglia, e sai per chi stai ordinando.</p>
+        <button class="btn gold sm" id="vai_pianta">\u{1F5FA}\uFE0F Vai ai tavoli</button></div>\`;
+    $('#vai_pianta').onclick = () => show('pianta');
+    if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
+    if ($('#so_cfg')) $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
+    if ($('#cf_save')) $('#cf_save').onclick = async () => {
+      await api('/self-order/config', { method: 'POST', body: JSON.stringify({
+        press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
+        press_auto: $('#cf_pauto').checked, eta_modo: $('#cf_emodo').value, map_rosso_min: Number($('#cf_mrosso').value || 10),
+      }) });
+      show('comande');
+    };
+    return;
+  }
   $('#view').innerHTML = soPanel + \`
     <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
       <div class="row" style="margin-bottom:8px">\${entry}</div>
@@ -8828,12 +8921,17 @@ async function renderSalaCarta() {
   CARTA_TURNO = d.turno;
   const sel = $('#cdc_tav');
   if (sel) sel.innerHTML = '<option value="">\u2014 tavolo \u2014</option>' + d.tavoli.map(t => \`<option value="\${t.numero}">Tavolo \${t.numero}</option>\`).join('');
+  // Nei turni di coworking si contano le SEDIE: un tavolo con una persona non e' "occupato".
+  const cowo = (d.turni || []).find(x => (typeof x === 'string' ? x : x.turno) === d.turno)?.scopo === 'coworking';
   const chip = (t) => {
-    const occupato = !t.libero;
-    return \`<div style="border:1px solid var(--line);border-left:4px solid \${occupato ? '#b14a35' : '#2e6b45'};border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
+    const liberi = t.posti_liberi != null ? t.posti_liberi : (t.libero ? t.posti : 0);
+    const occupato = cowo ? liberi <= 0 : !t.libero;
+    return \`<div style="border:1px solid var(--line);border-left:4px solid \${occupato ? '#b14a35' : liberi < t.posti ? '#c88a2e' : '#2e6b45'};border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
       <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
         <b>Tavolo \${t.numero}</b>
-        <span class="muted" style="font-size:.78rem">\${occupato ? esc(t.nome || 'occupato') + ' \xB7 ' + (t.persone || '?') + 'p' : t.posti + ' posti liberi'}</span>
+        <span class="muted" style="font-size:.78rem">\${cowo
+          ? \`\${liberi}/\${t.posti} postazioni libere\`
+          : occupato ? esc(t.nome || 'occupato') + ' \xB7 ' + (t.persone || '?') + 'p' : t.posti + ' posti liberi'}</span>
       </div>
       \${(t.prestiti || []).length ? \`<div class="muted" style="font-size:.78rem;margin-top:4px">\u{1F3B2} \${t.prestiti.map(p => esc(p.gioco_nome) + ' (' + esc(p.giocatore || '\u2014') + ')').join(' \xB7 ')}</div>\` : ''}
     </div>\`;
@@ -8841,14 +8939,16 @@ async function renderSalaCarta() {
   box.innerHTML = \`<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
       \${d.turni.map(t => { const v = typeof t === 'string' ? t : t.turno; const lab = typeof t === 'string' ? t : (t.etichetta || t.turno); const ico = (typeof t === 'object' && t.scopo === 'coworking') ? '\u{1F4BB}' : '\u{1F557}';
         return \`<button class="btn \${v === d.turno ? 'gold' : 'ghost'} sm" data-carta-turno="\${esc(v)}">\${ico} \${esc(lab)}</button>\`; }).join('')}
-      \${d.minimo ? \`<span class="muted" style="font-size:.76rem;align-self:center">minimo \${d.minimo} giocatori</span>\` : ''}
+      \${cowo
+        ? '<span class="muted" style="font-size:.76rem;align-self:center">postazioni singole \xB7 si lavora anche da soli</span>'
+        : (d.minimo ? \`<span class="muted" style="font-size:.76rem;align-self:center">minimo \${d.minimo} giocatori</span>\` : '')}
     </div>
     \${d.tavoli.map(chip).join('')}
     \${d.prestiti_senza_tavolo.length ? \`<p class="muted" style="font-size:.78rem">Senza tavolo: \${d.prestiti_senza_tavolo.map(p => esc(p.gioco_nome)).join(', ')}</p>\` : ''}
     <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
       <input id="carta_chi" placeholder="Tessera o nome" style="min-width:140px">
-      <input id="carta_p" type="number" min="1" value="2" style="width:64px" title="Persone">
-      <button class="btn gold sm" id="carta_pren">+ Prenota tavolo</button>
+      <input id="carta_p" type="number" min="1" value="\${cowo ? 1 : 2}" style="width:64px" title="\${cowo ? 'Postazioni' : 'Persone'}">
+      <button class="btn gold sm" id="carta_pren">+ \${cowo ? 'Prenota postazione' : 'Prenota tavolo'}</button>
     </div><div id="carta_msg" class="muted" style="font-size:.78rem;margin-top:4px"></div>\`;
   document.querySelectorAll('[data-carta-turno]').forEach(b => b.onclick = () => { CARTA_TURNO = b.dataset.cartaTurno; renderSalaCarta(); });
   $('#carta_pren').onclick = async () => {
@@ -9784,7 +9884,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.00";
+var VERSION = "5.01";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14023,7 +14123,14 @@ adminRouter.get("/db/backup", requireCap("db"), async (req, res) => {
 adminRouter.get("/audit", requireCap("registro"), async (req, res) => {
   res.json(await db.prepare("SELECT * FROM audit_log ORDER BY ts DESC LIMIT 200").all());
 });
-adminRouter.get("/tavoli/layout", requireCap("comande"), async (req, res) => {
+function capAmbiente(req) {
+  const amb = String(req.query.ambiente || req.body?.ambiente || "garden");
+  return amb === "carta" ? "cdc" : amb === "stage" ? "cinema" : "comande";
+}
+function requireCapAmbiente(req, res, next) {
+  return requireCap(capAmbiente(req))(req, res, next);
+}
+adminRouter.get("/tavoli/layout", requireCapAmbiente, async (req, res) => {
   const amb = ["garden", "carta", "stage"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : null;
   await layoutPredefinito(amb || "garden");
   const rows = amb ? await db.prepare("SELECT * FROM tavoli_layout WHERE ambiente=? ORDER BY predefinito DESC, nome").all(amb) : await db.prepare("SELECT * FROM tavoli_layout ORDER BY predefinito DESC, nome").all();
@@ -14046,7 +14153,10 @@ adminRouter.post("/tavoli/layout", requireCap("comande"), async (req, res) => {
   audit(req.adminUser.username, "crea", "tavoli_layout", id, b.nome);
   res.status(201).json({ ok: true, id });
 });
-adminRouter.put("/tavoli/layout/:id", requireCap("comande"), async (req, res) => {
+adminRouter.put("/tavoli/layout/:id", async (req, res) => {
+  const lay = await db.prepare("SELECT ambiente FROM tavoli_layout WHERE id=?").get(req.params.id);
+  const cap = lay?.ambiente === "carta" ? "cdc" : lay?.ambiente === "stage" ? "cinema" : "comande";
+  if (!hasCap(req.adminUser, cap)) return res.status(403).json({ error: "Permesso insufficiente per questo ambiente" });
   const b = req.body || {};
   const l = await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(req.params.id);
   if (!l) return res.status(404).json({ error: "Disposizione non trovata" });
@@ -14093,7 +14203,7 @@ adminRouter.put("/tavoli/giorno", requireCap("comande"), async (req, res) => {
   audit(req.adminUser.username, "layout_giorno", "tavoli_giorni", 0, `${b.data} -> ${b.layout_id || "predefinito"}`);
   res.json({ ok: true });
 });
-adminRouter.get("/tavoli/turno", requireCap("comande"), async (req, res) => {
+adminRouter.get("/tavoli/turno", requireCapAmbiente, async (req, res) => {
   const data = String(req.query.data || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const amb = ["garden", "carta", "stage"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : "garden";
   let t;
@@ -14106,7 +14216,7 @@ adminRouter.get("/tavoli/turno", requireCap("comande"), async (req, res) => {
   const turno = t.includes(String(req.query.turno)) ? String(req.query.turno) : t[0];
   res.json({ ...await statoTurno(data, turno, amb), turni: t.map((x) => ({ turno: x, etichetta: amb === "stage" ? "spettacolo " + x : etichettaTurno(x), scopo: amb === "stage" ? "stage" : scopoTurno(x) })) });
 });
-adminRouter.post("/tavoli/prenota", requireCap("comande"), async (req, res) => {
+adminRouter.post("/tavoli/prenota", requireCapAmbiente, async (req, res) => {
   const b = req.body || {};
   const data = String(b.data || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
@@ -14471,7 +14581,7 @@ adminRouter.put("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
   audit(req.adminUser.username, "articolo_capsule", "magazzino_articoli", id, "");
   res.json({ ok: true, articolo_id: id || null });
 });
-adminRouter.post("/tavoli/layout/rigenera", requireCap("comande"), async (req, res) => {
+adminRouter.post("/tavoli/layout/rigenera", requireCapAmbiente, async (req, res) => {
   const amb = ["garden", "carta", "stage"].includes(String(req.body?.ambiente)) ? String(req.body.ambiente) : null;
   if (!amb) return res.status(400).json({ error: "Ambiente non valido" });
   const attive = await db.prepare(
@@ -14527,9 +14637,29 @@ adminRouter.get("/cruscotto", async (req, res) => {
   const lezDeboli = lezioni.filter((l) => !l.confermata).length;
   if (lezDeboli) attenzione.push({ tipo: "fitness", testo: `${lezDeboli} lezioni di oggi sotto il minimo`, vai: "fitness" });
   const partiteDaGiocare = await n("SELECT COUNT(*) n FROM partite WHERE stato<>'giocata'");
+  const turniGarden = await turni("garden");
+  const attesi = [];
+  for (const t of turniGarden) {
+    const st = await statoTurno(oggi2, t, "garden");
+    attesi.push({
+      turno: t,
+      coperti: st.coperti_prenotati,
+      posti: st.posti_totali,
+      ospiti: (st.prenotazioni || []).map((p) => ({ nome: p.nome, persone: p.persone, tavoli: p.tavoli }))
+    });
+  }
+  const cartaOggiEl = await db.prepare("SELECT turno,nome,persone FROM prenotazioni_tavolo WHERE ambiente='carta' AND data=? AND stato='prenotato' ORDER BY turno").all(oggi2);
+  const stageOggiEl = await db.prepare("SELECT turno,nome,persone FROM prenotazioni_tavolo WHERE ambiente='stage' AND data=? AND stato='prenotato' ORDER BY turno").all(oggi2);
+  const campiOggiEl = await db.prepare(
+    "SELECT pc.slot, c.nome AS campo, pc.nome FROM prenotazioni_campo pc JOIN campi c ON c.id=pc.campo_id WHERE pc.data=? AND pc.stato='prenotato' ORDER BY pc.slot"
+  ).all(oggi2).catch(() => []);
   res.json({
     oggi: oggi2,
     ora,
+    turni_garden: attesi,
+    carta_oggi: cartaOggiEl,
+    stage_oggi: stageOggiEl,
+    campi_oggi: campiOggiEl,
     servizio: {
       comande_aperte: comandeAperte.length,
       in_ritardo: inRitardo,
@@ -14948,6 +15078,13 @@ async function quotaUsata(campoId, socioId, da, a) {
   const righe = await occupazioniDelSocio(campoId, socioId, da, a);
   return new Set(righe.map((r) => r.partita_id || `${r.data}-${r.slot}`)).size;
 }
+async function fasceAmmesse(campo) {
+  const perFascia = Math.max(1, Number(campo.durata_slot) || 60);
+  const dichiarato = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
+  if (!await par("campi_limita_durata")) return dichiarato;
+  const minuti = Math.max(perFascia, Number(await par("campi_durata_massima_minuti")) || 120);
+  return Math.max(1, Math.min(dichiarato, Math.floor(minuti / perFascia)));
+}
 async function prenSettimana(campoId, socioId, dataISO) {
   const w = settimanaDi(dataISO);
   if (!await par("campi_quota_su_partecipanti")) {
@@ -14965,8 +15102,8 @@ async function slotDelSocioNelGiorno(campoId, socioId, data) {
 }
 async function catenaTroppoLunga(campo, data, sceltiSlot, socioId) {
   if (!await par("campi_catena")) return null;
-  const maxSlot = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
   if (!await par("campi_limita_durata")) return null;
+  const maxSlot = Math.max(1, await fasceAmmesse(campo));
   const tutti = slotDiCampo(campo);
   const miei = new Set(await slotDelSocioNelGiorno(campo.id, socioId, data));
   for (const s of sceltiSlot) miei.add(s);
@@ -15037,12 +15174,15 @@ publicRouter.get("/campi", async (req, res) => {
     durata_max_minuti: await par("campi_durata_max_minuti"),
     unisciti: await par("campi_unisciti"),
     unisciti_modo: await par("campi_unisciti_modo"),
+    durata_massima_minuti: await par("campi_durata_massima_minuti"),
     numero_legale: await par("campi_numero_legale"),
     numero_legale_minuti: await par("campi_numero_legale_minuti")
   };
-  res.json(rows.map((c) => ({
+  const conFasce = [];
+  for (const c of rows) conFasce.push({ ...c, fasce_ammesse: await fasceAmmesse(c) });
+  res.json(conFasce.map((c) => ({
     ...c,
-    max_slot_prenotazione: regole.limita_durata ? c.max_slot_prenotazione : null,
+    max_slot_prenotazione: regole.limita_durata ? c.fasce_ammesse : null,
     max_pren_settimana: regole.limita_settimana ? c.max_pren_settimana : null,
     regole
   })));
@@ -15135,7 +15275,7 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
   const socio = await socioAttivoByTessera(tessera_code);
   if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
-  const maxSlot = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
+  const maxSlot = Math.max(1, await fasceAmmesse(campo));
   const nSlot = Math.max(1, Number(req.body?.n_slot) || 1);
   if (await par("campi_limita_durata") && nSlot > maxSlot) {
     return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito` });
@@ -16019,7 +16159,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 10:22" : "online";
+var BUILD = true ? "2026-08-21 10:59" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
