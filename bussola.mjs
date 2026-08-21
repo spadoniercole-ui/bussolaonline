@@ -2354,7 +2354,6 @@ var init_parametri = __esm({
         predefinito: 120,
         min: 30,
         max: 300,
-        dipende_da: "campi_limita_durata",
         etichetta: "Durata massima di una prenotazione (minuti)",
         aiuto: "Il limite vero e' il TEMPO, non il numero di fasce: su un campo da 90 minuti due fasce fanno tre ore, e il tetto sulle fasce non serviva a niente. Da qui si ricava quante fasce si possono prendere su ciascun campo."
       },
@@ -2954,7 +2953,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .gtable td.team .d{display:inline-block; width:9px;height:9px;border-radius:50%; margin-right:6px; vertical-align:middle;}
 .mapwrap{padding:0 0 10px;}
 .mapbox{position:relative; border-radius:12px; overflow:hidden; border:1px solid var(--line);}
-.mapbox iframe{width:100%; height:190px; border:0; display:block;}
+.mapbox iframe{width:100%; height:46vh; min-height:260px; border:0; display:block;}
 .mapopen{display:block; text-align:center; padding:8px; font-size:.78rem; background:var(--card); color:var(--navy); text-decoration:none; border-top:1px solid var(--line);}
 .matchrow{display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line);} .matchrow:last-child{border-bottom:none;}
 .matchrow .wh{width:58px; text-align:center; font-size:.68rem; color:var(--navy); font-weight:700;}
@@ -3607,17 +3606,13 @@ function renderBussola() {
     : null;
   // La mappa incorporata (senza chiave) fa vedere DOV'E' invece di far immaginare: si tocca
   // per aprire le indicazioni nell'app di mappe del telefono.
-  const mappaHTML = (x, alt) => x.lat == null || x.lng == null ? '' :
-    \`<div class="mapbox"><iframe title="\${esc(alt || x.titolo || '')}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
-        src="https://maps.google.com/maps?q=\${x.lat},\${x.lng}&z=16&output=embed"></iframe>
-      <a class="mapopen" href="\${mappaHref(x)}" target="_blank" rel="noopener">\${T('Apri nelle mappe')} \u2197</a></div>\`;
+
   const rows = (arr) => (arr || []).map(x => {
     const href = mappaHref(x);
     const dentro = \`<b style="font-size:.84rem">\${esc(x.titolo)}</b>\${x.dettaglio ? \`<span class="ct" style="margin-left:6px">\${esc(x.dettaglio)}</span>\` : ''}\`;
     const dist = \`\${x.distanza ? \`<span class="ct" style="white-space:nowrap;margin-left:8px">\${esc(x.distanza)}</span>\` : ''}\${href ? '<span class="ct" style="margin-left:6px">\u2197</span>' : ''}\`;
     return href
-      ? \`<div><div class="matchrow" role="button" tabindex="0" data-mappa="\${esc(x.titolo)}" style="cursor:pointer"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>
-          <div class="mapwrap hide" id="map_\${esc(String(x.titolo).replace(/[^a-z0-9]/gi, ''))}">\${mappaHTML(x)}</div></div>\`
+      ? \`<div class="matchrow" role="button" tabindex="0" data-mappa="\${x.lat},\${x.lng}|\${esc(x.titolo)}" style="cursor:pointer"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`
       : \`<div class="matchrow"><span style="flex:1;min-width:0">\${dentro}</span>\${dist}</div>\`;
   }).join('');
   const luoghi = state.data.luoghi || SEED.luoghi;
@@ -3882,12 +3877,14 @@ async function openCampi(campoId) {
   try { disp = await api(\`/campi/\${sel.id}/disponibilita?data=\${data}\${qs}\`); } catch { }
   const campo = disp.campo || sel;
   const posti = campo.posti_default || sel.posti_default || 4;
+  // Il tempo totale scritto sulla chip: "2\xD7 90\u2032 \xB7 3 h" rende evidente quanto campo si occupa.
+  const oreDi = (min) => min % 60 === 0 ? \`\${min / 60} h\` : \`\${Math.floor(min / 60)} h \${min % 60}\u2032\`;
   const maxFasce = campo.max_slot_prenotazione || sel.max_slot_prenotazione || 1;
   if (!state._campoFasce || state._campoFasce > maxFasce) state._campoFasce = 1;
   const courtChips = campi.map(c => \`<button class="chip\${c.id === sel.id ? ' sel' : ''}" data-campo-pick="\${c.id}">\${sportIcon(c.sport)} \${esc(c.nome)}</button>\`).join('');
   const dayChips = days.map(d => \`<button class="chip\${d.iso === data ? ' sel' : ''}" data-campo-date="\${d.iso}">\${esc(d.label)}</button>\`).join('');
   const fasceChips = maxFasce > 1
-    ? \`<div class="field"><label>\${T('Durata')}</label><div class="chips">\${Array.from({ length: maxFasce }, (_, i) => i + 1).map(n => \`<button class="chip\${n === state._campoFasce ? ' sel' : ''}" data-campo-fasce="\${n}">\${n}\xD7 \${campo.durata_slot || 60}\u2032</button>\`).join('')}</div></div>\`
+    ? \`<div class="field"><label>\${T('Durata')}</label><div class="chips">\${Array.from({ length: maxFasce }, (_, i) => i + 1).map(n => \`<button class="chip\${n === state._campoFasce ? ' sel' : ''}" data-campo-fasce="\${n}">\${n}\xD7 \${campo.durata_slot || 60}\u2032 <span class="tiny">\xB7 \${oreDi(n * (campo.durata_slot || 60))}</span></button>\`).join('')}</div></div>\`
     : '';
   const q = disp.quota;
   const quotaHTML = q
@@ -3971,6 +3968,19 @@ function openSerateSpeciali() {
 }
 
 
+
+// La mappa si apre a tutto foglio con il codice di Google (senza chiavi), non dentro l'elenco:
+// l'anteprima delle voci resta compatta com'era.
+function openMappa(coord, nome) {
+  const [lat, lng] = String(coord).split(',');
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Dove si trova')}</div>
+    <h2>\${esc(nome || '')}</h2>
+    <div class="mapbox"><iframe title="\${esc(nome || '')}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+      src="https://maps.google.com/maps?q=\${encodeURIComponent(lat + ',' + lng)}&z=16&hl=it&output=embed"></iframe></div>
+    <a class="btn navy block" style="margin-top:10px" href="https://www.google.com/maps/dir/?api=1&destination=\${lat},\${lng}" target="_blank" rel="noopener">\u{1F9ED} \${T('Portami l\xEC')}</a>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
 // ---- Coworking: postazioni della sala, non tavoli da gioco ----
 // Prima questa tessera apriva la vecchia "risorsa" coworking, un sistema a parte: la
 // prenotazione non compariva nella sala, il contatore non si muoveva e il socio non
@@ -4276,7 +4286,10 @@ async function openGarden(opz) {
     <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)}</b><div class="ct">\${m.persone} \${T('persone')} \xB7 \${T('tavolo')} \${m.tavoli.join(', ')}</div></div><button class="btn ghost sm" data-gard-ann="\${m.id}">\${T('Annulla')}</button></div>\`).join('')}</div>\` : '';
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Cena al tavolo')}</h2>
     \${soloOggi ? \`<div class="note" style="margin-top:0">\${T('Stai prenotando per stasera')} \xB7 <b>\${esc(dataBella(data))}</b>. \${T('Per gli altri giorni usa la sezione Eventi.')}</div>\` : \`<div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>\`}
-    <div class="field"><label>\${T('Quante persone')}</label><div class="chips">\${[1, 2, 3, 4, 5, 6, 8].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-gard-pers="\${n}">\${n}</button>\`).join('')}</div></div>
+    <div class="field"><label>\${T('Quante persone')}</label>
+      <div class="chips">\${[2, 3, 4, 5, 6, 8, 10, 12].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-gard-pers="\${n}">\${n}</button>\`).join('')}
+        <button class="chip\${persone > 12 ? ' sel' : ''}" data-gard-altri="1">\${persone > 12 ? persone : T('di pi\xF9\u2026')}</button></div>
+      <p class="tiny muted" style="margin-top:4px">\${T('Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.')}</p></div>
     <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
     <div class="card" style="padding:4px 14px">\${turni && turni.turni ? turni.turni.map(turnoBox).join('') : \`<p class="tiny muted" style="padding:8px 0">\${T('Prenotazione non disponibile.')}</p>\`}</div>
     \${mieHTML}
@@ -5213,7 +5226,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -5252,11 +5265,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
-  if (t.dataset.mappa) {
-    const el = document.getElementById('map_' + String(t.dataset.mappa).replace(/[^a-z0-9]/gi, ''));
-    if (el) el.classList.toggle('hide');
-    return;
-  }
+  if (t.dataset.mappa) { const [c, nome] = t.dataset.mappa.split('|'); return openMappa(c, nome); }
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
   if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
@@ -5275,6 +5284,11 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.gardOggi) { state._gardData = new Date().toISOString().slice(0, 10); return openGarden({ soloOggi: true }); }
   if (t.dataset.gardDate) { state._gardData = t.dataset.gardDate; return openGarden(); }
   if (t.dataset.gardPers) { state._gardPers = Number(t.dataset.gardPers); return openGarden({ soloOggi: !!state._gardSoloOggi }); }
+  if (t.dataset.gardAltri) {
+    const n = Number(prompt(T('Quante persone siete?'), String(state._gardPers || 14)) || 0);
+    if (n > 0) state._gardPers = n;
+    return openGarden({ soloOggi: !!state._gardSoloOggi });
+  }
   if (t.dataset.gardPren) return gardenPrenota(t.dataset.gardPren);
   if (t.dataset.gardAnn) return gardenAnnulla(t.dataset.gardAnn);
   if (t.dataset.gardMenu != null) return openMenuGarden();
@@ -7296,7 +7310,12 @@ function abilitaFold() {
   const chiave = 'koine_fold_' + (window.__view || '');
   let chiusi = [];
   try { chiusi = JSON.parse(localStorage.getItem(chiave) || '[]'); } catch (e) { }
-  const pannelli = [...document.querySelectorAll('.panel[data-fold]')];
+  // Ogni pannello con un titolo e' comprimibile: non serve marcarlo a mano.
+  document.querySelectorAll('#view .panel > h3').forEach((h) => {
+    const box = h.parentElement;
+    if (!box.dataset.fold) box.dataset.fold = (h.textContent || '').trim().slice(0, 30).replace(/\\s+/g, '_');
+  });
+  const pannelli = [...document.querySelectorAll('#view .panel[data-fold]')];
   pannelli.forEach((p) => {
     const nome = p.dataset.fold;
     if (chiusi.includes(nome)) p.classList.add('chiuso');
@@ -7308,7 +7327,7 @@ function abilitaFold() {
       try { localStorage.setItem(chiave, JSON.stringify(ora)); } catch (e) { }
     };
   });
-  if (pannelli.length > 2 && !document.querySelector('.foldbar')) {
+  if (pannelli.length > 1 && !document.querySelector('.foldbar')) {
     const bar = document.createElement('div');
     bar.className = 'foldbar';
     bar.innerHTML = '<button class="btn ghost sm" id="fold_tutti">Comprimi tutto</button><button class="btn ghost sm" id="fold_apri">Espandi tutto</button>';
@@ -7369,6 +7388,10 @@ input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;backgro
 .tag.ok{background:#e6f2ea;color:var(--ok)}.tag.mid{background:#f6e9cf;color:var(--mid)}.tag.no{background:#f6e0da;color:var(--no)}
 .muted{color:var(--muted)}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.panel[data-fold] > b:first-child, .panel[data-fold] > h3:first-child{display:flex;align-items:center;gap:8px;}
+.panel[data-fold] > b:first-child::before, .panel[data-fold] > h3:first-child::before{content:'\u25BE';font-size:.8em;opacity:.5;transition:transform .15s;}
+.panel[data-fold].chiuso > b:first-child::before, .panel[data-fold].chiuso > h3:first-child::before{transform:rotate(-90deg);}
+.panel[data-fold].chiuso > *:not(b:first-child):not(h3:first-child){display:none;}
 .panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
 .panel h3{color:var(--accent);font-size:1rem;margin-bottom:10px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
@@ -7769,11 +7792,35 @@ function downloadB64(filename, mime, b64) {
 async function esporta(path) { try { const d = await api(path); downloadB64(d.filename, d.mime, d.b64); } catch (e) { alert('Export non riuscito: ' + (e.message || '')); } }
 
 const VIEWS = {};
+// Le sezioni si comprimono anche qui: su un telefono una pagina lunga si scorre male.
+function abilitaFold() {
+  const chiave = 'crew_fold_' + (ZONA || '') + '_' + (window.__tab || '');
+  let chiusi = [];
+  try { chiusi = JSON.parse(localStorage.getItem(chiave) || '[]'); } catch (e) { }
+  const titoli = [...document.querySelectorAll('#view .panel > b:first-child, #view .panel > h3:first-child')];
+  const pannelli = [];
+  titoli.forEach((h) => {
+    const box = h.parentElement;
+    if (!box.classList.contains('panel')) return;
+    const nome = (h.textContent || '').trim().slice(0, 30).replace(/\\s+/g, '_');
+    box.dataset.fold = nome;
+    pannelli.push(box);
+    if (chiusi.includes(nome)) box.classList.add('chiuso');
+    h.style.cursor = 'pointer';
+    h.onclick = () => {
+      box.classList.toggle('chiuso');
+      const ora = pannelli.filter((x) => x.classList.contains('chiuso')).map((x) => x.dataset.fold);
+      try { localStorage.setItem(chiave, JSON.stringify(ora)); } catch (e) { }
+    };
+  });
+}
 async function show(v) {
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
+  window.__tab = v;
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
+  try { abilitaFold(); } catch (e) { }
 }
 
 const COM_STATI = { aperta: ['Aperta', 'mid'], in_preparazione: ['In preparazione', 'mid'], pronta: ['Pronta', 'ok'], consegnata: ['Consegnata', 'ok'], chiusa: ['Chiusa', ''], annullata: ['Annullata', 'no'] };
@@ -9884,7 +9931,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.01";
+var VERSION = "5.02";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15081,9 +15128,10 @@ async function quotaUsata(campoId, socioId, da, a) {
 async function fasceAmmesse(campo) {
   const perFascia = Math.max(1, Number(campo.durata_slot) || 60);
   const dichiarato = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
-  if (!await par("campi_limita_durata")) return dichiarato;
   const minuti = Math.max(perFascia, Number(await par("campi_durata_massima_minuti")) || 120);
-  return Math.max(1, Math.min(dichiarato, Math.floor(minuti / perFascia)));
+  const daTempo = Math.max(1, Math.floor(minuti / perFascia));
+  if (!await par("campi_limita_durata")) return daTempo;
+  return Math.max(1, Math.min(dichiarato, daTempo));
 }
 async function prenSettimana(campoId, socioId, dataISO) {
   const w = settimanaDi(dataISO);
@@ -15102,7 +15150,6 @@ async function slotDelSocioNelGiorno(campoId, socioId, data) {
 }
 async function catenaTroppoLunga(campo, data, sceltiSlot, socioId) {
   if (!await par("campi_catena")) return null;
-  if (!await par("campi_limita_durata")) return null;
   const maxSlot = Math.max(1, await fasceAmmesse(campo));
   const tutti = slotDiCampo(campo);
   const miei = new Set(await slotDelSocioNelGiorno(campo.id, socioId, data));
@@ -15182,7 +15229,7 @@ publicRouter.get("/campi", async (req, res) => {
   for (const c of rows) conFasce.push({ ...c, fasce_ammesse: await fasceAmmesse(c) });
   res.json(conFasce.map((c) => ({
     ...c,
-    max_slot_prenotazione: regole.limita_durata ? c.fasce_ammesse : null,
+    max_slot_prenotazione: c.fasce_ammesse,
     max_pren_settimana: regole.limita_settimana ? c.max_pren_settimana : null,
     regole
   })));
@@ -15244,7 +15291,10 @@ publicRouter.get("/campi/:id/disponibilita", async (req, res) => {
       sport: campo.sport,
       durata_slot: campo.durata_slot,
       posti_default: campo.posti_default,
-      max_slot_prenotazione: campo.max_slot_prenotazione,
+      // Le fasce ammesse, non il numero grezzo della scheda: e' il tetto in minuti tradotto
+      // su questo campo. Altrimenti l'app propone "2× 90′" cioe' tre ore.
+      max_slot_prenotazione: await fasceAmmesse(campo),
+      durata_massima_minuti: Number(await par("campi_durata_massima_minuti")) || 120,
       max_pren_settimana: campo.max_pren_settimana
     },
     data,
@@ -15277,8 +15327,9 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const maxSlot = Math.max(1, await fasceAmmesse(campo));
   const nSlot = Math.max(1, Number(req.body?.n_slot) || 1);
-  if (await par("campi_limita_durata") && nSlot > maxSlot) {
-    return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito` });
+  if (nSlot > maxSlot) {
+    const min = maxSlot * (Number(campo.durata_slot) || 60);
+    return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito (${min} minuti)` });
   }
   const usate = await prenSettimana(campo.id, socio.id, data);
   if (await par("campi_limita_settimana") && usate >= campo.max_pren_settimana) {
@@ -16159,7 +16210,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 10:59" : "online";
+var BUILD = true ? "2026-08-21 11:28" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
