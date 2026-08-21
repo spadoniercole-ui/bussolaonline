@@ -6311,16 +6311,17 @@ VIEWS.bussola = async () => {
       <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
         <label class="muted" style="font-size:.78rem">Lat <input id="bv_lat_\${b.id}" value="\${corto(b.lat)}" placeholder="latitudine" style="width:110px"></label>
         <label class="muted" style="font-size:.78rem">Lng <input id="bv_lng_\${b.id}" value="\${corto(b.lng)}" placeholder="longitudine" style="width:110px"></label>
-        <input id="bv_inc_\${b.id}" placeholder="\u2026oppure incolla qui il link di Google Maps o le coordinate" style="flex:1;min-width:220px">
+        <input id="bv_inc_\${b.id}" placeholder="\u2026oppure incolla il link (Google Maps, Waze, Apple Maps) o le coordinate" style="flex:1;min-width:240px">
         <button class="btn ghost sm" data-bvinc="\${b.id}">Leggi</button>
         \${geo ? \`<a class="btn ghost sm" href="https://www.google.com/maps/search/?api=1&query=\${b.lat},\${b.lng}" target="_blank" rel="noopener">\u{1F50E} Verifica sulla mappa</a>\`
               : '<span class="tag mid">senza posizione</span>'}
-      </div>\`}
+      </div>
+      <div id="bv_nota_\${b.id}" class="muted" style="font-size:.74rem;margin-top:4px"></div>\`}
     </div>\`;
   };
   $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>\u{1F9ED} Contenuti della guida</h3>
     <p class="muted">Ogni voce pu\xF2 avere una <b>posizione</b>: con le coordinate, nell'app dei soci diventa un collegamento che apre le mappe del telefono.<br>
-    <b>Come si prendono le coordinate:</b> su Google Maps fai <b>tasto destro sul punto esatto</b> (o tieni premuto sul telefono) e <b>clicca sulle coordinate per copiarle</b>; poi incollale nel campo qui sotto e premi <b>Leggi</b>. Va bene anche il link della mappa. <i>I link accorciati (maps.app.goo.gl) non contengono le coordinate: aprili prima, e copia dalla barra dell'indirizzo.</i><br>
+    <b>Come si indica la posizione:</b> incolla quello che hai e premi <b>Leggi</b>. Vanno bene le <b>coordinate</b> copiate da Google Maps (tasto destro sul punto \u2192 clic sulle coordinate), il <b>link della mappa</b>, il link <b>condiviso dal telefono</b> anche se accorciato, e i link di <b>Waze</b>, <b>Apple Maps</b> e <b>OpenStreetMap</b>. Riconosce anche i gradi (36\xB055'07.0"N 15\xB010'14.2"E) e la virgola decimale italiana.<br>
     Dopo aver salvato, usa <b>Verifica sulla mappa</b>: se il segnaposto non cade sul posto giusto, la posizione \xE8 sbagliata.</p>
     \${senzaGeo ? \`<div class="row" style="background:#fdf6e6;border-left:4px solid var(--gold);padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:12px"><b>\${senzaGeo} voci senza posizione.</b> <span class="muted">Finch\xE9 non hanno le coordinate restano righe di testo, senza collegamento alla mappa.</span></div>\` : ''}
     \${voci.map(scheda).join('') || '<p class="muted">Nessuna voce.</p>'}
@@ -6349,13 +6350,25 @@ VIEWS.bussola = async () => {
   document.querySelectorAll('[data-rcdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il periodo?')) return; await api('/rifiuti/calendario/' + encodeURIComponent(b.dataset.rcdel), { method: 'DELETE' }); show('bussola'); });
   $('#rc_add').onclick = async () => { const per = ($('#rc_new_per').value || '').trim(); if (!per) return; await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ giorni: {} }) }); show('bussola'); };
   // "Leggi" estrae le coordinate da quello che e' stato incollato e riempie i due campi.
-  document.querySelectorAll('[data-bvinc]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('[data-bvinc]').forEach(b => b.onclick = async () => {
     const id = b.dataset.bvinc;
-    const c = parseCoords($('#bv_inc_' + id).value);
-    if (!c) { alert('Non riesco a leggere le coordinate.\\n\\nIncolla "36.9186, 15.1706" oppure il link completo della mappa.\\nI link accorciati (maps.app.goo.gl) non contengono le coordinate: aprili prima nel browser.'); return; }
-    $('#bv_lat_' + id).value = c.lat.toFixed(5);
-    $('#bv_lng_' + id).value = c.lng.toFixed(5);
+    const testo = $('#bv_inc_' + id).value;
+    if (!testo.trim()) return;
+    // Prima si prova qui (istantaneo), poi si chiede al server, che sa seguire i link corti.
+    let c = parseCoords(testo);
+    const eti = b.textContent;
+    if (!c) {
+      b.textContent = '\u2026'; b.disabled = true;
+      try { c = await api('/geo/risolvi', { method: 'POST', body: JSON.stringify({ testo }) }); }
+      catch (e) { alert(e.message || 'Non riesco a leggere una posizione da questo testo.'); }
+      b.textContent = eti; b.disabled = false;
+    }
+    if (!c || c.lat == null) return;
+    $('#bv_lat_' + id).value = Number(c.lat).toFixed(5);
+    $('#bv_lng_' + id).value = Number(c.lng).toFixed(5);
     $('#bv_inc_' + id).value = '';
+    const nota = $('#bv_nota_' + id);
+    if (nota) nota.textContent = c.origine === 'testo' ? '' : \`Letto seguendo il link. Controlla con \u201CVerifica sulla mappa\u201D.\`;
   });
   document.querySelectorAll('[data-bvsave]').forEach(b => b.onclick = async () => {
     const id = b.dataset.bvsave;
@@ -9416,7 +9429,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.95";
+var VERSION = "4.96";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -11821,6 +11834,90 @@ async function bloccaSeCollegato(res, entita, id, cosa) {
   return true;
 }
 
+// server/geo.js
+function daGradi(testo) {
+  const re = /(\d{1,3})[°\s]+(\d{1,2})['\u2032\s]+([\d.]+)["\u2033\s]*([NSEWOns])/g;
+  const trovati = [];
+  let m;
+  while ((m = re.exec(testo)) !== null) {
+    const val = Number(m[1]) + Number(m[2]) / 60 + Number(m[3]) / 3600;
+    const dir = m[4].toUpperCase();
+    trovati.push({ val: dir === "S" || dir === "W" || dir === "O" ? -val : val, dir });
+  }
+  if (trovati.length < 2) return null;
+  const lat = trovati.find((t) => "NS".includes(t.dir)) || trovati[0];
+  const lng = trovati.find((t) => "EWO".includes(t.dir)) || trovati[1];
+  return { lat: lat.val, lng: lng.val };
+}
+function valida(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+}
+function leggiCoordinate(input) {
+  if (!input) return null;
+  const grezzo = String(input).trim();
+  let s = grezzo;
+  try {
+    s = decodeURIComponent(grezzo);
+  } catch (_) {
+  }
+  const gradi = daGradi(s);
+  if (gradi) return valida(gradi.lat, gradi.lng);
+  const ita = s.match(/^\s*(-?\d{1,3},\d+)\s+(-?\d{1,3},\d+)\s*$/);
+  if (ita) return valida(parseFloat(ita[1].replace(",", ".")), parseFloat(ita[2].replace(",", ".")));
+  const schemi = [
+    /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
+    // Google: /@lat,lng,17z
+    /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/,
+    // Google: link lungo
+    /[?&](?:q|ll|daddr|saddr|query|sll|center)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
+    // Apple, Google
+    /\bll[.=](-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
+    // Waze: to=ll.lat,lng
+    /[?&]latlng=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
+    // Il segnaposto va letto PRIMA della vista: #map= contiene il centro della mappa, che e'
+    // arrotondato, mentre mlat/mlon sono il punto esatto.
+    /[?&]mlat=(-?\d+(?:\.\d+)?)[^]*?[?&]mlon=(-?\d+(?:\.\d+)?)/,
+    // OSM segnaposto
+    /#map=\d+\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)/,
+    // OpenStreetMap, vista
+    /^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/,
+    // "lat, lng" e basta
+    /(-?\d{1,3}\.\d+)\s*[,;]\s*(-?\d{1,3}\.\d+)/
+    // coppia dentro un testo
+  ];
+  for (const re of schemi) {
+    const m = s.match(re);
+    if (m) {
+      const r = valida(parseFloat(m[1]), parseFloat(m[2]));
+      if (r) return r;
+    }
+  }
+  return null;
+}
+async function risolviPosizione(input) {
+  const diretto = leggiCoordinate(input);
+  if (diretto) return { ...diretto, origine: "testo" };
+  const s = String(input || "").trim();
+  if (!/^https?:\/\//i.test(s)) return { errore: "Non riesco a leggere una posizione da questo testo." };
+  try {
+    const r = await fetch(s, {
+      redirect: "follow",
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; BussolaResidence/1.0)" },
+      signal: AbortSignal.timeout(8e3)
+    });
+    const daUrl = leggiCoordinate(r.url);
+    if (daUrl) return { ...daUrl, origine: "link risolto", url: r.url };
+    const html2 = (await r.text()).slice(0, 3e5);
+    const daPagina = leggiCoordinate(html2);
+    if (daPagina) return { ...daPagina, origine: "pagina", url: r.url };
+    return { errore: "Il link si apre ma non contiene coordinate leggibili. Aprilo nel browser e copia le coordinate dalla barra dell'indirizzo.", url: r.url };
+  } catch (e) {
+    return { errore: `Non sono riuscito ad aprire il link (${String(e.message || e).slice(0, 60)}). Copia le coordinate a mano.` };
+  }
+}
+
 // server/routes/admin.js
 init_fitness();
 function menuZona(v) {
@@ -12130,7 +12227,8 @@ adminRouter.put("/bussola/:id", requireCap("guida"), async (req, res) => {
     const n = Number(String(v).replace(",", "."));
     return Number.isFinite(n) ? n : null;
   };
-  const lat0 = num(b.lat), lng0 = num(b.lng);
+  const daTesto = (b.lat == null || b.lat === "") && b.geo ? leggiCoordinate(b.geo) : null;
+  const lat0 = daTesto ? daTesto.lat : num(b.lat), lng0 = daTesto ? daTesto.lng : num(b.lng);
   const valide = lat0 != null && lng0 != null && Math.abs(lat0) <= 90 && Math.abs(lng0) <= 180;
   if ((b.lat || b.lng) && !valide && (lat0 != null || lng0 != null)) {
     return res.status(400).json({ error: "Coordinate non valide: la latitudine sta fra -90 e 90, la longitudine fra -180 e 180." });
@@ -14124,6 +14222,11 @@ adminRouter.get("/riepilogo", async (req, res) => {
     serate: { prenotazioni: Number(serate.n || 0), coperti: Number(serate.coperti || 0), importo: Number(serate.importo || 0) }
   });
 });
+adminRouter.post("/geo/risolvi", requireCap("guida"), async (req, res) => {
+  const r = await risolviPosizione(req.body?.testo || "");
+  if (r.errore) return res.status(422).json(r);
+  res.json(r);
+});
 
 // build/entry.mjs
 init_authuser();
@@ -15528,7 +15631,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 05:57" : "online";
+var BUILD = true ? "2026-08-21 06:14" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
