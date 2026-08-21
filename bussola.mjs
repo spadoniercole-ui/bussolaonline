@@ -1606,6 +1606,24 @@ async function migrate() {
   await addIfMissing("menu_articoli", "magazzino_id", "magazzino_id INTEGER");
   await addIfMissing("menu_articoli", "consumo", "consumo REAL NOT NULL DEFAULT 1");
   await addIfMissing("comande", "scaricata", "scaricata INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("eventi", "luogo", "luogo TEXT");
+  await addIfMissing("eventi", "occupa_stage", "occupa_stage INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("serate", "luogo", "luogo TEXT");
+  try {
+    if (await getSetting("eventi_luogo_v1", "") !== "v1") {
+      await db.prepare("UPDATE eventi SET luogo=LOWER(ambiente) WHERE luogo IS NULL AND ambiente IS NOT NULL AND ambiente<>''").run();
+      await db.prepare("UPDATE eventi SET luogo='stage' WHERE luogo IS NULL AND (LOWER(ambiente) LIKE '%stage%' OR tipo='cinema')").run();
+      await setSetting("eventi_luogo_v1", "v1");
+    }
+  } catch (_) {
+  }
+  try {
+    if (await getSetting("cowo_unificato", "") !== "v1") {
+      await db.prepare("UPDATE risorse SET attivo=0 WHERE chiave='cowo' OR tipo='coworking'").run();
+      await setSetting("cowo_unificato", "v1");
+    }
+  } catch (_) {
+  }
   try {
     if (await getSetting("coppa_sei_discipline", "") !== "v1") {
       await db.prepare(
@@ -3116,11 +3134,14 @@ window.Comanda = (function () {
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
-      .cmd-alg{font-size:.7rem;color:#8a6d1f;font-style:italic;display:block}
+
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
@@ -3154,9 +3175,35 @@ window.Comanda = (function () {
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
 
+    // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
+    function iconaDi(m) {
+      const t = ((m.categoria || '') + ' ' + (m.nome || '')).toLowerCase();
+      if (/caff|espress|cappucc/.test(t)) return '\\u2615';
+      if (/birr/.test(t)) return '\\ud83c\\udf7a';
+      if (/vino|calice|spritz|cocktail|amar|gin|apero/.test(t)) return '\\ud83c\\udf78';
+      if (/acqua|bibit|cola|succo|analcol/.test(t)) return '\\ud83e\\udd64';
+      if (/gelat|sorbet/.test(t)) return '\\ud83c\\udf68';
+      if (/dolc|torta|brioch|cornett/.test(t)) return '\\ud83c\\udf70';
+      if (/panin|toast|sandwich|hamburg/.test(t)) return '\\ud83e\\udd6a';
+      if (/pizz|focacc/.test(t)) return '\\ud83c\\udf55';
+      if (/past|primo|spaghett/.test(t)) return '\\ud83c\\udf5d';
+      if (/pesce|frutti di mare|cozz/.test(t)) return '\\ud83d\\udc1f';
+      if (/carne|grigl|secondo/.test(t)) return '\\ud83c\\udf56';
+      if (/insalat|verdur|contorn/.test(t)) return '\\ud83e\\udd57';
+      if (/patat|frit|snack|arancin/.test(t)) return '\\ud83c\\udf5f';
+      return '\\ud83c\\udf7d\\ufe0f';
+    }
     function itemHTML(m) {
       const q = cart[m.id] || 0;
-      return \`<div class="cmd-item"><div class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}\${m.allergeni ? \`<span class="cmd-alg">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</div><span class="cmd-pz">\${eur(m.prezzo)}</span><div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+      // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
+      // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
+      // bordo campo allungano la riga senza servire a chi batte la comanda.
+      return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
+          <span class="cmd-ico">\${esc(iconaDi(m))}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}</span>
+        </button>
+        <span class="cmd-pz">\${eur(m.prezzo)}</span>
+        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
     }
     function renderChips() {
       if (!chipsEl) return;
@@ -3428,7 +3475,7 @@ function renderHome() {
       \${ptile('fitness', '\u{1F9D8}', T('Fitness'), T('lezioni con istruttore'))}
       \${ptile('carta', '\u{1F3B2}', T('Casa di Carta'), T('tavolo da gioco'))}
       \${ptile('stage', '\u{1F3AC}', T('Stage'), T('posto allo spettacolo'))}
-      \${ptile('book="cowo"', '\u{1F4BB}', T('Coworking'), T('postazione'))}
+      \${ptile('cowo', '\u{1F4BB}', T('Coworking'), T('postazione'))}
     </div>
     <button class="btn navy block" style="margin-top:12px" data-serate-tutte>\u2728 \${T('Scopri le nostre serate speciali')}</button>
     <div style="height:10px"></div>\`;
@@ -3834,7 +3881,7 @@ async function openCampi(campoId) {
   }).join('');
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('Prenotazione campi')}</div><h2>\${sportIcon(sel.sport)} \${esc(sel.nome)}</h2>
     <div class="field"><label>\${T('Campo')}</label><div class="chips">\${courtChips}</div></div>
-    \${soloOggi ? \`<div class="note" style="margin-top:0">\${T('Stai prenotando per stasera')} \xB7 <b>\${esc(dataBella(data))}</b>. \${T('Per gli altri giorni usa la sezione Eventi.')}</div>\` : \`<div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>\`}
+    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
     \${fasceChips}
     <div class="sect-title" style="margin-top:6px">\${T('Fasce orarie')}</div>
     <div class="card" style="padding:4px 14px">\${slotHTML || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessuno slot per questa data.')}</p>\`}</div>
@@ -3901,6 +3948,55 @@ function openSerateSpeciali() {
   showOv();
 }
 
+
+// ---- Coworking: postazioni della sala, non tavoli da gioco ----
+// Prima questa tessera apriva la vecchia "risorsa" coworking, un sistema a parte: la
+// prenotazione non compariva nella sala, il contatore non si muoveva e il socio non
+// ritrovava piu' quello che aveva prenotato. Ora e' la stessa sala, con i suoi turni.
+async function openCowo() {
+  const giorni = gardenGiorni();
+  if (!state._cowoData || !giorni.some(d => d.iso === state._cowoData)) state._cowoData = giorni[0].iso;
+  const data = state._cowoData;
+  let d;
+  try { d = await api(\`/carta/turni?data=\${data}\`); } catch { okThen(T('Sala non disponibile'), false); return; }
+  const turni = (d.turni || []).filter(t => t.scopo === 'coworking');
+  let mie = [];
+  if (state.tessera) { try { mie = (await api('/carta/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera))).filter(m => m.scopo === 'coworking'); } catch { } }
+  const persone = state._cowoPers || 1;      // una postazione, una persona
+  const dayChips = giorni.map(x => \`<button class="chip\${x.iso === data ? ' sel' : ''}" data-cowo-date="\${x.iso}">\${esc(x.label)}</button>\`).join('');
+  const riga = (t) => {
+    const pieno = t.posti_liberi <= 0;
+    return \`<div class="matchrow"><div style="flex:1">
+        <b style="font-size:.92rem">\u{1F4BB} \${esc(t.etichetta || t.turno)}</b>
+        <div class="ct">\${pieno ? T('nessuna postazione libera') : \`\${t.posti_liberi} \${T('postazioni libere')} \${T('su')} \${t.posti_totali}\`}</div></div>
+      \${pieno ? \`<span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\`
+              : \`<button class="btn gold sm" data-cowo-pren="\${esc(t.turno)}">\${T('Prenota')}</button>\`}</div>\`;
+  };
+  const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:10px">\${T('Le mie postazioni')}</div>
+    <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)}</b><div class="ct">\${m.persone} \${m.persone === 1 ? T('postazione') : T('postazioni')} \xB7 \${T('tavolo')} \${m.tavoli.join(', ')}</div></div><button class="btn ghost sm" data-cowo-ann="\${m.id}">\${T('Annulla')}</button></div>\`).join('')}</div>\`
+    : \`<div class="note" style="margin-top:10px">\${T('Non hai postazioni prenotate.')}</div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F4BB} \${T('Coworking')}</div>
+    <h2>\${T('La tua postazione')}</h2>
+    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    <div class="field"><label>\${T('Quante postazioni')}</label><div class="chips">\${[1, 2, 3].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-cowo-pers="\${n}">\${n}</button>\`).join('')}</div></div>
+    <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
+    <div class="card" style="padding:4px 14px">\${turni.map(riga).join('') || \`<p class="tiny muted" style="padding:8px 0">\${T('Nessun turno di coworking.')}</p>\`}</div>
+    \${mieHTML}
+    <div class="note">\${T('Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+async function cowoPrenota(turno) {
+  if (!state.tessera) { okThen(T('Serve la tessera di un socio per prenotare'), false); return; }
+  try {
+    const r = await fetch(API_BASE + '/api/carta/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._cowoData, turno, persone: state._cowoPers || 1 }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; }
+    okThen(\`\${T('Postazione al tavolo')} \${j.tavoli.join(', ')} \xB7 \${dataBella(state._cowoData)} \${turno}\`);
+  } catch { okThen(T('Errore di rete'), false); return; }
+  openCowo();
+}
+
 // ---- Lezioni di fitness ----
 async function openFitness() {
   let d;
@@ -3965,7 +4061,7 @@ async function openCarta() {
     <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
     <div class="field"><label>\${T('Quante persone')}</label><div class="chips">\${[2, 3, 4, 5, 6].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-carta-pers="\${n}">\${n}</button>\`).join('')}</div></div>
     <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
-    <div class="card" style="padding:4px 14px">\${(d.turni || []).map(riga).join('')}</div>
+    <div class="card" style="padding:4px 14px">\${(d.turni || []).filter(t => t.scopo !== 'coworking').map(riga).join('')}</div>
     \${mieHTML}
     <div class="note">\${d.minimo ? \`\${T('Al tavolo servono almeno')} \${d.minimo} \${T('giocatori: da soli non si occupa un tavolo.')}\` : T('Il tavolo si prenota a turni.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
@@ -5094,7 +5190,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -5136,6 +5232,11 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
   if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
+  if (t.dataset.cowo != null) return openCowo();
+  if (t.dataset.cowoDate) { state._cowoData = t.dataset.cowoDate; return openCowo(); }
+  if (t.dataset.cowoPers) { state._cowoPers = Number(t.dataset.cowoPers); return openCowo(); }
+  if (t.dataset.cowoPren) return cowoPrenota(t.dataset.cowoPren);
+  if (t.dataset.cowoAnn) return api('/carta/prenotazioni/' + t.dataset.cowoAnn + '/annulla', { method: 'POST', body: JSON.stringify({ tessera_code: state.tessera }) }).then(openCowo).catch(() => openCowo());
   if (t.dataset.carta != null) return openCarta();
   if (t.dataset.cartaDate) { state._cartaData = t.dataset.cartaDate; return openCarta(); }
   if (t.dataset.cartaPers) { state._cartaPers = Number(t.dataset.cartaPers); return openCarta(); }
@@ -6114,10 +6215,11 @@ VIEWS.eventi = async () => {
       <h3 style="margin:0">Cartellone settimanale</h3>
       <div class="row"><button class="btn ghost sm" id="ev_new">+ Nuovo evento</button><button class="btn gold sm" id="ev_a3">\u{1F5A8}\uFE0F Locandina A3</button></div></div>
     <p class="muted" style="font-size:.82rem;margin:8px 0">Modello ibrido: qui il ritmo della settimana (giorno, ora, tipologia, artista, prezzo). Se l'evento \xE8 a pagamento con prenotazione/incasso, collegalo a una <b>Serata</b>: la locandina mostrer\xE0 la quota della serata.</p>
-    <table><thead><tr><th>Giorno</th><th>Ora</th><th>Evento</th><th>Tipologia / Artista</th><th>Costo</th><th>Attivo</th><th></th></tr></thead><tbody>
+    <table><thead><tr><th>Giorno</th><th>Ora</th><th>Evento</th><th>Tipologia / Artista</th><th>Luogo</th><th>Costo</th><th>Attivo</th><th></th></tr></thead><tbody>
     \${ordinati.map(e => \`<tr><td><b>\${esc(e.giorno || '\u2014')}</b></td><td>\${esc(e.ora_inizio || '\u2014')}</td>
       <td><b>\${esc(e.titolo)}</b>\${e.sottotitolo ? \`<br><span class="muted">\${esc(e.sottotitolo)}</span>\` : ''}</td>
       <td>\${esc(e.tipologia || '\u2014')}\${e.artista ? \`<br><span class="muted">\u{1F3A4} \${esc(e.artista)}</span>\` : ''}</td>
+      <td>\${e.luogo ? \`<span class="tag">\${esc(e.luogo === 'carta' ? 'Casa di Carta' : e.luogo)}</span>\` : '<span class="muted">\u2014</span>'}\${e.capienza ? \` <span class="muted">\${e.capienza} p</span>\` : ''}\${e.occupa_stage ? ' <span class="tag mid">stage riservato</span>' : ''}</td>
       <td>\${e.serata_id ? '\u{1F39F}\uFE0F ' : ''}\${costoLabel(costoEvento(e, serate))}</td>
       <td>\${e.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag no">no</span>'}</td>
       <td class="row"><button class="btn ghost sm" data-ev="\${e.id}">\u270E</button><button class="btn danger sm" data-evdel="\${e.id}">\u{1F5D1}</button></td></tr>\`).join('')}
@@ -6136,6 +6238,12 @@ VIEWS.eventi = async () => {
       <label>Ambiente / luogo</label><input id="e_a" value="\${esc(e.ambiente || '')}">
       <label>Descrizione</label><textarea id="e_d" rows="3">\${esc(e.descrizione || '')}</textarea>
       \${PAR.eventi_onerosi === false ? '<p class="muted" style="font-size:.78rem">Gli eventi a pagamento sono <b>disattivati</b> nei Parametri: tutti gli ingressi sono liberi.</p>' : \`
+      <div class="grid2">
+        <div><label>Luogo</label><select id="e_luogo">\${['', 'bar', 'garden', 'stage', 'carta', 'campi', 'altro'].map(l => \`<option value="\${l}" \${(e.luogo || '') === l ? 'selected' : ''}>\${l === '' ? '\u2014 non indicato \u2014' : l === 'carta' ? 'Casa di Carta' : l.charAt(0).toUpperCase() + l.slice(1)}</option>\`).join('')}</select></div>
+        <div><label>Capienza (persone)</label><input id="e_cap" type="number" min="0" value="\${e.capienza ?? ''}" placeholder="senza limite"></div>
+      </div>
+      <label class="check"><input type="checkbox" id="e_occstage" \${e.occupa_stage ? 'checked' : ''}> occupa <b>tutto lo Stage</b> (es. presentazione di un libro): nessun altro posto prenotabile quella sera</label>
+      <p class="muted" style="font-size:.78rem">Il <b>luogo</b> dice dove si tiene e quante persone pu\xF2 accogliere. Al Garden la capienza sono i coperti; allo Stage i posti della platea.</p>
       <label>Ingresso</label>
       <div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
         <label class="check"><input type="radio" name="e_ct" value="nessuno" \${(e.costo_tipo || 'nessuno') === 'nessuno' ? 'checked' : ''}> Libero</label>
@@ -6172,6 +6280,7 @@ VIEWS.eventi = async () => {
       const ct = document.querySelector('input[name="e_ct"]:checked');
       const body = { giorno: $('#e_g').value, ora_inizio: $('#e_h').value, titolo: $('#e_t').value, sottotitolo: $('#e_s').value, tipologia: $('#e_ty').value, artista: $('#e_ar').value, ambiente: $('#e_a').value, descrizione: $('#e_d').value,
         costo_tipo: ct ? ct.value : 'nessuno', prezzo: Number(($('#e_pz') || {}).value || 0), consumazione: ($('#e_cons') || {}).value || '',
+        luogo: ($('#e_luogo') || {}).value || null, capienza: ($('#e_cap') || {}).value, occupa_stage: ($('#e_occstage') || {}).checked,
         serata_id: ($('#e_ser') || {}).value || null, attivo: $('#e_on').checked };
       if (!body.titolo) { alert('Titolo obbligatorio'); return; }
       if (isNew) await api('/eventi', { method: 'POST', body: JSON.stringify(body) });
@@ -7329,11 +7438,14 @@ window.Comanda = (function () {
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
-      .cmd-alg{font-size:.7rem;color:#8a6d1f;font-style:italic;display:block}
+
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
@@ -7367,9 +7479,35 @@ window.Comanda = (function () {
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
 
+    // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
+    function iconaDi(m) {
+      const t = ((m.categoria || '') + ' ' + (m.nome || '')).toLowerCase();
+      if (/caff|espress|cappucc/.test(t)) return '\\u2615';
+      if (/birr/.test(t)) return '\\ud83c\\udf7a';
+      if (/vino|calice|spritz|cocktail|amar|gin|apero/.test(t)) return '\\ud83c\\udf78';
+      if (/acqua|bibit|cola|succo|analcol/.test(t)) return '\\ud83e\\udd64';
+      if (/gelat|sorbet/.test(t)) return '\\ud83c\\udf68';
+      if (/dolc|torta|brioch|cornett/.test(t)) return '\\ud83c\\udf70';
+      if (/panin|toast|sandwich|hamburg/.test(t)) return '\\ud83e\\udd6a';
+      if (/pizz|focacc/.test(t)) return '\\ud83c\\udf55';
+      if (/past|primo|spaghett/.test(t)) return '\\ud83c\\udf5d';
+      if (/pesce|frutti di mare|cozz/.test(t)) return '\\ud83d\\udc1f';
+      if (/carne|grigl|secondo/.test(t)) return '\\ud83c\\udf56';
+      if (/insalat|verdur|contorn/.test(t)) return '\\ud83e\\udd57';
+      if (/patat|frit|snack|arancin/.test(t)) return '\\ud83c\\udf5f';
+      return '\\ud83c\\udf7d\\ufe0f';
+    }
     function itemHTML(m) {
       const q = cart[m.id] || 0;
-      return \`<div class="cmd-item"><div class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}\${m.allergeni ? \`<span class="cmd-alg">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</div><span class="cmd-pz">\${eur(m.prezzo)}</span><div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+      // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
+      // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
+      // bordo campo allungano la riga senza servire a chi batte la comanda.
+      return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
+          <span class="cmd-ico">\${esc(iconaDi(m))}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}</span>
+        </button>
+        <span class="cmd-pz">\${eur(m.prezzo)}</span>
+        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
     }
     function renderChips() {
       if (!chipsEl) return;
@@ -7638,7 +7776,11 @@ VIEWS.comande = async () => {
 
   const entry = garden
     ? \`<label>Tavolo <input id="co_tav" type="number" min="1" inputmode="numeric" placeholder="n\xB0" style="width:100px"></label>\`
-    : \`<label>Nome cliente <input id="co_nome" placeholder="es. Mario" style="max-width:220px"></label>\`;
+    : \`<label style="flex:1;min-width:260px">Nome cliente
+        <span style="display:flex;gap:6px;align-items:center">
+          <input id="co_nome" placeholder="Cognome, oppure inquadra la tessera" style="flex:1;min-width:200px">
+          <button class="btn ghost sm" id="co_scan" title="Inquadra il QR della tessera" style="padding:6px 10px;font-size:1.1rem">\u{1F4F7}</button>
+        </span></label>\`;
 
   $('#view').innerHTML = soPanel + \`
     <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
@@ -7666,6 +7808,16 @@ VIEWS.comande = async () => {
     CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, onChange: (cart, tot) => { $('#co_tot').textContent = 'Totale ' + eur(tot); renderCart(cart); } });
     CO.focusSearch();
   } else { renderCart({}); }
+  // Scansione della tessera: si evita di digitare il cognome e si prende quello vero.
+  if ($('#co_scan')) $('#co_scan').onclick = () => scansionaTessera(async (codice) => {
+    const el = $('#co_nome');
+    if (!el) return;
+    el.value = codice;
+    try {
+      const s2 = await api('/soci/tessera/' + encodeURIComponent(codice)).catch(() => null);
+      if (s2 && s2.nome) el.value = (s2.nome + ' ' + (s2.cognome || '')).trim();
+    } catch (_) { }
+  });
   $('#co_send').onclick = async () => {
     const righe = CO ? CO.getRighe() : [];
     if (!righe.length) { alert('Aggiungi almeno un prodotto.'); return; }
@@ -8888,71 +9040,107 @@ VIEWS.pianta = async () => {
   // In servizio il tocco su un tavolo (o su una seduta) apre la prenotazione al banco proprio
   // su quello: serve a chi passa dal chiosco e non usa l'app.
   if (PIANTA.modo === 'servizio') {
+    // Il tavolo e' il punto di partenza di tutto. Toccandolo si vede chi lo occupa (e lo si
+    // chiama per nome), si prende la comanda senza digitare il numero del tavolo, si prenota,
+    // si cambia forma e si accorpa. Prima queste cose stavano in tre posti diversi.
     document.querySelectorAll('#p_canvas [data-pren]').forEach(el => el.onclick = () => {
       const n = Number(el.dataset.pren);
       const t = (turnoDati.tavoli || []).find(x => x.numero === n);
       if (!t) return;
       const cs = perTavolo[n] || [];
-      if (cs.length) {
-        // Tavolo servito: da qui si chiude o si annulla la comanda, cosi' il tavolo torna
-        // pulito senza andare a cercarla altrove.
-        const righe = cs.map(c => \`<div style="border-bottom:1px solid var(--line);padding:6px 0">
+      const pren = (turnoDati.prenotazioni || []).find(x => (x.tavoli || []).includes(n));
+      const chi = pren ? (pren.nome || '') : '';
+      const stage = PIANTA.ambiente === 'stage';
+      const forme = ['tondo', 'quadrato', 'rettangolo'];
+      const zonaC = PIANTA.ambiente === 'carta' ? 'carta' : 'garden';
+
+      const comandeHTML = cs.length ? \`<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px">
+          <b style="font-size:.86rem">Comande in corso</b>
+          \${cs.map(c => \`<div style="padding:6px 0;border-bottom:1px solid var(--line)">
             <div class="row" style="justify-content:space-between"><b>#\${esc(String(c.numero))}</b><span class="muted">\${esc(c.stato)}</span></div>
-            <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`).join(' \xB7 ') || esc(c.punto || '')}</div>
+            <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`).join(' \xB7 ')}</div>
             <div class="row" style="gap:6px;margin-top:6px">
               <button class="btn gold sm" data-cchiudi="\${c.id}">\u2713 Chiudi</button>
-              <button class="btn danger sm" data-cann="\${c.id}">Annulla</button>
-            </div></div>\`).join('');
-        openModal(\`<h3>Tavolo \${n} \xB7 comande in corso</h3>\${righe}
-          <div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost sm" id="c_tutte">\u{1F9F9} Libera il tavolo</button><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
-        const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
-        const agisci = async (id, stato) => { await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato }) }); };
-        document.querySelectorAll('[data-cchiudi]').forEach(x => x.onclick = async () => { await agisci(x.dataset.cchiudi, 'chiusa'); closeModal(); show('pianta'); });
-        document.querySelectorAll('[data-cann]').forEach(x => x.onclick = async () => { await agisci(x.dataset.cann, 'annullata'); closeModal(); show('pianta'); });
-        $('#c_tutte').onclick = async () => {
-          if (!confirm('Chiudere tutte le comande di questo tavolo?')) return;
-          for (const c of cs) await agisci(c.id, 'chiusa');
-          closeModal(); show('pianta');
-        };
-        return;
-      }
-      if (!t.libero) {
-        const p = (turnoDati.prenotazioni || []).find(x => (x.tavoli || []).includes(n));
-        openModal(\`<h3>\${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'} \${n}</h3>
-          <p>Occupato da <b>\${esc(t.nome || '\u2014')}</b>\${t.persone ? ' \xB7 ' + t.persone + ' persone' : ''}.</p>
-          <div class="row" style="gap:8px">\${p ? \`<button class="btn danger sm" id="pr_lib">Libera</button>\` : ''}<button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
-        const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
-        if ($('#pr_lib')) $('#pr_lib').onclick = async () => {
-          await api('/tavoli/prenotazioni/' + p.id, { method: 'PUT', body: JSON.stringify({ stato: 'annullato' }) });
-          closeModal(); show('pianta');
-        };
-        return;
-      }
-      openModal(\`<h3>\${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'} \${n} \xB7 \${esc(PIANTA.turno)}</h3>
-        <p class="muted" style="font-size:.82rem">\${t.posti} \${t.posti === 1 ? 'posto' : 'posti'}\${(t.tipo === 'extra') ? ' \xB7 extra' : ''}</p>
-        <label style="display:block;font-size:.82rem;margin-bottom:6px">Nome o tessera <input id="pr_chi" placeholder="BR-2026-0001 oppure Sig. Rossi"></label>
-        <label style="display:block;font-size:.82rem;margin-bottom:10px">Persone <input id="pr_p" type="number" min="1" value="\${Math.min(2, t.posti)}" style="width:80px"></label>
-        <div class="row" style="gap:8px"><button class="btn gold sm" id="pr_ok">Prenota</button><button class="btn ghost sm" data-mclose>Annulla</button></div>
-        <div id="pr_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>\`);
+              <button class="btn danger sm" data-cann="\${c.id}">Annulla</button></div></div>\`).join('')}
+        </div>\` : '';
+
+      openModal(\`<h3>\${stage ? 'Seduta' : 'Tavolo'} \${n}\${(t.uniti && t.uniti.length) ? ' + ' + t.uniti.join(' + ') : ''}</h3>
+        <p class="muted" style="font-size:.84rem;margin-top:-4px">\${t.posti} \${t.posti === 1 ? 'posto' : 'posti'}\${t.tipo === 'extra' ? ' \xB7 extra' : ''} \xB7 \${esc(PIANTA.turno)}</p>
+        \${chi ? \`<div style="background:#eaf3ec;border-left:4px solid #2e6b45;border-radius:0 8px 8px 0;padding:8px 12px;margin-bottom:10px">
+            <b style="color:var(--navy)">\${esc(chi)}</b> \xB7 \${pren.persone} \${pren.persone === 1 ? 'persona' : 'persone'}
+            <div class="muted" style="font-size:.78rem">Chiamali per nome: sanno di essere attesi.</div></div>\` : ''}
+        <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          \${stage ? '' : '<button class="btn gold sm" id="tv_ordina">\u{1F9FE} Ordina</button>'}
+          \${chi ? '<button class="btn ghost sm" id="tv_libera">\u{1F9F9} Libera</button>'
+                : '<button class="btn navy sm" id="tv_pren">\u{1F464} Prenota</button>'}
+        </div>
+        \${comandeHTML}
+        \${stage ? '' : \`<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px">
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <label class="muted" style="font-size:.8rem">Posti <input id="tv_p" type="number" min="1" value="\${t.posti}" style="width:62px"></label>
+            <label class="muted" style="font-size:.8rem">Forma <select id="tv_f">\${forme.map(f => \`<option value="\${f}" \${t.forma === f ? 'selected' : ''}>\${f}</option>\`).join('')}</select></label>
+            <button class="btn ghost sm" id="tv_applica">Applica</button>
+          </div>
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+            \${(t.uniti && t.uniti.length)
+              ? \`<span class="muted" style="font-size:.8rem">Unito con <b>\${t.uniti.join(', ')}</b></span><button class="btn ghost sm" id="tv_sep">\u2702\uFE0F Separa</button>\`
+              : \`<label class="muted" style="font-size:.8rem">Unisci al <select id="tv_u">\${(turnoDati.tavoli || []).filter(z => z.numero !== n && z.tipo !== 'arredo' && !(z.uniti || []).length).map(z => \`<option value="\${z.numero}">\${z.numero} \xB7 \${z.posti} p</option>\`).join('') || '<option value="">\u2014</option>'}</select></label><button class="btn ghost sm" id="tv_unisci">\u{1F517} Unisci</button>\`}
+          </div></div>\`}
+        <div id="tv_msg" class="muted" style="font-size:.8rem;margin-top:8px"></div>
+        <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
       const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
-      $('#pr_ok').onclick = async () => {
-        const v = ($('#pr_chi').value || '').trim();
-        const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#pr_p').value) || 1, tavoli: [n] };
-        if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
-        const rotta = PIANTA.ambiente === 'carta' ? '/carta/prenota' : PIANTA.ambiente === 'stage' ? null : '/tavoli/prenota';
-        try {
-          if (rotta) await api(rotta, { method: 'POST', body: JSON.stringify(body) });
-          else {
-            const pr = (await api('/proiezioni').catch(() => [])).find(x => x.data === PIANTA.data && x.ora === PIANTA.turno);
-            if (!pr) throw new Error('Nessuna proiezione o spettacolo in questa fascia.');
-            await api('/proiezioni/' + pr.id + '/prenota', { method: 'POST', body: JSON.stringify({ ...body, persone: body.persone }) });
-          }
-          closeModal(); show('pianta');
-        } catch (e) { $('#pr_msg').textContent = e.message; }
+
+      const agisci = async (id, stato) => { await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato }) }); closeModal(); show('pianta'); };
+      document.querySelectorAll('[data-cchiudi]').forEach(x => x.onclick = () => agisci(x.dataset.cchiudi, 'chiusa'));
+      document.querySelectorAll('[data-cann]').forEach(x => x.onclick = () => agisci(x.dataset.cann, 'annullata'));
+
+      if ($('#tv_ordina')) $('#tv_ordina').onclick = () => apriComandaTavolo(n, chi, zonaC);
+      if ($('#tv_libera')) $('#tv_libera').onclick = async () => {
+        if (!confirm('Liberare il tavolo?')) return;
+        await api('/tavoli/prenotazioni/' + pren.id, { method: 'PUT', body: JSON.stringify({ stato: 'annullato' }) });
+        closeModal(); show('pianta');
       };
+      if ($('#tv_pren')) $('#tv_pren').onclick = () => apriPrenotaTavolo(n, t);
+
+      // Forma, posti e unione si fanno da qui: non serve piu' passare in "Modifica pianta".
+      const salvaPianta = async (cambia) => {
+        const base = (PIANTA.tavoli && PIANTA.tavoli.length) ? PIANTA.tavoli : (turnoDati.tavoli || []);
+        const tavoli = base.map(x => ({ numero: x.numero, posti: x.posti, forma: x.forma, x: x.x, y: x.y, attivo: x.attivo === 0 ? false : true, uniti: x.uniti || [], tipo: x.tipo, quota: x.quota }));
+        cambia(tavoli);
+        try {
+          await api('/tavoli/layout/' + turnoDati.layout.id, { method: 'PUT', body: JSON.stringify({ tavoli }) });
+          closeModal(); PIANTA.sporco = false; show('pianta');
+        } catch (e) { $('#tv_msg').textContent = e.message; }
+      };
+      if ($('#tv_applica')) $('#tv_applica').onclick = () => salvaPianta((tav) => {
+        const x = tav.find(z => z.numero === n); if (!x) return;
+        x.posti = Math.max(1, Number($('#tv_p').value) || x.posti);
+        x.forma = $('#tv_f').value;
+      });
+      if ($('#tv_unisci')) $('#tv_unisci').onclick = () => {
+        const altro = Number(($('#tv_u') || {}).value);
+        if (!altro) { $('#tv_msg').textContent = 'Nessun tavolo libero da unire.'; return; }
+        salvaPianta((tav) => {
+          const a = tav.find(z => z.numero === n), b2 = tav.find(z => z.numero === altro);
+          if (!a || !b2) return;
+          a.posti = Number(a.posti) + Number(b2.posti);
+          a.uniti = [...(a.uniti || []), b2.numero, ...(b2.uniti || [])];
+          a.forma = 'rettangolo';
+          b2.attivo = false; b2.uniti = [];
+        });
+      };
+      if ($('#tv_sep')) $('#tv_sep').onclick = () => salvaPianta((tav) => {
+        const a = tav.find(z => z.numero === n); if (!a) return;
+        for (const num of (a.uniti || [])) {
+          const b2 = tav.find(z => z.numero === num);
+          if (b2) { b2.attivo = true; a.posti = Math.max(1, Number(a.posti) - Number(b2.posti)); }
+        }
+        a.uniti = [];
+      });
     });
     return;
   }
+
   if (PIANTA.modo !== 'disposizione') return;
 
   // --- trascinamento (pointer events: funziona con dito e mouse)
@@ -9177,6 +9365,109 @@ async function stampaQrTavoli(tavoli, ambiente) {
   <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script></body></html>\`);
   w.document.close();
 }
+
+// Comanda presa DAL TAVOLO: il numero non si digita, e' quello che hai toccato. Con il nome
+// di chi ha prenotato in testa, cosi' si serve chiamando le persone per come si chiamano.
+async function apriComandaTavolo(numero, chi, zona) {
+  const menu = (await api('/menu?zona=' + zona).catch(() => api('/menu'))).filter(m => m.attivo !== 0);
+  if (!menu.length) { alert('Men\xF9 vuoto: caricalo dalla tab Men\xF9.'); return; }
+  openModal(\`<h3>\u{1F9FE} Comanda \xB7 tavolo \${numero}</h3>
+    \${chi ? \`<p class="muted" style="margin-top:-4px">per <b>\${esc(chi)}</b></p>\` : ''}
+    <div id="ct_menu" style="max-height:46vh;overflow:auto"></div>
+    <div id="ct_cart" style="margin-top:8px"></div>
+    <div id="ct_tot" style="text-align:right;font-weight:800;margin-top:6px"></div>
+    <div class="row" style="gap:8px;margin-top:10px">
+      <button class="btn gold" id="ct_invia" disabled>Invia in cucina</button>
+      <button class="btn ghost" data-mclose>Annulla</button></div>
+    <div id="ct_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>\`);
+  const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
+  const disegnaCarrello = (cart) => {
+    const ids = Object.keys(cart || {});
+    $('#ct_cart').innerHTML = ids.length
+      ? ids.map(id => { const m = menu.find(x => String(x.id) === id); return \`<div class="row" style="justify-content:space-between;font-size:.86rem;padding:2px 0"><span>\${cart[id]}\xD7 \${esc(m.nome)}</span><span>\${eur(m.prezzo * cart[id])}</span></div>\`; }).join('')
+      : '<span class="muted" style="font-size:.85rem">Tocca un prodotto del men\xF9.</span>';
+  };
+  const CO = Comanda.create({
+    mount: $('#ct_menu'), menu, search: true,
+    onChange: (cart, tot, n) => { $('#ct_tot').textContent = 'Totale ' + eur(tot); disegnaCarrello(cart); $('#ct_invia').disabled = !n; }
+  });
+  disegnaCarrello({});
+  $('#ct_invia').onclick = async () => {
+    const righe = CO.getRighe();
+    if (!righe.length) return;
+    try {
+      await api('/comande', { method: 'POST', body: JSON.stringify({ origine: 'tavolo', zona, riferimento: String(numero), nome: chi || null, righe }) });
+      closeModal(); show('pianta');
+    } catch (e) { $('#ct_msg').textContent = e.message; }
+  };
+}
+
+// Prenotazione al banco per un tavolo preciso: si tocca il tavolo, non si sceglie da un elenco.
+function apriPrenotaTavolo(numero, t) {
+  const stage = PIANTA.ambiente === 'stage';
+  openModal(\`<h3>\${stage ? 'Seduta' : 'Tavolo'} \${numero} \xB7 \${esc(PIANTA.turno)}</h3>
+    <p class="muted" style="font-size:.82rem;margin-top:-4px">\${t.posti} \${t.posti === 1 ? 'posto' : 'posti'}\${t.tipo === 'extra' ? ' \xB7 extra' : ''}</p>
+    <label style="display:block;font-size:.82rem;margin-bottom:6px">Nome o tessera <input id="pr_chi" placeholder="BR-2026-0001 oppure Sig. Rossi"></label>
+    <label style="display:block;font-size:.82rem;margin-bottom:10px">Persone <input id="pr_p" type="number" min="1" value="\${Math.min(2, t.posti)}" style="width:80px"></label>
+    <div class="row" style="gap:8px"><button class="btn gold sm" id="pr_ok">Prenota</button><button class="btn ghost sm" data-mclose>Annulla</button></div>
+    <div id="pr_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>\`);
+  const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
+  $('#pr_ok').onclick = async () => {
+    const v = ($('#pr_chi').value || '').trim();
+    const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#pr_p').value) || 1, tavoli: [numero] };
+    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    const rotta = PIANTA.ambiente === 'carta' ? '/carta/prenota' : stage ? null : '/tavoli/prenota';
+    try {
+      if (rotta) await api(rotta, { method: 'POST', body: JSON.stringify(body) });
+      else {
+        const pr = (await api('/proiezioni').catch(() => [])).find(x => x.data === PIANTA.data && x.ora === PIANTA.turno);
+        if (!pr) throw new Error('Nessuno spettacolo in questa fascia.');
+        await api('/proiezioni/' + pr.id + '/prenota', { method: 'POST', body: JSON.stringify(body) });
+      }
+      closeModal(); show('pianta');
+    } catch (e) { $('#pr_msg').textContent = e.message; }
+  };
+}
+
+// Lettura del QR della tessera con la fotocamera. Usa il lettore di codici del browser quando
+// c'e' (Chrome su Android), altrimenti spiega come fare invece di lasciare un tasto morto.
+async function scansionaTessera(quando) {
+  if (!('BarcodeDetector' in window)) {
+    const manuale = prompt('Questo browser non sa leggere i codici dalla fotocamera.\\nDigita o incolla il codice della tessera:');
+    if (manuale) quando(manuale.trim().toUpperCase());
+    return;
+  }
+  let stream = null;
+  openModal(\`<h3>\u{1F4F7} Inquadra la tessera</h3>
+    <video id="sc_v" autoplay playsinline muted style="width:100%;border-radius:12px;background:#000"></video>
+    <p class="muted" style="font-size:.8rem;margin-top:8px">Tieni il QR della tessera dentro il riquadro.</p>
+    <div class="row" style="gap:8px"><button class="btn ghost sm" data-mclose>Annulla</button></div>
+    <div id="sc_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>\`);
+  const chiudi = () => { if (stream) stream.getTracks().forEach(t => t.stop()); closeModal(); };
+  const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = chiudi;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const v = $('#sc_v'); v.srcObject = stream;
+    const det = new window.BarcodeDetector({ formats: ['qr_code'] });
+    const cerca = async () => {
+      if (!stream) return;
+      try {
+        const codici = await det.detect(v);
+        if (codici && codici.length) {
+          const testo = String(codici[0].rawValue || '').trim();
+          const m = testo.match(/BR-\\d{4}-\\d{4}/i);
+          chiudi();
+          quando((m ? m[0] : testo).toUpperCase());
+          return;
+        }
+      } catch (_) { }
+      setTimeout(cerca, 300);
+    };
+    cerca();
+  } catch (e) {
+    $('#sc_msg').textContent = 'Fotocamera non disponibile: ' + (e.message || e);
+  }
+}
 </script>
 </body>
 </html>
@@ -9275,11 +9566,14 @@ window.Comanda = (function () {
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
-      .cmd-alg{font-size:.7rem;color:#8a6d1f;font-style:italic;display:block}
+
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
@@ -9313,9 +9607,35 @@ window.Comanda = (function () {
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
 
+    // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
+    function iconaDi(m) {
+      const t = ((m.categoria || '') + ' ' + (m.nome || '')).toLowerCase();
+      if (/caff|espress|cappucc/.test(t)) return '\\u2615';
+      if (/birr/.test(t)) return '\\ud83c\\udf7a';
+      if (/vino|calice|spritz|cocktail|amar|gin|apero/.test(t)) return '\\ud83c\\udf78';
+      if (/acqua|bibit|cola|succo|analcol/.test(t)) return '\\ud83e\\udd64';
+      if (/gelat|sorbet/.test(t)) return '\\ud83c\\udf68';
+      if (/dolc|torta|brioch|cornett/.test(t)) return '\\ud83c\\udf70';
+      if (/panin|toast|sandwich|hamburg/.test(t)) return '\\ud83e\\udd6a';
+      if (/pizz|focacc/.test(t)) return '\\ud83c\\udf55';
+      if (/past|primo|spaghett/.test(t)) return '\\ud83c\\udf5d';
+      if (/pesce|frutti di mare|cozz/.test(t)) return '\\ud83d\\udc1f';
+      if (/carne|grigl|secondo/.test(t)) return '\\ud83c\\udf56';
+      if (/insalat|verdur|contorn/.test(t)) return '\\ud83e\\udd57';
+      if (/patat|frit|snack|arancin/.test(t)) return '\\ud83c\\udf5f';
+      return '\\ud83c\\udf7d\\ufe0f';
+    }
     function itemHTML(m) {
       const q = cart[m.id] || 0;
-      return \`<div class="cmd-item"><div class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}\${m.allergeni ? \`<span class="cmd-alg">Allergeni: \${esc(m.allergeni)}</span>\` : ''}</div><span class="cmd-pz">\${eur(m.prezzo)}</span><div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+      // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
+      // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
+      // bordo campo allungano la riga senza servire a chi batte la comanda.
+      return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
+          <span class="cmd-ico">\${esc(iconaDi(m))}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}</span>
+        </button>
+        <span class="cmd-pz">\${eur(m.prezzo)}</span>
+        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
     }
     function renderChips() {
       if (!chipsEl) return;
@@ -9464,7 +9784,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.97";
+var VERSION = "5.00";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12181,7 +12501,7 @@ adminRouter.get("/eventi", async (req, res) => {
 adminRouter.put("/eventi/:id", requireCap("eventi"), async (req, res) => {
   const b = req.body || {};
   const c = await costoEvento(b);
-  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,costo_tipo=?,consumazione=?,serata_id=?,attivo=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, c.prezzo, c.costo_tipo, c.consumazione, b.serata_id || null, b.attivo ? 1 : 0, req.params.id);
+  await db.prepare("UPDATE eventi SET titolo=?,sottotitolo=?,descrizione=?,ambiente=?,giorno=?,ora_inizio=?,tipologia=?,artista=?,prezzo=?,costo_tipo=?,consumazione=?,serata_id=?,attivo=?,luogo=?,capienza=?,occupa_stage=? WHERE id=?").run(b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.giorno ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, c.prezzo, c.costo_tipo, c.consumazione, b.serata_id || null, b.attivo ? 1 : 0, LUOGHI_EV.includes(b.luogo) ? b.luogo : null, b.capienza === "" || b.capienza == null ? null : Number(b.capienza), b.occupa_stage ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "eventi", req.params.id);
   res.json({ ok: true });
 });
@@ -12190,7 +12510,7 @@ adminRouter.post("/eventi", requireCap("eventi"), async (req, res) => {
   if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM eventi").get()).n;
   const c = await costoEvento(b);
-  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,costo_tipo,consumazione,serata_id,tipo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, c.prezzo, c.costo_tipo, c.consumazione, b.serata_id || null, b.tipo ?? "serata", ord);
+  const info = await db.prepare("INSERT INTO eventi (giorno,titolo,sottotitolo,descrizione,ambiente,ora_inizio,tipologia,artista,prezzo,costo_tipo,consumazione,serata_id,tipo,attivo,ordine,luogo,capienza,occupa_stage) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)").run(b.giorno ?? "", b.titolo, b.sottotitolo ?? "", b.descrizione ?? "", b.ambiente ?? "", b.ora_inizio ?? null, b.tipologia ?? null, b.artista ?? null, c.prezzo, c.costo_tipo, c.consumazione, b.serata_id || null, b.tipo ?? "serata", ord, LUOGHI_EV.includes(b.luogo) ? b.luogo : null, b.capienza === "" || b.capienza == null ? null : Number(b.capienza), b.occupa_stage ? 1 : 0);
   audit(req.adminUser.username, "crea", "eventi", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
@@ -13043,7 +13363,7 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const righe = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
   if (!righe.length) return res.status(400).json({ error: "Aggiungi almeno un articolo" });
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
-  const zona = b.zona === "bar" ? "bar" : "garden";
+  const zona = ["bar", "carta", "garden"].includes(b.zona) ? b.zona : "garden";
   const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,zona,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco", "bar"].includes(b.origine) ? b.origine : zona === "bar" ? "bar" : "tavolo", b.riferimento || null, zona, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
@@ -13846,6 +14166,7 @@ adminRouter.put("/parametri", requireCap("parametri"), async (req, res) => {
   audit(req.adminUser.username, "parametri", "impostazioni", 0, cambiati.join(", "));
   res.json({ ok: true, cambiati, parametri: await tuttiParametri() });
 });
+var LUOGHI_EV = ["bar", "garden", "stage", "carta", "campi", "altro"];
 async function costoEvento(b) {
   const onerosi = await par("eventi_onerosi");
   if (!onerosi) return { costo_tipo: "nessuno", prezzo: 0, consumazione: null };
@@ -14288,6 +14609,11 @@ adminRouter.get("/riepilogo", async (req, res) => {
 adminRouter.post("/geo/risolvi", requireCap("guida"), async (req, res) => {
   const r = await risolviPosizione(req.body?.testo || "");
   if (r.errore) return res.status(422).json(r);
+  res.json(r);
+});
+adminRouter.get("/soci/tessera/:code", requireCap("comande"), async (req, res) => {
+  const r = await db.prepare("SELECT id,nome,cognome,tessera_code,attivo FROM soci WHERE tessera_code=?").get(String(req.params.code).toUpperCase());
+  if (!r) return res.status(404).json({ error: "Tessera non riconosciuta" });
   res.json(r);
 });
 
@@ -15287,9 +15613,9 @@ publicRouter.get("/carta/mie-prenotazioni", async (req, res) => {
   const t = String(req.query.tessera_code || "");
   if (!t) return res.json([]);
   const rows = await db.prepare(
-    "SELECT pt.id,pt.data,pt.turno,pt.persone,pt.tavoli,g.nome AS gioco FROM prenotazioni_tavolo pt LEFT JOIN cdc_giochi g ON g.id=pt.gioco_id WHERE pt.tessera_code=? AND pt.ambiente='carta' AND pt.stato='prenotato' AND pt.data>=date('now','-1 day') ORDER BY pt.data,pt.turno"
+    "SELECT pt.id,pt.data,pt.turno,pt.persone,pt.tavoli,pt.scopo,g.nome AS gioco FROM prenotazioni_tavolo pt LEFT JOIN cdc_giochi g ON g.id=pt.gioco_id WHERE pt.tessera_code=? AND pt.ambiente='carta' AND pt.stato='prenotato' AND pt.data>=date('now','-1 day') ORDER BY pt.data,pt.turno"
   ).all(t);
-  res.json(rows.map((r) => ({ ...r, tavoli: JSON.parse(r.tavoli || "[]") })));
+  res.json(rows.map((r) => ({ ...r, tavoli: JSON.parse(r.tavoli || "[]"), scopo: r.scopo || scopoTurno(r.turno) })));
 });
 publicRouter.post("/carta/prenotazioni/:id/annulla", async (req, res) => {
   const p = await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE id=? AND ambiente='carta'").get(req.params.id);
@@ -15348,7 +15674,6 @@ async function seed({ verbose = false } = {}) {
   const RISORSE = [
     ["pickleball", "Campo di Pickleball", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera sul palco."],
     ["soft", "Campo di Soft tennis", "sport", "Turni da 90 minuti \xB7 gioco 17\u201320", JSON.stringify(["17:00\u201318:30", "18:30\u201320:00"]), "Si gioca dalle 17 alle 20, per rispettare il silenzio pomeridiano e le attivit\xE0 della sera."],
-    ["cowo", "Postazione Coworking", "coworking", "Casa di Carta \xB7 wi-fi e caff\xE8", JSON.stringify(["Mattina (9\u201313)", "Pomeriggio (14\u201318)", "Giornata intera"]), null],
     ["tavolo", "Tavolo per la cena", "tavolo", "~40 coperti serviti \xB7 turni 20:00 e 21:30", JSON.stringify(["20:00", "21:30"]), "Indica il numero di persone. All\u2019apertura di stagione c\u2019\xE8 un unico turno alle 20:00 (segue la sfilata dei clan)."]
   ];
   const insRis = db.prepare("INSERT INTO risorse (chiave,nome,tipo,sottotitolo,slots,nota) VALUES (?,?,?,?,?,?)");
@@ -15694,7 +16019,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 06:39" : "online";
+var BUILD = true ? "2026-08-21 10:22" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
