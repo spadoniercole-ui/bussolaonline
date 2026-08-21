@@ -1604,6 +1604,26 @@ async function migrate() {
   } catch (_) {
   }
   try {
+    if (await getSetting("bussola_geo_reset_v1", "") !== "v1") {
+      const STIMATE = [
+        [36.9186, 15.1706],
+        [36.9906, 15.2178],
+        [36.9169, 15.1731],
+        [36.9203, 15.169],
+        [36.9192, 15.1712],
+        [37.0596, 15.2933],
+        [37.0759, 15.2743],
+        [37.0594, 15.2933],
+        [37.0035, 15.3037],
+        [36.9906, 15.0447]
+      ];
+      const del = db.prepare("UPDATE bussola SET lat=NULL, lng=NULL WHERE ROUND(lat,4)=ROUND(?,4) AND ROUND(lng,4)=ROUND(?,4)");
+      for (const [la, ln] of STIMATE) await del.run(la, ln);
+      await setSetting("bussola_geo_reset_v1", "v1");
+    }
+  } catch (_) {
+  }
+  try {
     if (await getSetting("bussola_geo_v1", "") !== "v1") {
       const COORD = [
         ["Farmacia", 36.9186, 15.1706],
@@ -3352,12 +3372,15 @@ function renderHome() {
     <div class="pgrid">
       \${ptile('campi', '\u{1F3BE}', T('Campi'), T('prenota o partita'))}
       \${ptile('partite', '\u{1F465}', T('Partite aperte'), T('unisciti'))}
-      \${ptile('book="cowo"', '\u{1F4BB}', T('Coworking'), T('postazione'))}
-      \${ptile('ordina="bar"', '\u{1F378}', T('Bar'), T('ordina e ritira'))}
       \${ptile('ordina="garden"', '\u{1F37D}\uFE0F', T('Garden'), T('cena e tavolo'))}
+      \${ptile('ordina="bar"', '\u{1F378}', T('Bar'), T('ordina e ritira'))}
+      \${ptile('fitness', '\u{1F9D8}', T('Fitness'), T('lezioni con istruttore'))}
+      \${ptile('carta', '\u{1F3B2}', T('Casa di Carta'), T('tavolo da gioco'))}
+      \${ptile('stage', '\u{1F3AC}', T('Stage'), T('posto allo spettacolo'))}
+      \${ptile('book="cowo"', '\u{1F4BB}', T('Coworking'), T('postazione'))}
     </div>
-    <div class="sect-title">\${T('Questa settimana')}</div>
-    <div>\${evs.map(e => evCardHTML(e, true)).join('')}</div><div style="height:6px"></div>\`;
+    <button class="btn navy block" style="margin-top:12px" data-serate-tutte>\u2728 \${T('Scopri le nostre serate speciali')}</button>
+    <div style="height:10px"></div>\`;
 }
 function serateSectionHTML() {
   const list = state.data.serate || [];
@@ -3805,6 +3828,146 @@ async function campoCrea(v, aperta) {
 async function campoUnisci(pid) {
   try { const r = await fetch(API_BASE + '/api/partite-aperte/' + pid + '/unisciti', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) }); const j = await r.json().catch(() => ({})); if (!r.ok) { okThen(j.error || T('Non riuscito'), false); return; } okThen(j.completa ? T('Partita al completo, ci vediamo in campo! \u{1F3BE}') : \`\${T('Iscritto!')} \${j.iscritti}/\${j.posti_totali}\`); } catch { okThen(T('Errore di rete'), false); return; }
   if (state._campoSel) openCampi(state._campoSel); else openPartiteAperte();
+}
+
+
+// ---- Serate speciali: quelle su prenotazione, con posti contati ----
+// Erano finite in fondo agli Eventi e di fatto sparivano. Dalla home ci si arriva con un tasto.
+function openSerateSpeciali() {
+  const list = state.data.serate || [];
+  if (!list.length) { okThen(T('Nessuna serata su prenotazione al momento.'), false); return; }
+  const riga = (s) => \`<div class="matchrow"><div style="flex:1">
+      <b style="font-size:.92rem">\${esc(s.titolo)}</b>
+      <div class="ct">\${esc(s.quando || '')} \xB7 \u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti liberi')}\` : ''}</div>
+      \${s.descrizione ? \`<div class="ct">\${esc(s.descrizione)}</div>\` : ''}</div>
+    <button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button></div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Su prenotazione')}</div>
+    <h2>\${T('Le serate speciali')}</h2>
+    <p class="sub">\${T('Posti contati: si prenota e si paga in loco.')}</p>
+    <div class="card" style="padding:4px 14px">\${list.map(riga).join('')}</div>
+    <div class="note">\${T('Il programma completo della settimana \xE8 nella sezione Eventi.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+
+// ---- Lezioni di fitness ----
+async function openFitness() {
+  let d;
+  try { d = await api('/fitness'); } catch { okThen(T('Lezioni non disponibili'), false); return; }
+  const lez = (d.lezioni || []).slice(0, 20);
+  if (!lez.length) { okThen(T('Nessuna lezione in programma.'), false); return; }
+  let mie = [];
+  if (state.tessera) { try { mie = await api('/fitness/mie-iscrizioni?tessera_code=' + encodeURIComponent(state.tessera)); } catch { } }
+  const iscritto = new Set(mie.map(m => m.corso_nome + '|' + m.data + '|' + m.ora));
+  const riga = (l) => {
+    const gia = iscritto.has(l.corso_nome + '|' + l.data + '|' + l.ora);
+    const stato = l.completa ? \`<span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\`
+      : gia ? \`<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('ISCRITTO')}</span>\`
+      : \`<button class="btn gold sm" data-fitpren="\${l.id}">\${T('Iscriviti')}</button>\`;
+    return \`<div class="matchrow"><div style="flex:1">
+        <b style="font-size:.9rem">\${esc(l.titolo || l.corso_nome)}\${l.masterclass ? ' \u{1F31F}' : ''}</b>
+        <div class="ct">\${esc(dataBella(l.data))} \xB7 \${esc(l.ora)} \xB7 \${l.durata_min}\u2032\${l.istruttore ? ' \xB7 ' + esc(l.istruttore) : ''}</div>
+        <div class="ct">\${l.iscritti}/\${l.posti_max} \xB7 \u20AC \${Number(l.prezzo).toFixed(2)}\${l.minimo && !l.confermata ? \` \xB7 \${T('mancano')} \${l.mancano} \${T('per confermarla')}\` : ''}</div>
+      </div>\${stato}</div>\`;
+  };
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F9D8} \${T('Area fitness')}</div>
+    <h2>\${T('Lezioni con istruttore')}</h2>
+    <div class="card" style="padding:4px 14px;max-height:56vh;overflow:auto">\${lez.map(riga).join('')}</div>
+    <div class="note">\${T('Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+async function fitnessIscrivi(id) {
+  if (!state.tessera) { okThen(T('Serve la tessera di un socio per iscriverti'), false); return; }
+  try {
+    const r = await fetch(API_BASE + '/api/fitness/sedute/' + id + '/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { okThen(j.error || T('Iscrizione non riuscita'), false); return; }
+    okThen(j.confermata ? T('Iscrizione confermata') : \`\${T('Iscritto')} \xB7 \${T('mancano')} \${j.mancano} \${T('per confermare la lezione')}\`);
+  } catch { okThen(T('Errore di rete'), false); return; }
+  openFitness();
+}
+
+// ---- Tavolo da gioco alla Casa di Carta ----
+async function openCarta() {
+  const giorni = gardenGiorni();
+  if (!state._cartaData || !giorni.some(d => d.iso === state._cartaData)) state._cartaData = giorni[0].iso;
+  const data = state._cartaData;
+  let d;
+  try { d = await api(\`/carta/turni?data=\${data}\`); } catch { okThen(T('Sala non disponibile'), false); return; }
+  let mie = [];
+  if (state.tessera) { try { mie = await api('/carta/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera)); } catch { } }
+  const persone = state._cartaPers || 2;
+  const dayChips = giorni.map(x => \`<button class="chip\${x.iso === data ? ' sel' : ''}" data-carta-date="\${x.iso}">\${esc(x.label)}</button>\`).join('');
+  const riga = (t) => {
+    const pieno = t.tavoli_liberi <= 0;
+    return \`<div class="matchrow"><div style="flex:1">
+        <b style="font-size:.92rem">\${t.scopo === 'coworking' ? '\u{1F4BB}' : '\u{1F3B2}'} \${esc(t.etichetta || t.turno)}</b>
+        <div class="ct">\${pieno ? T('nessun tavolo libero') : \`\${t.tavoli_liberi} \${T('tavoli liberi')} \xB7 \${t.posti_liberi} \${T('posti')}\`}</div></div>
+      \${pieno ? \`<span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\`
+              : \`<button class="btn gold sm" data-carta-pren="\${esc(t.turno)}">\${T('Prenota')}</button>\`}</div>\`;
+  };
+  const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:10px">\${T('Le mie prenotazioni')}</div>
+    <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)}</b><div class="ct">\${m.persone} \${T('persone')} \xB7 \${T('tavolo')} \${m.tavoli.join(', ')}\${m.gioco ? ' \xB7 ' + esc(m.gioco) : ''}</div></div><button class="btn ghost sm" data-carta-ann="\${m.id}">\${T('Annulla')}</button></div>\`).join('')}</div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#7a5c2e">\u{1F3B2} \${T('Casa di Carta')}</div>
+    <h2>\${T('Tavolo da gioco')}</h2>
+    <div class="field"><label>\${T('Giorno')}</label><div class="chips">\${dayChips}</div></div>
+    <div class="field"><label>\${T('Quante persone')}</label><div class="chips">\${[2, 3, 4, 5, 6].map(n => \`<button class="chip\${n === persone ? ' sel' : ''}" data-carta-pers="\${n}">\${n}</button>\`).join('')}</div></div>
+    <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
+    <div class="card" style="padding:4px 14px">\${(d.turni || []).map(riga).join('')}</div>
+    \${mieHTML}
+    <div class="note">\${d.minimo ? \`\${T('Al tavolo servono almeno')} \${d.minimo} \${T('giocatori: da soli non si occupa un tavolo.')}\` : T('Il tavolo si prenota a turni.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+async function cartaPrenota(turno) {
+  if (!state.tessera) { okThen(T('Serve la tessera di un socio per prenotare'), false); return; }
+  try {
+    const r = await fetch(API_BASE + '/api/carta/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: state._cartaData, turno, persone: state._cartaPers || 2 }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; }
+    okThen(\`\${T('Tavolo')} \${j.tavoli.join(', ')} \xB7 \${dataBella(state._cartaData)} \${turno}\`);
+  } catch { okThen(T('Errore di rete'), false); return; }
+  openCarta();
+}
+
+// ---- Posto allo Stage (cinema e spettacoli) ----
+async function openStage() {
+  let d;
+  try { d = await api('/cinema'); } catch { okThen(T('Programma non disponibile'), false); return; }
+  const pr = d.prossime || [];
+  if (!pr.length) { okThen(T('Nessuno spettacolo in programma.'), false); return; }
+  let mie = [];
+  if (state.tessera) { try { mie = await api('/cinema/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera)); } catch { } }
+  const riga = (p) => {
+    const pieno = p.posti_liberi <= 0;
+    return \`<div class="matchrow"><div style="flex:1">
+        <b style="font-size:.92rem">\${esc(p.titolo || T('Spettacolo'))}</b>
+        <div class="ct">\${esc(dataBella(p.data))} \xB7 \${esc(p.ora)}\${p.regia ? ' \xB7 ' + esc(p.regia) : ''}\${p.durata_min ? " \xB7 " + p.durata_min + "'" : ''}</div>
+        <div class="ct">\${pieno ? T('al completo') : \`\${p.posti_liberi} \${T('posti liberi')}\${p.solo_extra ? ' \xB7 ' + T('restano solo i posti in fondo') : ''}\`}</div></div>
+      \${pieno || !d.prenotabile ? '' : \`<button class="btn gold sm" data-stagepren="\${p.id}">\${T('Prenota')}</button>\`}</div>\`;
+  };
+  const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:10px">\${T('I miei posti')}</div>
+    <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(m.titolo || T('Spettacolo'))}</b><div class="ct">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)} \xB7 \${T('posti')} \${m.posti.join(', ')}</div></div></div>\`).join('')}</div>\` : '';
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#5f5188">\u{1F3AC} \${T('Bussola Stage')}</div>
+    <h2>\${T('Il tuo posto')}</h2>
+    <div class="card" style="padding:4px 14px">\${pr.map(riga).join('')}</div>
+    \${mieHTML}
+    <div class="note">\${esc(d.nota_contributo || '')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+async function stagePrenota(id) {
+  if (!state.tessera) { okThen(T('Serve la tessera di un socio per prenotare'), false); return; }
+  const n = Number(prompt(T('Quante persone?'), '2')) || 0;
+  if (n < 1) return;
+  try {
+    const r = await fetch(API_BASE + '/api/cinema/' + id + '/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, persone: n }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { okThen(j.error || T('Prenotazione non riuscita'), false); return; }
+    okThen(\`\${T('Posti')} \${j.posti.join(', ')}\`);
+  } catch { okThen(T('Errore di rete'), false); return; }
+  openStage();
 }
 
 // ---- Appartenenti a una casata (con il capitano in evidenza) ----
@@ -4867,7 +5030,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-gard-oggi],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -4906,6 +5069,16 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
+  if (t.dataset.serateTutte != null) return openSerateSpeciali();
+  if (t.dataset.fitness != null) return openFitness();
+  if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
+  if (t.dataset.carta != null) return openCarta();
+  if (t.dataset.cartaDate) { state._cartaData = t.dataset.cartaDate; return openCarta(); }
+  if (t.dataset.cartaPers) { state._cartaPers = Number(t.dataset.cartaPers); return openCarta(); }
+  if (t.dataset.cartaPren) return cartaPrenota(t.dataset.cartaPren);
+  if (t.dataset.cartaAnn) return api('/carta/prenotazioni/' + t.dataset.cartaAnn + '/annulla', { method: 'POST', body: JSON.stringify({ tessera_code: state.tessera }) }).then(openCarta).catch(() => openCarta());
+  if (t.dataset.stage != null) return openStage();
+  if (t.dataset.stagepren) return stagePrenota(t.dataset.stagepren);
   if (t.dataset.gardOggi) { state._gardData = new Date().toISOString().slice(0, 10); return openGarden({ soloOggi: true }); }
   if (t.dataset.gardDate) { state._gardData = t.dataset.gardDate; return openGarden(); }
   if (t.dataset.gardPers) { state._gardPers = Number(t.dataset.gardPers); return openGarden({ soloOggi: !!state._gardSoloOggi }); }
@@ -6050,12 +6223,46 @@ VIEWS.bussola = async () => {
     <p class="muted" style="margin-bottom:12px"><b>Nell'app dei soci si vede solo il periodo acceso</b>: spunta quello in corso e spegni gli altri, invece di mostrarli tutti uno sotto l'altro. Per ogni periodo imposta gli orari e <b>clicca le caselle</b>: ogni riga \xE8 un rifiuto, ogni colonna un giorno. Un giorno pu\xF2 avere pi\xF9 rifiuti (es. venerd\xEC: Carta <i>e</i> Vetro). La casella accesa mostra il colore della legenda.</p>
     \${periodBlocks || \`<p class="muted">Nessun periodo. Aggiungine uno qui sotto.</p>\`}
     <div class="row" style="margin-top:6px"><input id="rc_new_per" placeholder="Nuovo periodo (es. Invernale)" style="max-width:220px"><button class="btn gold sm" id="rc_add">+ Aggiungi periodo</button></div></div>\`;
-  $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>Contenuti guida</h3>
+  // Ogni voce ha la sua scheda: testi e COORDINATE. Senza coordinate la voce resta una riga di
+  // testo; con le coordinate diventa un collegamento che apre le mappe del telefono.
+  const voci = list.filter(b => b.sezione !== 'rifiuti');
+  const senzaGeo = voci.filter(b => b.sezione !== 'orari' && (b.lat == null || b.lng == null)).length;
+  const scheda = (b) => {
+    const geo = b.lat != null && b.lng != null;
+    const orari = b.sezione === 'orari';
+    return \`<div style="border:1px solid var(--line);border-left:4px solid \${geo || orari ? 'var(--ok)' : 'var(--gold)'};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#fff">
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="tag">\${esc(b.sezione)}</span>
+        <input id="bv_t_\${b.id}" value="\${esc(b.titolo)}" style="min-width:180px;font-weight:700">
+        <input id="bv_d_\${b.id}" value="\${esc(b.dettaglio || '')}" placeholder="Dettaglio" style="flex:1;min-width:160px">
+        <input id="bv_km_\${b.id}" value="\${esc(b.distanza || '')}" placeholder="Distanza" style="width:100px">
+        <span style="flex:1"></span>
+        <button class="btn gold sm" data-bvsave="\${b.id}">Salva</button>
+        <button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button>
+      </div>
+      \${orari ? '<p class="muted" style="font-size:.78rem;margin:0">Voce informativa: non ha una posizione sulla mappa.</p>' : \`
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+        <label class="muted" style="font-size:.78rem">Lat <input id="bv_lat_\${b.id}" value="\${corto(b.lat)}" placeholder="latitudine" style="width:110px"></label>
+        <label class="muted" style="font-size:.78rem">Lng <input id="bv_lng_\${b.id}" value="\${corto(b.lng)}" placeholder="longitudine" style="width:110px"></label>
+        <input id="bv_inc_\${b.id}" placeholder="\u2026oppure incolla qui il link di Google Maps o le coordinate" style="flex:1;min-width:220px">
+        <button class="btn ghost sm" data-bvinc="\${b.id}">Leggi</button>
+        \${geo ? \`<a class="btn ghost sm" href="https://www.google.com/maps/search/?api=1&query=\${b.lat},\${b.lng}" target="_blank" rel="noopener">\u{1F50E} Verifica sulla mappa</a>\`
+              : '<span class="tag mid">senza posizione</span>'}
+      </div>\`}
+    </div>\`;
+  };
+  $('#view').innerHTML = legenda + calendario + \`<div class="panel"><h3>\u{1F9ED} Contenuti della guida</h3>
+    <p class="muted">Ogni voce pu\xF2 avere una <b>posizione</b>: con le coordinate, nell'app dei soci diventa un collegamento che apre le mappe del telefono.<br>
+    <b>Come si prendono le coordinate:</b> su Google Maps fai <b>tasto destro sul punto esatto</b> (o tieni premuto sul telefono) e <b>clicca sulle coordinate per copiarle</b>; poi incollale nel campo qui sotto e premi <b>Leggi</b>. Va bene anche il link della mappa. <i>I link accorciati (maps.app.goo.gl) non contengono le coordinate: aprili prima, e copia dalla barra dell'indirizzo.</i><br>
+    Dopo aver salvato, usa <b>Verifica sulla mappa</b>: se il segnaposto non cade sul posto giusto, la posizione \xE8 sbagliata.</p>
+    \${senzaGeo ? \`<div class="row" style="background:#fdf6e6;border-left:4px solid var(--gold);padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:12px"><b>\${senzaGeo} voci senza posizione.</b> <span class="muted">Finch\xE9 non hanno le coordinate restano righe di testo, senza collegamento alla mappa.</span></div>\` : ''}
+    \${voci.map(scheda).join('') || '<p class="muted">Nessuna voce.</p>'}
+    <h3 style="margin-top:18px">Aggiungi una voce</h3>
     <div class="row"><select id="b_sez"><option value="servizi">servizi</option><option value="vedere">vedere</option><option value="orari">orari</option></select>
-      <input id="b_tit" placeholder="Titolo"><input id="b_det" placeholder="Dettaglio"><input id="b_dist" placeholder="Distanza" style="max-width:110px"><button class="btn gold sm" id="b_add">+ Aggiungi</button></div>
-    <table><thead><tr><th>Sezione</th><th>Titolo</th><th>Dettaglio</th><th>Distanza</th><th></th></tr></thead><tbody>
-    \${list.filter(b => b.sezione !== 'rifiuti').map(b => \`<tr><td>\${esc(b.sezione)}</td><td><b>\${esc(b.titolo)}</b></td><td>\${esc(b.dettaglio || '')}</td><td>\${esc(b.distanza || '')}</td><td><button class="btn danger sm" data-del="\${b.id}">\u{1F5D1}</button></td></tr>\`).join('')}
-  </tbody></table></div>\`;
+      <input id="b_tit" placeholder="Titolo"><input id="b_det" placeholder="Dettaglio"><input id="b_dist" placeholder="Distanza" style="max-width:110px">
+      <input id="b_geo" placeholder="Coordinate o link Google Maps" style="min-width:220px">
+      <button class="btn gold sm" id="b_add">+ Aggiungi</button></div>
+  </div>\`;
   // caselle matrice: accese col colore del rifiuto, spente su fondo bianco
   const styleTog = (btn) => { const on = btn.classList.contains('active'); const col = btn.dataset.col || '#7A8790'; if (on) { btn.style.background = col; btn.style.border = '1.5px solid ' + col; btn.style.color = rifTxt(col); btn.textContent = '\u2713'; } else { btn.style.background = '#fff'; btn.style.border = '1.5px solid #cbd2d8'; btn.style.color = ''; btn.textContent = ''; } };
   document.querySelectorAll('.rc_tog').forEach(btn => { styleTog(btn); btn.onclick = () => { btn.classList.toggle('active'); btn.setAttribute('aria-pressed', btn.classList.contains('active')); styleTog(btn); }; });
@@ -6074,17 +6281,53 @@ VIEWS.bussola = async () => {
   });
   document.querySelectorAll('[data-rcdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il periodo?')) return; await api('/rifiuti/calendario/' + encodeURIComponent(b.dataset.rcdel), { method: 'DELETE' }); show('bussola'); });
   $('#rc_add').onclick = async () => { const per = ($('#rc_new_per').value || '').trim(); if (!per) return; await api('/rifiuti/calendario/' + encodeURIComponent(per), { method: 'PUT', body: JSON.stringify({ giorni: {} }) }); show('bussola'); };
-  $('#b_add').onclick = async () => { await api('/bussola', { method: 'POST', body: JSON.stringify({ sezione: $('#b_sez').value, titolo: $('#b_tit').value, dettaglio: $('#b_det').value, distanza: $('#b_dist').value }) }); show('bussola'); };
+  // "Leggi" estrae le coordinate da quello che e' stato incollato e riempie i due campi.
+  document.querySelectorAll('[data-bvinc]').forEach(b => b.onclick = () => {
+    const id = b.dataset.bvinc;
+    const c = parseCoords($('#bv_inc_' + id).value);
+    if (!c) { alert('Non riesco a leggere le coordinate.\\n\\nIncolla "36.9186, 15.1706" oppure il link completo della mappa.\\nI link accorciati (maps.app.goo.gl) non contengono le coordinate: aprili prima nel browser.'); return; }
+    $('#bv_lat_' + id).value = c.lat.toFixed(5);
+    $('#bv_lng_' + id).value = c.lng.toFixed(5);
+    $('#bv_inc_' + id).value = '';
+  });
+  document.querySelectorAll('[data-bvsave]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.bvsave;
+    const incollato = ($('#bv_inc_' + id) || {}).value;
+    const c = incollato ? parseCoords(incollato) : null;   // se ha incollato senza premere Leggi
+    const lat = c ? c.lat : ($('#bv_lat_' + id) || {}).value;
+    const lng = c ? c.lng : ($('#bv_lng_' + id) || {}).value;
+    await api('/bussola/' + id, { method: 'PUT', body: JSON.stringify({
+      titolo: $('#bv_t_' + id).value, dettaglio: $('#bv_d_' + id).value,
+      distanza: $('#bv_km_' + id).value, lat, lng
+    }) });
+    show('bussola');
+  });
+  $('#b_add').onclick = async () => {
+    const c = parseCoords($('#b_geo').value);
+    await api('/bussola', { method: 'POST', body: JSON.stringify({ sezione: $('#b_sez').value, titolo: $('#b_tit').value, dettaglio: $('#b_det').value, distanza: $('#b_dist').value, lat: c ? c.lat : null, lng: c ? c.lng : null }) });
+    show('bussola');
+  };
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api('/bussola/' + b.dataset.del, { method: 'DELETE' }); show('bussola'); });
 };
 
 // ---- Luoghi "Siamo qui" ----
+// Accetta quello che l'operatore ha sotto mano: le coordinate copiate da Google Maps
+// ("36.918, 15.170"), il link della mappa (/@lat,lng oppure ?q= oppure !3d!4d dei link lunghi),
+// o un link "place" completo. I link accorciati (maps.app.goo.gl) NON contengono le coordinate:
+// in quel caso si apre il link e si copiano dalla barra dell'indirizzo.
 function parseCoords(s) {
   if (!s) return null;
-  // link Google Maps con @lat,lng  oppure  q=lat,lng  oppure  "lat, lng"
-  let m = s.match(/@(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/) || s.match(/[?&]q=(-?\\d+\\.\\d+),\\s*(-?\\d+\\.\\d+)/) || s.match(/(-?\\d+\\.\\d+)\\s*,\\s*(-?\\d+\\.\\d+)/);
-  return m ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]) } : null;
+  const m = s.match(/@(-?\\d+(?:\\.\\d+)?),\\s*(-?\\d+(?:\\.\\d+)?)/)
+    || s.match(/!3d(-?\\d+(?:\\.\\d+)?)!4d(-?\\d+(?:\\.\\d+)?)/)
+    || s.match(/[?&](?:q|ll|daddr|query)=(-?\\d+(?:\\.\\d+)?),\\s*(-?\\d+(?:\\.\\d+)?)/)
+    || s.match(/(-?\\d{1,2}(?:\\.\\d+)?)\\s*[,;]\\s*(-?\\d{1,3}(?:\\.\\d+)?)/);
+  if (!m) return null;
+  const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
 }
+function corto(v) { return v == null ? '' : Number(v).toFixed(5); }
 VIEWS.luoghi = async () => {
   const list = await api('/luoghi');
   $('#view').innerHTML = \`
@@ -9098,7 +9341,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "4.91";
+var VERSION = "4.93";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -11739,15 +11982,29 @@ adminRouter.get("/bussola", requireCap("guida"), async (req, res) => {
 });
 adminRouter.post("/bussola", requireCap("guida"), async (req, res) => {
   const b = req.body || {};
-  const num = (v) => v === "" || v == null ? null : Number(v);
+  const num = (v) => {
+    if (v === "" || v == null) return null;
+    const n = Number(String(v).replace(",", "."));
+    if (!Number.isFinite(n)) return null;
+    return n;
+  };
   const info = await db.prepare("INSERT INTO bussola (sezione,titolo,dettaglio,distanza,ordine,lat,lng) VALUES (?,?,?,?,?,?,?)").run(b.sezione, b.titolo, b.dettaglio ?? "", b.distanza ?? "", Number(b.ordine) || 0, num(b.lat), num(b.lng));
   audit(req.adminUser.username, "crea", "bussola", info.lastInsertRowid);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/bussola/:id", requireCap("guida"), async (req, res) => {
   const b = req.body || {};
-  const num = (v) => v === "" || v == null ? null : Number(v);
-  await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", num(b.lat), num(b.lng), req.params.id);
+  const num = (v) => {
+    if (v === "" || v == null) return null;
+    const n = Number(String(v).replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+  };
+  const lat0 = num(b.lat), lng0 = num(b.lng);
+  const valide = lat0 != null && lng0 != null && Math.abs(lat0) <= 90 && Math.abs(lng0) <= 180;
+  if ((b.lat || b.lng) && !valide && (lat0 != null || lng0 != null)) {
+    return res.status(400).json({ error: "Coordinate non valide: la latitudine sta fra -90 e 90, la longitudine fra -180 e 180." });
+  }
+  await db.prepare("UPDATE bussola SET titolo=?,dettaglio=?,distanza=?,lat=?,lng=? WHERE id=?").run(b.titolo, b.dettaglio ?? "", b.distanza ?? "", valide ? lat0 : null, valide ? lng0 : null, req.params.id);
   audit(req.adminUser.username, "modifica", "bussola", req.params.id);
   res.json({ ok: true });
 });
@@ -14781,17 +15038,18 @@ async function seed({ verbose = false } = {}) {
     }
   }
   const BUSSOLA = [
-    // Le coordinate rendono la voce un collegamento: si tocca e si apre la mappa del telefono.
-    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1, 36.9186, 15.1706],
-    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2, 36.9906, 15.2178],
-    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3, 36.9169, 15.1731],
-    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4, 36.9203, 15.169],
-    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5, 36.9192, 15.1712],
-    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1, 37.0596, 15.2933],
-    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2, 37.0759, 15.2743],
-    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3, 37.0594, 15.2933],
-    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4, 37.0035, 15.3037],
-    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5, 36.9906, 15.0447],
+    // Nessuna coordinata qui: le posizioni si inseriscono dal back office, verificate sulla
+    // mappa. Inventarle significa mandare qualcuno nel posto sbagliato.
+    ["servizi", "Farmacia", "Fontane Bianche", "~600 m", 1],
+    ["servizi", "Guardia medica", "Cassibile", "~5 km", 2],
+    ["servizi", "Spiaggia", "Fontane Bianche", "~300 m", 3],
+    ["servizi", "Market & alimentari", "Viale dei Lidi", "~700 m", 4],
+    ["servizi", "Bar & tabacchi", "Fontane Bianche", "~500 m", 5],
+    ["vedere", "Ortigia", "Centro storico di Siracusa \xB7 cultura", "~20 km", 1],
+    ["vedere", "Parco della Neapolis", "Teatro Greco \xB7 Orecchio di Dioniso", "~22 km", 2],
+    ["vedere", "Duomo di Siracusa", "Luogo di culto \xB7 barocco", "~20 km", 3],
+    ["vedere", "Riserva del Plemmirio", "Area marina protetta \xB7 natura", "~12 km", 4],
+    ["vedere", "Cavagrande del Cassibile", "Laghetti e sentieri \xB7 natura", "~18 km", 5],
     ["rifiuti", "Lun \xB7 Organico", "", "", 1],
     ["rifiuti", "Mar \xB7 Plastica", "", "", 2],
     ["rifiuti", "Mer \xB7 Carta", "", "", 3],
@@ -15002,7 +15260,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-20 13:56" : "online";
+var BUILD = true ? "2026-08-21 04:43" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
