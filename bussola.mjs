@@ -113,6 +113,12 @@ var init_push = __esm({
 
 // server/routes/authuser.js
 import { Router as Router3 } from "express";
+function etaDa(dataNascita) {
+  if (!dataNascita) return null;
+  const n = /* @__PURE__ */ new Date(String(dataNascita).slice(0, 10) + "T12:00:00Z");
+  if (Number.isNaN(n.getTime())) return null;
+  return Math.floor((Date.now() - n.getTime()) / (365.25 * 864e5));
+}
 async function requireUser(req, res, next) {
   const token = (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
   const u = await getUserSession(token);
@@ -177,7 +183,7 @@ var init_authuser = __esm({
       const token = await createUserSession(socio);
       audit(socio.tessera_code, "login_tessera", "soci", socio.id);
       const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
-      res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
+      res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, casata_id: socio.casata_id, colore: casata.colore, eta: etaDa(socio.data_nascita), notifiche_push: !!socio.notifiche_push } });
     });
     authUserRouter.post("/verify-otp", async (req, res) => {
       const email = String(req.body?.email || "").trim().toLowerCase();
@@ -190,7 +196,7 @@ var init_authuser = __esm({
       const token = await createUserSession(socio);
       audit(socio.tessera_code, "login_utente", "soci", socio.id);
       const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
-      res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, colore: casata.colore, notifiche_push: !!socio.notifiche_push } });
+      res.json({ token, socio: { tessera_code: socio.tessera_code, nome: socio.nome, cognome: socio.cognome, ruolo: socio.ruolo, tipo_profilo: socio.tipo_profilo, casata: casata.nome, casata_id: socio.casata_id, colore: casata.colore, eta: etaDa(socio.data_nascita), notifiche_push: !!socio.notifiche_push } });
     });
     authUserRouter.post("/registrazione", async (req, res) => {
       const b = req.body || {};
@@ -1606,6 +1612,26 @@ async function migrate() {
   await addIfMissing("menu_articoli", "magazzino_id", "magazzino_id INTEGER");
   await addIfMissing("menu_articoli", "consumo", "consumo REAL NOT NULL DEFAULT 1");
   await addIfMissing("comande", "scaricata", "scaricata INTEGER NOT NULL DEFAULT 0");
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS richieste_aiuto (
+    id           INTEGER PRIMARY KEY,
+    tessera_code TEXT,
+    nome         TEXT,
+    tipo         TEXT NOT NULL DEFAULT 'aiuto',   -- aiuto | sono_qui
+    lat          REAL,
+    lng          REAL,
+    precisione   REAL,
+    nota         TEXT,
+    stato        TEXT NOT NULL DEFAULT 'aperta',  -- aperta | presa | chiusa
+    preso_da     TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    chiusa_at    TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_aiuto_stato ON richieste_aiuto(stato, created_at);
+  `);
+  } catch (_) {
+  }
   await addIfMissing("bussola", "mappa_embed", "mappa_embed TEXT");
   await addIfMissing("luoghi", "mappa_embed", "mappa_embed TEXT");
   await addIfMissing("eventi", "luogo", "luogo TEXT");
@@ -2549,6 +2575,33 @@ var init_parametri = __esm({
         etichetta: "Prenotazione obbligatoria",
         aiuto: "Le attivit\xE0 con istruttore hanno posti contati: senza prenotazione non si entra."
       },
+      // ---- Accessibilita' e assistenza ----
+      {
+        chiave: "semplice_eta",
+        gruppo: "Accessibilita\u0300",
+        tipo: "numero",
+        predefinito: 70,
+        min: 55,
+        max: 95,
+        etichetta: "Da che eta' l'app parte in modo semplice",
+        aiuto: "Chi ha almeno questa eta' trova la versione essenziale gia' attiva: poche voci grandi e la prenotazione in un tocco. Resta comunque possibile passare alla versione completa, e viceversa."
+      },
+      {
+        chiave: "aiuto_numero",
+        gruppo: "Accessibilita\u0300",
+        tipo: "testo",
+        predefinito: "",
+        etichetta: "Numero del residence per le emergenze",
+        aiuto: "Il numero che squilla al chiosco o in reception. Compare nel tasto \u201CChiedi aiuto\u201D accanto al 112. Se vuoto, resta solo il 112."
+      },
+      {
+        chiave: "aiuto_avvisa_crew",
+        gruppo: "Accessibilita\u0300",
+        tipo: "bool",
+        predefinito: true,
+        etichetta: "Avvisa anche la Crew",
+        aiuto: "La richiesta compare subito nell'app dello staff, con la posizione se il socio l'ha concessa: chi e' sul posto arriva prima di chiunque altro."
+      },
       // ---- Casa di Carta ----
       {
         chiave: "carta_prenotazione",
@@ -2881,6 +2934,20 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .welcome .wl{flex:1;} .welcome .eyebrow{color:var(--coral);}
 .welcome h3{font-family:Georgia,serif; color:var(--navy); font-size:1rem; margin:2px 0 3px;}
 .welcome p{font-size:.75rem; color:var(--mute);}
+/* Modo semplice: bersagli grandi, etichetta sempre scritta, nessun gesto da imparare. */
+.bigtile{display:flex; align-items:center; gap:14px; width:100%; min-height:82px; margin-top:12px;
+  background:var(--card); border:1.5px solid var(--line); border-radius:18px; padding:14px 16px;
+  text-align:left; font:inherit; color:var(--navy); cursor:pointer;}
+.bigtile .bt-ico{font-size:2rem; flex:0 0 auto;}
+.bigtile .bt-txt{flex:1; display:flex; flex-direction:column; gap:2px;}
+.bigtile .bt-txt b{font-size:1.18rem;}
+.bigtile .bt-txt span{font-size:.92rem; color:var(--muted);}
+.bigtile .bt-go{font-size:1.6rem; color:var(--muted);}
+.bigtile.aiuto{background:#fdecea; border-color:#b14a35;}
+.bigtile.aiuto .bt-txt b{color:#8e2f1e;}
+.btn.sos{background:#b14a35; color:#fff; font-size:1.15rem; padding:16px;}
+.card.oggi{padding:18px 18px 14px;}
+.card.oggi h2{font-size:1.5rem; margin:4px 0 6px;}
 .hero{position:relative; border-radius:18px; overflow:hidden; color:#fff; padding:18px; min-height:150px; display:flex; flex-direction:column; justify-content:flex-end; margin-top:14px;
   background:linear-gradient(180deg, rgba(18,50,79,.2), rgba(18,50,79,.9)), linear-gradient(135deg,#5f4f95,#256b65); cursor:pointer;}
 .hero .eyebrow{color:#ffe1ac;}
@@ -3473,7 +3540,46 @@ function ptile(attr, icona, titolo, sotto) {
   const a = attr.includes('=') ? 'data-' + attr : \`data-\${attr}=""\`;
   return \`<div class="ptile" role="button" tabindex="0" \${a}><span class="ic">\${icona}</span><span class="tx"><b>\${titolo}</b><span>\${sotto}</span></span></div>\`;
 }
+// ---- Modo semplice ------------------------------------------------------------------------
+// Non e' una seconda app: e' la stessa, con meno decisioni. Si accende da sola per chi ha
+// l'eta' indicata nei parametri (la data di nascita e' gia' in anagrafica) e si spegne con un
+// tocco \u2014 chi la trova attiva per sbaglio non deve restare chiuso fuori da meta' applicazione.
+function modoSemplice() {
+  const scelto = localStorage.getItem('koine_semplice');
+  if (scelto === '1') return true;
+  if (scelto === '0') return false;
+  const eta = Number(state.socio?.eta || 0);
+  const soglia = Number(state.data?.regole?.semplice_eta || 70);
+  return eta > 0 && eta >= soglia;
+}
+function cambiaModo(v) { localStorage.setItem('koine_semplice', v ? '1' : '0'); render(); }
+
+function eventoDiOggi() {
+  const gg = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'][new Date().getDay()];
+  return (state.data.eventi || []).find(e => String(e.giorno || '').toLowerCase().startsWith(gg)) || null;
+}
+function renderHomeSemplice() {
+  const hero = eventoDiOggi();
+  const casata = state.socio?.casata;
+  const bigTile = (attr, ico, titolo, sotto) => \`<button class="bigtile" \${attr}>
+      <span class="bt-ico">\${ico}</span><span class="bt-txt"><b>\${esc(titolo)}</b><span>\${esc(sotto)}</span></span>
+      <span class="bt-go">\u203A</span></button>\`;
+  $('#s-home').innerHTML = \`
+    <div class="card oggi">
+      <div class="eyebrow">\${T('Oggi al residence')}</div>
+      <h2 class="serif">\${esc(hero ? hero.titolo : T('Giornata libera'))}</h2>
+      \${hero && hero.sottotitolo ? \`<p>\${esc(hero.sottotitolo)}</p>\` : ''}
+      \${hero && hero.ora_inizio ? \`<p class="sub"><b>\${esc(hero.ora_inizio)}</b>\${hero.luogo ? ' \xB7 ' + esc(hero.luogo) : ''}</p>\` : ''}
+    </div>
+    \${bigTile('data-gard-oggi="1"', '\u{1F37D}\uFE0F', T('Prenota la cena'), T('per stasera, in un tocco'))}
+    \${casata ? bigTile('data-vuoigiocare="1"', '\u{1F3BE}', T('Vuoi giocare?'), \`\${T('la tua casata')}: \${esc(casata)}\`) : ''}
+    \${bigTile('data-t="bussola"', '\u{1F9ED}', T('Informazioni utili'), T('orari, rifiuti, numeri'))}
+    <button class="bigtile aiuto" data-aiuto="1"><span class="bt-ico">\u{1F198}</span><span class="bt-txt"><b>\${T('Chiedi aiuto')}</b><span>\${T('112, residence, la mia posizione')}</span></span></button>
+    <button class="btn ghost block" style="margin-top:14px" data-modo="0">\${T('Passa alla versione completa')}</button>\`;
+}
+
 function renderHome() {
+  if (modoSemplice()) return renderHomeSemplice();
   const evs = state.data.eventi;
   // Il "benvenuto" salta il luned\xEC vuoto: mostra la prima serata con attivit\xE0.
   const first = evs.find(e => e.tipo !== 'libero' && e.chiave !== 'lun') || evs[0];
@@ -3991,6 +4097,57 @@ function openMappa(nome) {
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
+
+// ---- Chiedi aiuto ---------------------------------------------------------------------
+// Tre cose, grandi e senza passaggi: il 112, il numero del residence, e "sono qui" che manda
+// la posizione a chi sta lavorando nel villaggio \u2014 che di solito arriva prima dell'ambulanza.
+async function openAiuto() {
+  let n = { emergenza: '112', residence: null, avvisa_crew: true };
+  try { n = await api('/aiuto/numeri'); } catch { }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#b14a35">\${T('Assistenza')}</div>
+    <h2>\${T('Chiedi aiuto')}</h2>
+    <a class="btn sos block" href="tel:112">\u{1F4DE} \${T('Chiama il 112')}</a>
+    \${n.residence ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(n.residence)}">\u{1F4DE} \${T('Chiama il residence')} \xB7 \${esc(n.residence)}</a>\` : ''}
+    \${n.avvisa_crew ? \`<button class="btn gold block" style="margin-top:10px" id="aiuto_qui">\u{1F4CD} \${T('Sono qui \u2014 avvisa il personale')}</button>\` : ''}
+    <div id="aiuto_esito" class="note" style="margin-top:12px">\${T('Il 112 \xE8 il numero unico delle emergenze. Il personale del residence \xE8 gi\xE0 sul posto e pu\xF2 arrivare prima.')}</div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+  const box = $('#aiuto_esito');
+  if ($('#aiuto_qui')) $('#aiuto_qui').onclick = () => {
+    box.textContent = T('Cerco la tua posizione\u2026');
+    const invia = async (pos) => {
+      const c = pos ? pos.coords : null;
+      try {
+        await api('/aiuto', { method: 'POST', body: JSON.stringify({
+          tessera_code: state.tessera, tipo: 'sono_qui',
+          lat: c ? c.latitude : null, lng: c ? c.longitude : null, precisione: c ? c.accuracy : null
+        }) });
+        box.innerHTML = \`<b>\${T('Fatto: il personale \xE8 stato avvisato.')}</b><br>\${c ? T('Sa dove ti trovi. Resta dove sei.') : T('Non ho la tua posizione: se puoi, di\\' dove sei quando ti raggiungono.')}\`;
+      } catch (e) { box.textContent = T('Non sono riuscito ad avvisare: chiama il numero qui sopra.'); }
+    };
+    if (!navigator.geolocation) return invia(null);
+    navigator.geolocation.getCurrentPosition(invia, () => invia(null), { enableHighAccuracy: true, timeout: 8000 });
+  };
+}
+
+// "Vuoi giocare?" \u2014 le partite aperte della propria casata, senza passare dai campi.
+async function openVuoiGiocare() {
+  let aperte = [];
+  try { aperte = await api('/partite-aperte'); } catch { }
+  const riga = (p) => \`<div class="matchrow"><div style="flex:1">
+      <b style="font-size:.92rem">\${esc(p.campo_nome || p.campo || '')}</b>
+      <div class="ct">\${esc(dataBella(p.data))} \xB7 \${esc(p.slot)} \xB7 \${p.iscritti}/\${p.posti_totali} \${T('giocatori')}</div></div>
+    <button class="btn gold sm" data-unisciti="\${p.id}">\${T('Mi unisco')}</button></div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F3BE} \${T('Vuoi giocare?')}</div>
+    <h2>\${T('Partite aperte')}</h2>
+    \${aperte.length
+      ? \`<div class="card" style="padding:4px 14px">\${aperte.map(riga).join('')}</div>\`
+      : \`<div class="note">\${T('Nessuna partita aperta in questo momento.')}</div>\`}
+    <button class="btn navy block" style="margin-top:10px" data-campi="1">\${T('Prenota un campo')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+
 // ---- Coworking: postazioni della sala, non tavoli da gioco ----
 // Prima questa tessera apriva la vecchia "risorsa" coworking, un sistema a parte: la
 // prenotazione non compariva nella sala, il contatore non si muoveva e il socio non
@@ -4139,8 +4296,10 @@ async function openStage() {
   };
   const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:10px">\${T('I miei posti')}</div>
     <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(m.titolo || T('Spettacolo'))}</b><div class="ct">\${esc(dataBella(m.data))} \xB7 \${esc(m.turno)} \xB7 \${T('posti')} \${m.posti.join(', ')}</div></div></div>\`).join('')}</div>\` : '';
+  const over70 = Number(state.socio?.eta || 0) >= 70 && Number(d.prima_fila_over70 || 0) > 0;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#5f5188">\u{1F3AC} \${T('Bussola Stage')}</div>
     <h2>\${T('Il tuo posto')}</h2>
+    \${over70 ? \`<div class="note" style="border-left-color:#7a5c2e"><b>\${T('Hai diritto alla prima fila')}</b> \u2014 \${T('la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.')}</div>\` : ''}
     <div class="card" style="padding:4px 14px">\${pr.map(riga).join('')}</div>
     \${mieHTML}
     <div class="note">\${esc(d.nota_contributo || '')}</div>
@@ -5236,7 +5395,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -5275,6 +5434,9 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
+  if (t.dataset.aiuto) return openAiuto();
+  if (t.dataset.vuoigiocare) return openVuoiGiocare();
+  if (t.dataset.modo) return cambiaModo(t.dataset.modo === '1');
   if (t.dataset.mappa) return openMappa(t.dataset.mappa);
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
@@ -7864,6 +8026,23 @@ function pickMetodo(onPick) {
 }
 
 /* ---------- COMANDE (cassa): l'operatore vede il men\xF9 ESATTAMENTE come il cliente ---------- */
+// Le richieste di aiuto stanno in cima: chi lavora al banco guarda questa schermata di continuo.
+async function bannerAiuto() {
+  let r = [];
+  try { r = await api('/aiuto'); } catch { return ''; }
+  const aperte = r.filter(x => x.stato !== 'chiusa');
+  if (!aperte.length) return '';
+  return \`<div class="panel" style="border:2px solid #b14a35;background:#fdecea">
+    <b style="color:#8e2f1e">\u{1F198} Richieste di aiuto (\${aperte.length})</b>
+    \${aperte.map(a => \`<div class="row" style="justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.08)">
+      <div><b>\${esc(a.nome || '\u2014')}</b> <span class="muted">\xB7 \${esc(String(a.created_at || '').slice(11, 16))}\${a.stato === 'presa' ? ' \xB7 presa da ' + esc(a.preso_da || '') : ''}</span>
+        <div class="muted" style="font-size:.8rem">\${a.lat != null ? \`posizione nota\${a.precisione ? ' (\xB1' + Math.round(a.precisione) + ' m)' : ''}\` : 'posizione non disponibile'}</div></div>
+      <div class="row" style="gap:6px">
+        \${a.lat != null ? \`<a class="btn ghost sm" href="https://www.google.com/maps/search/?api=1&query=\${a.lat},\${a.lng}" target="_blank" rel="noopener">\u{1F4CD} Dov'\xE8</a>\` : ''}
+        \${a.stato === 'aperta' ? \`<button class="btn gold sm" data-aiutopresa="\${a.id}">Ci penso io</button>\` : \`<button class="btn ghost sm" data-aiutochiudi="\${a.id}">Chiudi</button>\`}
+      </div></div>\`).join('')}</div>\`;
+}
+
 VIEWS.comande = async () => {
   const menu = (await api('/menu')).filter(m => m.attivo);
   const garden = ZONA === 'garden';
@@ -7925,12 +8104,14 @@ VIEWS.comande = async () => {
 
   if (garden) {
     // Niente compositore qui: al Garden si ordina toccando il tavolo nella Pianta.
-    $('#view').innerHTML = soPanel + \`
+    $('#view').innerHTML = (await bannerAiuto()) + soPanel + \`
       <div class="panel"><h3>\u{1F9FE} Comande del Garden</h3>
         <p class="muted">Le comande si prendono <b>dal tavolo</b>: apri la tab <b>\u{1F5FA}\uFE0F Tavoli & pianta</b>, tocca il tavolo e premi <b>Ordina</b>. Cosi' il numero del tavolo non si digita e non si sbaglia, e sai per chi stai ordinando.</p>
         <button class="btn gold sm" id="vai_pianta">\u{1F5FA}\uFE0F Vai ai tavoli</button></div>\`;
     $('#vai_pianta').onclick = () => show('pianta');
-    if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
+    document.querySelectorAll('[data-aiutopresa]').forEach(b => b.onclick = async () => { await api('/aiuto/' + b.dataset.aiutopresa, { method: 'PUT', body: JSON.stringify({ stato: 'presa' }) }); show('comande'); });
+  document.querySelectorAll('[data-aiutochiudi]').forEach(b => b.onclick = async () => { await api('/aiuto/' + b.dataset.aiutochiudi, { method: 'PUT', body: JSON.stringify({ stato: 'chiusa' }) }); show('comande'); });
+  if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
     if ($('#so_cfg')) $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
     if ($('#cf_save')) $('#cf_save').onclick = async () => {
       await api('/self-order/config', { method: 'POST', body: JSON.stringify({
@@ -7941,7 +8122,7 @@ VIEWS.comande = async () => {
     };
     return;
   }
-  $('#view').innerHTML = soPanel + \`
+  $('#view').innerHTML = (await bannerAiuto()) + soPanel + \`
     <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
       <div class="row" style="margin-bottom:8px">\${entry}</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
@@ -9950,7 +10131,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.04";
+var VERSION = "5.05";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14726,6 +14907,8 @@ adminRouter.get("/cruscotto", async (req, res) => {
   ).all();
   const negativi = await db.prepare("SELECT id,nome,giacenza FROM magazzino_articoli WHERE giacenza < 0 ORDER BY giacenza LIMIT 8").all();
   const attenzione = [];
+  const aiuti = await db.prepare("SELECT COUNT(*) n FROM richieste_aiuto WHERE stato='aperta'").get();
+  if (Number(aiuti?.n || 0)) attenzione.push({ tipo: "aiuto", testo: `${aiuti.n} richieste di aiuto da prendere in carico`, vai: "chiosco" });
   if (negativi.length) attenzione.push({ tipo: "magazzino", testo: `${negativi.length} articoli con giacenza NEGATIVA: si sta vendendo merce che a sistema non c'\xE8`, vai: "magazzino" });
   if (inRitardo) attenzione.push({ tipo: "comande", testo: `${inRitardo} comande oltre i 10 minuti`, vai: "chiosco" });
   if (daRiordinare.length) attenzione.push({ tipo: "magazzino", testo: `${daRiordinare.length} articoli sotto il punto di riordino`, vai: "magazzino" });
@@ -14842,6 +15025,18 @@ adminRouter.get("/soci/tessera/:code", requireCap("comande"), async (req, res) =
   const r = await db.prepare("SELECT id,nome,cognome,tessera_code,attivo FROM soci WHERE tessera_code=?").get(String(req.params.code).toUpperCase());
   if (!r) return res.status(404).json({ error: "Tessera non riconosciuta" });
   res.json(r);
+});
+adminRouter.get("/aiuto", async (req, res) => {
+  const righe = await db.prepare(
+    "SELECT * FROM richieste_aiuto WHERE stato<>'chiusa' OR created_at > datetime('now','-6 hours') ORDER BY (stato='chiusa'), id DESC LIMIT 40"
+  ).all();
+  res.json(righe);
+});
+adminRouter.put("/aiuto/:id", async (req, res) => {
+  const stato = ["presa", "chiusa", "aperta"].includes(req.body?.stato) ? req.body.stato : "presa";
+  await db.prepare("UPDATE richieste_aiuto SET stato=?, preso_da=?, chiusa_at=CASE WHEN ?='chiusa' THEN datetime('now') ELSE chiusa_at END WHERE id=?").run(stato, req.adminUser.username, stato, req.params.id);
+  audit(req.adminUser.username, "aiuto:" + stato, "richieste_aiuto", req.params.id);
+  res.json({ ok: true });
 });
 
 // build/entry.mjs
@@ -15057,10 +15252,12 @@ publicRouter.get("/discipline/:dominio", async (req, res) => {
   res.json(out);
 });
 publicRouter.get("/tessera/:code", async (req, res) => {
-  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,c.nome AS casata,c.colore
+  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,so.data_nascita,c.nome AS casata,c.colore
                         FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
                         WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
   if (!s) return res.status(404).json({ error: "Tessera non trovata" });
+  s.eta = etaDi(s);
+  delete s.data_nascita;
   s.is_host = s.host ? 1 : 0;
   s.ha_casa = s.struttura_id ? 1 : 0;
   delete s.struttura_id;
@@ -15272,6 +15469,7 @@ publicRouter.get("/campi", async (req, res) => {
     unisciti: await par("campi_unisciti"),
     unisciti_modo: await par("campi_unisciti_modo"),
     durata_massima_minuti: await par("campi_durata_massima_minuti"),
+    semplice_eta: Number(await par("semplice_eta")) || 70,
     numero_legale: await par("campi_numero_legale"),
     numero_legale_minuti: await par("campi_numero_legale_minuti")
   };
@@ -15656,7 +15854,8 @@ publicRouter.get("/cinema", async (req, res) => {
       solo_extra: st.standard_liberi <= 0 && st.posti_liberi > 0
     });
   }
-  res.json({ film, prossime, prenotabile, contributo, nota_contributo: contributo > 0 ? `Chi cena al Garden ha gia\u0300 il suo posto davanti al palco. Per il solo spettacolo si versa un contributo di \u20AC ${contributo.toFixed(2)} all'ingresso.` : "Ingresso libero." });
+  const primaFila = Number(await par("stage_prima_fila_over70")) || 0;
+  res.json({ film, prossime, prenotabile, contributo, prima_fila_over70: primaFila, nota_contributo: contributo > 0 ? `Chi cena al Garden ha gia\u0300 il suo posto davanti al palco. Per il solo spettacolo si versa un contributo di \u20AC ${contributo.toFixed(2)} all'ingresso.` : "Ingresso libero." });
 });
 publicRouter.post("/cinema/:id/prenota", async (req, res) => {
   if (!await par("cinema_prenotazione")) return res.status(409).json({ error: "La prenotazione dei posti non e\u0300 attiva" });
@@ -15864,6 +16063,26 @@ publicRouter.post("/carta/prenotazioni/:id/annulla", async (req, res) => {
   if (p.tessera_code && req.body?.tessera_code && p.tessera_code !== req.body.tessera_code) return res.status(403).json({ error: "Puoi annullare solo le tue prenotazioni" });
   await db.prepare("UPDATE prenotazioni_tavolo SET stato='annullato' WHERE id=?").run(p.id);
   res.json({ ok: true });
+});
+publicRouter.get("/aiuto/numeri", async (req, res) => {
+  const numero = String(await par("aiuto_numero") || "").trim();
+  res.json({
+    emergenza: "112",
+    residence: numero || null,
+    avvisa_crew: !!await par("aiuto_avvisa_crew")
+  });
+});
+publicRouter.post("/aiuto", async (req, res) => {
+  const b = req.body || {};
+  if (!await par("aiuto_avvisa_crew")) return res.json({ ok: true, avvisata: false });
+  const socio = b.tessera_code ? await socioAttivoByTessera(b.tessera_code) : null;
+  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : b.nome || "Ospite";
+  const num = (v) => v == null || v === "" ? null : Number(v);
+  const info = await db.prepare(
+    "INSERT INTO richieste_aiuto (tessera_code,nome,tipo,lat,lng,precisione,nota) VALUES (?,?,?,?,?,?,?)"
+  ).run(b.tessera_code || null, nome, b.tipo === "sono_qui" ? "sono_qui" : "aiuto", num(b.lat), num(b.lng), num(b.precisione), b.nota || null);
+  audit(b.tessera_code || "ospite", "richiesta_aiuto", "richieste_aiuto", Number(info.lastInsertRowid), nome);
+  res.status(201).json({ ok: true, avvisata: true, id: Number(info.lastInsertRowid) });
 });
 
 // server/seed.js
@@ -16260,7 +16479,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-21 12:31" : "online";
+var BUILD = true ? "2026-08-22 05:09" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
