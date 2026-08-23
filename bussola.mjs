@@ -3728,6 +3728,13 @@ function renderHome() {
 function serateSectionHTML() {
   const list = state.data.serate || [];
   if (!list.length) return '';
+  // A un minorenne le serate con quota non si propongono nemmeno. Il server le rifiuta gia',
+  // ma mostrare il tasto e poi negarlo e' peggio: lo si mette nella condizione di impegnare
+  // soldi che non sono suoi, e di prendersi un rifiuto per una cosa che gli abbiamo offerto.
+  if (modoRagazzi()) {
+    return \`<div class="sect-title" style="margin-top:14px">\${T('Serate su prenotazione')}</div>
+      <div class="note">\${T('Ci sono serate con posti contati e una quota da pagare: le prenota un adulto per te.')}</div>\`;
+  }
   return \`<div class="sect-title" style="margin-top:14px">\${T('Serate su prenotazione')}</div>
     <div>\${list.map(s => \`<div class="evcard" role="button" tabindex="0" data-serata="\${s.id}">
       <span class="stripe" style="background:#b14a35"></span>
@@ -3737,7 +3744,7 @@ function serateSectionHTML() {
 function renderEventi() {
   $('#s-eventi').innerHTML = \`
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 4px">\${T('Il programma')}</h2>
-    <p class="tiny muted" style="margin-bottom:12px">\${T('Tocca una serata per i dettagli e per prenotare.')}</p>
+    <p class="tiny muted" style="margin-bottom:12px">\${modoRagazzi() ? T('Tocca una serata per i dettagli.') : T('Tocca una serata per i dettagli e per prenotare.')}</p>
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
     \${serateSectionHTML()}
     <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}</div>\`;
@@ -4190,10 +4197,10 @@ function openSerateSpeciali() {
       <b style="font-size:.92rem">\${esc(s.titolo)}</b>
       <div class="ct">\${esc(s.quando || '')} \xB7 \u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti liberi')}\` : ''}</div>
       \${s.descrizione ? \`<div class="ct">\${esc(s.descrizione)}</div>\` : ''}</div>
-    <button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button></div>\`;
+    \${modoRagazzi() ? '' : \`<button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button>\`}</div>\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Su prenotazione')}</div>
     <h2>\${T('Le serate speciali')}</h2>
-    <p class="sub">\${T('Posti contati: si prenota e si paga in loco.')}</p>
+    <p class="sub">\${modoRagazzi() ? T('Posti contati e quota da pagare: le prenota un adulto per te.') : T('Posti contati: si prenota e si paga in loco.')}</p>
     <div class="card" style="padding:4px 14px">\${list.map(riga).join('')}</div>
     <div class="note">\${T('Il programma completo della settimana \xE8 nella sezione Eventi.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
@@ -5563,7 +5570,11 @@ document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
-  if (t.dataset.serata != null) return openSerata(t.dataset.serata);
+  if (t.dataset.serata != null) {
+    // Ovunque si arrivi, per un minorenne la serata si guarda ma non si prenota.
+    if (modoRagazzi()) { okThen(T('Le serate con quota le prenota un adulto per te.'), false); return; }
+    return openSerata(t.dataset.serata);
+  }
   if (t.dataset.openContest != null) return openContest();
   if (t.dataset.cap) { const a = t.dataset.cap; if (a === 'convoca') return openCapConvoca(); if (a === 'serata') return openCapSerata(); if (a === 'share') return capShare(); return; }
   if (t.dataset.capm != null) return openCapMembri(Number(t.dataset.capm));
@@ -10305,7 +10316,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.11";
+var VERSION = "5.12";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -16694,7 +16705,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-23 10:46" : "online";
+var BUILD = true ? "2026-08-23 11:02" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
