@@ -3591,7 +3591,15 @@ function regoleApp() { return ((state.data?.campi || [])[0] || {}).regole || {};
 // La scelta della versione e' della persona, non del telefono: nonno e nipote possono usare
 // lo stesso apparecchio senza rubarsi la modalita' a vicenda.
 function chiaveModo() { return 'koine_semplice_' + (state.tessera || 'anon'); }
-function sceltaModo() { return localStorage.getItem(chiaveModo()) || localStorage.getItem('koine_semplice'); }
+// Niente ripiego sulla vecchia chiave comune: un "passa alla versione completa" premuto una
+// volta da chiunque restava valido per tutti quelli che usavano quel telefono, e teneva
+// spenta la modalita' anche a chi non l'aveva mai toccata. La si cancella una volta per tutte.
+function sceltaModo() {
+  // La vecchia chiave comune si butta e basta: era di "chiunque avesse quel telefono", quindi
+  // non e' attribuibile a nessuno. Riportarla sulla tessera avrebbe conservato il blocco.
+  if (localStorage.getItem('koine_semplice') !== null) localStorage.removeItem('koine_semplice');
+  return localStorage.getItem(chiaveModo());
+}
 function modoSemplice() {
   const scelto = sceltaModo();
   if (scelto === '1') return true;
@@ -10293,7 +10301,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.09";
+var VERSION = "5.10";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -16672,7 +16680,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-23 10:31" : "online";
+var BUILD = true ? "2026-08-23 10:38" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
