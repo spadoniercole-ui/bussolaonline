@@ -1612,6 +1612,8 @@ async function migrate() {
   await addIfMissing("menu_articoli", "magazzino_id", "magazzino_id INTEGER");
   await addIfMissing("menu_articoli", "consumo", "consumo REAL NOT NULL DEFAULT 1");
   await addIfMissing("comande", "scaricata", "scaricata INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("soci", "emergenza_nome", "emergenza_nome TEXT");
+  await addIfMissing("soci", "emergenza_tel", "emergenza_tel TEXT");
   try {
     await db.exec(`
   CREATE TABLE IF NOT EXISTS richieste_aiuto (
@@ -2587,6 +2589,32 @@ var init_parametri = __esm({
         aiuto: "Chi ha almeno questa eta' trova la versione essenziale gia' attiva: poche voci grandi e la prenotazione in un tocco. Resta comunque possibile passare alla versione completa, e viceversa."
       },
       {
+        chiave: "ragazzi_eta",
+        gruppo: "Accessibilita\u0300",
+        tipo: "numero",
+        predefinito: 14,
+        min: 8,
+        max: 17,
+        etichetta: "Fino a che eta' l'app parte in modo ragazzi",
+        aiuto: "Chi ha fino a questa eta' trova una versione centrata su sport, casata e programma. A 14 anni si e' gia' dentro le casate, e il telefono ce l'hanno anche prima."
+      },
+      {
+        chiave: "ragazzi_ordini",
+        gruppo: "Accessibilita\u0300",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "I minorenni possono ordinare da soli",
+        aiuto: "Ordinare significa spendere. Spento, un minorenne vede il men\xF9 ma l'ordine lo fa un adulto al banco: non e' una limitazione dell'app, e' una scelta su chi paga."
+      },
+      {
+        chiave: "ragazzi_prenotano_campi",
+        gruppo: "Accessibilita\u0300",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "I ragazzi prenotano i campi",
+        aiuto: "Di norma no: il campo lo prenota un adulto e il ragazzo gioca, unendosi alla partita. Unirsi resta sempre possibile \u2014 e' giocare, non impegnare uno spazio."
+      },
+      {
         chiave: "aiuto_numero",
         gruppo: "Accessibilita\u0300",
         tipo: "testo",
@@ -3544,15 +3572,49 @@ function ptile(attr, icona, titolo, sotto) {
 // Non e' una seconda app: e' la stessa, con meno decisioni. Si accende da sola per chi ha
 // l'eta' indicata nei parametri (la data di nascita e' gia' in anagrafica) e si spegne con un
 // tocco \u2014 chi la trova attiva per sbaglio non deve restare chiuso fuori da meta' applicazione.
+// Le soglie arrivano dal server insieme alle regole dei campi: si spostano dai parametri,
+// non stanno scritte qui.
+function regoleApp() { return ((state.data?.campi || [])[0] || {}).regole || {}; }
 function modoSemplice() {
   const scelto = localStorage.getItem('koine_semplice');
   if (scelto === '1') return true;
   if (scelto === '0') return false;
   const eta = Number(state.socio?.eta || 0);
-  const soglia = Number(state.data?.regole?.semplice_eta || 70);
-  return eta > 0 && eta >= soglia;
+  return eta > 0 && eta >= Number(regoleApp().semplice_eta || 70);
+}
+// Modo ragazzi: la stessa app, centrata su cio' per cui la useranno davvero \u2014 lo sport e la
+// casata. Le limitazioni riguardano solo la spesa, e sono applicate dal server: nascondere un
+// tasto non e' un divieto.
+function modoRagazzi() {
+  if (localStorage.getItem('koine_semplice') === '0') return false;
+  const eta = Number(state.socio?.eta || 0);
+  return eta > 0 && eta <= Number(regoleApp().ragazzi_eta || 14);
 }
 function cambiaModo(v) { localStorage.setItem('koine_semplice', v ? '1' : '0'); render(); }
+
+// In modo semplice e ragazzi la barra in basso porta le stesse voci della home: usando l'app
+// si finisce in una schermata qualsiasi e le scorciatoie non devono sparire.
+function adattaBarra() {
+  const bar = document.querySelector('nav[aria-label="Navigazione principale"]');
+  if (!bar) return;
+  if (!bar.dataset.originale) bar.dataset.originale = bar.innerHTML;
+  const semplice = modoSemplice(), ragazzi = modoRagazzi();
+  if (!semplice && !ragazzi) { if (bar.innerHTML !== bar.dataset.originale) { bar.innerHTML = bar.dataset.originale; ricollegaBarra(); } return; }
+  const voci = ragazzi
+    ? [['home', '\u{1F3E0}', T('Home')], ['partite', '\u{1F93E}', T('Giocare')], ['coppa', '\u{1F3C6}', T('Coppa')], ['eventi', '\u{1F4C5}', T('Stasera')], ['bussola', '\u{1F9ED}', T('Guida')]]
+    : [['home', '\u{1F3E0}', T('Home')], ['cena', '\u{1F37D}\uFE0F', T('Cena')], ['bussola', '\u{1F9ED}', T('Info')], ['aiuto', '\u{1F198}', T('Aiuto')]];
+  bar.innerHTML = voci.map(([k, ic, et]) => \`<button class="tab\${k === 'home' ? ' on' : ''}" data-t="\${k}" data-semplice="1"><span style="font-size:1.35rem;line-height:1">\${ic}</span>\${esc(et)}</button>\`).join('');
+  ricollegaBarra();
+}
+function ricollegaBarra() {
+  document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+    const k = b.dataset.t;
+    if (k === 'cena') return openCenaSubito();
+    if (k === 'aiuto') return openAiuto();
+    if (k === 'partite') return openPartiteAperte();
+    go(k);
+  });
+}
 
 function eventoDiOggi() {
   const gg = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'][new Date().getDay()];
@@ -3560,7 +3622,7 @@ function eventoDiOggi() {
 }
 function renderHomeSemplice() {
   const hero = eventoDiOggi();
-  const casata = state.socio?.casata;
+  const conv = (state.convocazioni || []).filter(c => !c.risposta);
   const bigTile = (attr, ico, titolo, sotto) => \`<button class="bigtile" \${attr}>
       <span class="bt-ico">\${ico}</span><span class="bt-txt"><b>\${esc(titolo)}</b><span>\${esc(sotto)}</span></span>
       <span class="bt-go">\u203A</span></button>\`;
@@ -3569,16 +3631,39 @@ function renderHomeSemplice() {
       <div class="eyebrow">\${T('Oggi al residence')}</div>
       <h2 class="serif">\${esc(hero ? hero.titolo : T('Giornata libera'))}</h2>
       \${hero && hero.sottotitolo ? \`<p>\${esc(hero.sottotitolo)}</p>\` : ''}
-      \${hero && hero.ora_inizio ? \`<p class="sub"><b>\${esc(hero.ora_inizio)}</b>\${hero.luogo ? ' \xB7 ' + esc(hero.luogo) : ''}</p>\` : ''}
     </div>
-    \${bigTile('data-gard-oggi="1"', '\u{1F37D}\uFE0F', T('Prenota la cena'), T('per stasera, in un tocco'))}
-    \${casata ? bigTile('data-vuoigiocare="1"', '\u{1F3BE}', T('Vuoi giocare?'), \`\${T('la tua casata')}: \${esc(casata)}\`) : ''}
-    \${bigTile('data-t="bussola"', '\u{1F9ED}', T('Informazioni utili'), T('orari, rifiuti, numeri'))}
+    \${bigTile('data-cena-subito="1"', '\u{1F37D}\uFE0F', T('Prenota la cena'), T('per stasera, tavolo da 4'))}
+    \${conv.length ? bigTile('data-vai="coppa"', '\u{1F3BE}', T('Ti hanno convocato'), \`\${conv.length} \${conv.length === 1 ? T('partita da confermare') : T('partite da confermare')}\`) : ''}
+    \${bigTile('data-vai="bussola"', '\u{1F9ED}', T('Informazioni utili'), T('orari, rifiuti, numeri'))}
     <button class="bigtile aiuto" data-aiuto="1"><span class="bt-ico">\u{1F198}</span><span class="bt-txt"><b>\${T('Chiedi aiuto')}</b><span>\${T('112, residence, la mia posizione')}</span></span></button>
     <button class="btn ghost block" style="margin-top:14px" data-modo="0">\${T('Passa alla versione completa')}</button>\`;
 }
 
+function renderHomeRagazzi() {
+  const hero = eventoDiOggi();
+  const casata = state.socio?.casata;
+  const r = regoleApp();
+  const mia = (state.data.casate || []).find(c => c.nome === casata);
+  const conv = (state.convocazioni || []).filter(c => !c.risposta);
+  const bigTile = (attr, ico, titolo, sotto) => \`<button class="bigtile" \${attr}>
+      <span class="bt-ico">\${ico}</span><span class="bt-txt"><b>\${esc(titolo)}</b><span>\${esc(sotto)}</span></span>
+      <span class="bt-go">\u203A</span></button>\`;
+  $('#s-home').innerHTML = \`
+    \${mia ? \`<div class="card oggi" style="border-left:6px solid \${esc(mia.colore || '#2e6b45')}">
+      <div class="eyebrow">\${T('La tua casata')}</div>
+      <h2 class="serif">\${esc(mia.nome)}\${mia.campione ? ' \u2727' : ''}</h2>
+      <p class="sub"><b>\${mia.punti}</b> \${T('punti')} \xB7 \${T('posizione')} <b>\${mia.posizione}</b>\${mia.exAequo ? ' ' + T('a pari merito') : ''}</p></div>\` : ''}
+    \${conv.length ? bigTile('data-vai="coppa"', '\u{1F3BE}', T('Ti hanno convocato'), \`\${conv.length} \${conv.length === 1 ? T('partita da confermare') : T('partite da confermare')}\`) : ''}
+    \${bigTile('data-partite="1"', '\u{1F93E}', T('Partite aperte'), T('unisciti a chi sta giocando'))}
+    \${bigTile('data-vai="coppa"', '\u{1F3C6}', T('Come va la Coppa'), T('classifica e prossime partite'))}
+    \${hero ? bigTile('data-vai="eventi"', '\u{1F3AC}', T('Stasera'), esc(hero.titolo)) : ''}
+    \${bigTile('data-carta="1"', '\u{1F3B2}', T('Giochi da tavolo'), T('alla Casa di Carta'))}
+    <div class="note" style="margin-top:12px">\${r.ragazzi_prenotano_campi === false ? T('Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.') : ''} \${r.ragazzi_ordini === false ? T('Per ordinare al bar serve un adulto.') : ''}</div>
+    <button class="btn ghost block" style="margin-top:14px" data-modo="0">\${T('Passa alla versione completa')}</button>\`;
+}
+
 function renderHome() {
+  if (modoRagazzi()) return renderHomeRagazzi();
   if (modoSemplice()) return renderHomeSemplice();
   const evs = state.data.eventi;
   // Il "benvenuto" salta il luned\xEC vuoto: mostra la prima serata con attivit\xE0.
@@ -4098,6 +4183,37 @@ function openMappa(nome) {
   showOv();
 }
 
+
+// Cena in modo semplice: nessuna scelta da fare. Stasera, tavolo da quattro, il turno con
+// posto \u2014 e una sola conferma. Chi vuole decidere passa alla versione completa.
+async function openCenaSubito() {
+  const oggi = new Date().toISOString().slice(0, 10);
+  const persone = 4;
+  let turni = [];
+  try { turni = (await api(\`/garden/turni?data=\${oggi}\`)).turni || []; } catch { }
+  const scelto = turni.find(t => t.posti_liberi >= persone) || turni[0];
+  if (!scelto) { okThen(T('Stasera il Garden non prende prenotazioni.'), false); return; }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\${T('Cena')}</div>
+    <h2>\${T('Stasera alle')} \${esc(scelto.turno)}</h2>
+    <p class="sub">\${T('Tavolo per 4 persone')} \xB7 \${esc(dataBella(oggi))}</p>
+    <div class="note">\${T('Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.')}</div>
+    <button class="btn gold block" style="margin-top:12px;font-size:1.1rem;padding:16px" id="cs_ok">\${T('Confermo')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Annulla')}</button>
+    <div id="cs_msg" class="muted" style="font-size:.85rem;margin-top:8px"></div>\`);
+  showOv();
+  $('#cs_ok').onclick = async () => {
+    try {
+      const r = await fetch(API_BASE + '/api/garden/prenota', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tessera_code: state.tessera, data: oggi, turno: scelto.turno, persone }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { $('#cs_msg').textContent = j.error || T('Prenotazione non riuscita'); return; }
+      setSheet(\`<div class="grab"></div><h2>\${T('\xC8 fatta')}</h2>
+        <p class="sub">\${T('Stasera alle')} <b>\${esc(scelto.turno)}</b> \xB7 \${T('tavolo')} <b>\${j.tavoli.join(', ')}</b> \xB7 4 \${T('persone')}</p>
+        \${j.stage && j.stage.posti ? \`<div class="note">\u{1F3AD} \${T('Hai anche')} \${j.stage.posti.length} \${T('posti davanti al palco')}</div>\` : ''}
+        <button class="btn gold block" style="margin-top:12px" data-close>\${T('Ho capito')}</button>\`);
+    } catch { $('#cs_msg').textContent = T('Errore di rete'); }
+  };
+}
+
 // ---- Chiedi aiuto ---------------------------------------------------------------------
 // Tre cose, grandi e senza passaggi: il 112, il numero del residence, e "sono qui" che manda
 // la posizione a chi sta lavorando nel villaggio \u2014 che di solito arriva prima dell'ambulanza.
@@ -4107,6 +4223,7 @@ async function openAiuto() {
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#b14a35">\${T('Assistenza')}</div>
     <h2>\${T('Chiedi aiuto')}</h2>
     <a class="btn sos block" href="tel:112">\u{1F4DE} \${T('Chiama il 112')}</a>
+    \${state.socio?.emergenza_tel ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(state.socio.emergenza_tel)}">\u{1F4DE} \${esc(state.socio.emergenza_nome || T('Il mio contatto'))}</a>\` : ''}
     \${n.residence ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(n.residence)}">\u{1F4DE} \${T('Chiama il residence')} \xB7 \${esc(n.residence)}</a>\` : ''}
     \${n.avvisa_crew ? \`<button class="btn gold block" style="margin-top:10px" id="aiuto_qui">\u{1F4CD} \${T('Sono qui \u2014 avvisa il personale')}</button>\` : ''}
     <div id="aiuto_esito" class="note" style="margin-top:12px">\${T('Il 112 \xE8 il numero unico delle emergenze. Il personale del residence \xE8 gi\xE0 sul posto e pu\xF2 arrivare prima.')}</div>
@@ -4603,7 +4720,7 @@ async function enterApp() {
   await loadAll();
   initA11yToggle();
   renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
-  applyProfileGating();
+  applyProfileGating(); adattaBarra();
   if (state.lang && state.lang !== 'it') applyLang(state.lang);
   // Socio/Residente auto-registrato senza casata: invito (gentile) a sceglierla.
   const s = state.socio || {};
@@ -4621,7 +4738,7 @@ async function refreshSocio(force) {
   let s; try { s = await api('/tessera/' + state.tessera); } catch { return; }
   const eraCasa = !!(state.socio && state.socio.ha_casa);
   state.socio = s;
-  renderHeader(); renderHome(); applyProfileGating();
+  renderHeader(); renderHome(); applyProfileGating(); adattaBarra();
   // Aggancio appena confermato dall'host \u2192 mostra subito "Casa mia" con le indicazioni.
   const ov = $('#ov');
   if (!eraCasa && s.ha_casa && ov && !ov.classList.contains('show')) openCasaMia();
@@ -4638,10 +4755,20 @@ async function loginTessera() {
     state.token = r.token; state.tessera = r.socio.tessera_code; state.authed = true;
     store.set('token', r.token); store.set('tessera', r.socio.tessera_code);
     hideGate();
+  } catch (e) {
+    if (err) err.textContent = T('Tessera non trovata. Controlla il codice o usa l\u2019e-mail.');
+    return;
+  }
+  // Da qui in poi l'accesso e' riuscito: un errore di disegno e' un'altra cosa e va detto
+  // com'e', non travestito da "tessera non trovata" su una pagina vuota.
+  try {
     await enterApp();
     if (!store.get('seen', false)) $('#onb').classList.add('show');
   } catch (e) {
-    if (err) err.textContent = T('Tessera non trovata. Controlla il codice o usa l\u2019e-mail.');
+    console.error('enterApp', e);
+    $('#s-home').innerHTML = \`<div class="card"><b>\${T('Qualcosa non ha funzionato nel caricamento.')}</b>
+      <p class="sub">\${esc(e.message || '')}</p>
+      <button class="btn gold block" onclick="location.reload()">\${T('Riprova')}</button></div>\`;
   }
 }
 function demoPreview() {   // solo per anteprima: usa la tessera demo e i dati SEED se offline
@@ -5395,7 +5522,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) return openSerata(t.dataset.serata);
@@ -5434,6 +5561,9 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
+  if (t.dataset.vai) return go(t.dataset.vai);
+  if (t.dataset.cenaSubito) return openCenaSubito();
+  if (t.dataset.partite != null) return openPartiteAperte();
   if (t.dataset.aiuto) return openAiuto();
   if (t.dataset.vuoigiocare) return openVuoiGiocare();
   if (t.dataset.modo) return cambiaModo(t.dataset.modo === '1');
@@ -6047,6 +6177,11 @@ async function editSocio(s, all) {
       <div><label>Cognome*</label><input id="f_cognome" value="\${esc(s?.cognome||'')}"></div>
       <div><label>Email</label><input id="f_email" value="\${esc(s?.email||'')}"></div>
       <div><label>Telefono</label><input id="f_tel" value="\${esc(s?.telefono||'')}"></div>
+      <div class="grid2">
+        <div><label>In caso di emergenza, chi chiamare</label><input id="f_emn" value="\${esc(s?.emergenza_nome||'')}" placeholder="es. Giulia (figlia)"></div>
+        <div><label>Il suo numero</label><input id="f_emt" value="\${esc(s?.emergenza_tel||'')}" placeholder="333 1234567"></div>
+      </div>
+      <p class="muted" style="font-size:.78rem">Compare nel tasto <b>Chiedi aiuto</b> dell'app, accanto al 112. Utile soprattutto per i soci anziani.</p>
       <div><label>Data di nascita</label><input id="f_nasc" type="date" value="\${esc(s?.data_nascita||'')}"></div>
       <div><label>Casata</label><select id="f_casata">\${casataOptions(s?.casata_id)}</select></div>
       <div><label>Tipo profilo</label><select id="f_tipo">\${profili.map(p=>\`<option value="\${p[0]}" \${s?.tipo_profilo===p[0]?'selected':''}>\${p[1]}</option>\`).join('')}</select></div>
@@ -10131,7 +10266,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.05";
+var VERSION = "5.07";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12805,7 +12940,8 @@ adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
   const tipo = b.tipo_profilo ?? "socio";
   const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
   await db.prepare(`UPDATE soci SET nome=?,cognome=?,email=?,telefono=?,data_nascita=?,casata_id=?,ruolo=?,tipo_profilo=?,tutore_id=?,lingua=?,
-    consenso_privacy=?,consenso_marketing=?,consenso_foto=?,notifiche_push=?,attivo=?,valida_fino=?,soggiorno_dal=?,soggiorno_al=? WHERE id=?`).run(
+    consenso_privacy=?,consenso_marketing=?,consenso_foto=?,notifiche_push=?,attivo=?,valida_fino=?,soggiorno_dal=?,soggiorno_al=?,
+    emergenza_nome=?,emergenza_tel=? WHERE id=?`).run(
     b.nome,
     b.cognome,
     b.email ?? null,
@@ -12824,6 +12960,8 @@ adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
     b.valida_fino ?? null,
     b.soggiorno_dal ?? null,
     b.soggiorno_al ?? null,
+    b.emergenza_nome ?? null,
+    b.emergenza_tel ?? null,
     req.params.id
   );
   if (!["residente", "socio_residente"].includes(tipo)) await db.prepare("UPDATE soci SET host=0, host_ko=0 WHERE id=?").run(req.params.id);
@@ -15089,6 +15227,11 @@ publicRouter.post("/self-order", async (req, res) => {
   });
   const righeIn = Array.isArray(b.righe) ? b.righe.filter((r) => r && r.menu_id && Number(r.qta) > 0) : [];
   if (!righeIn.length) return res.status(400).json({ error: "Aggiungi almeno un prodotto" });
+  if (b.tessera_code) {
+    const chi2 = await socioAttivoByTessera(b.tessera_code);
+    const no = await bloccoMinorenne(chi2, "ordine");
+    if (no) return res.status(403).json({ error: no });
+  }
   const punto = String(b.punto || "").trim() || "Chiosco";
   const tavolo = b.tavolo ? String(b.tavolo).trim() : null;
   const chi = b.tessera_code ? String(b.tessera_code).trim().toUpperCase() : null;
@@ -15252,7 +15395,7 @@ publicRouter.get("/discipline/:dominio", async (req, res) => {
   res.json(out);
 });
 publicRouter.get("/tessera/:code", async (req, res) => {
-  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,so.data_nascita,c.nome AS casata,c.colore
+  const s = await db.prepare(`SELECT so.tessera_code,so.nome,so.cognome,so.ruolo,so.tipo_profilo,so.dinieghi,so.notifiche_push,so.valida_fino,so.host,so.struttura_id,so.data_nascita,so.emergenza_nome,so.emergenza_tel,c.nome AS casata,c.colore
                         FROM soci so LEFT JOIN casate c ON c.id=so.casata_id
                         WHERE so.tessera_code=? AND so.attivo=1`).get(req.params.code);
   if (!s) return res.status(404).json({ error: "Tessera non trovata" });
@@ -15470,6 +15613,9 @@ publicRouter.get("/campi", async (req, res) => {
     unisciti_modo: await par("campi_unisciti_modo"),
     durata_massima_minuti: await par("campi_durata_massima_minuti"),
     semplice_eta: Number(await par("semplice_eta")) || 70,
+    ragazzi_eta: Number(await par("ragazzi_eta")) || 14,
+    ragazzi_ordini: !!await par("ragazzi_ordini"),
+    ragazzi_prenotano_campi: !!await par("ragazzi_prenotano_campi"),
     numero_legale: await par("campi_numero_legale"),
     numero_legale_minuti: await par("campi_numero_legale_minuti")
   };
@@ -15583,6 +15729,8 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
   if (await par("campi_limita_settimana") && usate >= campo.max_pren_settimana) {
     return res.status(409).json({ error: `Hai gi\xE0 ${usate} prenotazioni questa settimana su ${campo.nome} (massimo ${campo.max_pren_settimana})` });
   }
+  const noCampo = await bloccoMinorenne(socio, "campo");
+  if (noCampo) return res.status(403).json({ error: noCampo });
   if (await par("campi_max_giorno")) {
     const maxG = Math.max(1, Number(await par("campi_max_giorno_n")) || 1);
     const oggi2 = await quotaUsata(campo.id, socio.id, data, data);
@@ -15730,6 +15878,22 @@ publicRouter.get("/garden/turni", async (req, res) => {
   }
   res.json({ data, turni: out });
 });
+async function bloccoMinorenne(socio, cosa) {
+  const eta = etaDi(socio);
+  if (eta == null) return null;
+  const soglia = Number(await par("ragazzi_eta")) || 14;
+  if (eta > soglia) return null;
+  if (cosa === "ordine" && !await par("ragazzi_ordini")) {
+    return "Per ordinare serve un adulto: mostra il men\xF9 a mamma o pap\xE0, oppure vai al banco con loro.";
+  }
+  if (cosa === "campo" && !await par("ragazzi_prenotano_campi")) {
+    return "Per prenotare il campo serve un adulto della tua casata.";
+  }
+  if (cosa === "tavolo") {
+    return "Il tavolo lo prenota un adulto: chiedi a chi e\u0300 con te.";
+  }
+  return null;
+}
 function etaDi(socio) {
   if (!socio || !socio.data_nascita) return null;
   const n = /* @__PURE__ */ new Date(String(socio.data_nascita).slice(0, 10) + "T12:00:00Z");
@@ -15749,6 +15913,8 @@ publicRouter.post("/garden/prenota", async (req, res) => {
   const socio = await socioAttivoByTessera(b.tessera_code);
   if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const noMin = await bloccoMinorenne(socio, "tavolo");
+  if (noMin) return res.status(403).json({ error: noMin });
   const nome = (socio.nome + " " + (socio.cognome || "")).trim();
   const r = await prenotaTavolo({ data, turno: String(b.turno || ""), persone: b.persone, socio, tessera_code: b.tessera_code, nome, origine: "app", note: b.note });
   if (r.error) {
@@ -16479,7 +16645,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-22 05:09" : "online";
+var BUILD = true ? "2026-08-22 23:17" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
