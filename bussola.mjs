@@ -3135,6 +3135,9 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       <button data-scale="1.15" aria-label="Testo grande">A+</button>
       <button data-scale="1.3" aria-label="Testo molto grande">A++</button>
       <button id="hcBtn" aria-label="Alto contrasto" aria-pressed="false">\u25D1 Contrasto</button>
+      <!-- La via del ritorno: sta accanto ai comandi del testo, dove chi ha bisogno di leggere
+           meglio va a cercare. Nessuno deve restare bloccato nella versione sbagliata. -->
+      <button id="modoBtn" aria-label="Cambia versione dell'app">\u{1FA9F} Versione</button>
     </div>
   </header>
 
@@ -3526,6 +3529,16 @@ function go(t) {
 // ---- Rendering schermate --------------------------------------------------
 // La fascia "Testo / contrasto" resta utile ai soci anziani, ma non deve occupare una riga
 // fissa in cima: si apre dall'icona A\xB1 ed e' ricordata per la volta dopo.
+function initModoToggle() {
+  const b = document.getElementById('modoBtn');
+  if (!b) return;
+  const aggiorna = () => {
+    const semplice = modoSemplice() || modoRagazzi();
+    b.textContent = semplice ? '\u{1FA9F} ' + T('Versione completa') : '\u{1FA9F} ' + T('Versione semplice');
+  };
+  aggiorna();
+  b.onclick = () => { cambiaModo(!(modoSemplice() || modoRagazzi())); aggiorna(); };
+}
 function initA11yToggle() {
   const btn = document.getElementById('a11yBtn'), bar = document.getElementById('a11yBar');
   if (!btn || !bar) return;
@@ -3575,8 +3588,12 @@ function ptile(attr, icona, titolo, sotto) {
 // Le soglie arrivano dal server insieme alle regole dei campi: si spostano dai parametri,
 // non stanno scritte qui.
 function regoleApp() { return ((state.data?.campi || [])[0] || {}).regole || {}; }
+// La scelta della versione e' della persona, non del telefono: nonno e nipote possono usare
+// lo stesso apparecchio senza rubarsi la modalita' a vicenda.
+function chiaveModo() { return 'koine_semplice_' + (state.tessera || 'anon'); }
+function sceltaModo() { return localStorage.getItem(chiaveModo()) || localStorage.getItem('koine_semplice'); }
 function modoSemplice() {
-  const scelto = localStorage.getItem('koine_semplice');
+  const scelto = sceltaModo();
   if (scelto === '1') return true;
   if (scelto === '0') return false;
   const eta = Number(state.socio?.eta || 0);
@@ -3586,11 +3603,20 @@ function modoSemplice() {
 // casata. Le limitazioni riguardano solo la spesa, e sono applicate dal server: nascondere un
 // tasto non e' un divieto.
 function modoRagazzi() {
-  if (localStorage.getItem('koine_semplice') === '0') return false;
+  if (sceltaModo() === '0') return false;
   const eta = Number(state.socio?.eta || 0);
   return eta > 0 && eta <= Number(regoleApp().ragazzi_eta || 14);
 }
-function cambiaModo(v) { localStorage.setItem('koine_semplice', v ? '1' : '0'); render(); }
+function cambiaModo(v) {
+  localStorage.setItem(chiaveModo(), v ? '1' : '0');
+  closeOv();
+  renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola();
+  renderDom('sport'); renderDom('giochi');
+  applyProfileGating(); adattaBarra();
+  const b = document.getElementById('modoBtn');
+  if (b) b.textContent = (modoSemplice() || modoRagazzi()) ? '\u{1FA9F} ' + T('Versione completa') : '\u{1FA9F} ' + T('Versione semplice');
+  go('home');
+}
 
 // In modo semplice e ragazzi la barra in basso porta le stesse voci della home: usando l'app
 // si finisce in una schermata qualsiasi e le scorciatoie non devono sparire.
@@ -4718,7 +4744,7 @@ function showGate() { const g = $('#gate'); if (g) { g.classList.add('show'); co
 function hideGate() { const g = $('#gate'); if (g) g.classList.remove('show'); }
 async function enterApp() {
   await loadAll();
-  initA11yToggle();
+  initA11yToggle(); initModoToggle();
   renderHeader(); renderHome(); renderEventi(); renderCoppa(); renderBussola(); renderDom('sport'); renderDom('giochi');
   applyProfileGating(); adattaBarra();
   if (state.lang && state.lang !== 'it') applyLang(state.lang);
@@ -6227,6 +6253,7 @@ async function editSocio(s, all) {
     const osp = $('#f_tipo').value === 'ospite_temporaneo';
     const body = {
       nome:$('#f_nome').value, cognome:$('#f_cognome').value, email:$('#f_email').value, telefono:$('#f_tel').value,
+      emergenza_nome:($('#f_emn')||{}).value||null, emergenza_tel:($('#f_emt')||{}).value||null,
       data_nascita:$('#f_nasc').value, casata_id:$('#f_casata').value||null, ruolo:$('#f_ruolo').value, lingua:$('#f_lingua').value,
       tipo_profilo:$('#f_tipo').value, tutore_id: $('#f_tipo').value==='under14' ? ($('#f_tutore').value||null) : null,
       // Ospite temporaneo: nessuna tessera annuale, ma periodo di soggiorno dal/al.
@@ -10266,7 +10293,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.07";
+var VERSION = "5.09";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -16645,7 +16672,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-22 23:17" : "online";
+var BUILD = true ? "2026-08-23 10:31" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
