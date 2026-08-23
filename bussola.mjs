@@ -2599,14 +2599,6 @@ var init_parametri = __esm({
         aiuto: "Chi ha fino a questa eta' trova una versione centrata su sport, casata e programma. A 14 anni si e' gia' dentro le casate, e il telefono ce l'hanno anche prima."
       },
       {
-        chiave: "ragazzi_ordini",
-        gruppo: "Accessibilita\u0300",
-        tipo: "bool",
-        predefinito: false,
-        etichetta: "I minorenni possono ordinare da soli",
-        aiuto: "Ordinare significa spendere. Spento, un minorenne vede il men\xF9 ma l'ordine lo fa un adulto al banco: non e' una limitazione dell'app, e' una scelta su chi paga."
-      },
-      {
         chiave: "ragazzi_prenotano_campi",
         gruppo: "Accessibilita\u0300",
         tipo: "bool",
@@ -3616,6 +3608,13 @@ function modoSemplice() {
 // all'app intera si ritroverebbe davanti prenotazioni a pagamento e serate con quota \u2014 cioe'
 // impegni presi con i soldi di qualcun altro. Per gli anziani, invece, la scelta resta:
 // li' il rischio e' l'opposto, restare bloccati in una versione che non si sa cambiare.
+// Minorenne per la legge, non per l'interfaccia: la soglia dei parametri decide solo quale
+// versione dell'app mostrare, questa decide chi puo' impegnarsi a pagare. Un sedicenne usa
+// l'app completa ma non prenota una serata da 30 euro.
+function minorenne() {
+  const eta = Number(state.socio?.eta || 0);
+  return eta > 0 && eta < Number(regoleApp().maggiore_eta || 18);
+}
 function modoRagazzi() {
   const eta = Number(state.socio?.eta || 0);
   return eta > 0 && eta <= Number(regoleApp().ragazzi_eta || 14);
@@ -3697,7 +3696,7 @@ function renderHomeRagazzi() {
     \${bigTile('data-vai="coppa"', '\u{1F3C6}', T('Come va la Coppa'), T('classifica e prossime partite'))}
     \${hero ? bigTile('data-vai="eventi"', '\u{1F3AC}', T('Stasera'), esc(hero.titolo)) : ''}
     \${bigTile('data-carta="1"', '\u{1F3B2}', T('Giochi da tavolo'), T('alla Casa di Carta'))}
-    <div class="note" style="margin-top:12px">\${r.ragazzi_prenotano_campi === false ? T('Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.') : ''} \${r.ragazzi_ordini === false ? T('Per ordinare al bar e per le serate serve un adulto.') : ''}</div>\`;
+    <div class="note" style="margin-top:12px">\${r.ragazzi_prenotano_campi === false ? T('Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.') : ''} \${T('Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.')}</div>\`;
 }
 
 function renderHome() {
@@ -3709,20 +3708,22 @@ function renderHome() {
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
     <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2>
-      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p><button class="btn gold" data-gard-oggi="1">\${esc(hero.cta)}</button></div></div>
+      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p>\${minorenne() ? '' : \`<button class="btn gold" data-gard-oggi="1">\${esc(hero.cta)}</button>\`}</div></div>
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
       \${ptile('campi', '\u{1F3BE}', T('Campi'), T('prenota o partita'))}
       \${ptile('partite', '\u{1F465}', T('Partite aperte'), T('unisciti'))}
-      \${ptile('ordina="garden"', '\u{1F37D}\uFE0F', T('Garden'), T('cena e tavolo'))}
-      \${ptile('ordina="bar"', '\u{1F378}', T('Bar'), T('ordina e ritira'))}
-      \${ptile('fitness', '\u{1F9D8}', T('Fitness'), T('lezioni con istruttore'))}
+      \${minorenne() ? '' : ptile('ordina="garden"', '\u{1F37D}\uFE0F', T('Garden'), T('cena e tavolo'))}
+      \${minorenne() ? '' : ptile('ordina="bar"', '\u{1F378}', T('Bar'), T('ordina e ritira'))}
+      \${minorenne() ? '' : ptile('fitness', '\u{1F9D8}', T('Fitness'), T('lezioni con istruttore'))}
       \${ptile('carta', '\u{1F3B2}', T('Casa di Carta'), T('tavolo da gioco'))}
       \${ptile('stage', '\u{1F3AC}', T('Stage'), T('posto allo spettacolo'))}
       \${ptile('cowo', '\u{1F4BB}', T('Coworking'), T('postazione'))}
     </div>
-    <button class="btn navy block" style="margin-top:12px" data-serate-tutte>\u2728 \${T('Scopri le nostre serate speciali')}</button>
+    \${minorenne()
+      ? \`<div class="note" style="margin-top:12px">\${T('Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.')}</div>\`
+      : \`<button class="btn navy block" style="margin-top:12px" data-serate-tutte>\u2728 \${T('Scopri le nostre serate speciali')}</button>\`}
     <div style="height:10px"></div>\`;
 }
 function serateSectionHTML() {
@@ -3731,7 +3732,7 @@ function serateSectionHTML() {
   // A un minorenne le serate con quota non si propongono nemmeno. Il server le rifiuta gia',
   // ma mostrare il tasto e poi negarlo e' peggio: lo si mette nella condizione di impegnare
   // soldi che non sono suoi, e di prendersi un rifiuto per una cosa che gli abbiamo offerto.
-  if (modoRagazzi()) {
+  if (minorenne()) {
     return \`<div class="sect-title" style="margin-top:14px">\${T('Serate su prenotazione')}</div>
       <div class="note">\${T('Ci sono serate con posti contati e una quota da pagare: le prenota un adulto per te.')}</div>\`;
   }
@@ -3744,7 +3745,7 @@ function serateSectionHTML() {
 function renderEventi() {
   $('#s-eventi').innerHTML = \`
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 4px">\${T('Il programma')}</h2>
-    <p class="tiny muted" style="margin-bottom:12px">\${modoRagazzi() ? T('Tocca una serata per i dettagli.') : T('Tocca una serata per i dettagli e per prenotare.')}</p>
+    <p class="tiny muted" style="margin-bottom:12px">\${minorenne() ? T('Tocca una serata per i dettagli.') : T('Tocca una serata per i dettagli e per prenotare.')}</p>
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
     \${serateSectionHTML()}
     <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}</div>\`;
@@ -4197,10 +4198,10 @@ function openSerateSpeciali() {
       <b style="font-size:.92rem">\${esc(s.titolo)}</b>
       <div class="ct">\${esc(s.quando || '')} \xB7 \u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti liberi')}\` : ''}</div>
       \${s.descrizione ? \`<div class="ct">\${esc(s.descrizione)}</div>\` : ''}</div>
-    \${modoRagazzi() ? '' : \`<button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button>\`}</div>\`;
+    \${minorenne() ? '' : \`<button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button>\`}</div>\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Su prenotazione')}</div>
     <h2>\${T('Le serate speciali')}</h2>
-    <p class="sub">\${modoRagazzi() ? T('Posti contati e quota da pagare: le prenota un adulto per te.') : T('Posti contati: si prenota e si paga in loco.')}</p>
+    <p class="sub">\${minorenne() ? T('Posti contati e quota da pagare: fino ai 18 anni le prenota un adulto per te.') : T('Posti contati: si prenota e si paga in loco.')}</p>
     <div class="card" style="padding:4px 14px">\${list.map(riga).join('')}</div>
     <div class="note">\${T('Il programma completo della settimana \xE8 nella sezione Eventi.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
@@ -5572,7 +5573,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) {
     // Ovunque si arrivi, per un minorenne la serata si guarda ma non si prenota.
-    if (modoRagazzi()) { okThen(T('Le serate con quota le prenota un adulto per te.'), false); return; }
+    if (minorenne()) { okThen(T('Le serate con quota le prenota un adulto per te.'), false); return; }
     return openSerata(t.dataset.serata);
   }
   if (t.dataset.openContest != null) return openContest();
@@ -5632,6 +5633,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.cartaAnn) return api('/carta/prenotazioni/' + t.dataset.cartaAnn + '/annulla', { method: 'POST', body: JSON.stringify({ tessera_code: state.tessera }) }).then(openCarta).catch(() => openCarta());
   if (t.dataset.stage != null) return openStage();
   if (t.dataset.stagepren) return stagePrenota(t.dataset.stagepren);
+  if ((t.dataset.gardOggi || t.dataset.ordina || t.dataset.fitness != null || t.dataset.cenaSubito) && minorenne()) { okThen(T('Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.'), false); return; }
   if (t.dataset.gardOggi) { state._gardData = new Date().toISOString().slice(0, 10); return openGarden({ soloOggi: true }); }
   if (t.dataset.gardDate) { state._gardData = t.dataset.gardDate; return openGarden(); }
   if (t.dataset.gardPers) { state._gardPers = Number(t.dataset.gardPers); return openGarden({ soloOggi: !!state._gardSoloOggi }); }
@@ -10316,7 +10318,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.12";
+var VERSION = "5.13";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15666,7 +15668,7 @@ publicRouter.get("/campi", async (req, res) => {
     durata_massima_minuti: await par("campi_durata_massima_minuti"),
     semplice_eta: Number(await par("semplice_eta")) || 70,
     ragazzi_eta: Number(await par("ragazzi_eta")) || 14,
-    ragazzi_ordini: !!await par("ragazzi_ordini"),
+    maggiore_eta: 18,
     ragazzi_prenotano_campi: !!await par("ragazzi_prenotano_campi"),
     numero_legale: await par("campi_numero_legale"),
     numero_legale_minuti: await par("campi_numero_legale_minuti")
@@ -15932,23 +15934,14 @@ publicRouter.get("/garden/turni", async (req, res) => {
 });
 async function bloccoMinorenne(socio, cosa) {
   const eta = etaDi(socio);
-  if (eta == null) return null;
-  const soglia = Number(await par("ragazzi_eta")) || 14;
-  if (eta > soglia) return null;
-  if (cosa === "ordine" && !await par("ragazzi_ordini")) {
-    return "Per ordinare serve un adulto: mostra il men\xF9 a mamma o pap\xE0, oppure vai al banco con loro.";
-  }
-  if (cosa === "serata" && !await par("ragazzi_ordini")) {
-    return "La serata la prenota un adulto: ha una quota da pagare. Fatti prenotare da chi e\u0300 con te.";
-  }
-  if (cosa === "fitness" && !await par("ragazzi_ordini")) {
-    return "La lezione si paga: chiedi a un adulto di iscriverti.";
-  }
+  if (eta == null || eta >= 18) return null;
+  const perTramite = " Chiedi a un adulto di farlo per te.";
+  if (cosa === "ordine") return "Per ordinare serve un adulto: fino ai 18 anni non si possono fare acquisti da soli." + perTramite;
+  if (cosa === "serata") return "La serata ha una quota: fino ai 18 anni la prenota un adulto." + perTramite;
+  if (cosa === "fitness") return "La lezione si paga: fino ai 18 anni l'iscrizione la fa un adulto." + perTramite;
+  if (cosa === "tavolo") return "Il tavolo per la cena lo prenota un adulto." + perTramite;
   if (cosa === "campo" && !await par("ragazzi_prenotano_campi")) {
-    return "Per prenotare il campo serve un adulto della tua casata.";
-  }
-  if (cosa === "tavolo") {
-    return "Il tavolo lo prenota un adulto: chiedi a chi e\u0300 con te.";
+    return "Per prenotare il campo serve un adulto della tua casata: tu puoi unirti a una partita gi\xE0 aperta.";
   }
   return null;
 }
@@ -16705,7 +16698,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-23 11:02" : "online";
+var BUILD = true ? "2026-08-23 11:17" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
