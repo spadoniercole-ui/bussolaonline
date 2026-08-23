@@ -3533,6 +3533,8 @@ function initModoToggle() {
   const b = document.getElementById('modoBtn');
   if (!b) return;
   const aggiorna = () => {
+    if (modoRagazzi()) { b.hidden = true; return; }
+    b.hidden = false;
     const semplice = modoSemplice() || modoRagazzi();
     b.textContent = semplice ? '\u{1FA9F} ' + T('Versione completa') : '\u{1FA9F} ' + T('Versione semplice');
   };
@@ -3610,8 +3612,11 @@ function modoSemplice() {
 // Modo ragazzi: la stessa app, centrata su cio' per cui la useranno davvero \u2014 lo sport e la
 // casata. Le limitazioni riguardano solo la spesa, e sono applicate dal server: nascondere un
 // tasto non e' un divieto.
+// Per i minorenni la versione NON si sceglie: dipende dall'eta'. Un ragazzino che passa
+// all'app intera si ritroverebbe davanti prenotazioni a pagamento e serate con quota \u2014 cioe'
+// impegni presi con i soldi di qualcun altro. Per gli anziani, invece, la scelta resta:
+// li' il rischio e' l'opposto, restare bloccati in una versione che non si sa cambiare.
 function modoRagazzi() {
-  if (sceltaModo() === '0') return false;
   const eta = Number(state.socio?.eta || 0);
   return eta > 0 && eta <= Number(regoleApp().ragazzi_eta || 14);
 }
@@ -3622,7 +3627,7 @@ function cambiaModo(v) {
   renderDom('sport'); renderDom('giochi');
   applyProfileGating(); adattaBarra();
   const b = document.getElementById('modoBtn');
-  if (b) b.textContent = (modoSemplice() || modoRagazzi()) ? '\u{1FA9F} ' + T('Versione completa') : '\u{1FA9F} ' + T('Versione semplice');
+  if (b) { b.hidden = modoRagazzi(); b.textContent = (modoSemplice() || modoRagazzi()) ? '\u{1FA9F} ' + T('Versione completa') : '\u{1FA9F} ' + T('Versione semplice'); }
   go('home');
 }
 
@@ -3692,8 +3697,7 @@ function renderHomeRagazzi() {
     \${bigTile('data-vai="coppa"', '\u{1F3C6}', T('Come va la Coppa'), T('classifica e prossime partite'))}
     \${hero ? bigTile('data-vai="eventi"', '\u{1F3AC}', T('Stasera'), esc(hero.titolo)) : ''}
     \${bigTile('data-carta="1"', '\u{1F3B2}', T('Giochi da tavolo'), T('alla Casa di Carta'))}
-    <div class="note" style="margin-top:12px">\${r.ragazzi_prenotano_campi === false ? T('Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.') : ''} \${r.ragazzi_ordini === false ? T('Per ordinare al bar serve un adulto.') : ''}</div>
-    <button class="btn ghost block" style="margin-top:14px" data-modo="0">\${T('Passa alla versione completa')}</button>\`;
+    <div class="note" style="margin-top:12px">\${r.ragazzi_prenotano_campi === false ? T('Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.') : ''} \${r.ragazzi_ordini === false ? T('Per ordinare al bar e per le serate serve un adulto.') : ''}</div>\`;
 }
 
 function renderHome() {
@@ -10301,7 +10305,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.10";
+var VERSION = "5.11";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15401,7 +15405,9 @@ publicRouter.post("/serate/:id/prenota", async (req, res) => {
   const usati = await seratePostiUsati(s.id);
   if (usati + persone > s.capienza) return res.status(409).json({ ok: false, error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.`, posti_liberi: Math.max(0, s.capienza - usati) });
   const tessera = req.body?.tessera_code || null;
-  const socio = tessera ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(tessera) : null;
+  const socio = tessera ? await db.prepare("SELECT id,nome,cognome,data_nascita FROM soci WHERE tessera_code=?").get(tessera) : null;
+  const noMin = await bloccoMinorenne(socio, "serata");
+  if (noMin) return res.status(403).json({ error: noMin });
   const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
   const importo = Math.round(s.quota * persone * 100) / 100;
   const info = await db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato) VALUES (?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare");
@@ -15921,6 +15927,12 @@ async function bloccoMinorenne(socio, cosa) {
   if (cosa === "ordine" && !await par("ragazzi_ordini")) {
     return "Per ordinare serve un adulto: mostra il men\xF9 a mamma o pap\xE0, oppure vai al banco con loro.";
   }
+  if (cosa === "serata" && !await par("ragazzi_ordini")) {
+    return "La serata la prenota un adulto: ha una quota da pagare. Fatti prenotare da chi e\u0300 con te.";
+  }
+  if (cosa === "fitness" && !await par("ragazzi_ordini")) {
+    return "La lezione si paga: chiedi a un adulto di iscriverti.";
+  }
   if (cosa === "campo" && !await par("ragazzi_prenotano_campi")) {
     return "Per prenotare il campo serve un adulto della tua casata.";
   }
@@ -16106,6 +16118,8 @@ publicRouter.post("/fitness/sedute/:id/prenota", async (req, res) => {
   const socio = await socioAttivoByTessera(req.body?.tessera_code);
   if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per iscriverti" });
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
+  const noFit = await bloccoMinorenne(socio, "fitness");
+  if (noFit) return res.status(403).json({ error: noFit });
   const nome = (socio.nome + " " + (socio.cognome || "")).trim();
   const r = await prenotaSeduta({ sedutaId: Number(req.params.id), socio, tessera_code: req.body.tessera_code, nome, origine: "app" });
   if (r.error) return res.status(409).json({ error: r.error });
@@ -16680,7 +16694,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-23 10:38" : "online";
+var BUILD = true ? "2026-08-23 10:46" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
