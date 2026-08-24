@@ -3971,7 +3971,8 @@ function renderBussola() {
     const right = l.chiave === 'chiosco'
       ? \`<span style="background:var(--coral);color:#fff;padding:3px 10px;border-radius:12px;font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px">\${esc(tr('siamo_qui'))}</span>\`
       : \`<span style="color:var(--teal);font-size:1.1rem">\u2197</span>\`;
-    return \`<div class="matchrow" \${has ? \`role="button" tabindex="0" data-map="\${l.lat},\${l.lng}" style="cursor:pointer"\` : ''}><div style="flex:1"><b style="font-size:.9rem">\${iconFor(l.chiave)} \${esc(label)}</b>\${has ? \`<div class="ct">\${esc(tr('apri_mappa'))}</div>\` : ''}</div>\${right}</div>\`;
+    if (has) MAPPE[label] = { titolo: label, lat: l.lat, lng: l.lng, dettaglio: l.chiave === 'isola' ? T('Conferimento rifiuti') : T('Bar, cucina e ritrovo'), mappa_embed: l.mappa_embed || null };
+    return \`<div class="matchrow" \${has ? \`role="button" tabindex="0" data-mappa="\${esc(label)}" style="cursor:pointer"\` : ''}><div style="flex:1"><b style="font-size:.9rem">\${iconFor(l.chiave)} \${esc(label)}</b>\${has ? \`<div class="ct">\${esc(tr('apri_mappa'))}</div>\` : ''}</div>\${right}</div>\`;
   }).join('');
   $('#s-bussola').innerHTML = \`
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 12px">\${T('Guida del residence')}</h2>
@@ -7183,6 +7184,15 @@ function parseCoords(s) {
 }
 function corto(v) { return v == null ? '' : Number(v).toFixed(5); }
 // Un solo valore: decimale (punto o virgola) oppure grado singolo 37\xB003'34.6"N.
+// Riconosce il codice della mappa incollato per sbaglio nel campo del link.
+function leggiEmbedLocale(t) {
+  const s = String(t || '');
+  const m = s.match(/src\\s*=\\s*["']([^"']+)["']/i);
+  const url = (m ? m[1] : s).trim();
+  if (!/^https:\\/\\/(www\\.)?google\\.[a-z.]+\\/maps\\/embed\\?/i.test(url)) return null;
+  const lng = url.match(/!2d(-?\\d+(?:\\.\\d+)?)/), lat = url.match(/!3d(-?\\d+(?:\\.\\d+)?)/);
+  return { src: url, lat: lat ? Number(lat[1]) : null, lng: lng ? Number(lng[1]) : null };
+}
 function gradiADecimale(t, asse) {
   const s = String(t || '').trim();
   const g = s.match(/^(\\d{1,3})\\s*\xB0\\s*(\\d{1,2})?\\s*['\\u2032]?\\s*([\\d.,]+)?\\s*["\\u2033]?\\s*([NSEWOnsewo])?$/);
@@ -7201,14 +7211,21 @@ VIEWS.luoghi = async () => {
   const list = await api('/luoghi');
   $('#view').innerHTML = \`
     <div class="panel"><h3>Punti "Siamo qui" \u2014 coordinate</h3>
-      <p class="muted" style="margin-bottom:12px">Su Google Maps: tasto destro sul punto \u2192 <b>clic sulle coordinate per copiarle</b>, poi incollale qui sotto (accetto anche il link della mappa). Al clic nell'app si aprir\xE0 il punto esatto.</p>
+      <p class="muted" style="margin-bottom:12px">Si impostano <b>come le voci della Guida</b>: coordinate decimali, gradi copiati da Google, link incollato, oppure il <b>codice della mappa</b> (Condividi \u2192 Incorpora una mappa \u2192 Copia HTML), da cui le coordinate si ricavano da sole.<br>
+      Nell'app il socio tocca la voce e la mappa si apre <b>dentro l'applicazione</b>, con il tasto per farsi accompagnare.</p>
       \${list.map(l => \`<div class="card" style="border:1px solid var(--line);padding:14px;margin-bottom:12px">
         <div class="row" style="margin-bottom:8px"><b style="color:var(--navy)">\${esc(l.chiave === 'chiosco' ? '\u{1F4CD}' : '\u267B\uFE0F')} \${esc(l.nome)}</b></div>
         <div class="grid2">
           <div><label>Nome</label><input id="n_\${l.id}" value="\${esc(l.nome)}"></div>
           <div><label>Incolla link o coordinate</label><input id="p_\${l.id}" placeholder="es. 37.0335, 15.2969 oppure link Maps"></div>
-          <div><label>Latitudine</label><input id="lat_\${l.id}" value="\${l.lat ?? ''}"></div>
-          <div><label>Longitudine</label><input id="lng_\${l.id}" value="\${l.lng ?? ''}"></div>
+          <div><label>Latitudine</label><input id="lat_\${l.id}" value="\${l.lat ?? ''}" placeholder="latitudine, anche in gradi"></div>
+          <div><label>Longitudine</label><input id="lng_\${l.id}" value="\${l.lng ?? ''}" placeholder="longitudine, anche in gradi"></div>
+        </div>
+        <div class="row" style="gap:8px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
+          <label class="muted" style="flex:1;min-width:260px;font-size:.78rem">Codice mappa di Google <i>(Condividi \u2192 Incorpora una mappa \u2192 Copia HTML)</i>
+            <textarea id="emb_\${l.id}" rows="2" placeholder="&lt;iframe src=&quot;https://www.google.com/maps/embed?pb=\u2026&quot;&gt;&lt;/iframe&gt;" style="width:100%;font-family:monospace;font-size:11px">\${esc(l.mappa_embed || '')}</textarea></label>
+          \${l.mappa_embed ? \`<div style="flex:0 0 200px"><iframe src="\${esc(l.mappa_embed)}" style="width:200px;height:120px;border:1px solid var(--line);border-radius:8px" loading="lazy"></iframe>
+            <div class="muted" style="font-size:.72rem;text-align:center">mappa impostata</div></div>\` : ''}
         </div>
         <div class="row" style="margin-top:10px;align-items:center">
           <button class="btn gold sm" data-save="\${l.id}">Salva</button>
@@ -7219,11 +7236,25 @@ VIEWS.luoghi = async () => {
     </div>\`;
   list.forEach(l => {
     const pasteEl = document.getElementById('p_' + l.id);
-    pasteEl.addEventListener('input', () => { const c = parseCoords(pasteEl.value); if (c) { $('#lat_' + l.id).value = c.lat; $('#lng_' + l.id).value = c.lng; } });
+    pasteEl.addEventListener('input', () => {
+      const c = parseCoords(pasteEl.value);
+      if (c) { $('#lat_' + l.id).value = c.lat; $('#lng_' + l.id).value = c.lng; return; }
+      const e = leggiEmbedLocale(pasteEl.value);
+      if (e) { const emb = $('#emb_' + l.id); if (emb) emb.value = pasteEl.value; if (e.lat != null) { $('#lat_' + l.id).value = e.lat; $('#lng_' + l.id).value = e.lng; } }
+    });
+    for (const asse of ['lat', 'lng']) {
+      const el = $('#' + asse + '_' + l.id);
+      if (el) el.onblur = () => { const n = gradiADecimale(el.value, asse); if (n != null) el.value = n.toFixed(5); };
+    }
     document.getElementById('prev_' + l.id).onclick = (e) => { e.preventDefault(); window.open('https://www.google.com/maps?q=' + $('#lat_' + l.id).value + ',' + $('#lng_' + l.id).value, '_blank'); };
     document.querySelector(\`[data-save="\${l.id}"]\`).onclick = async () => {
-      await api('/luoghi/' + l.id, { method: 'PUT', body: JSON.stringify({ nome: $('#n_' + l.id).value, lat: $('#lat_' + l.id).value, lng: $('#lng_' + l.id).value }) });
-      $('#ok_' + l.id).textContent = '\u2713 Salvato'; setTimeout(() => $('#ok_' + l.id).textContent = '', 1500);
+      try {
+        await api('/luoghi/' + l.id, { method: 'PUT', body: JSON.stringify({
+          nome: $('#n_' + l.id).value, lat: $('#lat_' + l.id).value, lng: $('#lng_' + l.id).value,
+          mappa_embed: ($('#emb_' + l.id) || {}).value ?? ''
+        }) });
+        show('luoghi');
+      } catch (e) { $('#ok_' + l.id).textContent = e.message; }
     };
   });
 };
@@ -10513,7 +10544,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.15";
+var VERSION = "5.16";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13393,9 +13424,30 @@ adminRouter.get("/luoghi", requireCap("luoghi"), async (req, res) => {
 });
 adminRouter.put("/luoghi/:id", requireCap("luoghi"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, b.lat === "" || b.lat == null ? null : Number(b.lat), b.lng === "" || b.lng == null ? null : Number(b.lng), req.params.id);
-  audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${b.lat},${b.lng}`);
-  res.json({ ok: true });
+  let embed = null;
+  if (b.mappa_embed !== void 0) {
+    const e = b.mappa_embed ? leggiEmbed(b.mappa_embed) : null;
+    if (b.mappa_embed && !e) return res.status(400).json({ error: "Questo non e\u0300 il codice di una mappa Google. Su Google Maps: Condividi \u2192 Incorpora una mappa \u2192 Copia HTML." });
+    embed = e;
+  }
+  const daTesto = (b.lat == null || b.lat === "") && b.geo ? leggiCoordinate(b.geo) : null;
+  let lat = daTesto ? daTesto.lat : leggiSingola(b.lat, "lat");
+  let lng = daTesto ? daTesto.lng : leggiSingola(b.lng, "lng");
+  if (lat == null && embed && embed.lat != null) {
+    lat = embed.lat;
+    lng = embed.lng;
+  }
+  const pieno = (v) => v != null && String(v).trim() !== "";
+  if (pieno(b.lat) && lat == null) return res.status(400).json({ error: "Non riesco a leggere la latitudine." });
+  if (pieno(b.lng) && lng == null) return res.status(400).json({ error: "Non riesco a leggere la longitudine." });
+  if (lat != null !== (lng != null)) return res.status(400).json({ error: "Servono tutte e due le coordinate." });
+  if (b.mappa_embed === void 0) {
+    await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=? WHERE id=?").run(b.nome, lat, lng, req.params.id);
+  } else {
+    await db.prepare("UPDATE luoghi SET nome=?,lat=?,lng=?,mappa_embed=? WHERE id=?").run(b.nome, lat, lng, embed ? embed.src : null, req.params.id);
+  }
+  audit(req.adminUser.username, "coordinate", "luoghi", req.params.id, `${lat},${lng}`);
+  res.json({ ok: true, lat, lng, mappa_embed: embed ? embed.src : void 0 });
 });
 adminRouter.get("/rifiuti", requireCap("guida"), async (req, res) => {
   const tipi = await db.prepare("SELECT id,nome,colore,ordine FROM rifiuti_tipi ORDER BY ordine,id").all();
@@ -15642,7 +15694,7 @@ publicRouter.get("/contest", async (req, res) => {
   res.json(await db.prepare("SELECT id,titolo,tipo,settimana,brief,stato,vincitore FROM contest ORDER BY id DESC").all());
 });
 publicRouter.get("/luoghi", async (req, res) => {
-  res.json(await db.prepare("SELECT chiave,nome,lat,lng FROM luoghi ORDER BY ordine").all());
+  res.json(await db.prepare("SELECT chiave,nome,lat,lng,mappa_embed FROM luoghi ORDER BY ordine").all());
 });
 publicRouter.get("/regolamenti", async (req, res) => {
   const generali = await db.prepare("SELECT chiave,titolo,testo FROM regolamenti ORDER BY ordine,id").all();
@@ -16973,7 +17025,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-24 09:01" : "online";
+var BUILD = true ? "2026-08-24 09:38" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
