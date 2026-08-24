@@ -2711,18 +2711,9 @@ var init_parametri = __esm({
         gruppo: "Accessibilita\u0300",
         tipo: "testo",
         predefinito: "",
-        etichetta: "Numero del residence per le emergenze",
-        aiuto: "Il numero che squilla al chiosco o in reception. Compare nel tasto \u201CChiedi aiuto\u201D accanto al 112. Se vuoto, resta solo il 112."
+        etichetta: "Numero del chiosco",
+        aiuto: "Il numero che squilla al chiosco. Compare fra i numeri rapidi dell'app, accanto al 112. Se vuoto, resta solo il 112 e l'eventuale contatto familiare del socio. Non e\u0300 un numero di soccorso: e\u0300 il nostro telefono."
       },
-      {
-        chiave: "aiuto_avvisa_crew",
-        gruppo: "Accessibilita\u0300",
-        tipo: "bool",
-        predefinito: true,
-        etichetta: "Avvisa anche la Crew",
-        aiuto: "La richiesta compare subito nell'app dello staff, con la posizione se il socio l'ha concessa: chi e' sul posto arriva prima di chiunque altro."
-      },
-      // ---- Casa di Carta ----
       {
         chiave: "carta_prenotazione",
         gruppo: "Casa di Carta",
@@ -3754,7 +3745,7 @@ function adattaBarra() {
   if (!semplice && !ragazzi) { if (bar.innerHTML !== bar.dataset.originale) { bar.innerHTML = bar.dataset.originale; ricollegaBarra(); } return; }
   const voci = ragazzi
     ? [['home', '\u{1F3E0}', T('Home')], ['partite', '\u{1F93E}', T('Giocare')], ['coppa', '\u{1F3C6}', T('Coppa')], ['eventi', '\u{1F4C5}', T('Stasera')], ['bussola', '\u{1F9ED}', T('Guida')]]
-    : [['home', '\u{1F3E0}', T('Home')], ['cena', '\u{1F37D}\uFE0F', T('Cena')], ['bussola', '\u{1F9ED}', T('Info')], ['aiuto', '\u{1F198}', T('Aiuto')]];
+    : [['home', '\u{1F3E0}', T('Home')], ['cena', '\u{1F37D}\uFE0F', T('Cena')], ['bussola', '\u{1F9ED}', T('Info')], ['aiuto', '\u{1F4DE}', T('Chiama')]];
   bar.innerHTML = voci.map(([k, ic, et]) => \`<button class="tab\${k === 'home' ? ' on' : ''}" data-t="\${k}" data-semplice="1"><span style="font-size:1.35rem;line-height:1">\${ic}</span>\${esc(et)}</button>\`).join('');
   ricollegaBarra();
 }
@@ -3787,7 +3778,7 @@ function renderHomeSemplice() {
     \${bigTile('data-cena-subito="1"', '\u{1F37D}\uFE0F', T('Prenota la cena'), T('per stasera, tavolo da 4'))}
     \${conv.length ? bigTile('data-vai="coppa"', '\u{1F3BE}', T('Ti hanno convocato'), \`\${conv.length} \${conv.length === 1 ? T('partita da confermare') : T('partite da confermare')}\`) : ''}
     \${bigTile('data-vai="bussola"', '\u{1F9ED}', T('Informazioni utili'), T('orari, rifiuti, numeri'))}
-    <button class="bigtile aiuto" data-aiuto="1"><span class="bt-ico">\u{1F198}</span><span class="bt-txt"><b>\${T('Chiedi aiuto')}</b><span>\${T('112, residence, la mia posizione')}</span></span></button>
+    <button class="bigtile aiuto" data-aiuto="1"><span class="bt-ico">\u{1F4DE}</span><span class="bt-txt"><b>\${T('Numeri rapidi')}</b><span>\${T('112, un familiare, il chiosco')}</span></span></button>
     <button class="btn ghost block" style="margin-top:14px" data-modo="0">\${T('Passa alla versione completa')}</button>\`;
 }
 
@@ -4433,55 +4424,38 @@ async function chatSegnala(id) {
   openChat(state._chatAmbito);
 }
 
-// ---- Chiedi aiuto ---------------------------------------------------------------------
-// Tre cose, grandi e senza passaggi: il 112, il numero del residence, e "sono qui" che manda
-// la posizione a chi sta lavorando nel villaggio \u2014 che di solito arriva prima dell'ambulanza.
+// ---- Numeri rapidi --------------------------------------------------------------------
+// Non e' un servizio di soccorso e non lo chiamiamo cosi'. Sono tre tasti grandi al posto di
+// una rubrica: il 112, un familiare, il chiosco. La telefonata la fa il telefono.
+//
+// L'unica cosa che aggiungiamo e' la POSIZIONE da leggere all'operatore del 112: chi e' in
+// difficolta' spesso non sa dire dove si trova, e nel residence tutte le ville si somigliano.
+// Resta sul telefono, non viene inviata a nessuno, e se non si ottiene non cambia niente.
 async function openAiuto() {
-  let n = { emergenza: '112', residence: null, avvisa_crew: true };
+  let n = { emergenza: '112', residence: null };
   try { n = await api('/aiuto/numeri'); } catch { }
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#b14a35">\${T('Assistenza')}</div>
-    <h2>\${T('Chiedi aiuto')}</h2>
-    <a class="btn sos block" href="tel:112">\u{1F4DE} \${T('Chiama il 112')}</a>
-    \${state.socio?.emergenza_tel ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(state.socio.emergenza_tel)}">\u{1F4DE} \${esc(state.socio.emergenza_nome || T('Il mio contatto'))}</a>\` : ''}
-    \${n.residence ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(n.residence)}">\u{1F4DE} \${T('Chiama il residence')} \xB7 \${esc(n.residence)}</a>\` : ''}
-    \${n.avvisa_crew ? \`<button class="btn gold block" style="margin-top:10px" id="aiuto_qui">\u{1F4CD} \${T('Sono qui \u2014 avvisa il personale')}</button>\` : ''}
-    <div id="aiuto_esito" class="note" style="margin-top:12px">\${T('Il 112 \xE8 il numero unico delle emergenze. Il personale del residence \xE8 gi\xE0 sul posto e pu\xF2 arrivare prima.')}</div>
+  const fam = state.socio?.emergenza_tel;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#b14a35">\${T('Numeri rapidi')}</div>
+    <h2>\${T('Chi vuoi chiamare')}</h2>
+    <a class="btn sos block" href="tel:112">\u{1F4DE} \${T('112 \xB7 emergenze')}</a>
+    \${fam ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(fam)}">\u{1F4DE} \${esc(state.socio.emergenza_nome || T('Il mio contatto'))}</a>\` : ''}
+    \${n.residence ? \`<a class="btn navy block" style="margin-top:10px" href="tel:\${esc(n.residence)}">\u{1F4DE} \${T('Il chiosco')} \xB7 \${esc(n.residence)}</a>\` : ''}
+    <button class="btn ghost block" style="margin-top:14px" id="aiuto_dove">\u{1F4CD} \${T('Dove mi trovo')}</button>
+    <div id="aiuto_esito" class="note" style="margin-top:10px">\${T('Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: questi sono solo i numeri, a portata di dito.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
   const box = $('#aiuto_esito');
-  if ($('#aiuto_qui')) $('#aiuto_qui').onclick = () => {
-    box.textContent = T('Cerco la tua posizione\u2026');
-    const invia = async (pos) => {
-      const c = pos ? pos.coords : null;
-      try {
-        await api('/aiuto', { method: 'POST', body: JSON.stringify({
-          tessera_code: state.tessera, tipo: 'sono_qui',
-          lat: c ? c.latitude : null, lng: c ? c.longitude : null, precisione: c ? c.accuracy : null
-        }) });
-        box.innerHTML = \`<b>\${T('Fatto: il personale \xE8 stato avvisato.')}</b><br>\${c ? T('Sa dove ti trovi. Resta dove sei.') : T('Non ho la tua posizione: se puoi, di\\' dove sei quando ti raggiungono.')}\`;
-      } catch (e) { box.textContent = T('Non sono riuscito ad avvisare: chiama il numero qui sopra.'); }
-    };
-    if (!navigator.geolocation) return invia(null);
-    navigator.geolocation.getCurrentPosition(invia, () => invia(null), { enableHighAccuracy: true, timeout: 8000 });
+  $('#aiuto_dove').onclick = () => {
+    if (!navigator.geolocation) { box.textContent = T('Il telefono non sa dirmi dove sei.'); return; }
+    box.textContent = T('Cerco la posizione\u2026');
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const c = pos.coords;
+      box.innerHTML = \`<b>\${T('Leggi questi numeri all\\'operatore')}:</b>
+        <div style="font-size:1.25rem;font-weight:800;letter-spacing:.02em;margin:6px 0">\${c.latitude.toFixed(5)} , \${c.longitude.toFixed(5)}</div>
+        <span class="tiny">\${T('Precisione')} \xB1\${Math.round(c.accuracy)} m \xB7 \${T('la posizione resta sul tuo telefono, non viene inviata a nessuno')}</span>\`;
+    }, () => { box.textContent = T('Non riesco a ottenere la posizione. Di\\' all\\'operatore il nome del residence e il numero della villa.'); },
+      { enableHighAccuracy: true, timeout: 10000 });
   };
-}
-
-// "Vuoi giocare?" \u2014 le partite aperte della propria casata, senza passare dai campi.
-async function openVuoiGiocare() {
-  let aperte = [];
-  try { aperte = await api('/partite-aperte'); } catch { }
-  const riga = (p) => \`<div class="matchrow"><div style="flex:1">
-      <b style="font-size:.92rem">\${esc(p.campo_nome || p.campo || '')}</b>
-      <div class="ct">\${esc(dataBella(p.data))} \xB7 \${esc(p.slot)} \xB7 \${p.iscritti}/\${p.posti_totali} \${T('giocatori')}</div></div>
-    <button class="btn gold sm" data-unisciti="\${p.id}">\${T('Mi unisco')}</button></div>\`;
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F3BE} \${T('Vuoi giocare?')}</div>
-    <h2>\${T('Partite aperte')}</h2>
-    \${aperte.length
-      ? \`<div class="card" style="padding:4px 14px">\${aperte.map(riga).join('')}</div>\`
-      : \`<div class="note">\${T('Nessuna partita aperta in questo momento.')}</div>\`}
-    <button class="btn navy block" style="margin-top:10px" data-campi="1">\${T('Prenota un campo')}</button>
-    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
-  showOv();
 }
 
 // ---- Coworking: postazioni della sala, non tavoli da gioco ----
@@ -8453,23 +8427,6 @@ function pickMetodo(onPick) {
 }
 
 /* ---------- COMANDE (cassa): l'operatore vede il men\xF9 ESATTAMENTE come il cliente ---------- */
-// Le richieste di aiuto stanno in cima: chi lavora al banco guarda questa schermata di continuo.
-async function bannerAiuto() {
-  let r = [];
-  try { r = await api('/aiuto'); } catch { return ''; }
-  const aperte = r.filter(x => x.stato !== 'chiusa');
-  if (!aperte.length) return '';
-  return \`<div class="panel" style="border:2px solid #b14a35;background:#fdecea">
-    <b style="color:#8e2f1e">\u{1F198} Richieste di aiuto (\${aperte.length})</b>
-    \${aperte.map(a => \`<div class="row" style="justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.08)">
-      <div><b>\${esc(a.nome || '\u2014')}</b> <span class="muted">\xB7 \${esc(String(a.created_at || '').slice(11, 16))}\${a.stato === 'presa' ? ' \xB7 presa da ' + esc(a.preso_da || '') : ''}</span>
-        <div class="muted" style="font-size:.8rem">\${a.lat != null ? \`posizione nota\${a.precisione ? ' (\xB1' + Math.round(a.precisione) + ' m)' : ''}\` : 'posizione non disponibile'}</div></div>
-      <div class="row" style="gap:6px">
-        \${a.lat != null ? \`<a class="btn ghost sm" href="https://www.google.com/maps/search/?api=1&query=\${a.lat},\${a.lng}" target="_blank" rel="noopener">\u{1F4CD} Dov'\xE8</a>\` : ''}
-        \${a.stato === 'aperta' ? \`<button class="btn gold sm" data-aiutopresa="\${a.id}">Ci penso io</button>\` : \`<button class="btn ghost sm" data-aiutochiudi="\${a.id}">Chiudi</button>\`}
-      </div></div>\`).join('')}</div>\`;
-}
-
 VIEWS.comande = async () => {
   const menu = (await api('/menu')).filter(m => m.attivo);
   const garden = ZONA === 'garden';
@@ -8531,14 +8488,12 @@ VIEWS.comande = async () => {
 
   if (garden) {
     // Niente compositore qui: al Garden si ordina toccando il tavolo nella Pianta.
-    $('#view').innerHTML = (await bannerAiuto()) + soPanel + \`
+    $('#view').innerHTML = soPanel + \`
       <div class="panel"><h3>\u{1F9FE} Comande del Garden</h3>
         <p class="muted">Le comande si prendono <b>dal tavolo</b>: apri la tab <b>\u{1F5FA}\uFE0F Tavoli & pianta</b>, tocca il tavolo e premi <b>Ordina</b>. Cosi' il numero del tavolo non si digita e non si sbaglia, e sai per chi stai ordinando.</p>
         <button class="btn gold sm" id="vai_pianta">\u{1F5FA}\uFE0F Vai ai tavoli</button></div>\`;
     $('#vai_pianta').onclick = () => show('pianta');
-    document.querySelectorAll('[data-aiutopresa]').forEach(b => b.onclick = async () => { await api('/aiuto/' + b.dataset.aiutopresa, { method: 'PUT', body: JSON.stringify({ stato: 'presa' }) }); show('comande'); });
-  document.querySelectorAll('[data-aiutochiudi]').forEach(b => b.onclick = async () => { await api('/aiuto/' + b.dataset.aiutochiudi, { method: 'PUT', body: JSON.stringify({ stato: 'chiusa' }) }); show('comande'); });
-  if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
+    if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
     if ($('#so_cfg')) $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
     if ($('#cf_save')) $('#cf_save').onclick = async () => {
       await api('/self-order/config', { method: 'POST', body: JSON.stringify({
@@ -8549,7 +8504,7 @@ VIEWS.comande = async () => {
     };
     return;
   }
-  $('#view').innerHTML = (await bannerAiuto()) + soPanel + \`
+  $('#view').innerHTML = soPanel + \`
     <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
       <div class="row" style="margin-bottom:8px">\${entry}</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
@@ -10558,7 +10513,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.14";
+var VERSION = "5.15";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15356,8 +15311,6 @@ adminRouter.get("/cruscotto", async (req, res) => {
   ).all();
   const negativi = await db.prepare("SELECT id,nome,giacenza FROM magazzino_articoli WHERE giacenza < 0 ORDER BY giacenza LIMIT 8").all();
   const attenzione = [];
-  const aiuti = await db.prepare("SELECT COUNT(*) n FROM richieste_aiuto WHERE stato='aperta'").get();
-  if (Number(aiuti?.n || 0)) attenzione.push({ tipo: "aiuto", testo: `${aiuti.n} richieste di aiuto da prendere in carico`, vai: "chiosco" });
   if (negativi.length) attenzione.push({ tipo: "magazzino", testo: `${negativi.length} articoli con giacenza NEGATIVA: si sta vendendo merce che a sistema non c'\xE8`, vai: "magazzino" });
   if (inRitardo) attenzione.push({ tipo: "comande", testo: `${inRitardo} comande oltre i 10 minuti`, vai: "chiosco" });
   if (daRiordinare.length) attenzione.push({ tipo: "magazzino", testo: `${daRiordinare.length} articoli sotto il punto di riordino`, vai: "magazzino" });
@@ -15476,18 +15429,6 @@ adminRouter.get("/soci/tessera/:code", requireCap("comande"), async (req, res) =
   const r = await db.prepare("SELECT id,nome,cognome,tessera_code,attivo FROM soci WHERE tessera_code=?").get(String(req.params.code).toUpperCase());
   if (!r) return res.status(404).json({ error: "Tessera non riconosciuta" });
   res.json(r);
-});
-adminRouter.get("/aiuto", async (req, res) => {
-  const righe = await db.prepare(
-    "SELECT * FROM richieste_aiuto WHERE stato<>'chiusa' OR created_at > datetime('now','-6 hours') ORDER BY (stato='chiusa'), id DESC LIMIT 40"
-  ).all();
-  res.json(righe);
-});
-adminRouter.put("/aiuto/:id", async (req, res) => {
-  const stato = ["presa", "chiusa", "aperta"].includes(req.body?.stato) ? req.body.stato : "presa";
-  await db.prepare("UPDATE richieste_aiuto SET stato=?, preso_da=?, chiusa_at=CASE WHEN ?='chiusa' THEN datetime('now') ELSE chiusa_at END WHERE id=?").run(stato, req.adminUser.username, stato, req.params.id);
-  audit(req.adminUser.username, "aiuto:" + stato, "richieste_aiuto", req.params.id);
-  res.json({ ok: true });
 });
 adminRouter.get("/chat/segnalati", requireCap("casate"), async (req, res) => {
   const segn = await db.prepare(
@@ -16634,20 +16575,8 @@ publicRouter.get("/aiuto/numeri", async (req, res) => {
   res.json({
     emergenza: "112",
     residence: numero || null,
-    avvisa_crew: !!await par("aiuto_avvisa_crew")
+    avviso: "Il 112 e\u0300 il numero unico delle emergenze. Il residence non e\u0300 un servizio di soccorso."
   });
-});
-publicRouter.post("/aiuto", async (req, res) => {
-  const b = req.body || {};
-  if (!await par("aiuto_avvisa_crew")) return res.json({ ok: true, avvisata: false });
-  const socio = b.tessera_code ? await socioAttivoByTessera(b.tessera_code) : null;
-  const nome = socio ? (socio.nome + " " + (socio.cognome || "")).trim() : b.nome || "Ospite";
-  const num = (v) => v == null || v === "" ? null : Number(v);
-  const info = await db.prepare(
-    "INSERT INTO richieste_aiuto (tessera_code,nome,tipo,lat,lng,precisione,nota) VALUES (?,?,?,?,?,?,?)"
-  ).run(b.tessera_code || null, nome, b.tipo === "sono_qui" ? "sono_qui" : "aiuto", num(b.lat), num(b.lng), num(b.precisione), b.nota || null);
-  audit(b.tessera_code || "ospite", "richiesta_aiuto", "richieste_aiuto", Number(info.lastInsertRowid), nome);
-  res.status(201).json({ ok: true, avvisata: true, id: Number(info.lastInsertRowid) });
 });
 
 // server/seed.js
@@ -17044,7 +16973,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-24 08:23" : "online";
+var BUILD = true ? "2026-08-24 09:01" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
