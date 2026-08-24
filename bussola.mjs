@@ -155,7 +155,10 @@ async function myStruttureIds(meId) {
 function notifica(socioId, titolo, corpo) {
   return db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)").run(socioId, "push", "sistema", titolo, corpo || null);
 }
-var authUserRouter, DEV, CAP_SOCI_CASATA, HOST_FIELDS2;
+async function chiSono(req) {
+  return await db.prepare("SELECT id,nome,cognome,ruolo,casata_id,tessera_code FROM soci WHERE tessera_code=? AND attivo=1").get(req.user.tessera_code);
+}
+var authUserRouter, DEV, CAP_SOCI_CASATA, HOST_FIELDS2, CHAT_MAX;
 var init_authuser = __esm({
   "server/routes/authuser.js"() {
     init_asyncroute();
@@ -518,6 +521,51 @@ var init_authuser = __esm({
       if (!g || !ids.includes(g.struttura_id)) return res.status(404).json({ error: "Visitatore non trovato" });
       await db.prepare("UPDATE soci SET struttura_id=NULL WHERE id=?").run(g.id);
       audit(me.tessera_code, "aggancio_scollega", "soci", g.id);
+      res.json({ ok: true });
+    });
+    CHAT_MAX = 500;
+    authUserRouter.get("/chat/:ambito", requireUser, async (req, res) => {
+      const me = await chiSono(req);
+      if (!me) return res.status(403).json({ error: "Socio non trovato" });
+      const ambito = req.params.ambito === "capitani" ? "capitani" : "casata";
+      if (ambito === "capitani" && me.ruolo !== "capitano") return res.status(403).json({ error: "Il gruppo e\u0300 riservato ai capitani delle casate" });
+      if (ambito === "casata" && !me.casata_id) return res.status(409).json({ error: "Non risulti in nessuna casata" });
+      const dopo = Number(req.query.dopo) || 0;
+      const righe = ambito === "capitani" ? await db.prepare("SELECT id,nome,testo,tessera_code,segnalato,created_at FROM chat_messaggi WHERE ambito='capitani' AND nascosto=0 AND id>? ORDER BY id DESC LIMIT 80").all(dopo) : await db.prepare("SELECT id,nome,testo,tessera_code,segnalato,created_at FROM chat_messaggi WHERE ambito='casata' AND casata_id=? AND nascosto=0 AND id>? ORDER BY id DESC LIMIT 80").all(me.casata_id, dopo);
+      const casata = me.casata_id ? await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(me.casata_id) : null;
+      res.json({
+        ambito,
+        casata: casata ? casata.nome : null,
+        colore: casata ? casata.colore : null,
+        capitano: me.ruolo === "capitano",
+        io: me.tessera_code,
+        avviso: "Questa chat non e\u0300 privata: i messaggi segnalati vengono letti dal gestore. Scrivi come se fossi in bacheca.",
+        messaggi: righe.reverse()
+      });
+    });
+    authUserRouter.post("/chat/:ambito", requireUser, async (req, res) => {
+      const me = await chiSono(req);
+      if (!me) return res.status(403).json({ error: "Socio non trovato" });
+      const ambito = req.params.ambito === "capitani" ? "capitani" : "casata";
+      if (ambito === "capitani" && me.ruolo !== "capitano") return res.status(403).json({ error: "Il gruppo e\u0300 riservato ai capitani" });
+      if (ambito === "casata" && !me.casata_id) return res.status(409).json({ error: "Non risulti in nessuna casata" });
+      let testo = String(req.body?.testo || "").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+      if (!testo) return res.status(400).json({ error: "Scrivi qualcosa" });
+      if (testo.length > CHAT_MAX) testo = testo.slice(0, CHAT_MAX);
+      if (/https?:\/\/|www\./i.test(testo)) return res.status(400).json({ error: "Niente collegamenti nella chat: qui si scrive solo testo." });
+      const nome = (me.nome + " " + (me.cognome || "")).trim();
+      const info = await db.prepare(
+        "INSERT INTO chat_messaggi (ambito,casata_id,socio_id,tessera_code,nome,testo) VALUES (?,?,?,?,?,?)"
+      ).run(ambito, ambito === "capitani" ? null : me.casata_id, me.id, me.tessera_code, nome, testo);
+      res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+    });
+    authUserRouter.post("/chat/messaggi/:id/segnala", requireUser, async (req, res) => {
+      const me = await chiSono(req);
+      const m = await db.prepare("SELECT * FROM chat_messaggi WHERE id=?").get(req.params.id);
+      if (!me || !m) return res.status(404).json({ error: "Messaggio non trovato" });
+      if (m.ambito === "casata" && m.casata_id !== me.casata_id) return res.status(403).json({ error: "Non e\u0300 la tua stanza" });
+      await db.prepare("UPDATE chat_messaggi SET segnalato=1, segnalato_da=?, motivo=? WHERE id=?").run(me.tessera_code, String(req.body?.motivo || "").slice(0, 200) || null, m.id);
+      audit(me.tessera_code, "segnala_messaggio", "chat_messaggi", m.id, m.nome);
       res.json({ ok: true });
     });
   }
@@ -1614,6 +1662,58 @@ async function migrate() {
   await addIfMissing("comande", "scaricata", "scaricata INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("soci", "emergenza_nome", "emergenza_nome TEXT");
   await addIfMissing("soci", "emergenza_tel", "emergenza_tel TEXT");
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS chat_messaggi (
+    id           INTEGER PRIMARY KEY,
+    ambito       TEXT NOT NULL DEFAULT 'casata',   -- casata | capitani
+    casata_id    INTEGER REFERENCES casate(id) ON DELETE CASCADE,
+    socio_id     INTEGER REFERENCES soci(id) ON DELETE SET NULL,
+    tessera_code TEXT,
+    nome         TEXT NOT NULL,
+    testo        TEXT NOT NULL,
+    segnalato    INTEGER NOT NULL DEFAULT 0,
+    segnalato_da TEXT,
+    motivo       TEXT,
+    nascosto     INTEGER NOT NULL DEFAULT 0,
+    nascosto_da  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS ix_chat ON chat_messaggi(ambito, casata_id, id);
+  CREATE INDEX IF NOT EXISTS ix_chat_segn ON chat_messaggi(segnalato, id);
+  `);
+  } catch (_) {
+  }
+  await addIfMissing("magazzino_articoli", "tipo_consumo", "tipo_consumo TEXT NOT NULL DEFAULT 'peso'");
+  try {
+    if (await getSetting("tipo_consumo_v1", "") !== "v1") {
+      await db.prepare(
+        "UPDATE magazzino_articoli SET tipo_consumo='pezzo' WHERE LOWER(unita) IN ('pz','pezzo','pezzi','n','conf','cf','bottiglia','lattina','bustina','barattolo','scatola','vasetto')"
+      ).run();
+      await setSetting("tipo_consumo_v1", "v1");
+    }
+  } catch (_) {
+  }
+  await addIfMissing("magazzino_articoli", "sfrido_pct", "sfrido_pct REAL NOT NULL DEFAULT 0");
+  try {
+    await db.exec(`
+  CREATE TABLE IF NOT EXISTS menu_distinta (
+    id          INTEGER PRIMARY KEY,
+    menu_id     INTEGER NOT NULL REFERENCES menu_articoli(id) ON DELETE CASCADE,
+    articolo_id INTEGER NOT NULL REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+    quantita    REAL NOT NULL,
+    UNIQUE(menu_id, articolo_id)
+  );
+  CREATE TABLE IF NOT EXISTS consumo_teorico (
+    id          INTEGER PRIMARY KEY,
+    articolo_id INTEGER NOT NULL REFERENCES magazzino_articoli(id) ON DELETE CASCADE,
+    data        TEXT NOT NULL,
+    quantita    REAL NOT NULL DEFAULT 0,
+    UNIQUE(articolo_id, data)
+  );
+  `);
+  } catch (_) {
+  }
   try {
     await db.exec(`
   CREATE TABLE IF NOT EXISTS richieste_aiuto (
@@ -3044,6 +3144,20 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .mapbox{position:relative; border-radius:12px; overflow:hidden; border:1px solid var(--line);}
 .mapbox iframe{width:100%; height:46vh; min-height:260px; border:0; display:block;}
 .mapopen{display:block; text-align:center; padding:8px; font-size:.78rem; background:var(--card); color:var(--navy); text-decoration:none; border-top:1px solid var(--line);}
+/* Chat: leggera, solo testo, bolle sobrie. Niente allegati e niente emoticon: serve a
+   organizzarsi, non a chiacchierare. */
+.chatbox{max-height:44vh; overflow:auto; background:var(--card); border:1px solid var(--line);
+  border-radius:12px; padding:10px; margin-top:10px;}
+.msg{position:relative; margin:8px 0; padding:8px 34px 8px 10px; border-radius:10px;
+  background:#fff; border:1px solid var(--line);}
+.msg.mio{background:#eaf3ec; border-color:#cfe3d6; margin-left:22px;}
+.msg b{display:block; font-size:.76rem; color:var(--navy); margin-bottom:2px;}
+.msg p{margin:0; font-size:.9rem; line-height:1.4; overflow-wrap:anywhere;}
+.msg .ora{display:block; font-size:.68rem; color:var(--muted); margin-top:3px;}
+.msg .segn{position:absolute; top:6px; right:6px; background:none; border:0; color:var(--muted);
+  font-size:.9rem; cursor:pointer; padding:2px 4px;}
+.chatinvio{display:flex; gap:8px; margin-top:10px;}
+.chatinvio input{flex:1; min-width:0;}
 .matchrow{display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line);} .matchrow:last-child{border-bottom:none;}
 .matchrow .wh{width:58px; text-align:center; font-size:.68rem; color:var(--navy); font-weight:700;}
 .matchrow .vs{flex:1; font-size:.8rem;} .matchrow .vs small{color:var(--mute);} .matchrow .ct{font-size:.68rem; color:var(--mute); margin-top:1px;}
@@ -3694,6 +3808,7 @@ function renderHomeRagazzi() {
     \${conv.length ? bigTile('data-vai="coppa"', '\u{1F3BE}', T('Ti hanno convocato'), \`\${conv.length} \${conv.length === 1 ? T('partita da confermare') : T('partite da confermare')}\`) : ''}
     \${bigTile('data-partite="1"', '\u{1F93E}', T('Partite aperte'), T('unisciti a chi sta giocando'))}
     \${bigTile('data-vai="coppa"', '\u{1F3C6}', T('Come va la Coppa'), T('classifica e prossime partite'))}
+    \${state.socio?.casata ? bigTile('data-chat="casata"', '\u{1F4AC}', T('Chat della casata'), T('organizzatevi fra voi')) : ''}
     \${hero ? bigTile('data-vai="eventi"', '\u{1F3AC}', T('Stasera'), esc(hero.titolo)) : ''}
     \${bigTile('data-carta="1"', '\u{1F3B2}', T('Giochi da tavolo'), T('alla Casa di Carta'))}
     <div class="note" style="margin-top:12px">\${r.ragazzi_prenotano_campi === false ? T('Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.') : ''} \${T('Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.')}</div>\`;
@@ -3774,6 +3889,7 @@ function renderCoppa() {
         <button class="btn sm" style="background:rgba(255,255,255,.2); color:#fff; flex:1" data-cap="serata">\u{1F3C6} \${T('Serata dei Clan')}</button>
       </div></div>\` : '';
   $('#s-coppa').innerHTML = \`
+    \${state.socio?.casata ? \`<button class="btn navy block" style="margin-bottom:12px" data-chat="casata">\u{1F4AC} \${T('Chat della casata')}\${isCap ? ' \xB7 ' + T('e capitani') : ''}</button>\` : ''}
     <div class="eyebrow" style="margin:4px 2px 2px">\${T('La comunit\xE0')}</div>
     <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin-bottom:12px">\${T('Coppa delle Casate')}</h2>
     <div class="myclan"><div class="shield" style="background:\${myClan.colore}">\${esc(mine[0]||'A')}</div><div class="info"><h3>\${esc(mine)}\${myClan.campione ? ' <span style="color:var(--gold)" title="' + T('Migliore casata') + ' ' + esc(myClan.campione_stagione || '') + '">\u2727</span>' : ''}</h3><p>\${T('La tua casata')} \xB7 \${esc(myClan.motto||'')}</p></div><div class="posbig"><div class="n">\${myPos||'\u2014'}\xB0</div><div class="l">\${T('posto')}</div></div></div>
@@ -4258,6 +4374,63 @@ async function openCenaSubito() {
         <button class="btn gold block" style="margin-top:12px" data-close>\${T('Ho capito')}</button>\`);
     } catch { $('#cs_msg').textContent = T('Errore di rete'); }
   };
+}
+
+
+// ---- Chat di casata ------------------------------------------------------------------------
+// Serve a dire "sabato ci sono", "cerco un sostituto", "proviamo con quella formazione".
+// Solo testo. E la prima cosa che si legge entrando e' che non e' una stanza privata: e'
+// piu' onesto dirlo che lasciarlo scoprire.
+async function openChat(ambito) {
+  if (!state.token) { okThen(T('Serve l\\'accesso con la tessera'), false); return; }
+  state._chatAmbito = ambito || state._chatAmbito || 'casata';
+  let d;
+  try { d = await api('/auth/chat/' + state._chatAmbito, { auth: true }); }
+  catch (e) { okThen(e.message || T('Chat non disponibile'), false); return; }
+
+  const riga = (m) => {
+    const mio = m.tessera_code === d.io;
+    return \`<div class="msg\${mio ? ' mio' : ''}">
+      \${mio ? '' : \`<b>\${esc(m.nome)}</b>\`}
+      <p>\${esc(m.testo)}</p>
+      <span class="ora">\${esc(String(m.created_at || '').slice(11, 16))}\${m.segnalato ? ' \xB7 ' + T('segnalato') : ''}</span>
+      \${mio ? '' : \`<button class="segn" data-chat-segnala="\${m.id}" title="\${T('Segnala')}">\u2691</button>\`}
+    </div>\`;
+  };
+  setSheet(\`<div class="grab"></div>
+    <div class="eyebrow" style="color:\${esc(d.colore || 'var(--teal)')}">\${d.ambito === 'capitani' ? '\u{1F396}\uFE0F ' + T('Capitani') : '\u{1F6E1}\uFE0F ' + esc(d.casata || '')}</div>
+    <h2>\${d.ambito === 'capitani' ? T('Gruppo capitani') : T('La chat della casata')}</h2>
+    <div class="note" style="margin-top:0">\${esc(d.avviso)}</div>
+    \${d.capitano ? \`<div class="chips" style="margin:10px 0">
+      <button class="chip\${d.ambito === 'casata' ? ' sel' : ''}" data-chat="casata">\${T('La mia casata')}</button>
+      <button class="chip\${d.ambito === 'capitani' ? ' sel' : ''}" data-chat="capitani">\${T('Capitani')}</button></div>\` : ''}
+    <div class="chatbox" id="chatbox">\${(d.messaggi || []).map(riga).join('') || \`<p class="tiny muted" style="text-align:center;padding:18px">\${T('Nessun messaggio. Comincia tu.')}</p>\`}</div>
+    <div class="chatinvio">
+      <input id="chat_txt" maxlength="500" placeholder="\${T('Scrivi qui\u2026')}" autocomplete="off">
+      <button class="btn gold sm" id="chat_send">\${T('Invia')}</button>
+    </div>
+    <div id="chat_msg" class="tiny muted" style="margin-top:6px"></div>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+  const box = $('#chatbox'); if (box) box.scrollTop = box.scrollHeight;
+  const invia = async () => {
+    const t = ($('#chat_txt').value || '').trim();
+    if (!t) return;
+    try {
+      await api('/auth/chat/' + state._chatAmbito, { auth: true, method: 'POST', body: JSON.stringify({ testo: t }) });
+      $('#chat_txt').value = '';
+      openChat(state._chatAmbito);
+    } catch (e) { $('#chat_msg').textContent = e.message; }
+  };
+  $('#chat_send').onclick = invia;
+  $('#chat_txt').onkeydown = (e) => { if (e.key === 'Enter') invia(); };
+}
+async function chatSegnala(id) {
+  if (!confirm(T('Segnalare questo messaggio al gestore? Verr\xE0 letto da lui.'))) return;
+  const motivo = prompt(T('Perch\xE9 lo segnali? (facoltativo)')) || '';
+  try { await api('/auth/chat/messaggi/' + id + '/segnala', { auth: true, method: 'POST', body: JSON.stringify({ motivo }) }); }
+  catch (e) { }
+  openChat(state._chatAmbito);
 }
 
 // ---- Chiedi aiuto ---------------------------------------------------------------------
@@ -5568,7 +5741,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) {
@@ -5611,6 +5784,8 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.casatamembri) return openCasataMembri(t.dataset.casatamembri);
   // Dalla serata di stasera si prenota per stasera: offrire altri giorni disperde chi era
   // entrato con l'intenzione di partecipare a QUELLA serata. Gli altri giorni stanno in Eventi.
+  if (t.dataset.chat != null) return openChat(t.dataset.chat || 'casata');
+  if (t.dataset.chatSegnala) return chatSegnala(t.dataset.chatSegnala);
   if (t.dataset.vai) return go(t.dataset.vai);
   if (t.dataset.cenaSubito) return openCenaSubito();
   if (t.dataset.partite != null) return openPartiteAperte();
@@ -5885,6 +6060,7 @@ var admin_default = `<!DOCTYPE html>
         <div class="grp">Operativit\xE0</div>
         <button data-v="sala" data-cap="cdc">\u{1F4BB} Coworking & sala</button>
         <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
+        <button data-v="confronto" data-cap="magazzino">\u2696\uFE0F Consumi</button>
 
         <div class="grp">Guida &amp; luoghi</div>
         <button data-v="bussola" data-cap="guida">\u{1F9ED} Guida</button>
@@ -6054,6 +6230,38 @@ VIEWS.dashboard = async () => {
       \${c.campi_oggi.map(x => riga(\`\${esc(x.slot)} \xB7 \${esc(x.campo)}\`, esc(x.nome || '\u2014'))).join('')}</div>\` : ''}
     \${c.coppa.partite_da_giocare ? \`<div class="panel"><p class="muted">\u{1F3C6} Coppa: <b>\${c.coppa.partite_da_giocare}</b> partite ancora da giocare. <button class="btn ghost sm" data-vai="casate">Vai al cartellone</button></p></div>\` : ''}\`;
   document.querySelectorAll('[data-vai]').forEach(b => b.onclick = () => show(b.dataset.vai));
+};
+
+
+// ---- Confronto teorico / reale ----
+// Il numero teorico non serve a scaricare: serve a essere smentito dalla conta. La colonna
+// che conta e' lo SCOSTAMENTO, non il valore assoluto \u2014 uno scarto stabile e' fisiologico,
+// uno che cambia all'improvviso e' un fatto da guardare.
+VIEWS.confronto = async () => {
+  const oggi = new Date().toISOString().slice(0, 10);
+  const setteFa = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+  const da = window.__cda || setteFa, a = window.__cdb || oggi;
+  const d = await api(\`/magazzino/confronto?da=\${da}&a=\${a}\`);
+  const col = (p) => p == null ? '' : Math.abs(p) < 10 ? 'var(--ok)' : Math.abs(p) < 25 ? 'var(--gold)' : 'var(--danger)';
+  $('#view').innerHTML = \`
+    <div class="panel" data-fold="confronto"><h3>\u2696\uFE0F Consumi: teorico e reale</h3>
+      <p class="muted">\${esc(d.nota)}</p>
+      <div class="row" style="gap:8px;align-items:flex-end;margin:10px 0">
+        <div><label>Dal</label><input type="date" id="cd_da" value="\${esc(d.da)}"></div>
+        <div><label>Al</label><input type="date" id="cd_a" value="\${esc(d.a)}"></div>
+        <button class="btn gold sm" id="cd_go">Aggiorna</button>
+      </div>
+      <table class="fit"><thead><tr><th>Articolo</th><th>Teorico</th><th>Contato</th><th>Scostamento</th><th>Sfrido dichiarato</th></tr></thead>
+      <tbody>\${(d.righe || []).map(r => \`<tr>
+        <td><b>\${esc(r.nome)}</b> <span class="muted">\${esc(r.unita || '')}</span></td>
+        <td>\${r.teorico}</td><td>\${r.reale}</td>
+        <td style="color:\${col(r.scarto_pct)};font-weight:700">\${r.scarto > 0 ? '+' : ''}\${r.scarto}\${r.scarto_pct != null ? \` <span style="font-weight:400">(\${r.scarto_pct > 0 ? '+' : ''}\${r.scarto_pct}%)</span>\` : ''}</td>
+        <td class="muted">\${r.sfrido_pct || 0}%</td></tr>\`).join('') || '<tr><td colspan="5" class="muted">Nessun consumo nel periodo. Il teorico si popola quando le comande vengono chiuse e le voci di men\xF9 hanno una distinta.</td></tr>'}</tbody></table>
+      <p class="muted" style="font-size:13px;margin-top:10px">Come si legge: <b>teorico</b> \xE8 quanto sarebbe uscito secondo le ricette, sfrido compreso.
+      <b>Contato</b> \xE8 quanto \xE8 uscito davvero, dagli scarichi e dalle rettifiche. Verde sotto il 10%, ocra fino al 25%, rosso oltre:
+      non \xE8 un giudizio, \xE8 un invito a guardare.</p>
+    </div>\`;
+  $('#cd_go').onclick = () => { window.__cda = $('#cd_da').value; window.__cdb = $('#cd_a').value; show('confronto'); };
 };
 
 // ---- Database (voce dedicata, solo gestore): stato persistenza + backup ----
@@ -6334,9 +6542,41 @@ VIEWS.casate = async () => {
       <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
         <button class="btn gold" id="ca_recalc">\u21BB Ricalcola e riordina</button>
         <span class="muted" id="ca_msg" style="font-size:13px">Il ricalcolo avviene gi\xE0 da solo a ogni risultato, archiviazione ed esito di contest.</span>
-      </div></div><div id="ca_chiusura"></div>\`;
+      </div></div><div id="ca_chiusura"></div><div id="ca_chat"></div>\`;
     // Chiusura della stagione: il sistema la propone quando ogni disciplina ha espresso i suoi
     // punti, e manda i primi tre nell'Albo d'Oro.
+    // Moderazione della chat: si vede cio' che e' stato segnalato, con il contesto attorno.
+    api('/chat/segnalati').then((ch2) => {
+      const box = $('#ca_chat'); if (!box) return;
+      const righe = (ch2.segnalati || []).map(m => \`<div style="border:1px solid var(--line);border-left:4px solid \${m.nascosto ? '#999' : 'var(--danger)'};border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">
+        <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <span><b>\${esc(m.nome)}</b> <span class="muted">\xB7 \${esc(m.casata)} \xB7 \${esc(String(m.created_at || '').slice(0, 16))}</span>
+            \${m.motivo ? \`<div class="muted" style="font-size:13px">segnalato da \${esc(m.segnalato_da || '')}: \u201C\${esc(m.motivo)}\u201D</div>\` : ''}</div>
+          <div class="row" style="gap:6px">
+            \${m.nascosto ? \`<span class="tag">nascosto</span><button class="btn ghost sm" data-chatrip="\${m.id}">Ripristina</button>\`
+                         : \`<button class="btn danger sm" data-chatnas="\${m.id}">Nascondi</button><button class="btn ghost sm" data-chatok="\${m.id}">Va bene</button>\`}
+          </div></div>
+        <div style="margin-top:8px;background:#faf7f0;border-radius:8px;padding:8px 10px">
+          \${(m.contesto || []).map(c => \`<div style="font-size:13px;padding:2px 0;\${c.id === m.id ? 'font-weight:700;color:var(--danger)' : 'color:var(--muted)'}"><b>\${esc(c.nome)}:</b> \${esc(c.testo)}</div>\`).join('')}
+        </div></div>\`).join('');
+      box.innerHTML = \`<div class="panel"><h3>\u{1F4AC} Chat delle casate \xB7 moderazione</h3>
+        <p class="muted">Non leggi tutta la chat: leggi <b>ci\xF2 che viene segnalato</b>, con i messaggi immediatamente attorno perch\xE9 una frase isolata spesso non si capisce. Nelle casate ci sono minorenni, e ai soci \xE8 scritto in chiaro che la chat non \xE8 privata.<br>
+        Messaggi in archivio: <b>\${ch2.messaggi_totali}</b>.</p>
+        \${righe || '<p class="muted">Nessuna segnalazione.</p>'}
+        <div class="row" style="margin-top:10px;align-items:center;gap:8px">
+          <label class="muted" style="font-size:13px">Svuota la chat scritta prima del <input type="date" id="ca_chatdata"></label>
+          <button class="btn ghost sm" id="ca_chatsvuota">Svuota</button>
+        </div></div>\`;
+      document.querySelectorAll('[data-chatnas]').forEach(b => b.onclick = async () => { await api('/chat/messaggi/' + b.dataset.chatnas, { method: 'PUT', body: JSON.stringify({ azione: 'nascondi' }) }); show('casate'); });
+      document.querySelectorAll('[data-chatrip]').forEach(b => b.onclick = async () => { await api('/chat/messaggi/' + b.dataset.chatrip, { method: 'PUT', body: JSON.stringify({ azione: 'ripristina' }) }); show('casate'); });
+      document.querySelectorAll('[data-chatok]').forEach(b => b.onclick = async () => { await api('/chat/messaggi/' + b.dataset.chatok, { method: 'PUT', body: JSON.stringify({ azione: 'archivia' }) }); show('casate'); });
+      if ($('#ca_chatsvuota')) $('#ca_chatsvuota').onclick = async () => {
+        const d = $('#ca_chatdata').value;
+        if (!d || !confirm('Cancellare tutti i messaggi scritti prima del ' + d + '? Non si torna indietro.')) return;
+        await api('/chat/svuota', { method: 'POST', body: JSON.stringify({ prima_del: d }) });
+        show('casate');
+      };
+    }).catch(() => { });
     api('/coppa/chiusura').then((ch) => {
       const box = $('#ca_chiusura'); if (!box) return;
       const podio = (ch.graduatoria || []).filter(c => c.posizione <= 3);
@@ -10318,7 +10558,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.13";
+var VERSION = "5.14";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13295,13 +13535,13 @@ adminRouter.post("/magazzino", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString());
+  const info = await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,note,ordine,aggiornato_at,tipo_consumo,sfrido_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.giacenza || 0), Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, ord, (/* @__PURE__ */ new Date()).toISOString(), tipoConsumo(b), Number(b.sfrido_pct) || 0);
   audit(req.adminUser.username, "crea", "magazzino_articoli", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/magazzino/:id", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,zona=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=? WHERE id=?").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), req.params.id);
+  await db.prepare("UPDATE magazzino_articoli SET nome=?,area=?,zona=?,unita=?,punto_riordino=?,soglia_preavviso=?,note=?,aggiornato_at=?,tipo_consumo=?,sfrido_pct=? WHERE id=?").run(b.nome, b.area || "chiosco", magNormZona(b.zona), b.unita || "pz", Number(b.punto_riordino || 0), Number(b.soglia_preavviso || 0), b.note || null, (/* @__PURE__ */ new Date()).toISOString(), tipoConsumo(b), Number(b.sfrido_pct) || 0, req.params.id);
   audit(req.adminUser.username, "modifica", "magazzino_articoli", req.params.id);
   res.json({ ok: true });
 });
@@ -13652,6 +13892,11 @@ function magNormArea(v) {
   const map = { "casa di carta": "casa_di_carta", "serata clan": "serata_clan", "serate a tema": "serate_tema", "serate tema": "serate_tema" };
   return map[s] || s.replace(/\s+/g, "_");
 }
+var UNITA_A_PEZZO = ["pz", "pezzo", "pezzi", "n", "conf", "cf", "bottiglia", "lattina", "bustina", "barattolo", "scatola", "vasetto"];
+function tipoConsumo(b) {
+  if (b.tipo_consumo === "pezzo" || b.tipo_consumo === "peso") return b.tipo_consumo;
+  return UNITA_A_PEZZO.includes(String(b.unita || "").toLowerCase()) ? "pezzo" : "peso";
+}
 function magNormZona(v) {
   const s = String(v || "").trim().toLowerCase();
   if (s.startsWith("bar")) return "bar";
@@ -13733,7 +13978,7 @@ adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) 
       aggiornati++;
     } else {
       const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM magazzino_articoli").get()).n;
-      await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at) VALUES (?,?,?,?,?,?,?,?,?)").run(nome, area, zona, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
+      await db.prepare("INSERT INTO magazzino_articoli (nome,area,zona,unita,giacenza,punto_riordino,soglia_preavviso,ordine,aggiornato_at,tipo_consumo,sfrido_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(nome, area, zona, clean(r.unita) || "pz", num(r.giacenza), num(r.punto_riordino), num(r.soglia_preavviso), ord, now);
       creati++;
     }
   }
@@ -13868,27 +14113,6 @@ adminRouter.delete("/menu/:id", requireCap("comande"), async (req, res) => {
   audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
-async function scaricaMagazzinoDaComanda(comandaId, chi) {
-  const c = await db.prepare("SELECT id,scaricata,zona FROM comande WHERE id=?").get(comandaId);
-  if (!c || c.scaricata) return 0;
-  const righe = await db.prepare(
-    `SELECT r.qta, m.magazzino_id, m.consumo, m.nome
-     FROM comanda_righe r JOIN menu_articoli m ON m.id = r.menu_id
-     WHERE r.comanda_id=? AND m.magazzino_id IS NOT NULL`
-  ).all(comandaId);
-  let mosse = 0;
-  for (const r of righe) {
-    const q = Number(r.qta || 0) * Number(r.consumo || 1);
-    if (!(q > 0)) continue;
-    const art = await db.prepare("SELECT id,nome,giacenza FROM magazzino_articoli WHERE id=?").get(r.magazzino_id);
-    if (!art) continue;
-    await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(Number(art.giacenza) - q, (/* @__PURE__ */ new Date()).toISOString(), art.id);
-    await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "vendita comanda #" + comandaId, chi || "sistema", c.zona || null);
-    mosse++;
-  }
-  if (mosse) await db.prepare("UPDATE comande SET scaricata=1 WHERE id=?").run(comandaId);
-  return mosse;
-}
 async function comandaConRighe(id) {
   const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id);
   if (!c) return null;
@@ -13907,6 +14131,41 @@ async function chiudiComandeAbbandonate() {
     audit("sistema", "chiusura_abbandono", "comande", c.id, `#${c.numero} \xB7 tavolo ${c.riferimento || "-"} \xB7 oltre ${ore}h`);
   }
   return vecchie.length;
+}
+async function scaricaMagazzinoDaComanda(comandaId, chi) {
+  const c = await db.prepare("SELECT id,scaricata,zona FROM comande WHERE id=?").get(comandaId);
+  if (!c || c.scaricata) return 0;
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  let mosse = 0, teorici = 0;
+  const dirette = await db.prepare(
+    `SELECT r.qta, m.magazzino_id AS articolo_id, m.consumo AS quantita
+     FROM comanda_righe r JOIN menu_articoli m ON m.id = r.menu_id
+     WHERE r.comanda_id=? AND m.magazzino_id IS NOT NULL`
+  ).all(comandaId);
+  const daDistinta = await db.prepare(
+    `SELECT r.qta, d.articolo_id, d.quantita
+     FROM comanda_righe r JOIN menu_distinta d ON d.menu_id = r.menu_id
+     WHERE r.comanda_id=?`
+  ).all(comandaId);
+  for (const r of [...dirette, ...daDistinta]) {
+    const q = Number(r.qta || 0) * Number(r.quantita || 1);
+    if (!(q > 0)) continue;
+    const art = await db.prepare("SELECT id,nome,giacenza,tipo_consumo,sfrido_pct FROM magazzino_articoli WHERE id=?").get(r.articolo_id);
+    if (!art) continue;
+    const conSfrido = q * (1 + (Number(art.sfrido_pct) || 0) / 100);
+    if ((art.tipo_consumo || "peso") === "pezzo") {
+      await db.prepare("UPDATE magazzino_articoli SET giacenza=?,aggiornato_at=? WHERE id=?").run(Number(art.giacenza) - q, (/* @__PURE__ */ new Date()).toISOString(), art.id);
+      await db.prepare("INSERT INTO magazzino_movimenti (articolo_id,tipo,quantita,causale,operatore,zona) VALUES (?,?,?,?,?,?)").run(art.id, "scarico", q, "vendita comanda #" + comandaId, chi || "sistema", c.zona || null);
+      mosse++;
+    } else {
+      await db.prepare(
+        "INSERT INTO consumo_teorico (articolo_id,data,quantita) VALUES (?,?,?) ON CONFLICT(articolo_id,data) DO UPDATE SET quantita = quantita + excluded.quantita"
+      ).run(art.id, oggi2, conSfrido);
+      teorici++;
+    }
+  }
+  if (mosse || teorici) await db.prepare("UPDATE comande SET scaricata=1 WHERE id=?").run(comandaId);
+  return mosse;
 }
 adminRouter.get("/comande", requireCap("comande"), async (req, res) => {
   await chiudiComandeAbbandonate();
@@ -15102,6 +15361,8 @@ adminRouter.get("/cruscotto", async (req, res) => {
   if (negativi.length) attenzione.push({ tipo: "magazzino", testo: `${negativi.length} articoli con giacenza NEGATIVA: si sta vendendo merce che a sistema non c'\xE8`, vai: "magazzino" });
   if (inRitardo) attenzione.push({ tipo: "comande", testo: `${inRitardo} comande oltre i 10 minuti`, vai: "chiosco" });
   if (daRiordinare.length) attenzione.push({ tipo: "magazzino", testo: `${daRiordinare.length} articoli sotto il punto di riordino`, vai: "magazzino" });
+  const segnalati = await n("SELECT COUNT(*) n FROM chat_messaggi WHERE segnalato=1 AND nascosto=0");
+  if (segnalati) attenzione.push({ tipo: "chat", testo: `${segnalati} messaggi segnalati nella chat delle casate`, vai: "casate" });
   const propNuove = await n("SELECT COUNT(*) n FROM proposte WHERE stato='nuova'");
   if (propNuove) attenzione.push({ tipo: "proposte", testo: `${propNuove} proposte da leggere`, vai: "proposte" });
   const lezDeboli = lezioni.filter((l) => !l.confermata).length;
@@ -15226,6 +15487,91 @@ adminRouter.put("/aiuto/:id", async (req, res) => {
   const stato = ["presa", "chiusa", "aperta"].includes(req.body?.stato) ? req.body.stato : "presa";
   await db.prepare("UPDATE richieste_aiuto SET stato=?, preso_da=?, chiusa_at=CASE WHEN ?='chiusa' THEN datetime('now') ELSE chiusa_at END WHERE id=?").run(stato, req.adminUser.username, stato, req.params.id);
   audit(req.adminUser.username, "aiuto:" + stato, "richieste_aiuto", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/chat/segnalati", requireCap("casate"), async (req, res) => {
+  const segn = await db.prepare(
+    "SELECT * FROM chat_messaggi WHERE segnalato=1 ORDER BY nascosto, id DESC LIMIT 40"
+  ).all();
+  const out = [];
+  for (const m of segn) {
+    const contesto = m.ambito === "capitani" ? await db.prepare("SELECT id,nome,testo,created_at FROM chat_messaggi WHERE ambito='capitani' AND id BETWEEN ? AND ? ORDER BY id").all(m.id - 3, m.id + 3) : await db.prepare("SELECT id,nome,testo,created_at FROM chat_messaggi WHERE ambito='casata' AND casata_id=? AND id BETWEEN ? AND ? ORDER BY id").all(m.casata_id, m.id - 3, m.id + 3);
+    const c = m.casata_id ? await db.prepare("SELECT nome FROM casate WHERE id=?").get(m.casata_id) : null;
+    out.push({ ...m, casata: c ? c.nome : "Capitani", contesto });
+  }
+  const totali = await db.prepare("SELECT COUNT(*) n FROM chat_messaggi").get();
+  res.json({ segnalati: out, messaggi_totali: Number(totali?.n || 0) });
+});
+adminRouter.put("/chat/messaggi/:id", requireCap("casate"), async (req, res) => {
+  const b = req.body || {};
+  if (b.azione === "nascondi") {
+    await db.prepare("UPDATE chat_messaggi SET nascosto=1, nascosto_da=? WHERE id=?").run(req.adminUser.username, req.params.id);
+  } else if (b.azione === "ripristina") {
+    await db.prepare("UPDATE chat_messaggi SET nascosto=0, segnalato=0, segnalato_da=NULL, motivo=NULL WHERE id=?").run(req.params.id);
+  } else if (b.azione === "archivia") {
+    await db.prepare("UPDATE chat_messaggi SET segnalato=0 WHERE id=?").run(req.params.id);
+  } else return res.status(400).json({ error: "Azione non valida" });
+  audit(req.adminUser.username, "chat:" + b.azione, "chat_messaggi", req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/chat/svuota", requireCap("casate"), async (req, res) => {
+  const r = await db.prepare("DELETE FROM chat_messaggi WHERE created_at < ?").run(String(req.body?.prima_del || "").slice(0, 10) || "1970-01-01");
+  audit(req.adminUser.username, "chat_svuota", "chat_messaggi", 0, String(req.body?.prima_del || ""));
+  res.json({ ok: true });
+});
+adminRouter.get("/magazzino/confronto", requireCap("magazzino"), async (req, res) => {
+  const da = String(req.query.da || "").slice(0, 10) || new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+  const a = String(req.query.a || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const articoli = await db.prepare(
+    "SELECT id,nome,unita,tipo_consumo,sfrido_pct,giacenza FROM magazzino_articoli WHERE tipo_consumo='peso' ORDER BY nome"
+  ).all();
+  const righe = [];
+  for (const art of articoli) {
+    const t = await db.prepare("SELECT COALESCE(SUM(quantita),0) q FROM consumo_teorico WHERE articolo_id=? AND data BETWEEN ? AND ?").get(art.id, da, a);
+    const teorico = Number(t?.q || 0);
+    const m = await db.prepare(
+      "SELECT COALESCE(SUM(quantita),0) q FROM magazzino_movimenti WHERE articolo_id=? AND tipo='scarico' AND date(created_at) BETWEEN ? AND ?"
+    ).get(art.id, da, a).catch(() => ({ q: 0 }));
+    const reale = Number(m?.q || 0);
+    if (teorico === 0 && reale === 0) continue;
+    const scarto = reale - teorico;
+    righe.push({
+      id: art.id,
+      nome: art.nome,
+      unita: art.unita,
+      teorico: Number(teorico.toFixed(2)),
+      reale: Number(reale.toFixed(2)),
+      scarto: Number(scarto.toFixed(2)),
+      scarto_pct: teorico > 0 ? Number((scarto / teorico * 100).toFixed(1)) : null,
+      sfrido_pct: art.sfrido_pct
+    });
+  }
+  righe.sort((x, y) => Math.abs(y.scarto_pct || 0) - Math.abs(x.scarto_pct || 0));
+  res.json({
+    da,
+    a,
+    righe,
+    nota: "Il teorico e' calcolato dalle vendite secondo la distinta, con lo sfrido dichiarato. Il reale viene dagli scarichi e dalle rettifiche. Conta lo scostamento, non il valore assoluto: uno scarto stabile e' normale, uno che cambia all'improvviso va guardato."
+  });
+});
+adminRouter.get("/menu/:id/distinta", requireCap("magazzino"), async (req, res) => {
+  const righe = await db.prepare(
+    `SELECT d.id, d.articolo_id, d.quantita, a.nome, a.unita, a.tipo_consumo
+     FROM menu_distinta d JOIN magazzino_articoli a ON a.id=d.articolo_id
+     WHERE d.menu_id=? ORDER BY a.nome`
+  ).all(req.params.id);
+  const articoli = await db.prepare("SELECT id,nome,unita,tipo_consumo FROM magazzino_articoli ORDER BY nome").all();
+  res.json({ righe, articoli });
+});
+adminRouter.put("/menu/:id/distinta", requireCap("magazzino"), async (req, res) => {
+  const voci = Array.isArray(req.body?.voci) ? req.body.voci : [];
+  await db.prepare("DELETE FROM menu_distinta WHERE menu_id=?").run(req.params.id);
+  for (const v of voci) {
+    const q = Number(v.quantita);
+    if (!v.articolo_id || !(q > 0)) continue;
+    await db.prepare("INSERT OR REPLACE INTO menu_distinta (menu_id,articolo_id,quantita) VALUES (?,?,?)").run(req.params.id, Number(v.articolo_id), q);
+  }
+  audit(req.adminUser.username, "distinta", "menu_articoli", req.params.id, `${voci.length} ingredienti`);
   res.json({ ok: true });
 });
 
@@ -16698,7 +17044,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-23 11:17" : "online";
+var BUILD = true ? "2026-08-24 08:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
