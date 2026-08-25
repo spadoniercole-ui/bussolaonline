@@ -3294,7 +3294,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 
   <nav aria-label="Navigazione principale">
     <button class="tab on" data-t="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 10.5L12 4l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
-    <button class="tab" data-t="eventi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>Eventi</button>
+    <button class="tab" data-t="eventi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>Settimana</button>
     <button class="tab" data-t="sport"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M4 8c5 2.2 11 2.2 16 0M4 16c5-2.2 11-2.2 16 0M12 3v18"/></svg>Sport</button>
     <button class="tab" data-t="giochi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="4.5" y="7" width="10.5" height="13.5" rx="2"/><rect x="9" y="3.5" width="10.5" height="13.5" rx="2"/></svg>Giochi</button>
     <button class="tab" data-t="bussola"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z" fill="currentColor" stroke="none"/></svg>Guida</button>
@@ -3789,7 +3789,7 @@ function adattaBarra() {
   const semplice = modoSemplice(), ragazzi = modoRagazzi();
   if (!semplice && !ragazzi) { if (bar.innerHTML !== bar.dataset.originale) { bar.innerHTML = bar.dataset.originale; ricollegaBarra(); } return; }
   const voci = ragazzi
-    ? [['home', '\u{1F3E0}', T('Home')], ['partite', '\u{1F93E}', T('Giocare')], ['coppa', '\u{1F3C6}', T('Coppa')], ['eventi', '\u{1F4C5}', T('Stasera')], ['bussola', '\u{1F9ED}', T('Guida')]]
+    ? [['home', '\u{1F3E0}', T('Home')], ['partite', '\u{1F93E}', T('Giocare')], ['coppa', '\u{1F3C6}', T('Coppa')], ['eventi', '\u{1F4C5}', T('Settimana')], ['bussola', '\u{1F9ED}', T('Guida')]]
     : [['home', '\u{1F3E0}', T('Home')], ['cena', '\u{1F37D}\uFE0F', T('Cena')], ['bussola', '\u{1F9ED}', T('Info')], ['aiuto', '\u{1F4DE}', T('Chiama')]];
   bar.innerHTML = voci.map(([k, ic, et]) => \`<button class="tab\${k === 'home' ? ' on' : ''}" data-t="\${k}" data-semplice="1"><span style="font-size:1.35rem;line-height:1">\${ic}</span>\${esc(et)}</button>\`).join('');
   ricollegaBarra();
@@ -3875,31 +3875,16 @@ function renderHome() {
     \${minorenne()
       ? \`<div class="note" style="margin-top:12px">\${T('Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.')}</div>\`
       : \`<button class="btn navy block" style="margin-top:12px" data-serate-tutte>\u2728 \${T('Scopri le nostre serate speciali')}</button>\`}
+    <button class="btn navy block" style="margin-top:10px" data-rassegna="1">\u{1F39E}\uFE0F \${T('Rassegna cinematografica')}</button>
     <div style="height:10px"></div>\`;
-}
-function serateSectionHTML() {
-  const list = state.data.serate || [];
-  if (!list.length) return '';
-  // A un minorenne le serate con quota non si propongono nemmeno. Il server le rifiuta gia',
-  // ma mostrare il tasto e poi negarlo e' peggio: lo si mette nella condizione di impegnare
-  // soldi che non sono suoi, e di prendersi un rifiuto per una cosa che gli abbiamo offerto.
-  if (minorenne()) {
-    return \`<div class="sect-title" style="margin-top:14px">\${T('Serate su prenotazione')}</div>
-      <div class="note">\${T('Ci sono serate con posti contati e una quota da pagare: le prenota un adulto per te.')}</div>\`;
-  }
-  return \`<div class="sect-title" style="margin-top:14px">\${T('Serate su prenotazione')}</div>
-    <div>\${list.map(s => \`<div class="evcard" role="button" tabindex="0" data-serata="\${s.id}">
-      <span class="stripe" style="background:#b14a35"></span>
-      <div class="body"><div class="dl">\${esc(s.quando || '')}</div><h4>\${esc(s.titolo)}</h4><p>\u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti')}\` : ''}</p></div>
-      <div class="cta"><button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button></div></div>\`).join('')}</div>\`;
 }
 function renderEventi() {
   $('#s-eventi').innerHTML = \`
-    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 4px">\${T('Il programma')}</h2>
+    <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:6px 2px 4px">\${T('La settimana')}</h2>
     <p class="tiny muted" style="margin-bottom:12px">\${minorenne() ? T('Tocca una serata per i dettagli.') : T('Tocca una serata per i dettagli e per prenotare.')}</p>
     <div>\${state.data.eventi.map(e => evCardHTML(e, false)).join('')}</div>
-    \${serateSectionHTML()}
-    <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}</div>\`;
+    <div class="note">\${T('Il pomeriggio \xE8 dello sport e delle famiglie; la sera, gli spettacoli che accompagnano la cena.')}<br>
+      \${T('Le serate speciali e la rassegna del cinema sono in')} <b>\${T('Home')}</b>.</div>\`;
 }
 // La posizione arriva dal server: a parita' di punti le casate condividono l'indice.
 function posizioneDi(c, sorted, i) { return c.posizione || i + 1; }
@@ -4712,7 +4697,7 @@ async function openStage() {
     \${over70 ? \`<div class="note" style="border-left-color:#7a5c2e"><b>\${T('Hai diritto alla prima fila')}</b> \u2014 \${T('la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.')}</div>\` : ''}
     <div class="card" style="padding:4px 14px">\${pr.map(riga).join('')}</div>
     \${mieHTML}
-    \${(d.film || []).length ? \`<button class="btn navy block" style="margin-top:12px" data-rassegna="1">\u{1F39E}\uFE0F \${T('La rassegna della stagione')} \xB7 \${d.film.length} \${T('film')}</button>\` : ''}
+    \${(d.film || []).length ? \`<button class="btn navy block" style="margin-top:12px" data-rassegna="1">\u{1F39E}\uFE0F \${T('Rassegna cinematografica')} \xB7 \${d.film.length} \${T('film')}</button>\` : ''}
     <div class="note">\${esc(d.nota_contributo || '')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
@@ -4725,22 +4710,17 @@ async function openRassegna() {
   let d;
   try { d = await api('/cinema'); state._cinema = d; } catch { okThen(T('Rassegna non disponibile'), false); return; }
   const film = d.film || [];
-  const dataDi = (f) => {
-    const p = (d.prossime || []).filter(x => x.film_id === f.id);
-    return p.length ? p.map(x => dataBella(x.data) + ' \xB7 ' + x.ora).join(' \u2014 ') : null;
-  };
   const scheda = (f) => \`<div class="matchrow" style="align-items:flex-start">
       <div style="flex:1">
         <b style="font-size:.95rem">\${esc(f.titolo)}</b>
         <div class="ct">\${[f.regia ? T('di') + ' ' + esc(f.regia) : '', f.anno || '', f.durata_min ? f.durata_min + "'" : '', esc(f.genere || ''), esc(f.vm || '')].filter(Boolean).join(' \xB7 ')}</div>
         \${f.sinossi ? \`<div class="ct" style="margin-top:4px">\${esc(f.sinossi)}</div>\` : ''}
-        <div class="ct" style="margin-top:4px;color:\${dataDi(f) ? 'var(--verde,#2e6b45)' : 'var(--muted)'}">
-          \${dataDi(f) ? '\u{1F3AC} ' + dataDi(f) : T('data da definire')}</div>
       </div></div>\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#5f5188">\u{1F39E}\uFE0F \${T('Bussola Stage')}</div>
-    <h2>\${T('La rassegna della stagione')}</h2>
-    <p class="sub">\${T('I film che proponiamo. Le serate si fissano via via: quelle gi\xE0 decise hanno la data.')}</p>
+    <h2>\${T('Rassegna cinematografica')}</h2>
+    <p class="sub">\${T('I film che proponiamo per la stagione.')}</p>
     <div class="card" style="padding:4px 14px;max-height:52vh;overflow:auto">\${film.map(scheda).join('') || \`<p class="tiny muted" style="padding:12px 0">\${T('Rassegna non ancora pubblicata.')}</p>\`}</div>
+    <div class="note">\${T('Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.')}</div>
     <button class="btn navy block" style="margin-top:10px" data-rassegnastampa="1">\u{1F5A8}\uFE0F \${T('Salva o stampa la rassegna')}</button>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
@@ -4751,7 +4731,6 @@ async function openRassegna() {
 function stampaRassegna() {
   const d = state._cinema || {};
   const film = d.film || [];
-  const dataDi = (f) => (d.prossime || []).filter(x => x.film_id === f.id).map(x => dataBella(x.data) + ' \xB7 ' + x.ora).join(' \u2014 ');
   const w = window.open('', '_blank');
   if (!w) { okThen(T('Consenti le finestre per salvare la rassegna.'), false); return; }
   w.document.write(\`<!doctype html><html lang="it"><head><meta charset="utf-8">
@@ -4766,11 +4745,10 @@ function stampaRassegna() {
       @media print{body{margin:12mm}}
     </style></head><body>
     <h1>Bussola Stage \u2014 \${T('la rassegna')}</h1>
-    <div class="sub">\${T('I film della stagione. Le date si aggiungono via via.')}</div>
+    <div class="sub">\${T('I film della stagione. Le date delle proiezioni si trovano nell\\'app, sezione Stage: possono cambiare.')}</div>
     \${film.map(f => \`<article><h2>\${esc(f.titolo)}</h2>
       <div class="meta">\${[f.regia ? 'di ' + esc(f.regia) : '', f.anno || '', f.durata_min ? f.durata_min + "'" : '', esc(f.genere || ''), esc(f.vm || '')].filter(Boolean).join(' \xB7 ')}</div>
-      \${f.sinossi ? \`<p>\${esc(f.sinossi)}</p>\` : ''}
-      <div class="data">\${dataDi(f) || T('data da definire')}</div></article>\`).join('')}
+      \${f.sinossi ? \`<p>\${esc(f.sinossi)}</p>\` : ''}</article>\`).join('')}
     </body></html>\`);
   w.document.close();
   setTimeout(() => { try { w.print(); } catch (e) { } }, 400);
@@ -5283,9 +5261,9 @@ function okThen(msg, ok = true) {
 // Lingue: 5 con traduzione fissa salvata (it/en/fr/de/es).
 const LANGS = [['it','Italiano','fixed'],['en','English','fixed'],['fr','Fran\xE7ais','fixed'],['de','Deutsch','fixed'],['es','Espa\xF1ol','fixed']];
 const I18N = {
-  it:{home:'Home',eventi:'Eventi',sport:'Sport',giochi:'Giochi',bussola:'Guida',ciao:'Ciao',testo:'Testo',contrasto:'Contrasto',siamo_qui:'Siamo qui',chiosco:'Chiosco La Bussola',isola:'Isola ecologica',qui:'sei qui',apri_mappa:'Tocca per aprire la mappa'},
-  en:{home:'Home',eventi:'Events',sport:'Sport',giochi:'Games',bussola:'Guide',ciao:'Hi',testo:'Text',contrasto:'Contrast',siamo_qui:'You are here',chiosco:'La Bussola kiosk',isola:'Recycling point',qui:'you are here',apri_mappa:'Tap to open the map'},
-  fr:{home:'Accueil',eventi:'\xC9v\xE9nements',sport:'Sport',giochi:'Jeux',bussola:'Guide',ciao:'Bonjour',testo:'Texte',contrasto:'Contraste',siamo_qui:'Vous \xEAtes ici',chiosco:'Kiosque La Bussola',isola:'Point de tri',qui:'vous \xEAtes ici',apri_mappa:'Touchez pour ouvrir la carte'},
+  it:{home:'Home',eventi:'Settimana',sport:'Sport',giochi:'Giochi',bussola:'Guida',ciao:'Ciao',testo:'Testo',contrasto:'Contrasto',siamo_qui:'Siamo qui',chiosco:'Chiosco La Bussola',isola:'Isola ecologica',qui:'sei qui',apri_mappa:'Tocca per aprire la mappa'},
+  en:{home:'Home',eventi:'The week',sport:'Sport',giochi:'Games',bussola:'Guide',ciao:'Hi',testo:'Text',contrasto:'Contrast',siamo_qui:'You are here',chiosco:'La Bussola kiosk',isola:'Recycling point',qui:'you are here',apri_mappa:'Tap to open the map'},
+  fr:{home:'Accueil',eventi:'La semaine',sport:'Sport',giochi:'Jeux',bussola:'Guide',ciao:'Bonjour',testo:'Texte',contrasto:'Contraste',siamo_qui:'Vous \xEAtes ici',chiosco:'Kiosque La Bussola',isola:'Point de tri',qui:'vous \xEAtes ici',apri_mappa:'Touchez pour ouvrir la carte'},
   de:{home:'Start',eventi:'Events',sport:'Sport',giochi:'Spiele',bussola:'Guide',ciao:'Hallo',testo:'Text',contrasto:'Kontrast',siamo_qui:'Sie sind hier',chiosco:'Kiosk La Bussola',isola:'Wertstoffinsel',qui:'Sie sind hier',apri_mappa:'Zum \xD6ffnen der Karte tippen'},
   es:{home:'Inicio',eventi:'Eventos',sport:'Deporte',giochi:'Juegos',bussola:'Gu\xEDa',ciao:'Hola',testo:'Texto',contrasto:'Contraste',siamo_qui:'Est\xE1s aqu\xED',chiosco:'Quiosco La Bussola',isola:'Punto de reciclaje',qui:'est\xE1s aqu\xED',apri_mappa:'Toca para abrir el mapa'},
 };
@@ -10752,7 +10730,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.18";
+var VERSION = "5.19";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17241,7 +17219,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 06:23" : "online";
+var BUILD = true ? "2026-08-25 07:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
