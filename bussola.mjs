@@ -8645,7 +8645,9 @@ function collegaSelfOrder(so, tornaA) {
 VIEWS.comande = async () => {
   // Lo stesso elenco che vede il socio: condimenti fuori dalle categorie e spuntabili dentro
   // il piatto. Se qui si usasse il listino grezzo, al tavolo ricomparirebbero come voci a se'.
-  const menu = await api('/menu?ordinabile=1');
+  // Con la zona della postazione: al Bar si vede il Bar (piu' la cucina, che serve tutti i
+  // punti), al Garden il Garden. Senza, l'operatore vedeva un elenco diverso dal socio.
+  const menu = await api('/menu?ordinabile=1&zona=' + (ZONA === 'bar' ? 'bar' : 'garden'));
   const garden = ZONA === 'garden';
   const entry = garden
     ? \`<label>Tavolo <input id="co_tav" type="number" min="1" inputmode="numeric" placeholder="n\xB0" style="width:100px"></label>\`
@@ -9458,7 +9460,7 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
       <div class="row"><span class="muted" style="font-size:.85rem">Punto: <b>\${ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden'}</b> (dalla zona della postazione)</span><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
       <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
-      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cross">\u{1F373} Da preparare, in entrambi i punti</button></div>
+      <div class="row"><button class="btn ghost sm" id="menu_diag">\\ud83e\\ude7a Diagnosi del men\\u00f9</button><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cross">\u{1F373} Da preparare, in entrambi i punti</button></div>
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p>
       
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Da preparare, in entrambi i punti" serve ai prodotti che richiedono una lavorazione e si vendono sia al Bar sia al Garden (panini, fritti, gelati sfusi): li segna <i>Cucina</i> + <i>Entrambi</i> in un colpo solo. Scegli tu le categorie: il resto del men\xF9 non si tocca.</p></div>
@@ -9502,7 +9504,31 @@ VIEWS.menu = async () => {
         qr = { svg: d.svg, caption: '\u{1F4F1} Inquadra e ordina dal tuo tavolo' };
       }
     } catch (_) {}
-    stampaMenuPDF(menu, punto, qr, ZONA);
+    // Si stampa quello che si ordina davvero: stesso elenco del socio, condimenti esclusi
+    // (sono una spunta dentro il piatto, non una voce del menu' stampato).
+    const daStampare = await api('/menu?ordinabile=1&zona=' + (ZONA === 'bar' ? 'bar' : 'garden'));
+    stampaMenuPDF(daStampare, punto, qr, ZONA);
+  };
+  // La diagnosi legge i dati veri e dice cosa non torna, invece di lasciare indovinare.
+  $('#menu_diag').onclick = async () => {
+    const d = await api('/menu/diagnosi');
+    const riga = (k, v) => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>\${k}</span><b>\${v}</b></div>\`;
+    const verdetto = d.problemi.length
+      ? \`<div style="background:#fdf1e7;border-left:4px solid #C0553F;padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:10px">\${d.problemi.map(p => \`<div>\\u26a0\\ufe0f \${esc(p)}</div>\`).join('')}</div>\`
+      : \`<div style="background:#eaf3ec;border-left:4px solid #2e6b45;padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:10px">\\u2705 Il men\\u00f9 \\u00e8 a posto: i condimenti si spuntano dentro i piatti e i piatti si ordinano da tutti e due i punti.</div>\`;
+    openModal(\`<h3 style="margin-top:0">\\ud83e\\ude7a Diagnosi del men\\u00f9</h3>
+      \${verdetto}
+      \${riga('Voci a listino', d.totale + ' (' + d.attivi + ' attive, ' + d.spenti + ' spente)')}
+      \${riga('Condimenti riconosciuti', d.condimenti.length ? esc(d.condimenti.join(', ')) : '\\u2014')}
+      \${d.condimenti_spenti.length ? riga('Condimenti SPENTI', esc(d.condimenti_spenti.join(', '))) : ''}
+      \${riga('Piatti preparati dalla cucina', d.piatti_cucina)}
+      \${riga('Prodotti del banco', d.prodotti_banco)}
+      \${riga('Si ordinano al Bar', d.ordinabili_al_bar)}
+      \${riga('Si ordinano al Garden', d.ordinabili_al_garden)}
+      \${d.esempio ? \`<p class="muted" style="font-size:.82rem;margin-top:10px">Esempio: in <b>\${esc(d.esempio.nome)}</b> il socio trova \${d.esempio.complementi.length ? esc(d.esempio.complementi.join(', ')) : 'nessuna aggiunta'}.</p>\` : ''}
+      <p class="muted" style="font-size:.78rem">Categorie a men\\u00f9: \${esc(d.categorie.join(' \\u00b7 ')) || '\\u2014'}</p>
+      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+    const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
   };
   $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
   $('#menu_punto').onclick = async () => { if (!confirm('Assegnare il Punto (Bar/Garden) a tutti gli articoli in base a nome/categoria? Le scelte manuali verranno ricalcolate.')) return; const r = await api('/menu/deduci-punto', { method: 'POST', body: '{}' }); alert(\`Punto assegnato: \${r.garden} Garden, \${r.bar} Bar. Rivedi i casi particolari nella colonna Punto.\`); show('menu'); };
@@ -9525,7 +9551,20 @@ VIEWS.menu = async () => {
       $('#imp_prev').innerHTML = \`<p class="muted" style="font-size:.82rem">Trovate <b>\${dry.totale}</b> righe. Anteprima:</p>
         <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Categoria</th><th>Allergeni</th></tr></thead><tbody>\${preview}</tbody></table>
         <div class="row" style="margin-top:8px"><label><input type="checkbox" id="imp_repl"> sostituisci l'intero men\xF9</label><button class="btn gold" id="imp_go">Importa \${dry.totale} righe</button></div>\`;
-      $('#imp_go').onclick = async () => { const res = await api('/menu/import', { method: 'POST', body: JSON.stringify({ fileB64: IMPORT_B64, mode: $('#imp_repl').checked ? 'replace' : 'merge' }) }); alert(\`Import completato: \${res.creati} creati, \${res.aggiornati} aggiornati.\`); IMPORT_B64 = null; show('menu'); };
+      $('#imp_go').onclick = async () => {
+        const invia = (forza) => api('/menu/import', { method: 'POST', body: JSON.stringify({ fileB64: IMPORT_B64, mode: $('#imp_repl').checked ? 'replace' : 'merge', forza }) });
+        try {
+          const res = await invia(false);
+          alert(\`Import completato: \${res.creati} creati, \${res.aggiornati} aggiornati.\`); show('menu');
+        } catch (e) {
+          // Il server rifiuta di azzerare il listino se ci sono comande aperte: si spiega
+          // perche', e si lascia al gestore la scelta, invece di fare danno in silenzio.
+          if (!/comande ancora aperte/i.test(e.message || '')) { alert(e.message); return; }
+          if (!confirm(e.message + '\\n\\nProcedo lo stesso?')) return;
+          const res = await invia(true);
+          alert(\`Import completato: \${res.creati} creati, \${res.aggiornati} aggiornati.\`); show('menu');
+        }
+      };
     } catch (err) { $('#imp_prev').innerHTML = \`<p class="muted">\${esc(err.message)}</p>\`; }
   };
 };
@@ -10793,7 +10832,10 @@ async function load() {
   }
   if (eta) setBanner('\u23F1\uFE0F Attesa stimata al momento: <b>' + eta + '</b>', 'eta');
   let menu;
-  try { menu = await (await fetch('/api/menu')).json(); }
+  // Il punto da cui si ordina lo dice il QR: senza, la pagina mostrava tutto il listino, Bar
+  // compreso, anche a un tavolo del Garden.
+  const zonaQR = /bar/i.test(PUNTO || '') ? 'bar' : 'garden';
+  try { menu = await (await fetch('/api/menu?zona=' + zonaQR)).json(); }
   catch (e) { document.getElementById('menu').innerHTML = '<p class="muted">Men\xF9 non disponibile.</p>'; return; }
   // Step 0/1: carico il men\xF9 e lo rendo con il componente condiviso (stessa vista dello staff).
   COM = Comanda.create({
@@ -10845,7 +10887,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.32";
+var VERSION = "5.33";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13191,18 +13233,6 @@ init_parametri();
 
 // server/cucina.js
 init_parametri();
-function ordinabileNella(m, zona) {
-  if (m.stazione === "cucina") return true;
-  if (zona !== "bar" && zona !== "garden") return true;
-  return m.zona === zona || m.zona === "comune";
-}
-function eCondimento(m) {
-  return m.complemento === 1 || CONDIMENTO_RX.test(String(m.categoria || ""));
-}
-function prendeComplementi(m) {
-  return m.stazione === "cucina" && !eCondimento(m);
-}
-var CONDIMENTO_RX = /condiment|aggiunt|complement|\bsalse\b/i;
 function hhmm(ore, minuti) {
   const h = Math.floor(ore + Math.floor(minuti / 60));
   const m = minuti % 60;
@@ -13221,6 +13251,84 @@ async function primoRitiro(haCucina, adesso = /* @__PURE__ */ new Date()) {
 function avvisoRitiro(nonPrima) {
   if (!nonPrima) return null;
   return `Ordine preso. La cucina consegna dalle ${nonPrima}: piastra e friggitrice devono scaldarsi.`;
+}
+
+// server/menu.js
+init_db();
+init_parametri();
+var CONDIMENTO_RX = /condiment|aggiunt|complement|\bsalse\b/i;
+function eCondimento(m) {
+  return Number(m.complemento) === 1 || CONDIMENTO_RX.test(String(m.categoria || ""));
+}
+function laPreparaLaCucina(m) {
+  return String(m.stazione || "") === "cucina";
+}
+function siVendeIn(m, zona) {
+  if (laPreparaLaCucina(m)) return true;
+  if (zona !== "bar" && zona !== "garden") return true;
+  return m.zona === zona || m.zona === "comune";
+}
+function prendeComplementi(m) {
+  return laPreparaLaCucina(m) && !eCondimento(m);
+}
+async function daOrdinare({ zona = "", soloAttivi = true } = {}) {
+  const tutte = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
+  const vive = soloAttivi ? tutte.filter((m) => Number(m.attivo) === 1) : tutte;
+  const condimenti = vive.filter(eCondimento).map((m) => ({ id: m.id, nome: m.nome }));
+  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
+  const voci = vive.filter((m) => !eCondimento(m) && siVendeIn(m, zona));
+  if (condimenti.length) {
+    for (const v of voci) {
+      if (!prendeComplementi(v)) continue;
+      v.complementi = condimenti;
+      v.supplemento_complementi = supplemento;
+    }
+  }
+  return { voci, condimenti, supplemento };
+}
+async function condimentiAmmessi(piatto) {
+  if (!prendeComplementi(piatto)) return [];
+  const tutte = await db.prepare("SELECT id,nome,categoria,complemento,magazzino_id FROM menu_articoli WHERE attivo=1 ORDER BY ordine,nome").all();
+  return tutte.filter(eCondimento);
+}
+async function diagnosi() {
+  const tutte = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
+  const attivi = tutte.filter((m) => Number(m.attivo) === 1);
+  const spenti = tutte.filter((m) => Number(m.attivo) !== 1);
+  const cond = attivi.filter(eCondimento);
+  const condSpenti = spenti.filter(eCondimento);
+  const cucina = attivi.filter((m) => laPreparaLaCucina(m) && !eCondimento(m));
+  const banco = attivi.filter((m) => !laPreparaLaCucina(m) && !eCondimento(m));
+  const categorie = [...new Set(tutte.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort();
+  const perZona = {};
+  for (const z of ["bar", "garden"]) {
+    perZona[z] = attivi.filter((m) => !eCondimento(m) && siVendeIn(m, z)).length;
+  }
+  const problemi = [];
+  if (!cond.length) {
+    problemi.push(condSpenti.length ? `I ${condSpenti.length} condimenti che hai sono SPENTI: riaccendili nella colonna Attivo e compariranno dentro i piatti.` : "Nel listino non c'\xE8 nessun condimento. Metti le voci (maionese, insalata\u2026) in una categoria che si chiami \u201CCondimenti extra\u201D, oppure spunta Compl. su quelle che ci sono.");
+  }
+  if (!cucina.length) {
+    problemi.push("Nessun prodotto ha stazione \u201CCucina\u201D: senza cucina i condimenti non hanno dove comparire, e al Bar non arriva nessun piatto. Correggi la colonna \u201CChi prepara\u201D.");
+  }
+  if (cond.length && cucina.length) {
+    problemi.length = 0;
+  }
+  return {
+    totale: tutte.length,
+    attivi: attivi.length,
+    spenti: spenti.length,
+    condimenti: cond.map((m) => m.nome),
+    condimenti_spenti: condSpenti.map((m) => m.nome),
+    piatti_cucina: cucina.length,
+    prodotti_banco: banco.length,
+    categorie,
+    ordinabili_al_bar: perZona.bar,
+    ordinabili_al_garden: perZona.garden,
+    // Un esempio concreto: il primo piatto di cucina, con quello che ci si spunta dentro.
+    esempio: cucina.length ? { nome: cucina[0].nome, complementi: cond.map((c) => c.nome) } : null,
+    problemi
+  };
 }
 
 // server/referenze.js
@@ -13244,7 +13352,11 @@ var VINCOLI = {
     { tabella: "magazzino_richieste", colonna: "articolo_id", soloSe: "stato='impegnata'", etichetta: "impegni in corso" }
   ],
   menu_articoli: [
-    { tabella: "comanda_righe", colonna: "articolo_id", etichetta: "righe di comanda che lo contengono" }
+    // La colonna si chiama menu_id, non articolo_id. Con il nome sbagliato la query andava in
+    // errore, il try/catch di rami() lo leggeva come "nessun vincolo", e la protezione non e'
+    // mai scattata: si poteva cancellare un prodotto dentro comande aperte, che perdevano il
+    // collegamento e smettevano di scaricare il magazzino. In silenzio.
+    { tabella: "comanda_righe", colonna: "menu_id", soloSe: "comanda_id IN (SELECT id FROM comande WHERE stato NOT IN ('chiusa','annullata'))", etichetta: "righe di comande ancora aperte" }
   ],
   cdc_giochi: [
     { tabella: "cdc_prestiti", colonna: "gioco_id", soloSe: "ora_fine IS NULL OR ora_fine=''", etichetta: "prestiti non ancora rientrati" }
@@ -14348,20 +14460,14 @@ adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
   res.json({ filename: "menu.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Menu") });
 });
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
-  const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
-  if (String(req.query.ordinabile || "") !== "1") return res.json(rows);
-  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
-  const z = String(req.query.zona || "");
-  const ordinabili = rows.filter((m) => m.attivo && !eCondimento(m) && ordinabileNella(m, z));
-  const condimenti = rows.filter((m) => m.attivo && eCondimento(m)).map((m) => ({ id: m.id, nome: m.nome }));
-  if (condimenti.length) {
-    for (const r of ordinabili) {
-      if (!prendeComplementi(r)) continue;
-      r.complementi = condimenti;
-      r.supplemento_complementi = supplemento;
-    }
+  if (String(req.query.ordinabile || "") !== "1") {
+    return res.json(await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all());
   }
-  res.json(ordinabili);
+  const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
+  res.json(voci);
+});
+adminRouter.get("/menu/diagnosi", requireCap("comande"), async (req, res) => {
+  res.json(await diagnosi());
 });
 adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res) => {
   const v = req.body?.complemento ? 1 : 0;
@@ -14432,6 +14538,18 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
   }) });
   let creati = 0, aggiornati = 0;
   if (b.mode === "replace") {
+    const inUso = await db.prepare(
+      `SELECT COUNT(DISTINCT r.menu_id) n FROM comanda_righe r
+       JOIN comande c ON c.id = r.comanda_id
+       WHERE r.menu_id IS NOT NULL AND c.stato NOT IN ('chiusa','annullata')`
+    ).get();
+    const quanti = Number(inUso?.n || 0);
+    if (quanti > 0 && !b.forza) {
+      return res.status(409).json({
+        error: `Ci sono ${quanti} prodotti dentro comande ancora aperte: sostituire il listino ora le lascerebbe senza collegamento, e quelle comande non scaricherebbero il magazzino. Chiudi il servizio e riprova, oppure conferma di voler procedere lo stesso.`,
+        in_uso: quanti
+      });
+    }
     await db.exec("DELETE FROM menu_articoli;");
   }
   for (const r of righe) {
@@ -14601,11 +14719,10 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
     totale += Number(m.prezzo) * qta;
     const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
     const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
-    if (!scelti.length || !prendeComplementi(m)) continue;
+    if (!scelti.length) continue;
+    const ammessi = await condimentiAmmessi(m);
+    if (!ammessi.length) continue;
     const padre = Number(info2.lastInsertRowid);
-    const ammessi = (await db.prepare(
-      "SELECT id,nome,categoria,complemento,magazzino_id FROM menu_articoli WHERE attivo=1 ORDER BY ordine,nome"
-    ).all()).filter(eCondimento);
     let messi = 0;
     for (const c of ammessi) {
       if (!scelti.includes(Number(c.id))) continue;
@@ -16012,20 +16129,8 @@ publicRouter.get("/albo-casate", async (req, res) => {
   res.json({ albo: await alboCasate(), campione: await campioneInCarica() });
 });
 publicRouter.get("/menu", async (req, res) => {
-  const z = String(req.query.zona || "");
-  const base = "SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni,zona,complemento FROM menu_articoli WHERE attivo=1";
-  const tutte = await db.prepare(base + " ORDER BY ordine,id").all();
-  const rows = tutte.filter((m) => !eCondimento(m) && ordinabileNella(m, z));
-  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
-  const condimenti = tutte.filter(eCondimento).map((m) => ({ id: m.id, nome: m.nome }));
-  if (condimenti.length) {
-    for (const r of rows) {
-      if (!prendeComplementi(r)) continue;
-      r.complementi = condimenti;
-      r.supplemento_complementi = supplemento;
-    }
-  }
-  res.json(rows);
+  const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
+  res.json(voci);
 });
 function zonaDaPunto(punto) {
   const p = String(punto || "").toLowerCase();
@@ -16065,11 +16170,9 @@ publicRouter.post("/self-order", async (req, res) => {
     totale += Number(m.prezzo) * qta;
     const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
     const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
-    if (scelti.length && prendeComplementi(m)) {
+    const ammessi = scelti.length ? await condimentiAmmessi(m) : [];
+    if (ammessi.length) {
       const padre = Number(info2.lastInsertRowid);
-      const ammessi = (await db.prepare(
-        "SELECT id,nome,categoria,complemento FROM menu_articoli WHERE attivo=1 ORDER BY ordine,nome"
-      ).all()).filter(eCondimento);
       let messi = 0;
       for (const c of ammessi) {
         if (!scelti.includes(Number(c.id))) continue;
@@ -17489,7 +17592,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 19:17" : "online";
+var BUILD = true ? "2026-08-25 19:56" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
