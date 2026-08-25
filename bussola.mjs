@@ -4691,7 +4691,7 @@ async function cartaPrenota(turno) {
 // ---- Posto allo Stage (cinema e spettacoli) ----
 async function openStage() {
   let d;
-  try { d = await api('/cinema'); } catch { okThen(T('Programma non disponibile'), false); return; }
+  try { d = await api('/cinema'); state._cinema = d; } catch { okThen(T('Programma non disponibile'), false); return; }
   const pr = d.prossime || [];
   if (!pr.length) { okThen(T('Nessuno spettacolo in programma.'), false); return; }
   let mie = [];
@@ -4712,9 +4712,68 @@ async function openStage() {
     \${over70 ? \`<div class="note" style="border-left-color:#7a5c2e"><b>\${T('Hai diritto alla prima fila')}</b> \u2014 \${T('la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.')}</div>\` : ''}
     <div class="card" style="padding:4px 14px">\${pr.map(riga).join('')}</div>
     \${mieHTML}
+    \${(d.film || []).length ? \`<button class="btn navy block" style="margin-top:12px" data-rassegna="1">\u{1F39E}\uFE0F \${T('La rassegna della stagione')} \xB7 \${d.film.length} \${T('film')}</button>\` : ''}
     <div class="note">\${esc(d.nota_contributo || '')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
+}
+
+// La rassegna e' l'elenco dei film che il residence propone per la stagione: le serate si
+// decidono dopo, e non tutti i film hanno gia' una data. Vale la pena mostrarla comunque \u2014
+// e poterla portare via, perche' e' la cosa che si guarda decidendo come passare la settimana.
+async function openRassegna() {
+  let d;
+  try { d = await api('/cinema'); state._cinema = d; } catch { okThen(T('Rassegna non disponibile'), false); return; }
+  const film = d.film || [];
+  const dataDi = (f) => {
+    const p = (d.prossime || []).filter(x => x.film_id === f.id);
+    return p.length ? p.map(x => dataBella(x.data) + ' \xB7 ' + x.ora).join(' \u2014 ') : null;
+  };
+  const scheda = (f) => \`<div class="matchrow" style="align-items:flex-start">
+      <div style="flex:1">
+        <b style="font-size:.95rem">\${esc(f.titolo)}</b>
+        <div class="ct">\${[f.regia ? T('di') + ' ' + esc(f.regia) : '', f.anno || '', f.durata_min ? f.durata_min + "'" : '', esc(f.genere || ''), esc(f.vm || '')].filter(Boolean).join(' \xB7 ')}</div>
+        \${f.sinossi ? \`<div class="ct" style="margin-top:4px">\${esc(f.sinossi)}</div>\` : ''}
+        <div class="ct" style="margin-top:4px;color:\${dataDi(f) ? 'var(--verde,#2e6b45)' : 'var(--muted)'}">
+          \${dataDi(f) ? '\u{1F3AC} ' + dataDi(f) : T('data da definire')}</div>
+      </div></div>\`;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:#5f5188">\u{1F39E}\uFE0F \${T('Bussola Stage')}</div>
+    <h2>\${T('La rassegna della stagione')}</h2>
+    <p class="sub">\${T('I film che proponiamo. Le serate si fissano via via: quelle gi\xE0 decise hanno la data.')}</p>
+    <div class="card" style="padding:4px 14px;max-height:52vh;overflow:auto">\${film.map(scheda).join('') || \`<p class="tiny muted" style="padding:12px 0">\${T('Rassegna non ancora pubblicata.')}</p>\`}</div>
+    <button class="btn navy block" style="margin-top:10px" data-rassegnastampa="1">\u{1F5A8}\uFE0F \${T('Salva o stampa la rassegna')}</button>
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+
+// "Scaricare" su un telefono vuol dire aprire una pagina pulita e usare Stampa \u2192 Salva come
+// PDF: funziona su Android e iPhone senza chiedere permessi ne' installare niente.
+function stampaRassegna() {
+  const d = state._cinema || {};
+  const film = d.film || [];
+  const dataDi = (f) => (d.prossime || []).filter(x => x.film_id === f.id).map(x => dataBella(x.data) + ' \xB7 ' + x.ora).join(' \u2014 ');
+  const w = window.open('', '_blank');
+  if (!w) { okThen(T('Consenti le finestre per salvare la rassegna.'), false); return; }
+  w.document.write(\`<!doctype html><html lang="it"><head><meta charset="utf-8">
+    <title>\${T('Rassegna')} \xB7 Bussola Residence</title>
+    <style>
+      body{font-family:Georgia,serif;color:#12324f;margin:26px;max-width:760px}
+      h1{font-size:26px;margin:0 0 2px} .sub{color:#6b7f8f;font-size:13px;margin-bottom:18px;font-family:system-ui,sans-serif}
+      article{border-top:1px solid #dfe6ec;padding:12px 0}
+      h2{font-size:17px;margin:0 0 3px} .meta{color:#6b7f8f;font-size:12px;font-family:system-ui,sans-serif}
+      p{font-size:13px;line-height:1.45;margin:6px 0 4px}
+      .data{font-family:system-ui,sans-serif;font-size:12px;font-weight:700;color:#2e6b45}
+      @media print{body{margin:12mm}}
+    </style></head><body>
+    <h1>Bussola Stage \u2014 \${T('la rassegna')}</h1>
+    <div class="sub">\${T('I film della stagione. Le date si aggiungono via via.')}</div>
+    \${film.map(f => \`<article><h2>\${esc(f.titolo)}</h2>
+      <div class="meta">\${[f.regia ? 'di ' + esc(f.regia) : '', f.anno || '', f.durata_min ? f.durata_min + "'" : '', esc(f.genere || ''), esc(f.vm || '')].filter(Boolean).join(' \xB7 ')}</div>
+      \${f.sinossi ? \`<p>\${esc(f.sinossi)}</p>\` : ''}
+      <div class="data">\${dataDi(f) || T('data da definire')}</div></article>\`).join('')}
+    </body></html>\`);
+  w.document.close();
+  setTimeout(() => { try { w.print(); } catch (e) { } }, 400);
 }
 async function stagePrenota(id) {
   if (!state.tessera) { okThen(T('Serve la tessera di un socio per prenotare'), false); return; }
@@ -5815,7 +5874,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-fitapri],[data-fitsett],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-fitapri],[data-rassegna],[data-rassegnastampa],[data-fitsett],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) {
@@ -5869,6 +5928,8 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.mappa) return openMappa(t.dataset.mappa);
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
+  if (t.dataset.rassegna) return openRassegna();
+  if (t.dataset.rassegnastampa) return stampaRassegna();
   if (t.dataset.fitapri) return openLezione(Number(t.dataset.fitapri));
   if (t.dataset.fitsett) { state._fitSett = t.dataset.fitsett; return openFitness(); }
   if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
@@ -6856,14 +6917,25 @@ VIEWS.campi = async () => {
   const gestione = \`<div class="panel"><h3>\u{1F3BE} Campi</h3>
     <p class="muted" style="font-size:.78rem;margin-bottom:8px"><b>Da (ora)</b> \xE8 la regola oraria: vuota = nessun vincolo, oppure es. <b>18:00</b> (il calcetto si prenota solo dopo le 18). Gli slot durano <b>Durata</b> minuti, da <b>Apre</b> a <b>Chiude</b>.<br>
     <b>Posti</b> \xE8 il numero di giocatori della prenotazione: lo decidi tu qui, il socio non lo cambia. <b>Min. gioc.</b> \xE8 il <b>numero legale</b>: se poco prima dell'orario i giocatori dichiarati sono meno di cos\xEC, la prenotazione decade e il campo torna libero \u2014 \xE8 quello che rende conveniente dichiarare chi gioca. <b>Max fasce</b> limita la durata di una singola prenotazione, <b>Max/sett.</b> quante prenotazioni pu\xF2 fare lo stesso socio in una settimana su questo campo: servono a evitare che siano sempre gli stessi a occupare il campo.</p>
-    <table><thead><tr><th>Nome</th><th>Sport</th><th>Apre</th><th>Chiude</th><th>Durata</th><th>Da (ora)</th><th>Posti</th><th>Min. gioc.</th><th>Max fasce</th><th>Max/sett.</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="12" class="muted">Nessun campo.</td></tr>'}</tbody></table>
-    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
-      <input id="cp_new_n" placeholder="Nome (es. Campo Tennis)" style="min-width:180px"><select id="cp_new_sp">\${sportOpts('tennis')}</select>
-      <input id="cp_new_ap" value="09:00" style="width:64px" title="Apertura"><input id="cp_new_ch" value="22:00" style="width:64px" title="Chiusura">
-      <input id="cp_new_du" type="number" value="60" style="width:64px" title="Durata slot (min)"><input id="cp_new_om" placeholder="Da (ora)" style="width:80px">
-      <input id="cp_new_pd" type="number" value="4" style="width:60px" title="Posti"><input id="cp_new_mg" type="number" value="2" style="width:60px" title="Minimo giocatori (numero legale)"><input id="cp_new_ms" type="number" value="2" style="width:60px" title="Max fasce consecutive">
-      <input id="cp_new_mw" type="number" value="3" style="width:60px" title="Max prenotazioni a settimana per socio"><button class="btn gold sm" id="cp_add">+ Aggiungi</button>
-    </div></div>\`;
+    <table><thead><tr><th>Nome</th><th>Sport</th><th>Apre</th><th>Chiude</th><th>Durata</th><th>Da (ora)</th><th>Posti</th><th>Min. gioc.</th><th>Max fasce</th><th>Max/sett.</th><th>Attivo</th><th></th></tr></thead>
+      <tbody>\${rows || '<tr><td colspan="12" class="muted">Nessun campo.</td></tr>'}
+      <!-- La riga per il nuovo campo sta DENTRO la tabella: ogni casella cade sotto la sua
+           intestazione, e si capisce cosa si sta scrivendo senza doverlo indovinare. Prima era
+           una fila di caselle sotto la tabella, senza nomi. -->
+      <tr style="background:#faf7f0;border-top:2px solid var(--line)">
+        <td><input id="cp_new_n" placeholder="es. Campo Tennis" style="width:100%"></td>
+        <td><select id="cp_new_sp" style="width:100%">\${sportOpts('tennis')}</select></td>
+        <td><input id="cp_new_ap" value="16:00" style="width:100%"></td>
+        <td><input id="cp_new_ch" value="20:30" style="width:100%"></td>
+        <td><input id="cp_new_du" type="number" value="90" style="width:100%"></td>
+        <td><input id="cp_new_om" placeholder="\u2014" style="width:100%"></td>
+        <td><input id="cp_new_pd" type="number" value="4" style="width:100%"></td>
+        <td><input id="cp_new_mg" type="number" value="2" style="width:100%"></td>
+        <td><input id="cp_new_ms" type="number" value="1" style="width:100%"></td>
+        <td><input id="cp_new_mw" type="number" value="3" style="width:100%"></td>
+        <td class="muted" style="font-size:12px">s\xEC</td>
+        <td><button class="btn gold sm" id="cp_add">+ Aggiungi</button></td>
+      </tr></tbody></table></div>\`;
   const campoOpts = campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('');
   const blocchi = \`<div class="panel"><h3>\u{1F6A7} Campo impegnato (torneo, manutenzione, evento)</h3>
     <p class="muted" style="font-size:.78rem;margin-bottom:8px">Le fasce dichiarate qui <b>non sono prenotabili</b> dai soci. \xC8 cos\xEC che si applica la regola del basket: quando il campo ospita il torneo, lo blocchi e resta libero solo il resto della giornata.</p>
@@ -6958,7 +7030,10 @@ VIEWS.eventi = async () => {
       <td><b>\${esc(e.titolo)}</b>\${e.sottotitolo ? \`<br><span class="muted">\${esc(e.sottotitolo)}</span>\` : ''}</td>
       <td>\${esc(e.tipologia || '\u2014')}\${e.artista ? \`<br><span class="muted">\u{1F3A4} \${esc(e.artista)}</span>\` : ''}</td>
       <td>\${e.luogo ? \`<span class="tag">\${esc(e.luogo === 'carta' ? 'Casa di Carta' : e.luogo)}</span>\` : '<span class="muted">\u2014</span>'}\${e.capienza ? \` <span class="muted">\${e.capienza} p</span>\` : ''}\${e.occupa_stage ? ' <span class="tag mid">stage riservato</span>' : ''}</td>
-      <td>\${e.serata_id ? '\u{1F39F}\uFE0F ' : ''}\${costoLabel(costoEvento(e, serate))}</td>
+      <td>\${costoLabel(costoEvento(e, serate))}\${(() => {
+        const ser = e.serata_id ? (serate || []).find(x => x.id == e.serata_id) : null;
+        return ser ? \`<div class="muted" style="font-size:12px">\u{1F39F}\uFE0F collegato a <b>\${esc(ser.titolo)}</b>\${Number(ser.quota) > 0 ? '' : ' (senza quota)'}</div>\` : '';
+      })()}</td>
       <td>\${e.attivo ? '<span class="tag ok">s\xEC</span>' : '<span class="tag no">no</span>'}</td>
       <td class="row"><button class="btn ghost sm" data-ev="\${e.id}">\u270E</button><button class="btn danger sm" data-evdel="\${e.id}">\u{1F5D1}</button></td></tr>\`).join('')}
   </tbody></table></div>\`;
@@ -7475,7 +7550,8 @@ VIEWS.tabellone = async () => {
       : '<div class="panel"><p class="muted">Nessun calendario per questa disciplina: premi \u201CGenera\u201D.</p></div>';
     $('#view').innerHTML = \`
       <div class="row">
-        <select id="tb_disc">\${discs.map(d => \`<option value="\${d.id}" \${d.id == cur ? 'selected' : ''}>\${d.dominio} \xB7 \${esc(d.nome)}\${d.attivo ? '' : ' (disattivata)'}</option>\`).join('')}</select>
+        <select id="tb_disc">\${discs.filter(d => d.attivo || d.id == cur).map(d => \`<option value="\${d.id}" \${d.id == cur ? 'selected' : ''}>\${d.dominio} \xB7 \${esc(d.nome)}\${d.attivo ? '' : ' (disattivata)'}</option>\`).join('')}</select>
+        \${discs.some(d => !d.attivo) ? \`<span class="muted" style="font-size:13px;align-self:center">\${discs.filter(d => !d.attivo).length} discipline fuori cartellone non sono elencate \u2014 si riattivano da <b>Discipline</b>.</span>\` : ''}
         \${can('tabellone_reset') ? '<button class="btn ghost sm" id="tb_gen">\u21BB Genera / azzera calendario</button>' : ''}
         \${t.completo ? '<span class="tag ok">gironi completi</span>' : ''}
       </div>
@@ -10676,7 +10752,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.17";
+var VERSION = "5.18";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17165,7 +17241,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 06:01" : "online";
+var BUILD = true ? "2026-08-25 06:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
