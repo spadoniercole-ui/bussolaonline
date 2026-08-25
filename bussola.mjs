@@ -9487,7 +9487,15 @@ VIEWS.menu = async () => {
     $('#cross_go').onclick = async () => {
       const cats = [...document.querySelectorAll('[data-xcat]')].filter(x => x.checked).map(x => x.dataset.xcat);
       if (!cats.length) { alert('Scegli almeno una categoria.'); return; }
-      const r = await api('/menu/cross-cucina', { method: 'POST', body: JSON.stringify({ categorie: cats }) });
+      let r;
+      try { r = await api('/menu/cross-cucina', { method: 'POST', body: JSON.stringify({ categorie: cats }) }); }
+      catch (e) {
+        // Il server si ferma se fra le categorie scelte c'e' roba da banco: si spiega e si
+        // lascia decidere, invece di mandare il caffe' al KDS Cucina in silenzio.
+        if (!/si servono al banco/i.test(e.message || '')) { alert(e.message); return; }
+        if (!confirm(e.message + '\\n\\nProcedo lo stesso?')) return;
+        r = await api('/menu/cross-cucina', { method: 'POST', body: JSON.stringify({ categorie: cats, forza: true }) });
+      }
       alert(\`\${r.aggiornati} prodotti ora sono Cucina + Entrambi.\` + (r.nomi && r.nomi.length ? '\\n\\n\xB7 ' + r.nomi.join('\\n\xB7 ') : ''));
       closeModal(); show('menu');
     };
@@ -9527,8 +9535,18 @@ VIEWS.menu = async () => {
       \${riga('Si ordinano al Garden', d.ordinabili_al_garden)}
       \${d.esempio ? \`<p class="muted" style="font-size:.82rem;margin-top:10px">Esempio: in <b>\${esc(d.esempio.nome)}</b> il socio trova \${d.esempio.complementi.length ? esc(d.esempio.complementi.join(', ')) : 'nessuna aggiunta'}.</p>\` : ''}
       <p class="muted" style="font-size:.78rem">Categorie a men\\u00f9: \${esc(d.categorie.join(' \\u00b7 ')) || '\\u2014'}</p>
-      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+      <div class="row" style="margin-top:10px">\${(d.incoerenze || []).length ? '<button class="btn gold sm" id="diag_fix">\\ud83d\\udd27 Rimetti a posto \\u201cChi prepara\\u201d</button>' : ''}<button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
     const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
+    // Riparazione con anteprima: prima si vede cosa cambierebbe, poi si decide.
+    if ($('#diag_fix')) $('#diag_fix').onclick = async () => {
+      const pre = await api('/menu/ricalcola-stazione', { method: 'POST', body: JSON.stringify({ dryRun: true }) });
+      if (!pre.cambierebbero) { alert('Non c\\'\\u00e8 niente da correggere.'); return; }
+      const righe = pre.elenco.slice(0, 25).map(x => \`\\u00b7 \${x.nome} (\${x.categoria}): \${x.ora} \\u2192 \${x.dovrebbe}\`).join('\\n');
+      if (!confirm(\`Cambierebbero \${pre.cambierebbero} prodotti:\\n\\n\${righe}\${pre.elenco.length > 25 ? '\\n\\u2026 e altri ' + (pre.elenco.length - 25) : ''}\\n\\nProcedo?\`)) return;
+      const r = await api('/menu/ricalcola-stazione', { method: 'POST', body: '{}' });
+      alert(\`Corretti \${r.corretti} prodotti. Ricontrolla la colonna \\u201cChi prepara\\u201d: le eccezioni si sistemano a mano.\`);
+      closeModal(); show('menu');
+    };
   };
   $('#menu_recat').onclick = async () => { const r = await api('/menu/ricategorizza', { method: 'POST', body: '{}' }); alert(\`Categorizzati \${r.categorizzati} articoli senza categoria.\`); show('menu'); };
   $('#menu_punto').onclick = async () => { if (!confirm('Assegnare il Punto (Bar/Garden) a tutti gli articoli in base a nome/categoria? Le scelte manuali verranno ricalcolate.')) return; const r = await api('/menu/deduci-punto', { method: 'POST', body: '{}' }); alert(\`Punto assegnato: \${r.garden} Garden, \${r.bar} Bar. Rivedi i casi particolari nella colonna Punto.\`); show('menu'); };
@@ -10887,7 +10905,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.33";
+var VERSION = "5.34";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13291,6 +13309,18 @@ async function condimentiAmmessi(piatto) {
   const tutte = await db.prepare("SELECT id,nome,categoria,complemento,magazzino_id FROM menu_articoli WHERE attivo=1 ORDER BY ordine,nome").all();
   return tutte.filter(eCondimento);
 }
+async function incoerenze() {
+  const { inferStazione: inferStazione2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
+  const tutte = await db.prepare("SELECT * FROM menu_articoli WHERE attivo=1 ORDER BY ordine,id").all();
+  const out = [];
+  for (const m of tutte) {
+    if (eCondimento(m)) continue;
+    const attesa = inferStazione2(m.nome, m.categoria);
+    if (attesa === String(m.stazione || "")) continue;
+    out.push({ id: m.id, nome: m.nome, categoria: m.categoria || "", ora: m.stazione, dovrebbe: attesa });
+  }
+  return out;
+}
 async function diagnosi() {
   const tutte = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
   const attivi = tutte.filter((m) => Number(m.attivo) === 1);
@@ -13304,16 +13334,20 @@ async function diagnosi() {
   for (const z of ["bar", "garden"]) {
     perZona[z] = attivi.filter((m) => !eCondimento(m) && siVendeIn(m, z)).length;
   }
+  const storte = await incoerenze();
+  const inCucinaPerSbaglio = storte.filter((x) => x.ora === "cucina");
   const problemi = [];
+  if (inCucinaPerSbaglio.length >= 3) {
+    const esempi = inCucinaPerSbaglio.slice(0, 4).map((x) => x.nome).join(", ");
+    problemi.push(`${inCucinaPerSbaglio.length} prodotti da banco risultano \u201Cpreparati dalla cucina\u201D (${esempi}\u2026). Finiscono sul KDS Cucina, dove nessuno li prepara, e si portano dietro i condimenti. Succede quando \u201CDa preparare, in entrambi i punti\u201D viene applicato a categorie che non c'entrano.`);
+  }
   if (!cond.length) {
     problemi.push(condSpenti.length ? `I ${condSpenti.length} condimenti che hai sono SPENTI: riaccendili nella colonna Attivo e compariranno dentro i piatti.` : "Nel listino non c'\xE8 nessun condimento. Metti le voci (maionese, insalata\u2026) in una categoria che si chiami \u201CCondimenti extra\u201D, oppure spunta Compl. su quelle che ci sono.");
   }
   if (!cucina.length) {
     problemi.push("Nessun prodotto ha stazione \u201CCucina\u201D: senza cucina i condimenti non hanno dove comparire, e al Bar non arriva nessun piatto. Correggi la colonna \u201CChi prepara\u201D.");
   }
-  if (cond.length && cucina.length) {
-    problemi.length = 0;
-  }
+  const tuttoOk = cond.length && cucina.length && inCucinaPerSbaglio.length < 3;
   return {
     totale: tutte.length,
     attivi: attivi.length,
@@ -13323,11 +13357,12 @@ async function diagnosi() {
     piatti_cucina: cucina.length,
     prodotti_banco: banco.length,
     categorie,
+    incoerenze: storte,
     ordinabili_al_bar: perZona.bar,
     ordinabili_al_garden: perZona.garden,
     // Un esempio concreto: il primo piatto di cucina, con quello che ci si spunta dentro.
     esempio: cucina.length ? { nome: cucina[0].nome, complementi: cond.map((c) => c.nome) } : null,
-    problemi
+    problemi: tuttoOk ? [] : problemi
   };
 }
 
@@ -14589,14 +14624,31 @@ adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) 
   audit(req.adminUser.username, "ricategorizza", "menu_articoli", null, `categorizzati ${n}`);
   res.json({ ok: true, categorizzati: n });
 });
+adminRouter.post("/menu/ricalcola-stazione", requireCap("comande"), async (req, res) => {
+  const storte = await incoerenze();
+  if (req.body?.dryRun) return res.json({ ok: true, cambierebbero: storte.length, elenco: storte });
+  for (const x of storte) {
+    await db.prepare("UPDATE menu_articoli SET stazione=? WHERE id=?").run(x.dovrebbe, x.id);
+  }
+  audit(req.adminUser.username, "ricalcola_stazione", "menu_articoli", null, `${storte.length} corretti`);
+  res.json({ ok: true, corretti: storte.length, elenco: storte });
+});
 adminRouter.post("/menu/cross-cucina", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,categoria FROM menu_articoli").all();
   const cats = Array.isArray(req.body?.categorie) ? req.body.categorie.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
   const categorie = [...new Set(rows.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort();
   if (!cats.length) return res.json({ ok: true, aggiornati: 0, categorie });
+  const bersagli = rows.filter((m) => cats.includes(String(m.categoria || "").trim().toLowerCase()));
+  const daBanco = bersagli.filter((m) => inferStazione(m.nome, m.categoria) !== "cucina");
+  if (daBanco.length && !req.body?.forza) {
+    return res.status(409).json({
+      error: `Fra le categorie scelte ci sono ${daBanco.length} prodotti che si servono al banco (${daBanco.slice(0, 4).map((m) => m.nome).join(", ")}\u2026). Marcarli \u201Ccucina\u201D li manda al KDS Cucina, dove nessuno li prepara. Togli quelle categorie, oppure conferma se sai quello che fai.`,
+      da_banco: daBanco.length,
+      esempi: daBanco.slice(0, 8).map((m) => ({ nome: m.nome, categoria: m.categoria }))
+    });
+  }
   let aggiornati = 0;
-  for (const m of rows) {
-    if (!cats.includes(String(m.categoria || "").trim().toLowerCase())) continue;
+  for (const m of bersagli) {
     await db.prepare("UPDATE menu_articoli SET stazione='cucina', zona='comune' WHERE id=?").run(m.id);
     aggiornati++;
   }
@@ -17592,7 +17644,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 19:56" : "online";
+var BUILD = true ? "2026-08-25 20:27" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
