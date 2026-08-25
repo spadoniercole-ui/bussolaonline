@@ -2681,6 +2681,16 @@ var init_parametri = __esm({
         etichetta: "Dopo quante ore",
         aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
       },
+      {
+        chiave: "comande_supplemento_complementi",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 0.5,
+        min: 0,
+        max: 5,
+        etichetta: "Supplemento condimenti (euro)",
+        aiuto: "I condimenti non hanno un prezzo ciascuno: si spuntano e basta. Chi ne prende uno o quattro paga lo stesso supplemento, una volta per piatto. A zero i condimenti sono gratis."
+      },
       // ---- Sport ----
       {
         chiave: "sport_foglio_gara",
@@ -3458,12 +3468,12 @@ window.Comanda = (function () {
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
       .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
       .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}
-      .cmd-more{background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:2px 0;cursor:pointer;text-align:left}
+      .cmd-more{width:100%;background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:4px 0 2px;cursor:pointer;text-align:left}
       .cmd-comp{width:100%;border-top:1px dashed var(--c-line);margin-top:6px;padding-top:6px}
       .cmd-comp[hidden]{display:none}
       .cmd-comp label{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:.86rem;color:var(--c-navy);min-height:36px;cursor:pointer}
       .cmd-comp input{width:20px;height:20px;flex:0 0 auto}
-      .cmd-comp .cmd-cp{margin-left:auto;color:var(--c-gold);font-weight:700;font-size:.8rem}
+      .cmd-comp .cmd-suppl{font-size:.76rem;color:#6b6257;padding:2px 2px 6px;font-weight:700}
       .cmd-badge{font-size:.72rem;color:#6b6257;display:block;margin-top:2px}\`;
     document.head.appendChild(st);
   }
@@ -3494,8 +3504,8 @@ window.Comanda = (function () {
       Object.keys(cart).forEach(id => {
         const m = menu.find(x => String(x.id) === id); if (!m) return;
         t += Number(m.prezzo) * cart[id];
-        const sel = comp[id] || [];
-        compDi(m).forEach(c => { if (sel.includes(Number(c.id))) t += Number(c.prezzo) * cart[id]; });
+        // Il supplemento e' del piatto: si paga una volta, che i condimenti siano uno o quattro.
+        if ((comp[id] || []).length) t += supplDi(m) * cart[id];
       });
       return t;
     }
@@ -3524,13 +3534,18 @@ window.Comanda = (function () {
     // "tre maionesi": o la vuoi o non la vuoi, e se prendi due panini la vogliono entrambi.
     function compDi(m) { return Array.isArray(m.complementi) ? m.complementi : []; }
     function scelti(id) { return comp[id] || (comp[id] = []); }
+    function supplDi(m) { return Number(m.supplemento_complementi) || 0; }
     function compHTML(m) {
       const list = compDi(m);
       if (!list.length) return '';
       const sel = scelti(m.id);
-      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span><span class="cmd-cp">\${Number(c.prezzo) > 0 ? '+ ' + eur(c.prezzo) : ''}</span></label>\`).join('');
+      const s = supplDi(m);
+      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span></label>\`).join('');
+      const nota = s > 0
+        ? \`<div class="cmd-suppl">\${eur(s)} in tutto, quanti che ne scegli</div>\`
+        : \`<div class="cmd-suppl">Senza supplemento</div>\`;
       return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
-        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${righe}</div>\`;
+        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${nota}\${righe}</div>\`;
     }
     function labelScelti(m) {
       const sel = scelti(m.id); if (!sel.length) return '';
@@ -4978,9 +4993,9 @@ let ORD_COM = null;
 async function openOrdina(punto) {
   const p = punto === 'garden' ? 'garden' : 'bar';
   if (p === 'garden') return openGarden();
-  // La cucina apre insieme al bar: chi arriva al pomeriggio e vuole un panino o le patatine
-  // le trova qui dentro, nello stesso ordine, senza dover passare dal Garden.
-  let menu; try { menu = await api('/menu?zona=bar&cucina=1'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
+  // Il panino ordinabile anche al bar e' un prodotto "comune": compare qui perche' e' segnato
+  // cosi' nel menu', non perche' la chiamata dal Bar si porti dietro una regola in piu'.
+  let menu; try { menu = await api('/menu?zona=bar'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F378} \${T('Bussola Bar')}</div><h2>\${T('Ordina e ritira al banco')}</h2>
     <div id="ord_menu" style="max-height:52vh;overflow:auto"></div>
     <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
@@ -8490,12 +8505,12 @@ window.Comanda = (function () {
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
       .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
       .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}
-      .cmd-more{background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:2px 0;cursor:pointer;text-align:left}
+      .cmd-more{width:100%;background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:4px 0 2px;cursor:pointer;text-align:left}
       .cmd-comp{width:100%;border-top:1px dashed var(--c-line);margin-top:6px;padding-top:6px}
       .cmd-comp[hidden]{display:none}
       .cmd-comp label{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:.86rem;color:var(--c-navy);min-height:36px;cursor:pointer}
       .cmd-comp input{width:20px;height:20px;flex:0 0 auto}
-      .cmd-comp .cmd-cp{margin-left:auto;color:var(--c-gold);font-weight:700;font-size:.8rem}
+      .cmd-comp .cmd-suppl{font-size:.76rem;color:#6b6257;padding:2px 2px 6px;font-weight:700}
       .cmd-badge{font-size:.72rem;color:#6b6257;display:block;margin-top:2px}\`;
     document.head.appendChild(st);
   }
@@ -8526,8 +8541,8 @@ window.Comanda = (function () {
       Object.keys(cart).forEach(id => {
         const m = menu.find(x => String(x.id) === id); if (!m) return;
         t += Number(m.prezzo) * cart[id];
-        const sel = comp[id] || [];
-        compDi(m).forEach(c => { if (sel.includes(Number(c.id))) t += Number(c.prezzo) * cart[id]; });
+        // Il supplemento e' del piatto: si paga una volta, che i condimenti siano uno o quattro.
+        if ((comp[id] || []).length) t += supplDi(m) * cart[id];
       });
       return t;
     }
@@ -8556,13 +8571,18 @@ window.Comanda = (function () {
     // "tre maionesi": o la vuoi o non la vuoi, e se prendi due panini la vogliono entrambi.
     function compDi(m) { return Array.isArray(m.complementi) ? m.complementi : []; }
     function scelti(id) { return comp[id] || (comp[id] = []); }
+    function supplDi(m) { return Number(m.supplemento_complementi) || 0; }
     function compHTML(m) {
       const list = compDi(m);
       if (!list.length) return '';
       const sel = scelti(m.id);
-      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span><span class="cmd-cp">\${Number(c.prezzo) > 0 ? '+ ' + eur(c.prezzo) : ''}</span></label>\`).join('');
+      const s = supplDi(m);
+      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span></label>\`).join('');
+      const nota = s > 0
+        ? \`<div class="cmd-suppl">\${eur(s)} in tutto, quanti che ne scegli</div>\`
+        : \`<div class="cmd-suppl">Senza supplemento</div>\`;
       return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
-        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${righe}</div>\`;
+        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${nota}\${righe}</div>\`;
     }
     function labelScelti(m) {
       const sel = scelti(m.id); if (!sel.length) return '';
@@ -9704,12 +9724,13 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
       <div class="row"><span class="muted" style="font-size:.85rem">Punto: <b>\${ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden'}</b> (dalla zona della postazione)</span><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
       <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
-      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cmpauto">\u{1F9E9} Riconosci i condimenti</button></div>
+      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cmpauto">\u{1F9E9} Riconosci i condimenti</button><button class="btn ghost sm" id="menu_cross">\u{1F373} Da preparare, in entrambi i punti</button></div>
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p>
-      <p class="muted" style="font-size:.78rem;margin-top:6px">"Riconosci i condimenti" marca come aggiunte le voci delle categorie tipo <i>Condimenti extra</i> e le abbina ai piatti della <b>Cucina</b>. Ti dice quante ne ha trovate: se sono zero, la categoria si chiama in un altro modo \u2014 spunta <b>Compl.</b> a mano e poi usa \u{1F9E9}.</p></div>
+      <p class="muted" style="font-size:.78rem;margin-top:6px">"Riconosci i condimenti" marca come aggiunte le voci delle categorie tipo <i>Condimenti extra</i> e le abbina ai piatti della <b>Cucina</b>. Ti dice quante ne ha trovate: se sono zero, la categoria si chiama in un altro modo \u2014 spunta <b>Compl.</b> a mano e poi usa \u{1F9E9}.</p>
+      <p class="muted" style="font-size:.78rem;margin-top:6px">"Da preparare, in entrambi i punti" serve ai prodotti che richiedono una lavorazione e si vendono sia al Bar sia al Garden (panini, fritti, gelati sfusi): li segna <i>Cucina</i> + <i>Entrambi</i> in un colpo solo. Scegli tu le categorie: il resto del men\xF9 non si tocca.</p></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
-      <p class="muted" style="font-size:.8rem;margin-bottom:8px"><b>Staz.</b> = chi lo prepara (Cucina/Bar, per il KDS) \xB7 <b>Punto</b> = dove si vende (Bar/Garden/Entrambi), guida l'ordine di stampa del men\xF9 \xB7 <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e si spunta dentro i piatti. Il tasto \u{1F9E9} dice <i>quali</i> aggiunte compaiono in quel piatto.</p>
-      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Punto</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e si spunta dentro i piatti. Il tasto \u{1F9E9} dice <i>quali</i> aggiunte compaiono in quel piatto.</p>
+      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
@@ -9761,8 +9782,23 @@ VIEWS.menu = async () => {
       return;
     }
     alert(\`Riconosciuti \${r.marcati} condimenti (\${(r.categorie_condimenti || []).join(', ')}).\\nAbbinati a \${r.piatti} piatti della Cucina.\` +
-      (r.piatti ? '' : '\\n\\nNessun piatto ha stazione "Cucina": correggi la colonna Staz. oppure abbina a mano con \u{1F9E9}.'));
+      (r.piatti ? '' : '\\n\\nNessun piatto ha stazione "Cucina": correggi la colonna "Chi prepara" oppure abbina a mano con \u{1F9E9}.'));
     show('menu');
+  };
+  $('#menu_cross').onclick = async () => {
+    const d = await api('/menu/cross-cucina', { method: 'POST', body: '{}' });
+    openModal(\`<h3 style="margin-top:0">\u{1F373} Da preparare, in entrambi i punti</h3>
+      <p class="muted" style="font-size:.82rem">Scegli le categorie dei prodotti che richiedono una lavorazione e si vendono sia al Bar sia al Garden. Diventano <b>Cucina</b> + <b>Entrambi</b>: si ordinano da tutti e due i punti e la riga arriva sempre al KDS Cucina. Le altre categorie non si toccano.</p>
+      <div style="max-height:44vh;overflow:auto;margin:10px 0">\${(d.categorie || []).map(c => \`<label style="display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid #f0ede4">
+        <input type="checkbox" data-xcat="\${esc(c)}" style="width:20px;height:20px"><span>\${esc(c)}</span></label>\`).join('') || '<p class="muted">Nessuna categoria a men\xF9.</p>'}</div>
+      <div class="row"><button class="btn gold" id="cross_go">Applica</button><button class="btn ghost" data-mclose>Annulla</button></div>\`);
+    $('#cross_go').onclick = async () => {
+      const cats = [...document.querySelectorAll('[data-xcat]')].filter(x => x.checked).map(x => x.dataset.xcat);
+      if (!cats.length) { alert('Scegli almeno una categoria.'); return; }
+      const r = await api('/menu/cross-cucina', { method: 'POST', body: JSON.stringify({ categorie: cats }) });
+      alert(\`\${r.aggiornati} prodotti ora sono Cucina + Entrambi.\` + (r.nomi && r.nomi.length ? '\\n\\n\xB7 ' + r.nomi.join('\\n\xB7 ') : ''));
+      closeModal(); show('menu');
+    };
   };
   $('#menu_pdf').onclick = async () => {
     const punto = ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden';
@@ -10771,12 +10807,12 @@ window.Comanda = (function () {
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
       .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
       .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}
-      .cmd-more{background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:2px 0;cursor:pointer;text-align:left}
+      .cmd-more{width:100%;background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:4px 0 2px;cursor:pointer;text-align:left}
       .cmd-comp{width:100%;border-top:1px dashed var(--c-line);margin-top:6px;padding-top:6px}
       .cmd-comp[hidden]{display:none}
       .cmd-comp label{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:.86rem;color:var(--c-navy);min-height:36px;cursor:pointer}
       .cmd-comp input{width:20px;height:20px;flex:0 0 auto}
-      .cmd-comp .cmd-cp{margin-left:auto;color:var(--c-gold);font-weight:700;font-size:.8rem}
+      .cmd-comp .cmd-suppl{font-size:.76rem;color:#6b6257;padding:2px 2px 6px;font-weight:700}
       .cmd-badge{font-size:.72rem;color:#6b6257;display:block;margin-top:2px}\`;
     document.head.appendChild(st);
   }
@@ -10807,8 +10843,8 @@ window.Comanda = (function () {
       Object.keys(cart).forEach(id => {
         const m = menu.find(x => String(x.id) === id); if (!m) return;
         t += Number(m.prezzo) * cart[id];
-        const sel = comp[id] || [];
-        compDi(m).forEach(c => { if (sel.includes(Number(c.id))) t += Number(c.prezzo) * cart[id]; });
+        // Il supplemento e' del piatto: si paga una volta, che i condimenti siano uno o quattro.
+        if ((comp[id] || []).length) t += supplDi(m) * cart[id];
       });
       return t;
     }
@@ -10837,13 +10873,18 @@ window.Comanda = (function () {
     // "tre maionesi": o la vuoi o non la vuoi, e se prendi due panini la vogliono entrambi.
     function compDi(m) { return Array.isArray(m.complementi) ? m.complementi : []; }
     function scelti(id) { return comp[id] || (comp[id] = []); }
+    function supplDi(m) { return Number(m.supplemento_complementi) || 0; }
     function compHTML(m) {
       const list = compDi(m);
       if (!list.length) return '';
       const sel = scelti(m.id);
-      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span><span class="cmd-cp">\${Number(c.prezzo) > 0 ? '+ ' + eur(c.prezzo) : ''}</span></label>\`).join('');
+      const s = supplDi(m);
+      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span></label>\`).join('');
+      const nota = s > 0
+        ? \`<div class="cmd-suppl">\${eur(s)} in tutto, quanti che ne scegli</div>\`
+        : \`<div class="cmd-suppl">Senza supplemento</div>\`;
       return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
-        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${righe}</div>\`;
+        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${nota}\${righe}</div>\`;
     }
     function labelScelti(m) {
       const sel = scelti(m.id); if (!sel.length) return '';
@@ -11029,7 +11070,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.22";
+var VERSION = "5.23";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14525,6 +14566,19 @@ adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res)
   audit(req.adminUser.username, v ? "segna_complemento" : "torna_articolo", "menu_articoli", req.params.id);
   res.json({ ok: true, complemento: v });
 });
+adminRouter.post("/menu/cross-cucina", requireCap("comande"), async (req, res) => {
+  const cats = Array.isArray(req.body?.categorie) ? req.body.categorie.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
+  const tutti = await db.prepare("SELECT id,nome,categoria,stazione,zona,complemento FROM menu_articoli").all();
+  if (!cats.length) {
+    return res.json({ ok: true, aggiornati: 0, categorie: [...new Set(tutti.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort() });
+  }
+  const target = tutti.filter((m) => !m.complemento && cats.includes(String(m.categoria || "").trim().toLowerCase()));
+  for (const m of target) {
+    await db.prepare("UPDATE menu_articoli SET stazione='cucina', zona='comune' WHERE id=?").run(m.id);
+  }
+  audit(req.adminUser.username, "cross_cucina", "menu_articoli", null, `${target.length} articoli: ${cats.join(", ")}`);
+  res.json({ ok: true, aggiornati: target.length, nomi: target.slice(0, 12).map((m) => m.nome) });
+});
 adminRouter.post("/menu/complementi-auto", requireCap("comande"), async (req, res) => {
   const CONDIM = /condiment|aggiunt|complement|salse|extra/i;
   const tutti = await db.prepare("SELECT id,nome,categoria,stazione,complemento FROM menu_articoli").all();
@@ -16147,19 +16201,15 @@ publicRouter.get("/albo-casate", async (req, res) => {
 publicRouter.get("/menu", async (req, res) => {
   const z = String(req.query.zona || "");
   const base = "SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni,zona FROM menu_articoli WHERE attivo=1 AND complemento=0";
-  const conCucina = String(req.query.cucina || "") === "1";
-  let rows;
-  if (z === "bar" || z === "garden") {
-    rows = conCucina ? await db.prepare(base + " AND (zona IN (?, 'comune') OR stazione='cucina') ORDER BY ordine,id").all(z) : await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z);
-  } else {
-    rows = await db.prepare(base + " ORDER BY ordine,id").all();
-  }
+  const rows = z === "bar" || z === "garden" ? await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z) : await db.prepare(base + " ORDER BY ordine,id").all();
+  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
   for (const r of rows) {
     r.complementi = await db.prepare(
-      `SELECT a.id, a.nome, a.prezzo FROM menu_complementi c
+      `SELECT a.id, a.nome FROM menu_complementi c
        JOIN menu_articoli a ON a.id = c.complemento_id
        WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
     ).all(r.id);
+    if (r.complementi.length) r.supplemento_complementi = supplemento;
   }
   res.json(rows);
 });
@@ -16192,6 +16242,7 @@ publicRouter.post("/self-order", async (req, res) => {
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
   const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", zonaDaPunto(punto), "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
   const cid = Number(info.lastInsertRowid);
+  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
   let totale = 0;
   for (const r of righeIn) {
     const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=? AND attivo=1").get(r.menu_id);
@@ -16206,12 +16257,19 @@ publicRouter.post("/self-order", async (req, res) => {
         `SELECT a.id,a.nome,a.prezzo FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
          WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
       ).all(m.id);
+      let messi = 0;
       for (const c of ammessi) {
         if (!scelti.includes(Number(c.id))) continue;
-        totale += Number(c.prezzo) * qta;
+        messi++;
         await db.prepare(
-          "INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,parent_riga_id) VALUES (?,?,?,?,?,?,?, 'in_coda', ?)"
-        ).run(cid, c.id, c.nome, Number(c.prezzo), qta, m.stazione, null, padre);
+          "INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,parent_riga_id) VALUES (?,?,?,0,?,?,?, 'in_coda', ?)"
+        ).run(cid, c.id, c.nome, qta, m.stazione, null, padre);
+      }
+      if (messi && supplemento > 0) {
+        totale += supplemento * qta;
+        await db.prepare(
+          "INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,parent_riga_id) VALUES (?,NULL,?,?,?,?,NULL,'in_coda',?)"
+        ).run(cid, "Supplemento condimenti", supplemento, qta, m.stazione, padre);
       }
     }
   }
@@ -17616,7 +17674,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 13:23" : "online";
+var BUILD = true ? "2026-08-25 16:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
