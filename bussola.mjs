@@ -620,8 +620,13 @@ __export(menucat_exports, {
   categoriaArticolo: () => categoriaArticolo,
   inferCategoria: () => inferCategoria,
   inferPunto: () => inferPunto,
+  inferStazione: () => inferStazione,
   ordinaCategorie: () => ordinaCategorie
 });
+function inferStazione(nome, categoria) {
+  const s = String(nome || "") + " " + String(categoria || "");
+  return STAZIONE_CUCINA_RX.test(s) ? "cucina" : "bar";
+}
 function inferCategoria(nome) {
   const s = String(nome == null ? "" : nome);
   for (const [name, rx] of CAT_RULES) {
@@ -646,7 +651,7 @@ function ordinaCategorie(arr) {
   };
   return arr.slice().sort((a, b) => rank(a) - rank(b) || String(a).localeCompare(String(b)));
 }
-var CAT_RULES, CATEGORIE_ORDINE, PUNTO_GARDEN_RX;
+var CAT_RULES, CATEGORIE_ORDINE, PUNTO_GARDEN_RX, STAZIONE_CUCINA_RX;
 var init_menucat = __esm({
   "server/menucat.js"() {
     CAT_RULES = [
@@ -662,6 +667,7 @@ var init_menucat = __esm({
     ];
     CATEGORIE_ORDINE = CAT_RULES.map((r) => r[0]).concat(["Bar", "Cucina"]);
     PUNTO_GARDEN_RX = /panin|toast|piadin|hamburger|cheeseburger|hot\s*dog|hotdog|pizz|focacc|tramezzin|\bwrap\b|insalat|\bpasta\b|bruschett|tagliere|\bfritt|arancin|panell|crocch|wurstel|petto\s*di\s*pollo|cotolett|\bpiatt|contorn|combo|bambini|salsicc|melanzan|\bkebab\b/i;
+    STAZIONE_CUCINA_RX = /panin|toast|piadin|hamburger|cheeseburger|hot\s*dog|hotdog|pizz|focacc|tramezzin|\bwrap\b|insalat|\bpasta\b|bruschett|tagliere|\bfritt|arancin|panell|crocch|wurstel|cotolett|\bpiatt|contorn|combo|salsicc|melanzan|\bkebab\b|caprese|cous\s*cous|\briso\b|verdur|grigliat|\bcarne\b|\bpollo\b|tagliat|straccett|condiment|\bprimi\b|\bsecondi\b|\bfettina\b|\bcosciotto\b|\bpetto\b|\bpatatine\s*fritte\b|\bhot\b/i;
   }
 });
 
@@ -1580,6 +1586,30 @@ async function migrate() {
         }
       }
       await setSetting("menu_complementi_backfill", "v1");
+    }
+  } catch (_) {
+  }
+  try {
+    if (await getSetting("menu_stazione_dedotta", "") !== "v1") {
+      const { inferStazione: inferStazione2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
+      const arts = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
+      let spostati = 0;
+      for (const m of arts) {
+        if (m.stazione === "cucina") continue;
+        if (inferStazione2(m.nome, m.categoria) !== "cucina") continue;
+        await db.prepare("UPDATE menu_articoli SET stazione='cucina' WHERE id=?").run(m.id);
+        spostati++;
+      }
+      await setSetting("menu_stazione_dedotta", "v1");
+      const CONDIM = /condiment|aggiunt|complement|salse/i;
+      let aggiunte = 0;
+      for (const m of arts) {
+        if (!CONDIM.test(String(m.categoria || ""))) continue;
+        await db.prepare("UPDATE menu_articoli SET complemento=1 WHERE id=?").run(m.id);
+        aggiunte++;
+      }
+      if (spostati) console.log(`  Menu': ${spostati} voci assegnate alla cucina (panini, piatti, fritti).`);
+      if (aggiunte) console.log(`  Menu': ${aggiunte} voci segnate come aggiunte (condimenti).`);
     }
   } catch (_) {
   }
@@ -8797,7 +8827,7 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  const PRIMA = { cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
+  const PRIMA = { garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
   show(PRIMA[ZONA] || 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -8805,7 +8835,10 @@ function setZona(z) {
 function applyZona() {
   const tog = (v, show) => { const el = document.querySelector('#tabs [data-v="' + v + '"]'); if (el) el.classList.toggle('hide', !show); };
   const hasMag = ME.gestore || (ME.caps || []).includes('magazzino');
-  tog('comande', ZONA === 'garden' || ZONA === 'bar');
+  // Al Garden la comanda si prende dal tavolo, nella Pianta: una tab che rimanda a un'altra
+  // tab non serve a niente. Il pannello degli ordini dal QR e' salito sulla Pianta, dove sta
+  // chi lavora. Al Bar la tab resta: li' la comanda si batte a nome, non a tavolo.
+  tog('comande', ZONA === 'bar');
   tog('tavoli', false);        // fusa nella Pianta: stesso tavolo, un posto solo dove guardarlo
   tog('pianta', ['garden', 'cdc', 'cinema'].includes(ZONA));
   tog('bar', ZONA === 'bar');
@@ -8910,24 +8943,21 @@ function pickMetodo(onPick) {
 }
 
 /* ---------- COMANDE (cassa): l'operatore vede il men\xF9 ESATTAMENTE come il cliente ---------- */
-VIEWS.comande = async () => {
-  // Lo stesso elenco che vede il socio: condimenti fuori dalle categorie e spuntabili dentro
-  // il piatto. Se qui si usasse il listino grezzo, al tavolo ricomparirebbero come voci a se'.
-  const menu = await api('/menu?ordinabile=1');
-  const garden = ZONA === 'garden';
-  // Il pannello self-order (pausa/pressione/ETA/mappa) riguarda il Garden (QR al tavolo): solo l\xEC.
-  const so = garden ? await api('/self-order/stato').catch(() => ({ aperto: true, eta_min: 0, config: {} })) : null;
-  const cfg = so ? (so.config || {}) : {};
-
-  let soPanel = '';
-  if (garden) {
+/* ---------- Ordini dal QR: il pannello sta dove si lavora, cioe' sulla Pianta ----------
+   Stava in una tab a se' che, al Garden, non conteneva altro che un rimando alla Pianta.
+   Chi sospende gli ordini dal telefono lo fa guardando i tavoli, non un'altra schermata. */
+async function statoSelfOrder() {
+  return api('/self-order/stato').catch(() => ({ aperto: true, eta_min: 0, config: {} }));
+}
+function pannelloSelfOrder(so) {
+  const cfg = so.config || {};
     const etaTxt = so.eta_min > 0 ? \`attesa stimata ~\${so.eta_min} min\` : 'coda libera';
     const bordo = !so.aperto ? 'var(--coral,#C0553F)' : (so.pressione ? 'var(--gold,#8a5a12)' : 'var(--ok,#2e6b45)');
     const statoRiga = !so.aperto
       ? '\u{1F534} <b>sospesi</b> (manuale) \u2014 i clienti col QR non possono ordinare'
       : (so.sospeso_pressione ? '\u{1F7E0} <b>sospesi in automatico</b> \u2014 cucina sotto pressione' : (so.pressione ? '\u{1F7E0} <b>aperti</b> \xB7 \u26A0\uFE0F cucina sotto pressione' : '\u{1F7E2} <b>aperti</b> \xB7 cucina regolare'));
     const pressSpieg = cfg.press_modo === 'tempo' ? \`oltre \${cfg.press_max_minuti} min di attesa stimata\` : \`oltre \${cfg.press_max_comande} comande da smaltire\`;
-    soPanel = \`
+  return \`
     <div class="panel" style="border-left:5px solid \${bordo}">
       <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div><b style="color:var(--navy)">\u{1F4F1} Ordini dal telefono (self-order): \${statoRiga}</b>
@@ -8961,8 +8991,24 @@ VIEWS.comande = async () => {
         <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn gold sm" id="cf_save">Salva regole</button></div>
       </div>
     </div>\`;
-  }
+}
+function collegaSelfOrder(so, tornaA) {
+  if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show(tornaA); };
+  if ($('#so_cfg')) $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
+  if ($('#cf_save')) $('#cf_save').onclick = async () => {
+    await api('/self-order/config', { method: 'POST', body: JSON.stringify({
+      press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
+      press_auto: $('#cf_pauto').checked, eta_modo: $('#cf_emodo').value, map_rosso_min: Number($('#cf_mrosso').value || 10),
+    }) });
+    show(tornaA);
+  };
+}
 
+VIEWS.comande = async () => {
+  // Lo stesso elenco che vede il socio: condimenti fuori dalle categorie e spuntabili dentro
+  // il piatto. Se qui si usasse il listino grezzo, al tavolo ricomparirebbero come voci a se'.
+  const menu = await api('/menu?ordinabile=1');
+  const garden = ZONA === 'garden';
   const entry = garden
     ? \`<label>Tavolo <input id="co_tav" type="number" min="1" inputmode="numeric" placeholder="n\xB0" style="width:100px"></label>\`
     : \`<label style="flex:1;min-width:260px">Nome cliente
@@ -8972,24 +9018,14 @@ VIEWS.comande = async () => {
         </span></label>\`;
 
   if (garden) {
-    // Niente compositore qui: al Garden si ordina toccando il tavolo nella Pianta.
-    $('#view').innerHTML = soPanel + \`
-      <div class="panel"><h3>\u{1F9FE} Comande del Garden</h3>
-        <p class="muted">Le comande si prendono <b>dal tavolo</b>: apri la tab <b>\u{1F5FA}\uFE0F Tavoli & pianta</b>, tocca il tavolo e premi <b>Ordina</b>. Cosi' il numero del tavolo non si digita e non si sbaglia, e sai per chi stai ordinando.</p>
-        <button class="btn gold sm" id="vai_pianta">\u{1F5FA}\uFE0F Vai ai tavoli</button></div>\`;
-    $('#vai_pianta').onclick = () => show('pianta');
-    if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
-    if ($('#so_cfg')) $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
-    if ($('#cf_save')) $('#cf_save').onclick = async () => {
-      await api('/self-order/config', { method: 'POST', body: JSON.stringify({
-        press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
-        press_auto: $('#cf_pauto').checked, eta_modo: $('#cf_emodo').value, map_rosso_min: Number($('#cf_mrosso').value || 10),
-      }) });
-      show('comande');
-    };
+    // Al Garden la tab Comande non c'e' piu': la comanda si prende dal tavolo, nella Pianta,
+    // e il pannello degli ordini dal QR e' salito li' sopra. Se qualcuno ci arriva lo stesso
+    // (link vecchio, tasto indietro), lo si porta dove si lavora invece di mostrargli una
+    // pagina che rimanda a un'altra pagina.
+    show('pianta');
     return;
   }
-  $('#view').innerHTML = soPanel + \`
+  $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
       <div class="row" style="margin-bottom:8px">\${entry}</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
@@ -10243,7 +10279,10 @@ VIEWS.pianta = async () => {
         <button class="btn gold sm" id="p_pren">+ Prenota al banco</button>
       </div><div id="p_msg2" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
 
-  $('#view').innerHTML = testa + stato + \`
+  // Gli ordini che arrivano dal QR si governano qui, davanti ai tavoli: e' guardando la sala
+  // che si decide se sospenderli. Al Garden e basta \u2014 al Carta e allo Stage non c'e' self-order.
+  const soG = PIANTA.ambiente === 'garden' && PIANTA.modo === 'servizio' ? await statoSelfOrder() : null;
+  $('#view').innerHTML = testa + (soG ? pannelloSelfOrder(soG) : '') + stato + \`
     <div class="panel"><div id="p_canvas" style="position:relative;width:100%;height:64vh;min-height:340px;border-radius:14px;
       background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:1px solid var(--line);overflow:hidden">
       <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
@@ -10280,6 +10319,8 @@ VIEWS.pianta = async () => {
   };
   // In servizio il tocco su un tavolo (o su una seduta) apre la prenotazione al banco proprio
   // su quello: serve a chi passa dal chiosco e non usa l'app.
+  if (soG) collegaSelfOrder(soG, 'pianta');
+
   if (PIANTA.modo === 'servizio') {
     // Il tavolo e' il punto di partenza di tutto. Toccandolo si vede chi lo occupa (e lo si
     // chiama per nome), si prende la comanda senza digitare il numero del tavolo, si prenota,
@@ -10295,14 +10336,24 @@ VIEWS.pianta = async () => {
       const forme = ['tondo', 'quadrato', 'rettangolo'];
       const zonaC = PIANTA.ambiente === 'carta' ? 'carta' : 'garden';
 
+      // Il conto del tavolo e' UNO: chi ha iniziato col QR e ha proseguito chiamando la crew
+      // non deve trovarsi due conti alla fine. Qui dentro ci sono tutte le comande di quel
+      // tavolo, da qualunque parte siano arrivate, e si chiudono insieme.
+      const totaleTavolo = cs.reduce((t, c) => t + Number(c.totale || 0), 0);
+      const daQr = cs.filter(c => c.canale === 'self').length;
       const comandeHTML = cs.length ? \`<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px">
-          <b style="font-size:.86rem">Comande in corso</b>
+          <div class="row" style="justify-content:space-between;align-items:baseline">
+            <b style="font-size:.86rem">Conto del tavolo</b>
+            <b style="font-size:1.05rem;color:var(--navy)">\${eur(totaleTavolo)}</b>
+          </div>
+          <div class="muted" style="font-size:.78rem">\${cs.length} \${cs.length === 1 ? 'comanda' : 'comande'}\${daQr ? \` \xB7 \${daQr} dal QR, \${cs.length - daQr} dalla crew\` : ''} \u2014 si pagano insieme.</div>
           \${cs.map(c => \`<div style="padding:6px 0;border-bottom:1px solid var(--line)">
-            <div class="row" style="justify-content:space-between"><b>#\${esc(String(c.numero))}</b><span class="muted">\${esc(c.stato)}</span></div>
-            <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`).join(' \xB7 ')}</div>
+            <div class="row" style="justify-content:space-between"><b>#\${esc(String(c.numero))} \${c.canale === 'self' ? '\u{1F4F1}' : '\u{1F9FE}'}</b><span class="muted">\${esc(c.stato)} \xB7 \${eur(c.totale || 0)}</span></div>
+            <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.parent_riga_id ? '\u21B3 ' : r.qta + '\xD7 '}\${esc(r.nome)}\`).join(' \xB7 ')}</div>
             <div class="row" style="gap:6px;margin-top:6px">
-              <button class="btn gold sm" data-cchiudi="\${c.id}">\u2713 Chiudi</button>
+              <button class="btn ghost sm" data-cchiudi="\${c.id}">\u2713 Chiudi solo questa</button>
               <button class="btn danger sm" data-cann="\${c.id}">Annulla</button></div></div>\`).join('')}
+          <button class="btn gold block" style="margin-top:10px" data-contochiudi="\${cs.map(c => c.id).join(',')}">\u{1F4B6} Chiudi il conto \xB7 \${eur(totaleTavolo)}</button>
         </div>\` : '';
 
       openModal(\`<h3>\${stage ? 'Seduta' : 'Tavolo'} \${n}\${(t.uniti && t.uniti.length) ? ' + ' + t.uniti.join(' + ') : ''}</h3>
@@ -10334,6 +10385,14 @@ VIEWS.pianta = async () => {
       const agisci = async (id, stato) => { await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato }) }); closeModal(); show('pianta'); };
       document.querySelectorAll('[data-cchiudi]').forEach(x => x.onclick = () => agisci(x.dataset.cchiudi, 'chiusa'));
       document.querySelectorAll('[data-cann]').forEach(x => x.onclick = () => agisci(x.dataset.cann, 'annullata'));
+      // Un conto solo: si chiudono tutte insieme, comprese quelle arrivate dal QR.
+      const bottoneConto = document.querySelector('[data-contochiudi]');
+      if (bottoneConto) bottoneConto.onclick = async () => {
+        const ids = bottoneConto.dataset.contochiudi.split(',').filter(Boolean);
+        if (!confirm(\`Chiudere il conto del tavolo \${n}? Sono \${ids.length} \${ids.length === 1 ? 'comanda' : 'comande'}, pagate insieme.\`)) return;
+        for (const id of ids) await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: 'chiusa' }) });
+        closeModal(); show('pianta');
+      };
 
       if ($('#tv_ordina')) $('#tv_ordina').onclick = () => apriComandaTavolo(n, chi, zonaC);
       if ($('#tv_libera')) $('#tv_libera').onclick = async () => {
@@ -11086,7 +11145,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.28";
+var VERSION = "5.29";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14610,13 +14669,13 @@ adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
+  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : b.stazione === "bar" ? "bar" : inferStazione(b.nome, b.categoria), menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
   audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : b.stazione === "bar" ? "bar" : inferStazione(b.nome, b.categoria), menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
   audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
@@ -14645,8 +14704,10 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
   const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
   const catImport = (r, staz, ex) => clean(r.categoria) || ex && ex.categoria || inferCategoria(r.nome) || (staz === "cucina" ? "Cucina" : "Bar");
   if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => {
-    const staz = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
-    return { ...r, prezzo: toNum(r.prezzo), categoria: catImport(r, staz, null) };
+    const dich = String(r.stazione || "").toLowerCase();
+    const cat = clean(r.categoria) || inferCategoria(r.nome);
+    const staz = dich.startsWith("cuc") ? "cucina" : dich.startsWith("bar") ? "bar" : inferStazione(r.nome, cat);
+    return { ...r, stazione: staz, prezzo: toNum(r.prezzo), categoria: catImport(r, staz, null) };
   }) });
   let creati = 0, aggiornati = 0;
   if (b.mode === "replace") {
@@ -14657,9 +14718,11 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     if (!nome) continue;
     const hasPrezzo = r.prezzo != null && String(r.prezzo).trim() !== "";
     const prezzo = toNum(r.prezzo);
-    const stazione = String(r.stazione || "").toLowerCase().startsWith("cuc") ? "cucina" : "bar";
+    const dichiarata = String(r.stazione || "").toLowerCase();
     const descrizione = clean(r.descrizione), allergeni = clean(r.allergeni);
     const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
+    const catFile = clean(r.categoria) || ex && ex.categoria || inferCategoria(nome);
+    const stazione = dichiarata.startsWith("cuc") ? "cucina" : dichiarata.startsWith("bar") ? "bar" : inferStazione(nome, catFile);
     const categoria = catImport(r, r.stazione ? stazione : ex ? ex.stazione : stazione, ex);
     const hasPunto = r.punto != null && String(r.punto).trim() !== "";
     const zonaNew = hasPunto ? menuZona(r.punto, stazione) : stazione === "cucina" ? "comune" : inferPunto(nome, categoria);
@@ -17705,7 +17768,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 17:35" : "online";
+var BUILD = true ? "2026-08-25 18:33" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
