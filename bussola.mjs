@@ -1401,7 +1401,16 @@ async function initSchema() {
     allergeni     TEXT,                                     -- elenco allergeni (da CSV)
     magazzino_id  INTEGER REFERENCES magazzino_articoli(id) ON DELETE SET NULL, -- scarico automatico (tecnicismo, invisibile all'operatore)
     attivo        INTEGER NOT NULL DEFAULT 1,
-    ordine        INTEGER NOT NULL DEFAULT 0
+    ordine        INTEGER NOT NULL DEFAULT 0,
+    complemento   INTEGER NOT NULL DEFAULT 0             -- 1 = e' un condimento/aggiunta: non compare da solo nel menu'
+  );
+  -- Quali complementi si possono spuntare dentro un prodotto. Il legame e' per singolo
+  -- prodotto: la maionese sta nel panino, non in tutta la categoria.
+  CREATE TABLE IF NOT EXISTS menu_complementi (
+    articolo_id    INTEGER NOT NULL REFERENCES menu_articoli(id) ON DELETE CASCADE,
+    complemento_id INTEGER NOT NULL REFERENCES menu_articoli(id) ON DELETE CASCADE,
+    ordine         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (articolo_id, complemento_id)
   );
   -- Testata comanda.
   CREATE TABLE IF NOT EXISTS comande (
@@ -1544,6 +1553,34 @@ async function migrate() {
   await addIfMissing("menu_articoli", "descrizione", "descrizione TEXT");
   await addIfMissing("menu_articoli", "allergeni", "allergeni TEXT");
   await addIfMissing("menu_articoli", "zona", "zona TEXT NOT NULL DEFAULT 'bar'");
+  await addIfMissing("menu_articoli", "complemento", "complemento INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("comanda_righe", "parent_riga_id", "parent_riga_id INTEGER");
+  await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
+    articolo_id    INTEGER NOT NULL,
+    complemento_id INTEGER NOT NULL,
+    ordine         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (articolo_id, complemento_id)
+  );`);
+  try {
+    if (await getSetting("menu_complementi_backfill", "") !== "v1") {
+      const CONDIM = /condiment|aggiunt|complement|extra/i;
+      const cond = (await db.prepare("SELECT id,nome,categoria FROM menu_articoli").all()).filter((m) => CONDIM.test(String(m.categoria || "")));
+      if (cond.length) {
+        const ids = cond.map((c) => c.id);
+        for (const c of cond) await db.prepare("UPDATE menu_articoli SET complemento=1 WHERE id=?").run(c.id);
+        const piatti = await db.prepare("SELECT id FROM menu_articoli WHERE stazione='cucina'").all();
+        for (const p of piatti) {
+          if (ids.includes(p.id)) continue;
+          let o = 0;
+          for (const c of cond) {
+            await db.prepare("INSERT OR IGNORE INTO menu_complementi (articolo_id,complemento_id,ordine) VALUES (?,?,?)").run(p.id, c.id, o++);
+          }
+        }
+      }
+      await setSetting("menu_complementi_backfill", "v1");
+    }
+  } catch (_) {
+  }
   try {
     if (await getSetting("menu_zona_backfill", "") !== "v1") {
       const { inferPunto: inferPunto2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
@@ -3407,7 +3444,7 @@ window.Comanda = (function () {
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
       .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
@@ -3420,7 +3457,14 @@ window.Comanda = (function () {
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
       .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
-      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}\`;
+      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}
+      .cmd-more{background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:2px 0;cursor:pointer;text-align:left}
+      .cmd-comp{width:100%;border-top:1px dashed var(--c-line);margin-top:6px;padding-top:6px}
+      .cmd-comp[hidden]{display:none}
+      .cmd-comp label{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:.86rem;color:var(--c-navy);min-height:36px;cursor:pointer}
+      .cmd-comp input{width:20px;height:20px;flex:0 0 auto}
+      .cmd-comp .cmd-cp{margin-left:auto;color:var(--c-gold);font-weight:700;font-size:.8rem}
+      .cmd-badge{font-size:.72rem;color:#6b6257;display:block;margin-top:2px}\`;
     document.head.appendChild(st);
   }
 
@@ -3431,6 +3475,7 @@ window.Comanda = (function () {
     const useSearch = opts.search !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
+    const comp = {};   // menu_id -> [id complementi spuntati]
     let selCat = '';
 
     mount.classList.add('cmd');
@@ -3444,7 +3489,16 @@ window.Comanda = (function () {
     const chipsEl = useSearch ? $('.cmd-chips') : null;
 
     function cats() { return sortCats([...new Set((menu || []).map(catOf))]); }
-    function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
+    function total() {
+      let t = 0;
+      Object.keys(cart).forEach(id => {
+        const m = menu.find(x => String(x.id) === id); if (!m) return;
+        t += Number(m.prezzo) * cart[id];
+        const sel = comp[id] || [];
+        compDi(m).forEach(c => { if (sel.includes(Number(c.id))) t += Number(c.prezzo) * cart[id]; });
+      });
+      return t;
+    }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
 
@@ -3466,6 +3520,23 @@ window.Comanda = (function () {
       if (/patat|frit|snack|arancin/.test(t)) return '\\ud83c\\udf5f';
       return '\\ud83c\\udf7d\\ufe0f';
     }
+    // Il "di cui" del piatto: le aggiunte si spuntano, non si contano. Nessuno ordina
+    // "tre maionesi": o la vuoi o non la vuoi, e se prendi due panini la vogliono entrambi.
+    function compDi(m) { return Array.isArray(m.complementi) ? m.complementi : []; }
+    function scelti(id) { return comp[id] || (comp[id] = []); }
+    function compHTML(m) {
+      const list = compDi(m);
+      if (!list.length) return '';
+      const sel = scelti(m.id);
+      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span><span class="cmd-cp">\${Number(c.prezzo) > 0 ? '+ ' + eur(c.prezzo) : ''}</span></label>\`).join('');
+      return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
+        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${righe}</div>\`;
+    }
+    function labelScelti(m) {
+      const sel = scelti(m.id); if (!sel.length) return '';
+      const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
+      return nomi.length ? '+ ' + nomi.join(', ') : '';
+    }
     function itemHTML(m) {
       const q = cart[m.id] || 0;
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
@@ -3473,10 +3544,11 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
-        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
+        \${compHTML(m)}</div>\`;
     }
     function renderChips() {
       if (!chipsEl) return;
@@ -3507,10 +3579,29 @@ window.Comanda = (function () {
 
     // Delegazione: un solo listener per tutto il componente.
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.dataset.cmore != null) {
+        const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
+        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'complementi \u25BE' : 'complementi \u25B4'; }
+        return;
+      }
       if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
       if (a.dataset.cdec != null) return chg(a.dataset.cdec, -1);
       if (a.dataset.ccat != null) { selCat = a.dataset.ccat; renderChips(); renderList(); }
+    });
+    // Spuntare un complemento su un piatto che non hai ancora scelto significa volerlo: si
+    // aggiunge il piatto. Altrimenti la maionese resterebbe spuntata su niente.
+    mount.addEventListener('change', (ev) => {
+      const el = ev.target.closest('[data-ccomp]'); if (!el) return;
+      const [mid, cid] = el.dataset.ccomp.split('|');
+      const sel = scelti(mid); const n = Number(cid);
+      const i = sel.indexOf(n);
+      if (el.checked && i < 0) sel.push(n); else if (!el.checked && i >= 0) sel.splice(i, 1);
+      const m = menu.find(x => String(x.id) === String(mid));
+      const badge = mount.querySelector('[data-cbadge="' + mid + '"]');
+      if (badge && m) badge.textContent = labelScelti(m);
+      if (el.checked && !cart[mid]) return chg(mid, 1);
+      fire();
     });
     if (qEl) qEl.addEventListener('input', renderList);
     if (useSearch) { const x = $('.cmd-qx'); if (x) x.addEventListener('click', () => { if (qEl) { qEl.value = ''; qEl.focus(); } renderList(); }); }
@@ -3518,10 +3609,10 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id] })); },
+      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
       total, count,
-      clear() { Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
-      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
     };
   }
@@ -4370,9 +4461,8 @@ function openSerateSpeciali() {
     \${minorenne() ? '' : \`<button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button>\`}</div>\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Su prenotazione')}</div>
     <h2>\${T('Le serate speciali')}</h2>
-    <p class="sub">\${minorenne() ? T('Posti contati e quota da pagare: fino ai 18 anni le prenota un adulto per te.') : T('Posti contati: si prenota e si paga in loco.')}</p>
+    \${minorenne() ? \`<p class="sub">\${T('Fino ai 18 anni le prenota un adulto per te.')}</p>\` : ''}
     <div class="card" style="padding:4px 14px">\${list.map(riga).join('')}</div>
-    <div class="note">\${T('Il programma completo della settimana \xE8 nella sezione Eventi.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
@@ -4888,7 +4978,9 @@ let ORD_COM = null;
 async function openOrdina(punto) {
   const p = punto === 'garden' ? 'garden' : 'bar';
   if (p === 'garden') return openGarden();
-  let menu; try { menu = await api('/menu?zona=bar'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
+  // La cucina apre insieme al bar: chi arriva al pomeriggio e vuole un panino o le patatine
+  // le trova qui dentro, nello stesso ordine, senza dover passare dal Garden.
+  let menu; try { menu = await api('/menu?zona=bar&cucina=1'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F378} \${T('Bussola Bar')}</div><h2>\${T('Ordina e ritira al banco')}</h2>
     <div id="ord_menu" style="max-height:52vh;overflow:auto"></div>
     <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
@@ -4940,8 +5032,7 @@ async function openGarden(opz) {
     <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
     <div class="card" style="padding:4px 14px">\${turni && turni.turni ? turni.turni.map(turnoBox).join('') : \`<p class="tiny muted" style="padding:8px 0">\${T('Prenotazione non disponibile.')}</p>\`}</div>
     \${mieHTML}
-    <div class="note">\${T('Il tavolo lo assegniamo noi, partendo da quelli pi\xF9 al centro: indica solo quante persone siete.')}</div>
-    <button class="btn navy block" style="margin-top:8px" data-gard-menu>\u{1F37D}\uFE0F \${T('Guarda il men\xF9 del Garden')}</button>
+    <button class="btn navy block" style="margin-top:10px" data-gard-menu>\u{1F37D}\uFE0F \${T('Ordina dal Tavolo')}</button>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
@@ -4976,8 +5067,23 @@ async function gardenAnnulla(id) {
 }
 async function openMenuGarden() {
   let menu; try { menu = await api('/menu?zona=garden'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Il men\xF9')}</h2>
-    <div id="ord_menu" style="max-height:58vh;overflow:auto"></div>
+  // Il tavolo il socio non se lo inventa: gliel'abbiamo assegnato noi quando ha prenotato.
+  // Se una prenotazione c'e', il numero e' gia' scritto; se ordina senza (o e' arrivato senza
+  // QR e senza passare dal personale) lo scrive lui, ed e' l'unica cosa che gli chiediamo.
+  let tavSug = '';
+  if (state.tessera) {
+    try {
+      const oggi = new Date().toISOString().slice(0, 10);
+      const mie = await api('/garden/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera));
+      const p = (mie || []).find(m => m.data === oggi);
+      if (p && p.tavoli && p.tavoli.length) tavSug = String(p.tavoli[0]);
+    } catch { }
+  }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Ordina dal Tavolo')}</h2>
+    <div class="field"><label>\${T('Numero del tavolo')}</label>
+      <input id="ord_tav" type="number" min="1" inputmode="numeric" value="\${esc(tavSug)}" placeholder="\${T('es. 7')}">
+      <p class="tiny muted" style="margin-top:4px">\${tavSug ? T('\xC8 il tavolo della tua prenotazione di oggi. Se ti hanno spostato, correggilo.') : T('Lo trovi sul tavolo. Serve a portarti l\u2019ordine dove sei seduto.')}</p></div>
+    <div id="ord_menu" style="max-height:52vh;overflow:auto"></div>
     <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
     <input type="hidden" id="ord_punto" value="Bussola Garden">
     <button class="btn gold block" style="margin-top:8px" id="ord_send" disabled>\${T('Invia ordine')}</button>
@@ -4993,11 +5099,15 @@ async function openMenuGarden() {
 async function ordInvia() {
   const righe = ORD_COM ? ORD_COM.getRighe() : [];
   if (!righe.length) return;
+  // Al Garden si mangia a un tavolo: senza il numero l'ordine non sa dove andare.
+  const tavEl = $('#ord_tav');
+  const tavolo = tavEl ? tavEl.value.trim() : '';
+  if (tavEl && !tavolo) { okThen(T('Indica il numero del tavolo: \xE8 l\xEC che ti portiamo l\u2019ordine.'), false); tavEl.focus(); return; }
   $('#ord_send').disabled = true;
-  let r; try { r = await api('/self-order', { method: 'POST', body: JSON.stringify({ punto: $('#ord_punto').value, tessera_code: state.tessera, righe }) }); }
+  let r; try { r = await api('/self-order', { method: 'POST', body: JSON.stringify({ punto: $('#ord_punto').value, tavolo: tavolo || undefined, tessera_code: state.tessera, righe }) }); }
   catch (e) { okThen(e.message || 'Errore', false); $('#ord_send').disabled = false; return; }
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u2705 \${T('Ordine inviato')}</div><h2>\${T('Comanda')} #\${esc(r.numero)}</h2>
-    <p class="sub">\${esc(r.punto)} \xB7 \${eur(r.totale)} \u2014 \${T('si paga in cassa. Ti avvisiamo quando \xE8 pronto.')}</p>
+    <p class="sub">\${esc(r.punto)}\${r.tavolo ? \` \xB7 \${T('tavolo')} \${esc(r.tavolo)}\` : ''} \xB7 \${eur(r.totale)} \u2014 \${T('si paga in cassa. Ti avvisiamo quando \xE8 pronto.')}</p>
     <button class="btn gold block" style="margin-top:8px" data-close>\${T('Fatto')}</button>\`);
   showOv();
 }
@@ -8366,7 +8476,7 @@ window.Comanda = (function () {
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
       .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
@@ -8379,7 +8489,14 @@ window.Comanda = (function () {
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
       .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
-      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}\`;
+      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}
+      .cmd-more{background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:2px 0;cursor:pointer;text-align:left}
+      .cmd-comp{width:100%;border-top:1px dashed var(--c-line);margin-top:6px;padding-top:6px}
+      .cmd-comp[hidden]{display:none}
+      .cmd-comp label{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:.86rem;color:var(--c-navy);min-height:36px;cursor:pointer}
+      .cmd-comp input{width:20px;height:20px;flex:0 0 auto}
+      .cmd-comp .cmd-cp{margin-left:auto;color:var(--c-gold);font-weight:700;font-size:.8rem}
+      .cmd-badge{font-size:.72rem;color:#6b6257;display:block;margin-top:2px}\`;
     document.head.appendChild(st);
   }
 
@@ -8390,6 +8507,7 @@ window.Comanda = (function () {
     const useSearch = opts.search !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
+    const comp = {};   // menu_id -> [id complementi spuntati]
     let selCat = '';
 
     mount.classList.add('cmd');
@@ -8403,7 +8521,16 @@ window.Comanda = (function () {
     const chipsEl = useSearch ? $('.cmd-chips') : null;
 
     function cats() { return sortCats([...new Set((menu || []).map(catOf))]); }
-    function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
+    function total() {
+      let t = 0;
+      Object.keys(cart).forEach(id => {
+        const m = menu.find(x => String(x.id) === id); if (!m) return;
+        t += Number(m.prezzo) * cart[id];
+        const sel = comp[id] || [];
+        compDi(m).forEach(c => { if (sel.includes(Number(c.id))) t += Number(c.prezzo) * cart[id]; });
+      });
+      return t;
+    }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
 
@@ -8425,6 +8552,23 @@ window.Comanda = (function () {
       if (/patat|frit|snack|arancin/.test(t)) return '\\ud83c\\udf5f';
       return '\\ud83c\\udf7d\\ufe0f';
     }
+    // Il "di cui" del piatto: le aggiunte si spuntano, non si contano. Nessuno ordina
+    // "tre maionesi": o la vuoi o non la vuoi, e se prendi due panini la vogliono entrambi.
+    function compDi(m) { return Array.isArray(m.complementi) ? m.complementi : []; }
+    function scelti(id) { return comp[id] || (comp[id] = []); }
+    function compHTML(m) {
+      const list = compDi(m);
+      if (!list.length) return '';
+      const sel = scelti(m.id);
+      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span><span class="cmd-cp">\${Number(c.prezzo) > 0 ? '+ ' + eur(c.prezzo) : ''}</span></label>\`).join('');
+      return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
+        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${righe}</div>\`;
+    }
+    function labelScelti(m) {
+      const sel = scelti(m.id); if (!sel.length) return '';
+      const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
+      return nomi.length ? '+ ' + nomi.join(', ') : '';
+    }
     function itemHTML(m) {
       const q = cart[m.id] || 0;
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
@@ -8432,10 +8576,11 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
-        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
+        \${compHTML(m)}</div>\`;
     }
     function renderChips() {
       if (!chipsEl) return;
@@ -8466,10 +8611,29 @@ window.Comanda = (function () {
 
     // Delegazione: un solo listener per tutto il componente.
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.dataset.cmore != null) {
+        const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
+        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'complementi \u25BE' : 'complementi \u25B4'; }
+        return;
+      }
       if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
       if (a.dataset.cdec != null) return chg(a.dataset.cdec, -1);
       if (a.dataset.ccat != null) { selCat = a.dataset.ccat; renderChips(); renderList(); }
+    });
+    // Spuntare un complemento su un piatto che non hai ancora scelto significa volerlo: si
+    // aggiunge il piatto. Altrimenti la maionese resterebbe spuntata su niente.
+    mount.addEventListener('change', (ev) => {
+      const el = ev.target.closest('[data-ccomp]'); if (!el) return;
+      const [mid, cid] = el.dataset.ccomp.split('|');
+      const sel = scelti(mid); const n = Number(cid);
+      const i = sel.indexOf(n);
+      if (el.checked && i < 0) sel.push(n); else if (!el.checked && i >= 0) sel.splice(i, 1);
+      const m = menu.find(x => String(x.id) === String(mid));
+      const badge = mount.querySelector('[data-cbadge="' + mid + '"]');
+      if (badge && m) badge.textContent = labelScelti(m);
+      if (el.checked && !cart[mid]) return chg(mid, 1);
+      fire();
     });
     if (qEl) qEl.addEventListener('input', renderList);
     if (useSearch) { const x = $('.cmd-qx'); if (x) x.addEventListener('click', () => { if (qEl) { qEl.value = ''; qEl.focus(); } renderList(); }); }
@@ -8477,10 +8641,10 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id] })); },
+      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
       total, count,
-      clear() { Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
-      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
     };
   }
@@ -8880,7 +9044,7 @@ function tavoloDetail(tb) {
   const comande = tb.cs.slice().sort((a, b) => tms(a) - tms(b));
   const blocks = comande.map(cm => {
     const t = parseTs(cm.created_at); const hh = t ? t.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-    const righe = (cm.righe || []).map(r => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f4f2ea"><span><b>\${r.qta}\xD7</b> \${esc(r.nome)} \${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${['pronta', 'consegnata'].includes(r.stato) ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+    const righe = (cm.righe || []).map(r => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f4f2ea\${r.parent_riga_id ? ';padding-left:18px' : ''}"><span>\${r.parent_riga_id ? '<span class="muted">\u21B3</span> ' : \`<b>\${r.qta}\xD7</b> \`}\${esc(r.nome)} \${r.parent_riga_id ? '' : (r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}')}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${['pronta', 'consegnata'].includes(r.stato) ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
     return \`<div style="margin-top:10px"><div class="muted" style="font-size:.74rem;font-weight:700">Comanda #\${cm.numero || cm.id}\${hh ? ' \xB7 ' + hh : ''}</div>\${righe}<div style="text-align:right;font-weight:800;margin-top:4px">\${eur(cm.totale)}</div></div>\`;
   }).join('') || '<p class="muted">Tavolo libero.</p>';
   const tot = comande.reduce((s, cm) => s + Number(cm.totale || 0), 0);
@@ -8946,7 +9110,7 @@ VIEWS.bar = async () => {
     const card = ({ c, st }) => {
       const col = ZCOL[st.key];
       const hhmm = st.since ? new Date(st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-      const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0"><span style="flex:1">\${r.qta}\xD7 \${esc(r.nome)} \${r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}'}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+      const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0\${r.parent_riga_id ? ';padding-left:16px' : ''}"><span style="flex:1">\${r.parent_riga_id ? '<span class="muted">\u21B3</span> ' : r.qta + '\xD7 '}\${esc(r.nome)} \${r.parent_riga_id ? '' : (r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}')}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
       const actions = \`\${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|in_preparazione">\u25B6 Avvia</button>\` : ''}\${c.stato === 'in_preparazione' ? \`<button class="btn ghost sm" data-cs="\${c.id}|pronta">\u2714 Pronta</button>\` : ''}\${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|consegnata">\u{1F6CE} Consegna</button>\` : ''}<button class="btn gold sm" data-ch="\${c.id}">\u{1F4B6} Incassa</button><button class="btn danger sm" data-can="\${c.id}">\u2715</button>\`;
       return \`<div class="panel" style="border:2px solid \${col.bd};background:\${col.bg};min-width:250px;flex:1 1 250px;max-width:340px;margin:0"><div class="row" style="justify-content:space-between"><b style="color:\${col.tx};font-size:1.05rem">\u{1F378} \${esc(c.riferimento || '\u2014')}</b>\${st.mins != null ? \`<span class="tag" style="background:\${col.bd};color:#fff">\${st.mins}\u2032</span>\` : (st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '')}</div><div style="font-size:.72rem;color:\${col.tx};font-weight:700">#\${c.numero || c.id}\${hhmm ? ' \xB7 ' + hhmm : ''}</div><div style="margin:8px 0">\${righe}</div><div style="text-align:right;font-weight:800;margin-bottom:6px">\${eur(c.totale)}</div><div class="row">\${actions}</div></div>\`;
     };
@@ -9528,7 +9692,8 @@ VIEWS.menu = async () => {
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
     <td><input id="mn_al_\${m.id}" value="\${esc(m.allergeni || '')}" style="width:150px" placeholder="glutine, latte\u2026"></td>
     <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
-    <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
+    <td style="text-align:center"><input type="checkbox" data-mncomp="\${m.id}" \${m.complemento ? 'checked' : ''} title="\xC8 un'aggiunta: si spunta dentro i piatti, non si ordina da sola"></td>
+    <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button>\${m.complemento ? '' : \`<button class="btn ghost sm" data-cmp="\${m.id}" title="Quali aggiunte si possono spuntare in questo piatto">\u{1F9E9}</button>\`}<button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u2B06\uFE0F Importa men\xF9 da Excel/CSV</h3>
@@ -9542,13 +9707,36 @@ VIEWS.menu = async () => {
       <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button></div>
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
-      <p class="muted" style="font-size:.8rem;margin-bottom:8px"><b>Staz.</b> = chi lo prepara (Cucina/Bar, per il KDS) \xB7 <b>Punto</b> = dove si vende (Bar/Garden/Entrambi), guida l'ordine di stampa del men\xF9.</p>
-      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Punto</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px"><b>Staz.</b> = chi lo prepara (Cucina/Bar, per il KDS) \xB7 <b>Punto</b> = dove si vende (Bar/Garden/Entrambi), guida l'ordine di stampa del men\xF9 \xB7 <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e si spunta dentro i piatti. Il tasto \u{1F9E9} dice <i>quali</i> aggiunte compaiono in quel piatto.</p>
+      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Punto</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
   document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, zona: $('#mn_z_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
+  // Un'aggiunta smette di essere una voce da ordinare e diventa una spunta dentro i piatti.
+  document.querySelectorAll('[data-mncomp]').forEach(c => c.onchange = async () => {
+    await api('/menu/' + c.dataset.mncomp + '/complemento', { method: 'PUT', body: JSON.stringify({ complemento: c.checked }) });
+    show('menu');
+  });
+  document.querySelectorAll('[data-cmp]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.cmp;
+    const nome = ($('#mn_n_' + id) || {}).value || 'questo piatto';
+    const d = await api('/menu/' + id + '/complementi');
+    if (!d.disponibili.length) { alert('Non hai ancora nessuna aggiunta.\\n\\nSpunta "Compl." sulle voci che sono condimenti (maionese, insalata, cipolla): poi potrai abbinarle ai piatti.'); return; }
+    const scelti = d.scelti.map(x => Number(x.id));
+    openModal(\`<h3 style="margin-top:0">\u{1F9E9} Complementi di \u201C\${esc(nome)}\u201D</h3>
+      <p class="muted" style="font-size:.82rem">Chi ordina li spunta s\xEC/no dentro il piatto. Ognuno arriva in cucina come riga sotto il piatto e scarica il magazzino per conto suo.</p>
+      <div style="max-height:46vh;overflow:auto;margin:10px 0">\${d.disponibili.map(c => \`<label style="display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid #f0ede4">
+        <input type="checkbox" data-cpick="\${c.id}" \${scelti.includes(Number(c.id)) ? 'checked' : ''} style="width:20px;height:20px">
+        <span style="flex:1">\${esc(c.nome)}</span><span class="muted">\${eur(c.prezzo)}</span></label>\`).join('')}</div>
+      <div class="row"><button class="btn gold" id="cmp_save">Salva</button><button class="btn ghost" data-mclose>Chiudi</button></div>\`);
+    $('#cmp_save').onclick = async () => {
+      const ids = [...document.querySelectorAll('[data-cpick]')].filter(x => x.checked).map(x => Number(x.dataset.cpick));
+      await api('/menu/' + id + '/complementi', { method: 'PUT', body: JSON.stringify({ complementi: ids }) });
+      closeModal();
+    };
+  });
   $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, zona: $('#mn_new_z').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
   $('#menu_pdf').onclick = async () => {
     const punto = ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden';
@@ -10543,7 +10731,7 @@ window.Comanda = (function () {
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;gap:8px;align-items:center}
+      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
       .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
@@ -10556,7 +10744,14 @@ window.Comanda = (function () {
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
       .cmd-n{min-width:20px;text-align:center;font-weight:800;color:var(--c-navy)}
-      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}\`;
+      .cmd-empty{color:#777;padding:10px 2px;font-size:.9rem}
+      .cmd-more{background:none;border:0;color:var(--c-navy);font-size:.76rem;font-weight:700;text-decoration:underline;padding:2px 0;cursor:pointer;text-align:left}
+      .cmd-comp{width:100%;border-top:1px dashed var(--c-line);margin-top:6px;padding-top:6px}
+      .cmd-comp[hidden]{display:none}
+      .cmd-comp label{display:flex;align-items:center;gap:8px;padding:6px 2px;font-size:.86rem;color:var(--c-navy);min-height:36px;cursor:pointer}
+      .cmd-comp input{width:20px;height:20px;flex:0 0 auto}
+      .cmd-comp .cmd-cp{margin-left:auto;color:var(--c-gold);font-weight:700;font-size:.8rem}
+      .cmd-badge{font-size:.72rem;color:#6b6257;display:block;margin-top:2px}\`;
     document.head.appendChild(st);
   }
 
@@ -10567,6 +10762,7 @@ window.Comanda = (function () {
     const useSearch = opts.search !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
+    const comp = {};   // menu_id -> [id complementi spuntati]
     let selCat = '';
 
     mount.classList.add('cmd');
@@ -10580,7 +10776,16 @@ window.Comanda = (function () {
     const chipsEl = useSearch ? $('.cmd-chips') : null;
 
     function cats() { return sortCats([...new Set((menu || []).map(catOf))]); }
-    function total() { let t = 0; Object.keys(cart).forEach(id => { const m = menu.find(x => String(x.id) === id); if (m) t += Number(m.prezzo) * cart[id]; }); return t; }
+    function total() {
+      let t = 0;
+      Object.keys(cart).forEach(id => {
+        const m = menu.find(x => String(x.id) === id); if (!m) return;
+        t += Number(m.prezzo) * cart[id];
+        const sel = comp[id] || [];
+        compDi(m).forEach(c => { if (sel.includes(Number(c.id))) t += Number(c.prezzo) * cart[id]; });
+      });
+      return t;
+    }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
     function fire() { onChange(cart, total(), count()); }
 
@@ -10602,6 +10807,23 @@ window.Comanda = (function () {
       if (/patat|frit|snack|arancin/.test(t)) return '\\ud83c\\udf5f';
       return '\\ud83c\\udf7d\\ufe0f';
     }
+    // Il "di cui" del piatto: le aggiunte si spuntano, non si contano. Nessuno ordina
+    // "tre maionesi": o la vuoi o non la vuoi, e se prendi due panini la vogliono entrambi.
+    function compDi(m) { return Array.isArray(m.complementi) ? m.complementi : []; }
+    function scelti(id) { return comp[id] || (comp[id] = []); }
+    function compHTML(m) {
+      const list = compDi(m);
+      if (!list.length) return '';
+      const sel = scelti(m.id);
+      const righe = list.map(c => \`<label><input type="checkbox" data-ccomp="\${m.id}|\${c.id}"\${sel.includes(Number(c.id)) ? ' checked' : ''}><span>\${esc(c.nome)}</span><span class="cmd-cp">\${Number(c.prezzo) > 0 ? '+ ' + eur(c.prezzo) : ''}</span></label>\`).join('');
+      return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
+        <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${righe}</div>\`;
+    }
+    function labelScelti(m) {
+      const sel = scelti(m.id); if (!sel.length) return '';
+      const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
+      return nomi.length ? '+ ' + nomi.join(', ') : '';
+    }
     function itemHTML(m) {
       const q = cart[m.id] || 0;
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
@@ -10609,10 +10831,11 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
-        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div></div>\`;
+        <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
+        \${compHTML(m)}</div>\`;
     }
     function renderChips() {
       if (!chipsEl) return;
@@ -10643,10 +10866,29 @@ window.Comanda = (function () {
 
     // Delegazione: un solo listener per tutto il componente.
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.dataset.cmore != null) {
+        const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
+        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'complementi \u25BE' : 'complementi \u25B4'; }
+        return;
+      }
       if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
       if (a.dataset.cdec != null) return chg(a.dataset.cdec, -1);
       if (a.dataset.ccat != null) { selCat = a.dataset.ccat; renderChips(); renderList(); }
+    });
+    // Spuntare un complemento su un piatto che non hai ancora scelto significa volerlo: si
+    // aggiunge il piatto. Altrimenti la maionese resterebbe spuntata su niente.
+    mount.addEventListener('change', (ev) => {
+      const el = ev.target.closest('[data-ccomp]'); if (!el) return;
+      const [mid, cid] = el.dataset.ccomp.split('|');
+      const sel = scelti(mid); const n = Number(cid);
+      const i = sel.indexOf(n);
+      if (el.checked && i < 0) sel.push(n); else if (!el.checked && i >= 0) sel.splice(i, 1);
+      const m = menu.find(x => String(x.id) === String(mid));
+      const badge = mount.querySelector('[data-cbadge="' + mid + '"]');
+      if (badge && m) badge.textContent = labelScelti(m);
+      if (el.checked && !cart[mid]) return chg(mid, 1);
+      fire();
     });
     if (qEl) qEl.addEventListener('input', renderList);
     if (useSearch) { const x = $('.cmd-qx'); if (x) x.addEventListener('click', () => { if (qEl) { qEl.value = ''; qEl.focus(); } renderList(); }); }
@@ -10654,10 +10896,10 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id] })); },
+      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
       total, count,
-      clear() { Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
-      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
+      setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
     };
   }
@@ -10761,7 +11003,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.20";
+var VERSION = "5.21";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14230,6 +14472,33 @@ adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
   res.json(rows);
 });
+adminRouter.get("/menu/:id/complementi", requireCap("comande"), async (req, res) => {
+  const scelti = await db.prepare(
+    `SELECT a.id,a.nome,a.prezzo FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
+     WHERE c.articolo_id=? ORDER BY c.ordine, a.nome`
+  ).all(req.params.id);
+  const disponibili = await db.prepare("SELECT id,nome,prezzo FROM menu_articoli WHERE complemento=1 AND id<>? ORDER BY nome").all(req.params.id);
+  res.json({ scelti, disponibili });
+});
+adminRouter.put("/menu/:id/complementi", requireCap("comande"), async (req, res) => {
+  const ids = Array.isArray(req.body?.complementi) ? req.body.complementi.map(Number).filter(Boolean) : [];
+  await db.prepare("DELETE FROM menu_complementi WHERE articolo_id=?").run(req.params.id);
+  let o = 0;
+  for (const id of ids) {
+    const c = await db.prepare("SELECT id FROM menu_articoli WHERE id=? AND complemento=1").get(id);
+    if (!c) continue;
+    await db.prepare("INSERT OR IGNORE INTO menu_complementi (articolo_id,complemento_id,ordine) VALUES (?,?,?)").run(req.params.id, id, o++);
+  }
+  audit(req.adminUser.username, "complementi", "menu_articoli", req.params.id, `${o} abbinati`);
+  res.json({ ok: true, n: o });
+});
+adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res) => {
+  const v = req.body?.complemento ? 1 : 0;
+  await db.prepare("UPDATE menu_articoli SET complemento=? WHERE id=?").run(v, req.params.id);
+  if (!v) await db.prepare("DELETE FROM menu_complementi WHERE complemento_id=?").run(req.params.id);
+  audit(req.adminUser.username, v ? "segna_complemento" : "torna_articolo", "menu_articoli", req.params.id);
+  res.json({ ok: true, complemento: v });
+});
 adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
@@ -15819,8 +16088,21 @@ publicRouter.get("/albo-casate", async (req, res) => {
 });
 publicRouter.get("/menu", async (req, res) => {
   const z = String(req.query.zona || "");
-  const base = "SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni,zona FROM menu_articoli WHERE attivo=1";
-  const rows = z === "bar" || z === "garden" ? await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z) : await db.prepare(base + " ORDER BY ordine,id").all();
+  const base = "SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni,zona FROM menu_articoli WHERE attivo=1 AND complemento=0";
+  const conCucina = String(req.query.cucina || "") === "1";
+  let rows;
+  if (z === "bar" || z === "garden") {
+    rows = conCucina ? await db.prepare(base + " AND (zona IN (?, 'comune') OR stazione='cucina') ORDER BY ordine,id").all(z) : await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z);
+  } else {
+    rows = await db.prepare(base + " ORDER BY ordine,id").all();
+  }
+  for (const r of rows) {
+    r.complementi = await db.prepare(
+      `SELECT a.id, a.nome, a.prezzo FROM menu_complementi c
+       JOIN menu_articoli a ON a.id = c.complemento_id
+       WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
+    ).all(r.id);
+  }
   res.json(rows);
 });
 function zonaDaPunto(punto) {
@@ -15858,7 +16140,22 @@ publicRouter.post("/self-order", async (req, res) => {
     if (!m) continue;
     const qta = Math.max(1, Math.round(Number(r.qta)));
     totale += Number(m.prezzo) * qta;
-    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
+    const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
+    const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
+    if (scelti.length) {
+      const padre = Number(info2.lastInsertRowid);
+      const ammessi = await db.prepare(
+        `SELECT a.id,a.nome,a.prezzo FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
+         WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
+      ).all(m.id);
+      for (const c of ammessi) {
+        if (!scelti.includes(Number(c.id))) continue;
+        totale += Number(c.prezzo) * qta;
+        await db.prepare(
+          "INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,parent_riga_id) VALUES (?,?,?,?,?,?,?, 'in_coda', ?)"
+        ).run(cid, c.id, c.nome, Number(c.prezzo), qta, m.stazione, null, padre);
+      }
+    }
   }
   await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
   audit(chi || "self", "self_order", "comande", cid, `${punto}${tavolo ? " \xB7 tav " + tavolo : ""} \xB7 \u20AC${totale}`);
@@ -16574,6 +16871,17 @@ publicRouter.post("/garden/prenota", async (req, res) => {
       stage = { errore: ps.error, spettacolo: sp.titolo || "spettacolo", ora: sp.ora };
     }
   }
+  try {
+    const gg = (/* @__PURE__ */ new Date(data + "T12:00:00Z")).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
+    const tav = Array.isArray(r.tavoli) && r.tavoli.length ? r.tavoli.join(", ") : null;
+    await sendToSocio(socio.id, {
+      title: "Tavolo prenotato al Garden",
+      body: `${gg} \xB7 turno ${r.turno} \xB7 ${tav ? "tavolo " + tav : r.persone + " persone"}${tav ? " \xB7 " + r.persone + " persone" : ""}`,
+      url: "/",
+      tag: "tavolo-garden"
+    });
+  } catch (_) {
+  }
   res.status(201).json({ ok: true, ...r, stage });
 });
 publicRouter.get("/garden/mie-prenotazioni", async (req, res) => {
@@ -17250,7 +17558,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 08:24" : "online";
+var BUILD = true ? "2026-08-25 13:09" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
