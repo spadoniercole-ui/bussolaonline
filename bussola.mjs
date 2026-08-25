@@ -9704,8 +9704,9 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
       <div class="row"><span class="muted" style="font-size:.85rem">Punto: <b>\${ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden'}</b> (dalla zona della postazione)</span><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
       <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
-      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button></div>
-      <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p></div>
+      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cmpauto">\u{1F9E9} Riconosci i condimenti</button></div>
+      <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p>
+      <p class="muted" style="font-size:.78rem;margin-top:6px">"Riconosci i condimenti" marca come aggiunte le voci delle categorie tipo <i>Condimenti extra</i> e le abbina ai piatti della <b>Cucina</b>. Ti dice quante ne ha trovate: se sono zero, la categoria si chiama in un altro modo \u2014 spunta <b>Compl.</b> a mano e poi usa \u{1F9E9}.</p></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
       <p class="muted" style="font-size:.8rem;margin-bottom:8px"><b>Staz.</b> = chi lo prepara (Cucina/Bar, per il KDS) \xB7 <b>Punto</b> = dove si vende (Bar/Garden/Entrambi), guida l'ordine di stampa del men\xF9 \xB7 <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e si spunta dentro i piatti. Il tasto \u{1F9E9} dice <i>quali</i> aggiunte compaiono in quel piatto.</p>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Staz.</th><th>Punto</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
@@ -9730,14 +9731,39 @@ VIEWS.menu = async () => {
       <div style="max-height:46vh;overflow:auto;margin:10px 0">\${d.disponibili.map(c => \`<label style="display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid #f0ede4">
         <input type="checkbox" data-cpick="\${c.id}" \${scelti.includes(Number(c.id)) ? 'checked' : ''} style="width:20px;height:20px">
         <span style="flex:1">\${esc(c.nome)}</span><span class="muted">\${eur(c.prezzo)}</span></label>\`).join('')}</div>
-      <div class="row"><button class="btn gold" id="cmp_save">Salva</button><button class="btn ghost" data-mclose>Chiudi</button></div>\`);
+      <div class="row"><button class="btn gold" id="cmp_save">Salva</button><button class="btn ghost" id="cmp_all">Applica a tutta la categoria</button><button class="btn ghost" data-mclose>Chiudi</button></div>\`);
+    const scelte = () => [...document.querySelectorAll('[data-cpick]')].filter(x => x.checked).map(x => Number(x.dataset.cpick));
     $('#cmp_save').onclick = async () => {
-      const ids = [...document.querySelectorAll('[data-cpick]')].filter(x => x.checked).map(x => Number(x.dataset.cpick));
-      await api('/menu/' + id + '/complementi', { method: 'PUT', body: JSON.stringify({ complementi: ids }) });
+      await api('/menu/' + id + '/complementi', { method: 'PUT', body: JSON.stringify({ complementi: scelte() }) });
+      closeModal();
+    };
+    // Gli stessi condimenti valgono per tutti i panini: non si abbinano uno per uno.
+    $('#cmp_all').onclick = async () => {
+      const cat = ($('#mn_c_' + id) || {}).value || '';
+      if (!cat) { alert('Questo articolo non ha una categoria: mettila e riprova.'); return; }
+      if (!confirm(\`Abbinare questi complementi a tutti gli articoli della categoria \u201C\${cat}\u201D?\`)) return;
+      const ids = scelte();
+      const tutti = await api('/menu');
+      const target = tutti.filter(x => (x.categoria || '').trim().toLowerCase() === cat.trim().toLowerCase() && !x.complemento);
+      for (const m of target) {
+        await api('/menu/' + m.id + '/complementi', { method: 'PUT', body: JSON.stringify({ complementi: ids }) });
+      }
+      alert(\`Fatto: \${ids.length} complementi su \${target.length} articoli di \u201C\${cat}\u201D.\`);
       closeModal();
     };
   });
   $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, zona: $('#mn_new_z').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
+  $('#menu_cmpauto').onclick = async () => {
+    const r = await api('/menu/complementi-auto', { method: 'POST', body: '{}' });
+    if (!r.marcati) {
+      alert('Nessun condimento riconosciuto.\\n\\nLe categorie che hai a men\xF9 sono:\\n\xB7 ' + (r.categorie || []).join('\\n\xB7 ') +
+        '\\n\\nSpunta "Compl." sulle voci che sono aggiunte (maionese, insalata\u2026), poi usa \u{1F9E9} su un piatto e "Applica a tutta la categoria".');
+      return;
+    }
+    alert(\`Riconosciuti \${r.marcati} condimenti (\${(r.categorie_condimenti || []).join(', ')}).\\nAbbinati a \${r.piatti} piatti della Cucina.\` +
+      (r.piatti ? '' : '\\n\\nNessun piatto ha stazione "Cucina": correggi la colonna Staz. oppure abbina a mano con \u{1F9E9}.'));
+    show('menu');
+  };
   $('#menu_pdf').onclick = async () => {
     const punto = ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden';
     let qr = null;
@@ -11003,7 +11029,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.21";
+var VERSION = "5.22";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14499,6 +14525,38 @@ adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res)
   audit(req.adminUser.username, v ? "segna_complemento" : "torna_articolo", "menu_articoli", req.params.id);
   res.json({ ok: true, complemento: v });
 });
+adminRouter.post("/menu/complementi-auto", requireCap("comande"), async (req, res) => {
+  const CONDIM = /condiment|aggiunt|complement|salse|extra/i;
+  const tutti = await db.prepare("SELECT id,nome,categoria,stazione,complemento FROM menu_articoli").all();
+  const cats = Array.isArray(req.body?.categorie) ? req.body.categorie.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
+  const isCondimento = (m) => cats.length ? cats.includes(String(m.categoria || "").trim().toLowerCase()) : CONDIM.test(String(m.categoria || "")) || m.complemento === 1;
+  const cond = tutti.filter(isCondimento);
+  const categorieViste = [...new Set(tutti.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort();
+  if (!cond.length) {
+    return res.json({ ok: true, marcati: 0, piatti: 0, abbinamenti: 0, categorie: categorieViste, categorie_condimenti: [] });
+  }
+  for (const c of cond) await db.prepare("UPDATE menu_articoli SET complemento=1 WHERE id=?").run(c.id);
+  const catPiatti = Array.isArray(req.body?.categorie_piatti) ? req.body.categorie_piatti.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
+  const ids = cond.map((c) => c.id);
+  const piatti = tutti.filter((m) => !ids.includes(m.id) && (catPiatti.length ? catPiatti.includes(String(m.categoria || "").trim().toLowerCase()) : m.stazione === "cucina"));
+  let abbinamenti = 0;
+  for (const p of piatti) {
+    let o = 0;
+    for (const c of cond) {
+      await db.prepare("INSERT OR IGNORE INTO menu_complementi (articolo_id,complemento_id,ordine) VALUES (?,?,?)").run(p.id, c.id, o++);
+      abbinamenti++;
+    }
+  }
+  audit(req.adminUser.username, "complementi_auto", "menu_articoli", null, `${cond.length} condimenti \xB7 ${piatti.length} piatti`);
+  res.json({
+    ok: true,
+    marcati: cond.length,
+    piatti: piatti.length,
+    abbinamenti,
+    categorie: categorieViste,
+    categorie_condimenti: [...new Set(cond.map((c) => c.categoria || "(senza categoria)"))]
+  });
+});
 adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
@@ -17558,7 +17616,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 13:09" : "online";
+var BUILD = true ? "2026-08-25 13:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
