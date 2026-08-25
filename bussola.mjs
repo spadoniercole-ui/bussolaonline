@@ -1662,6 +1662,18 @@ async function migrate() {
   await addIfMissing("comande", "scaricata", "scaricata INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("soci", "emergenza_nome", "emergenza_nome TEXT");
   await addIfMissing("soci", "emergenza_tel", "emergenza_tel TEXT");
+  await addIfMissing("corsi_fitness", "colore", "colore TEXT");
+  try {
+    if (await getSetting("fitness_colori_v1", "") !== "v1") {
+      const tavolozza = ["#2f6d8a", "#7a5c2e", "#2e6b45", "#8a4a6b", "#b08b3e", "#5f5188"];
+      const corsi = await db.prepare("SELECT id FROM corsi_fitness ORDER BY id").all();
+      for (let i = 0; i < corsi.length; i++) {
+        await db.prepare("UPDATE corsi_fitness SET colore=? WHERE id=? AND (colore IS NULL OR colore='')").run(tavolozza[i % tavolozza.length], corsi[i].id);
+      }
+      await setSetting("fitness_colori_v1", "v1");
+    }
+  } catch (_) {
+  }
   try {
     await db.exec(`
   CREATE TABLE IF NOT EXISTS chat_messaggi (
@@ -2426,6 +2438,10 @@ function normalizza(def, raw) {
     if (def.max != null) n = Math.min(def.max, n);
     return n;
   }
+  if (def.tipo === "testo") {
+    const t = String(raw).trim().slice(0, 120);
+    return t || def.predefinito;
+  }
   const ok = (def.opzioni || []).some((o) => o.valore === raw);
   return ok ? raw : def.predefinito;
 }
@@ -2676,6 +2692,22 @@ var init_parametri = __esm({
         predefinito: true,
         etichetta: "Prenotazione obbligatoria",
         aiuto: "Le attivit\xE0 con istruttore hanno posti contati: senza prenotazione non si entra."
+      },
+      {
+        chiave: "fitness_griglia_da",
+        gruppo: "Fitness",
+        tipo: "testo",
+        predefinito: "16:00",
+        etichetta: "Calendario lezioni \xB7 prima ora",
+        aiuto: "La griglia settimanale parte sempre da questa ora, anche se non ci sono lezioni: cosi' ha una forma stabile e le lezioni si collocano invece di comparire dove capita. Se una lezione e' piu' presto, la griglia si allarga da sola."
+      },
+      {
+        chiave: "fitness_griglia_a",
+        gruppo: "Fitness",
+        tipo: "testo",
+        predefinito: "20:00",
+        etichetta: "Calendario lezioni \xB7 ultima ora",
+        aiuto: "L'ultima ora mostrata. Come sopra: se una lezione e' piu' tardi, la griglia si allarga."
       },
       // ---- Accessibilita' e assistenza ----
       {
@@ -2934,7 +2966,7 @@ async function sedute({ corsoId = null, da = null, soloFuture = true } = {}) {
     args.push(da);
   }
   const rows = await db.prepare(
-    `SELECT s.*, c.nome AS corso_nome, c.descrizione, c.attivo AS corso_attivo
+    `SELECT s.*, c.nome AS corso_nome, c.descrizione, c.attivo AS corso_attivo, c.colore
      FROM fitness_sedute s JOIN corsi_fitness c ON c.id=s.corso_id
      WHERE ${cond.join(" AND ")} ORDER BY s.data, s.ora`
   ).all(...args);
@@ -3137,6 +3169,19 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .mapopen{display:block; text-align:center; padding:8px; font-size:.78rem; background:var(--card); color:var(--navy); text-decoration:none; border-top:1px solid var(--line);}
 /* Chat: leggera, solo testo, bolle sobrie. Niente allegati e niente emoticon: serve a
    organizzarsi, non a chiacchierare. */
+/* Griglia settimanale delle lezioni: sette colonne strette su schermo di telefono, quindi
+   caselle compatte e testo minuscolo ma leggibile. Il colore fa il lavoro dell'etichetta. */
+.fitgrid{width:100%; border-collapse:collapse; table-layout:fixed;}
+.fitgrid th{font-size:.66rem; color:var(--muted); font-weight:700; padding:2px 0; text-align:center;}
+.fitgrid th span{display:block; font-weight:400; font-size:.6rem;}
+.fitgrid th.ora{width:26px; color:var(--muted); font-size:.62rem; vertical-align:top; padding-top:6px;}
+.fitgrid td.fitv{padding:1px; vertical-align:top; border-top:1px solid var(--line); height:34px;}
+.fitq{display:block; width:100%; border:0; border-left:4px solid transparent; border-radius:6px;
+  color:#fff; padding:3px 2px; margin-bottom:2px; cursor:pointer; line-height:1.05; font:inherit;}
+.fitq b{display:block; font-size:.58rem; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.fitq span{display:block; font-size:.54rem; opacity:.9;}
+.fitq.ok{border-left-color:#2e6b45;} .fitq.attesa{border-left-color:#b08b3e;}
+.fitq.pieno{border-left-color:#b14a35; opacity:.55;} .fitq.mio{border-left-color:#fff; box-shadow:0 0 0 2px var(--navy);}
 .chatbox{max-height:44vh; overflow:auto; background:var(--card); border:1px solid var(--line);
   border-radius:12px; padding:10px; margin-top:10px;}
 .msg{position:relative; margin:8px 0; padding:8px 34px 8px 10px; border-radius:10px;
@@ -4509,32 +4554,86 @@ async function cowoPrenota(turno) {
 }
 
 // ---- Lezioni di fitness ----
+// Un elenco di ottanta lezioni una sotto l'altra costringeva a scorrere per trovare
+// l'incastro giorno-ora. Qui c'e' la stessa griglia settimanale del back office: sette
+// colonne, la fascia oraria fissa dai parametri, e il colore della disciplina \u2014 che su
+// trentacinque caselle si riconosce prima del testo.
 async function openFitness() {
   let d;
   try { d = await api('/fitness'); } catch { okThen(T('Lezioni non disponibili'), false); return; }
-  const lez = (d.lezioni || []).slice(0, 20);
+  const lez = d.lezioni || [];
   if (!lez.length) { okThen(T('Nessuna lezione in programma.'), false); return; }
   let mie = [];
   if (state.tessera) { try { mie = await api('/fitness/mie-iscrizioni?tessera_code=' + encodeURIComponent(state.tessera)); } catch { } }
   const iscritto = new Set(mie.map(m => m.corso_nome + '|' + m.data + '|' + m.ora));
-  const riga = (l) => {
-    const gia = iscritto.has(l.corso_nome + '|' + l.data + '|' + l.ora);
-    const stato = l.completa ? \`<span class="tag" style="background:#eee;color:#888;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('AL COMPLETO')}</span>\`
-      : gia ? \`<span class="tag" style="background:#e6f2ea;color:#2e6b45;padding:4px 10px;border-radius:12px;font-size:.62rem;font-weight:700">\${T('ISCRITTO')}</span>\`
-      : \`<button class="btn gold sm" data-fitpren="\${l.id}">\${T('Iscriviti')}</button>\`;
-    return \`<div class="matchrow"><div style="flex:1">
-        <b style="font-size:.9rem">\${esc(l.titolo || l.corso_nome)}\${l.masterclass ? ' \u{1F31F}' : ''}</b>
-        <div class="ct">\${esc(dataBella(l.data))} \xB7 \${esc(l.ora)} \xB7 \${l.durata_min}\u2032\${l.istruttore ? ' \xB7 ' + esc(l.istruttore) : ''}</div>
-        <div class="ct">\${l.iscritti}/\${l.posti_max} \xB7 \u20AC \${Number(l.prezzo).toFixed(2)}\${l.minimo && !l.confermata ? \` \xB7 \${T('mancano')} \${l.mancano} \${T('per confermarla')}\` : ''}</div>
-      </div>\${stato}</div>\`;
+
+  // settimane disponibili, come nel back office
+  const lunediDi = (iso) => { const dd = new Date(iso + 'T12:00:00Z'); dd.setUTCDate(dd.getUTCDate() - ((dd.getUTCDay() + 6) % 7)); return dd.toISOString().slice(0, 10); };
+  const settimane = [...new Set(lez.map(l => lunediDi(l.data)))].sort();
+  if (!state._fitSett || !settimane.includes(state._fitSett)) state._fitSett = settimane[0];
+  const sett = state._fitSett;
+  const giorni = Array.from({ length: 7 }, (_, i) => new Date(new Date(sett + 'T12:00:00Z').getTime() + i * 864e5).toISOString().slice(0, 10));
+
+  const oraNum = (o) => Number(String(o || '').slice(0, 2)) || 0;
+  const daPar = oraNum(d.griglia_da || '16:00'), aPar = oraNum(d.griglia_a || '20:00');
+  const diQuesta = lez.filter(l => giorni.includes(l.data));
+  const ore = diQuesta.map(l => oraNum(l.ora));
+  const primo = Math.min(daPar, ...(ore.length ? ore : [daPar]));
+  const ultimo = Math.max(aPar, ...(ore.length ? ore : [aPar]));
+  const righeOre = Array.from({ length: Math.max(1, ultimo - primo + 1) }, (_, i) => String(primo + i).padStart(2, '0') + ':00');
+
+  const perCella = {};
+  for (const l of diQuesta) (perCella[l.data + '|' + String(l.ora).slice(0, 2) + ':00'] ??= []).push(l);
+  FIT_LEZ = {}; for (const l of lez) FIT_LEZ[l.id] = l;
+
+  const GG = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
+  const cella = (g, o) => {
+    const list = perCella[g + '|' + o] || [];
+    if (!list.length) return '<td class="fitv"></td>';
+    return \`<td class="fitv">\${list.map(l => {
+      const gia = iscritto.has(l.corso_nome + '|' + l.data + '|' + l.ora);
+      const stato = l.completa ? 'pieno' : gia ? 'mio' : l.confermata ? 'ok' : 'attesa';
+      return \`<button class="fitq \${stato}" style="background:\${esc(l.colore || '#2f6d8a')}" data-fitapri="\${l.id}" title="\${esc(l.corso_nome)} \${esc(l.ora)}">
+        <b>\${esc((l.titolo || l.corso_nome).slice(0, 9))}</b><span>\${esc(l.ora)}</span></button>\`;
+    }).join('')}</td>\`;
   };
+  const chipSett = settimane.map(w => \`<button class="chip\${w === sett ? ' sel' : ''}" data-fitsett="\${w}">\${w.slice(8)}/\${w.slice(5, 7)}</button>\`).join('');
+  const mieHTML = mie.length ? \`<div class="sect-title" style="margin-top:12px">\${T('Le mie lezioni')}</div>
+    <div class="card" style="padding:4px 14px">\${mie.map(m => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.88rem">\${esc(m.corso_nome)}</b><div class="ct">\${esc(dataBella(m.data))} \xB7 \${esc(m.ora)}</div></div></div>\`).join('')}</div>\` : '';
+
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F9D8} \${T('Area fitness')}</div>
     <h2>\${T('Lezioni con istruttore')}</h2>
-    <div class="card" style="padding:4px 14px;max-height:56vh;overflow:auto">\${lez.map(riga).join('')}</div>
+    <div class="chips" style="margin-bottom:8px">\${chipSett}</div>
+    <table class="fitgrid"><thead><tr><th></th>\${giorni.map((g, i) => \`<th>\${GG[i]}<span>\${g.slice(8)}</span></th>\`).join('')}</tr></thead>
+      <tbody>\${righeOre.map(o => \`<tr><th class="ora">\${o.slice(0, 2)}</th>\${giorni.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>
+    <p class="tiny muted" style="margin-top:6px">\${T('Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.')}</p>
+    \${mieHTML}
     <div class="note">\${T('Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.')}</div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
+
+// Dettaglio della lezione toccata: prima di iscriversi si vede cosa si sta prenotando.
+var FIT_LEZ = {};
+function openLezione(id) {
+  const l = FIT_LEZ[id];
+  if (!l) return;
+  const manca = l.minimo && !l.confermata;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:\${esc(l.colore || 'var(--teal)')}">\${esc(l.corso_nome)}</div>
+    <h2>\${esc(l.titolo || l.corso_nome)}\${l.masterclass ? ' \u{1F31F}' : ''}</h2>
+    <p class="sub">\${esc(dataBella(l.data))} \xB7 <b>\${esc(l.ora)}</b> \xB7 \${l.durata_min}\u2032\${l.istruttore ? ' \xB7 ' + esc(l.istruttore) : ''}</p>
+    <div class="card" style="padding:12px 14px">
+      <div class="matchrow"><span style="flex:1">\${T('Posti')}</span><b>\${l.iscritti}/\${l.posti_max}</b></div>
+      <div class="matchrow"><span style="flex:1">\${T('Prezzo')}</span><b>\u20AC \${Number(l.prezzo).toFixed(2)}</b></div>
+      \${manca ? \`<div class="matchrow"><span style="flex:1">\${T('Per confermare la lezione')}</span><b>\${T('mancano')} \${l.mancano}</b></div>\` : ''}
+    </div>
+    \${l.completa
+      ? \`<div class="note">\${T('Lezione al completo.')}</div>\`
+      : \`<button class="btn gold block" style="margin-top:12px" data-fitpren="\${l.id}">\${T('Iscriviti')}</button>\`}
+    <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+
 async function fitnessIscrivi(id) {
   if (!state.tessera) { okThen(T('Serve la tessera di un socio per iscriverti'), false); return; }
   try {
@@ -5716,7 +5815,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-fitapri],[data-fitsett],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) {
@@ -5770,6 +5869,8 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.mappa) return openMappa(t.dataset.mappa);
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
   if (t.dataset.fitness != null) return openFitness();
+  if (t.dataset.fitapri) return openLezione(Number(t.dataset.fitapri));
+  if (t.dataset.fitsett) { state._fitSett = t.dataset.fitsett; return openFitness(); }
   if (t.dataset.fitpren) return fitnessIscrivi(t.dataset.fitpren);
   if (t.dataset.cowo != null) return openCowo();
   if (t.dataset.cowoDate) { state._cowoData = t.dataset.cowoDate; return openCowo(); }
@@ -7578,11 +7679,18 @@ function stampaCartellone(film, proiezioni) {
 // iscritti sotto il quale la lezione non parte. Si paga la singola lezione, in contanti.
 const FIT_GIORNI = [[1,'lun'],[2,'mar'],[3,'mer'],[4,'gio'],[5,'ven'],[6,'sab'],[7,'dom']];
 let FIT_SETT = null;
+// Tavolozza dei corsi: colori distinguibili anche da chi confonde rosso e verde, e sobri
+// abbastanza da stare accanto all'oro del residence.
+var COLORI_CORSO = ['#2f6d8a', '#7a5c2e', '#2e6b45', '#8a4a6b', '#b08b3e', '#5f5188', '#b14a35', '#3f7d6a'];
 VIEWS.fitness = async () => {
-  const [corsi, sedute] = await Promise.all([api('/fitness/corsi'), api('/fitness/sedute').catch(() => [])]);
+  const [corsi, sedute, pub] = await Promise.all([
+    api('/fitness/corsi'), api('/fitness/sedute').catch(() => []),
+    fetch(API_BASE + '/api/fitness').then(r => r.json()).catch(() => ({}))
+  ]);
+  const FIT_PAR = { griglia_da: pub.griglia_da || '16:00', griglia_a: pub.griglia_a || '20:00' };
   const eur2 = (v) => '\u20AC ' + Number(v || 0).toFixed(2);
   const righe = corsi.map(c => \`<tr>
-      <td><b>\${esc(c.nome)}</b>\${c.masterclass ? ' <span class="tag mid">masterclass</span>' : ''}<div class="muted">\${esc(c.descrizione || '')}</div></td>
+      <td><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:\${esc(c.colore || '#2f6d8a')};margin-right:7px;vertical-align:middle"></span><b>\${esc(c.nome)}</b>\${c.masterclass ? ' <span class="tag mid">masterclass</span>' : ''}<div class="muted">\${esc(c.descrizione || '')}</div></td>
       <td>\${esc(c.istruttore || '\u2014')}</td>
       <td>\${esc(c.data_inizio || '\u2014')}<div class="muted">\${esc(c.data_fine || '')}</div></td>
       <td>\${c.giorni.map(g => (FIT_GIORNI.find(x => x[0] === g) || [0, '?'])[1]).join(' ') || '\u2014'}<div class="muted">\${esc(c.ora)} \xB7 \${c.durata_min}\u2032</div></td>
@@ -7593,7 +7701,15 @@ VIEWS.fitness = async () => {
       <td class="row" style="margin:0"><button class="btn ghost sm" data-cfedit="\${c.id}">\u270E</button><button class="btn danger sm" data-cfdel="\${c.id}">\u{1F5D1}</button></td></tr>\`).join('');
   // Calendario a griglia: giorni in colonna, ore in riga, e all'incrocio il corso. Un elenco
   // di ottanta lezioni una sotto l'altra non si legge; una griglia si guarda.
-  const oreUsate = [...new Set(sedute.map(s => s.ora))].sort();
+  // La griglia ha una fascia FISSA (di norma 16-20, dai parametri): cosi' il calendario ha
+  // sempre la stessa forma e le lezioni si collocano, invece di comparire dove capita. Se una
+  // lezione cade fuori dalla fascia \u2014 lo yoga all'alba \u2014 la griglia si allarga da sola.
+  const oraNum = (o) => Number(String(o || '').slice(0, 2)) || 0;
+  const daPar = oraNum(FIT_PAR.griglia_da || '16:00'), aPar = oraNum(FIT_PAR.griglia_a || '20:00');
+  const oreLez = sedute.map(s => oraNum(s.ora));
+  const primo = Math.min(daPar, ...(oreLez.length ? oreLez : [daPar]));
+  const ultimo = Math.max(aPar, ...(oreLez.length ? oreLez : [aPar]));
+  const oreUsate = Array.from({ length: Math.max(1, ultimo - primo + 1) }, (_, i) => String(primo + i).padStart(2, '0') + ':00');
   const settimane = [...new Set(sedute.map(s => {
     const d = new Date(s.data + 'T12:00:00Z');
     d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
@@ -7602,22 +7718,25 @@ VIEWS.fitness = async () => {
   if (!FIT_SETT || !settimane.includes(FIT_SETT)) FIT_SETT = settimane[0] || null;
   const giorniSett = FIT_SETT ? Array.from({ length: 7 }, (_, i) => new Date(new Date(FIT_SETT + 'T12:00:00Z').getTime() + i * 864e5).toISOString().slice(0, 10)) : [];
   const perCella = {};
-  for (const s2 of sedute) (perCella[s2.data + '|' + s2.ora] ??= []).push(s2);
+  for (const s2 of sedute) (perCella[s2.data + '|' + String(s2.ora || '').slice(0, 2) + ':00'] ??= []).push(s2);
   const cella = (giorno, ora) => {
     const list = perCella[giorno + '|' + ora] || [];
     if (!list.length) return '<td></td>';
     return \`<td style="padding:3px">\${list.map(s2 => {
-      const col = s2.completa ? '#b14a35' : s2.confermata ? '#2e6b45' : '#b08b3e';
-      return \`<div data-sedit="\${s2.id}" title="\${esc(s2.istruttore || '')}" style="cursor:pointer;background:\${col};color:#fff;border-radius:8px;padding:5px 7px;margin-bottom:3px;line-height:1.2">
-        <div style="font-weight:800;font-size:.76rem">\${esc(s2.titolo || s2.corso_nome)}\${s2.masterclass ? ' \u{1F31F}' : ''}</div>
-        <div style="font-size:.66rem;opacity:.92">\${s2.iscritti}/\${s2.posti_max}\${s2.minimo && !s2.confermata ? \` \xB7 mancano \${s2.mancano}\` : ''} \xB7 \u20AC \${Number(s2.prezzo || 0).toFixed(2)}</div>
+      // Il COLORE dice la disciplina (si riconosce a colpo d'occhio su 35 caselle), il BORDO
+      // dice lo stato: verde confermata, ocra in attesa, rosso al completo.
+      const col = s2.colore || '#2f6d8a';
+      const bordo = s2.completa ? '#b14a35' : s2.confermata ? '#2e6b45' : '#b08b3e';
+      return \`<div data-sedit="\${s2.id}" title="\${esc(s2.corso_nome)} \xB7 \${esc(s2.ora)} \xB7 \${esc(s2.istruttore || '')}" style="cursor:pointer;background:\${col};color:#fff;border-radius:8px;padding:5px 7px;margin-bottom:3px;line-height:1.15;border-left:5px solid \${bordo}">
+        <div style="font-weight:800;font-size:.74rem">\${esc(s2.titolo || s2.corso_nome)}\${s2.masterclass ? ' \u{1F31F}' : ''}</div>
+        <div style="font-size:.64rem;opacity:.92">\${esc(s2.ora)} \xB7 \${s2.iscritti}/\${s2.posti_max}\${s2.minimo && !s2.confermata ? \` \xB7 \u2212\${s2.mancano}\` : ''} \xB7 \u20AC \${Number(s2.prezzo || 0).toFixed(2)}</div>
       </div>\`;
     }).join('')}</td>\`;
   };
   const GG = ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'];
   const griglia = FIT_SETT ? \`<table class="fit" style="table-layout:fixed"><thead><tr><th style="width:56px"></th>
       \${giorniSett.map((g, i) => \`<th style="text-align:center">\${GG[i]}<div class="muted" style="font-weight:400">\${g.slice(8)}/\${g.slice(5, 7)}</div></th>\`).join('')}</tr></thead>
-    <tbody>\${oreUsate.map(o => \`<tr><td style="vertical-align:top;font-weight:700;color:var(--muted)">\${esc(o)}</td>\${giorniSett.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>\`
+    <tbody>\${oreUsate.map(o => \`<tr><td style="vertical-align:top;font-weight:700;color:var(--muted);font-size:12px">\${esc(o)}</td>\${giorniSett.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>\`
     : '<p class="muted">Nessuna lezione in programma.</p>';
   const navSett = settimane.map(w => \`<button class="btn \${w === FIT_SETT ? 'gold' : 'ghost'} sm" data-fitsett="\${w}">\${w.slice(8)}/\${w.slice(5, 7)}</button>\`).join('');
 
@@ -7631,7 +7750,8 @@ VIEWS.fitness = async () => {
       <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <span class="muted" style="font-size:13px">Settimana dal</span>\${navSett}
         <span style="flex:1"></span>
-        <span class="tag ok">confermata</span><span class="tag mid">in attesa</span><span class="tag no">al completo</span>
+        <span class="muted" style="font-size:12px">bordo:</span><span class="tag ok">confermata</span><span class="tag mid">in attesa</span><span class="tag no">al completo</span>
+        <span class="muted" style="font-size:12px;margin-left:8px">colore: disciplina</span>
       </div>
       \${griglia}
       <p class="muted" style="font-size:13px;margin-top:8px">Tocca una lezione per cambiarne ora, istruttore, posti, prezzo o per marcarla come masterclass.</p>
@@ -7646,8 +7766,14 @@ VIEWS.fitness = async () => {
         <div><label>Fine corso</label><input type="date" id="cf_a" value="\${esc(c?.data_fine || '')}"></div></div>
       <label>Giorni della settimana</label>
       <div class="row">\${FIT_GIORNI.map(([n, l]) => \`<label class="check" style="margin:0"><input type="checkbox" class="cf_g" value="\${n}" \${c && c.giorni.includes(n) ? 'checked' : ''}> \${l}</label>\`).join('')}</div>
-      <div class="grid2"><div><label>Ora</label><input id="cf_o" value="\${esc(c?.ora || '09:00')}"></div>
+      <div class="grid2"><div><label>Ora</label><input id="cf_o" value="\${esc(c?.ora || '18:00')}"></div>
         <div><label>Durata lezione (min)</label><input id="cf_du" type="number" value="\${c?.durata_min || 60}"></div></div>
+      <label>Colore nel calendario</label>
+      <div class="row" id="cf_colori" style="gap:8px;flex-wrap:wrap">
+        \${COLORI_CORSO.map(col => \`<button type="button" class="cfcol" data-col="\${col}" style="width:34px;height:34px;border-radius:8px;background:\${col};border:3px solid \${(c?.colore || '#2f6d8a') === col ? 'var(--navy)' : 'transparent'};cursor:pointer"></button>\`).join('')}
+        <input type="hidden" id="cf_col" value="\${esc(c?.colore || COLORI_CORSO[0])}">
+      </div>
+      <p class="muted" style="font-size:.76rem">Serve a distinguere le discipline nel calendario settimanale, dove le caselle sono trentacinque: il colore si riconosce prima del testo.</p>
       <div class="grid2"><div><label>Posti massimi per seduta</label><input id="cf_pm" type="number" value="\${c?.posti_max || 20}"></div>
         <div><label>Minimo iscritti</label><input id="cf_mi" type="number" value="\${c?.min_iscritti ?? 6}"><div class="muted" style="font-size:.74rem">Con ~400 presenze la media e' 6-7 per lezione.</div></div></div>
       <div class="grid2"><div><label>Prezzo a lezione \u20AC</label><input id="cf_pr" type="number" step="0.01" value="\${Number(c?.prezzo || 0)}"></div>
@@ -7656,6 +7782,11 @@ VIEWS.fitness = async () => {
       <label class="check"><input type="checkbox" id="cf_on" \${c && !c.attivo ? '' : 'checked'}> attivo</label>
       <p class="muted">Salvando, le lezioni nei giorni scelti fra inizio e fine vengono <b>generate da sole</b>. Quelle gi\xE0 create non vengono toccate.</p>
       <div class="row" style="margin-top:10px"><button class="btn gold" id="cf_save">Salva</button><button class="btn ghost" data-mchiudi>Annulla</button></div>\`);
+    document.querySelectorAll('.cfcol').forEach(b => b.onclick = () => {
+      $('#cf_col').value = b.dataset.col;
+      document.querySelectorAll('.cfcol').forEach(x => x.style.borderColor = 'transparent');
+      b.style.borderColor = 'var(--navy)';
+    });
     $('#cf_save').onclick = async () => {
       const body = {
         nome: $('#cf_n').value, istruttore: $('#cf_i').value, descrizione: $('#cf_d').value,
@@ -7663,7 +7794,8 @@ VIEWS.fitness = async () => {
         giorni: [...document.querySelectorAll('.cf_g:checked')].map(x => Number(x.value)),
         ora: $('#cf_o').value, durata_min: Number($('#cf_du').value), posti_max: Number($('#cf_pm').value),
         min_iscritti: Number($('#cf_mi').value), prezzo: Number($('#cf_pr').value),
-        prezzo_master: Number($('#cf_pv').value), masterclass: $('#cf_mc').checked, attivo: $('#cf_on').checked
+        prezzo_master: Number($('#cf_pv').value), masterclass: $('#cf_mc').checked, attivo: $('#cf_on').checked,
+        colore: ($('#cf_col') || {}).value || null
       };
       if (!body.nome) { alert('Indica la disciplina.'); return; }
       const r = await api(c ? '/fitness/corsi/' + c.id : '/fitness/corsi', { method: c ? 'PUT' : 'POST', body: JSON.stringify(body) });
@@ -10544,7 +10676,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.16";
+var VERSION = "5.17";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15125,15 +15257,19 @@ function corpoCorso(b) {
     Math.max(0, Number(b.prezzo) || 0),
     b.masterclass ? 1 : 0,
     Math.max(0, Number(b.prezzo_master) || 0),
-    b.attivo === false ? 0 : 1
+    b.attivo === false ? 0 : 1,
+    // Il colore si accetta solo nella forma #rrggbb: e' un valore che finisce dentro il CSS
+    // delle pagine, e non ci va infilato testo libero.
+    /^#[0-9a-f]{6}$/i.test(String(b.colore || "")) ? b.colore : COLORI_FITNESS[Math.floor(Math.random() * COLORI_FITNESS.length)]
   ];
 }
+var COLORI_FITNESS = ["#2f6d8a", "#7a5c2e", "#2e6b45", "#8a4a6b", "#b08b3e", "#5f5188", "#b14a35", "#3f7d6a"];
 adminRouter.post("/fitness/corsi", requireCap("fitness"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Indica la disciplina" });
   const ord = ((await db.prepare("SELECT MAX(ordine) m FROM corsi_fitness").get())?.m || 0) + 1;
   const info = await db.prepare(
-    "INSERT INTO corsi_fitness (nome,istruttore,descrizione,data_inizio,data_fine,giorni,ora,durata_min,posti_max,min_iscritti,prezzo,masterclass,prezzo_master,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO corsi_fitness (nome,istruttore,descrizione,data_inizio,data_fine,giorni,ora,durata_min,posti_max,min_iscritti,prezzo,masterclass,prezzo_master,attivo,colore,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
   ).run(...corpoCorso(b), ord);
   const id = Number(info.lastInsertRowid);
   const g = await generaSedute(id);
@@ -15143,7 +15279,7 @@ adminRouter.post("/fitness/corsi", requireCap("fitness"), async (req, res) => {
 adminRouter.put("/fitness/corsi/:id", requireCap("fitness"), async (req, res) => {
   const b = req.body || {};
   await db.prepare(
-    "UPDATE corsi_fitness SET nome=?,istruttore=?,descrizione=?,data_inizio=?,data_fine=?,giorni=?,ora=?,durata_min=?,posti_max=?,min_iscritti=?,prezzo=?,masterclass=?,prezzo_master=?,attivo=? WHERE id=?"
+    "UPDATE corsi_fitness SET nome=?,istruttore=?,descrizione=?,data_inizio=?,data_fine=?,giorni=?,ora=?,durata_min=?,posti_max=?,min_iscritti=?,prezzo=?,masterclass=?,prezzo_master=?,attivo=?,colore=? WHERE id=?"
   ).run(...corpoCorso(b), req.params.id);
   const g = await generaSedute(Number(req.params.id));
   res.json({ ok: true, ...g });
@@ -16449,12 +16585,16 @@ publicRouter.get("/cinema/mie-prenotazioni", async (req, res) => {
   res.json(rows.map((r) => ({ ...r, posti: JSON.parse(r.tavoli || "[]") })));
 });
 publicRouter.get("/fitness", async (req, res) => {
-  const corsi = await db.prepare("SELECT id,nome,istruttore,descrizione,data_inizio,data_fine,ora,durata_min,prezzo,masterclass,prezzo_master FROM corsi_fitness WHERE attivo=1 ORDER BY ordine,id").all();
+  const corsi = await db.prepare("SELECT id,nome,istruttore,descrizione,data_inizio,data_fine,ora,durata_min,prezzo,masterclass,prezzo_master,colore FROM corsi_fitness WHERE attivo=1 ORDER BY ordine,id").all();
   res.json({
     corsi: corsi.map((c) => ({ ...c, masterclass: !!c.masterclass })),
     lezioni: await sedute({}),
     prenotazione_obbligatoria: await par("fitness_prenotazione_obbligatoria"),
-    minimo_attivo: await par("fitness_minimo")
+    minimo_attivo: await par("fitness_minimo"),
+    // Fascia della griglia: sempre almeno queste ore, cosi' il calendario ha una forma stabile
+    // e le lezioni si collocano invece di comparire dove capita.
+    griglia_da: String(await par("fitness_griglia_da") || "16:00"),
+    griglia_a: String(await par("fitness_griglia_a") || "20:00")
   });
 });
 publicRouter.post("/fitness/sedute/:id/prenota", async (req, res) => {
@@ -17025,7 +17165,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-24 09:38" : "online";
+var BUILD = true ? "2026-08-25 06:01" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
