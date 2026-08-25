@@ -1422,6 +1422,7 @@ async function initSchema() {
     totale      REAL NOT NULL DEFAULT 0,
     operatore   TEXT,
     note        TEXT,
+    non_prima   TEXT,                                     -- HH:MM: la cucina non consegna prima
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT
   );
@@ -1555,6 +1556,7 @@ async function migrate() {
   await addIfMissing("menu_articoli", "zona", "zona TEXT NOT NULL DEFAULT 'bar'");
   await addIfMissing("menu_articoli", "complemento", "complemento INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("comanda_righe", "parent_riga_id", "parent_riga_id INTEGER");
+  await addIfMissing("comande", "non_prima", "non_prima TEXT");
   await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
     articolo_id    INTEGER NOT NULL,
     complemento_id INTEGER NOT NULL,
@@ -2697,6 +2699,26 @@ var init_parametri = __esm({
         max: 5,
         etichetta: "Supplemento condimenti (euro)",
         aiuto: "I condimenti non hanno un prezzo ciascuno: si spuntano e basta. Chi ne prende uno o quattro paga lo stesso supplemento, una volta per piatto. A zero i condimenti sono gratis."
+      },
+      {
+        chiave: "cucina_apertura_ora",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 16,
+        min: 0,
+        max: 23,
+        etichetta: "Ora di apertura della cucina",
+        aiuto: "Prima di quest'ora gli ordini si prendono lo stesso: nessuno si sente dire di no. Si avvisa soltanto che la consegna non puo' essere immediata."
+      },
+      {
+        chiave: "cucina_riscaldamento_minuti",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 15,
+        min: 0,
+        max: 120,
+        etichetta: "Minuti di riscaldamento (piastra e friggitrice)",
+        aiuto: "Il tempo che serve alla piastra e alla friggitrice per andare in temperatura. Da qui esce l'ora del primo ritiro possibile: apertura + questi minuti."
       },
       // ---- Sport ----
       {
@@ -5005,8 +5027,8 @@ let ORD_COM = null;
 async function openOrdina(punto) {
   const p = punto === 'garden' ? 'garden' : 'bar';
   if (p === 'garden') return openGarden();
-  // Il panino ordinabile anche al bar e' un prodotto "comune": compare qui perche' e' segnato
-  // cosi' nel menu', non perche' la chiamata dal Bar si porti dietro una regola in piu'.
+  // Quello che prepara la cucina compare anche qui: e' una regola del server, non dipende da
+  // come sono marcati i prodotti nel listino. Al Bar si ordina un panino come una birra.
   let menu; try { menu = await api('/menu?zona=bar'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--gold)">\u{1F378} \${T('Bussola Bar')}</div><h2>\${T('Ordina e ritira al banco')}</h2>
     <div id="ord_menu" style="max-height:52vh;overflow:auto"></div>
@@ -5151,6 +5173,7 @@ async function ordInvia() {
   catch (e) { okThen(e.message || 'Errore', false); $('#ord_send').disabled = false; return; }
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u2705 \${T('Ordine inviato')}</div><h2>\${T('Comanda')} #\${esc(r.numero)}</h2>
     <p class="sub">\${esc(r.punto)}\${r.tavolo ? \` \xB7 \${T('tavolo')} \${esc(r.tavolo)}\` : ''} \xB7 \${eur(r.totale)} \u2014 \${T('si paga in cassa. Ti avvisiamo quando \xE8 pronto.')}</p>
+    \${r.non_prima ? \`<div class="note">\u{1F525} \${T('La cucina consegna dalle')} <b>\${esc(r.non_prima)}</b>: \${T('piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.')}</div>\` : ''}
     <button class="btn gold block" style="margin-top:8px" data-close>\${T('Fatto')}</button>\`);
   showOv();
 }
@@ -9008,7 +9031,8 @@ VIEWS.comande = async () => {
     let riferimento, zona, origine;
     if (garden) { riferimento = ($('#co_tav').value || '').trim(); if (!riferimento) { alert('Indica il numero del tavolo.'); return; } zona = 'garden'; origine = 'tavolo'; }
     else { riferimento = ($('#co_nome').value || '').trim(); if (!riferimento) { alert('Indica il nome del cliente.'); return; } zona = 'bar'; origine = 'bar'; }
-    await api('/comande', { method: 'POST', body: JSON.stringify({ origine, zona, riferimento, righe }) });
+    const r = await api('/comande', { method: 'POST', body: JSON.stringify({ origine, zona, riferimento, righe }) });
+    if (r && r.avviso) alert('\u{1F525} ' + r.avviso);
     show('comande');   // pronto per la comanda successiva; la fotografia \xE8 nella tab Tavoli/Bar
   };
   if (garden) {
@@ -9077,10 +9101,14 @@ function cucinaCard(g) {
     ? \`<span class="row" style="gap:6px"><span class="tsub" style="color:\${c.tx};font-size:1.02rem">\u{1F378} \${esc(g.rif)}</span></span>\`
     : \`<span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${esc(g.rif)}</span><span class="tsub" style="color:\${c.tx}">Tavolo</span></span>\`;
   const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button>\`}</div>\`).join('');
+  // Se l'ordine e' arrivato prima che la piastra fosse calda, la cucina deve saperlo: non e'
+  // in ritardo, e' in attesa dell'ora di consegna concordata con chi ha ordinato.
+  const attesa = g.comande.map(cm => cm.non_prima).filter(Boolean).sort().pop();
   return \`<div class="tcard clic" data-kdetail="\${g.zona}|\${esc(g.rif)}" style="border-color:\${c.bd};background:\${c.bg}">
     <div class="zacc" style="background:\${acc}"></div>
     <div class="thd" style="margin-top:2px">\${ref}\${chipOf(g.st)}</div>
     <div class="tst" style="color:\${c.tx}">\${c.lb}\${g.st.since ? ' \xB7 ' + hhmmOf(g.st.since) : ''}</div>
+    \${attesa ? \`<div class="tst" style="color:#B7791F;font-weight:800">\u{1F525} non prima delle \${esc(attesa)}</div>\` : ''}
     <div style="margin-top:6px">\${righe}</div></div>\`;
 }
 // ---- Modale dettaglio (clic su una card) ----
@@ -9743,7 +9771,7 @@ VIEWS.menu = async () => {
     <td><input id="mn_al_\${m.id}" value="\${esc(m.allergeni || '')}" style="width:150px" placeholder="glutine, latte\u2026"></td>
     <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
     <td style="text-align:center"><input type="checkbox" data-mncomp="\${m.id}" \${m.complemento ? 'checked' : ''} title="\xC8 un'aggiunta: si spunta dentro i piatti, non si ordina da sola"></td>
-    <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button>\${m.complemento ? '' : \`<button class="btn ghost sm" data-cmp="\${m.id}" title="Quali aggiunte si possono spuntare in questo piatto">\u{1F9E9}</button>\`}<button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
+    <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u2B06\uFE0F Importa men\xF9 da Excel/CSV</h3>
@@ -9754,12 +9782,12 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato \${ZONA === 'bar' ? 'il <b>QR dell\\'app Bussola</b>' : 'il <b>QR per ordinare dal tavolo</b>'}.</p>
       <div class="row"><span class="muted" style="font-size:.85rem">Punto: <b>\${ZONA === 'bar' ? 'Bussola Bar' : 'Bussola Garden'}</b> (dalla zona della postazione)</span><button class="btn gold sm" id="menu_pdf">\u{1F5A8}\uFE0F Stampa / salva PDF</button></div>
       <p class="muted" style="font-size:.82rem;margin:10px 0 6px">Se hai caricato un men\xF9 senza colonna <b>categoria</b>, il sistema la deduce dal nome (Caffetteria, Bibite, Birre\u2026). Le categorie impostate a mano non vengono toccate.</p>
-      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cmpauto">\u{1F9E9} Riconosci i condimenti</button><button class="btn ghost sm" id="menu_cross">\u{1F373} Da preparare, in entrambi i punti</button></div>
+      <div class="row"><button class="btn ghost sm" id="menu_recat">\u{1F3F7}\uFE0F Ricategorizza automaticamente</button><button class="btn ghost sm" id="menu_punto">\u{1F378}\u{1F37D}\uFE0F Deduci Punto (Bar/Garden)</button><button class="btn ghost sm" id="menu_cross">\u{1F373} Da preparare, in entrambi i punti</button></div>
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p>
-      <p class="muted" style="font-size:.78rem;margin-top:6px">"Riconosci i condimenti" marca come aggiunte le voci delle categorie tipo <i>Condimenti extra</i> e le abbina ai piatti della <b>Cucina</b>. Ti dice quante ne ha trovate: se sono zero, la categoria si chiama in un altro modo \u2014 spunta <b>Compl.</b> a mano e poi usa \u{1F9E9}.</p>
+      
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Da preparare, in entrambi i punti" serve ai prodotti che richiedono una lavorazione e si vendono sia al Bar sia al Garden (panini, fritti, gelati sfusi): li segna <i>Cucina</i> + <i>Entrambi</i> in un colpo solo. Scegli tu le categorie: il resto del men\xF9 non si tocca.</p></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
-      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e si spunta dentro i piatti. Il tasto \u{1F9E9} dice <i>quali</i> aggiunte compaiono in quel piatto.</p>
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e compare come spunta dentro <i>ogni</i> piatto che esce dalla cucina. Non c'\xE8 nient'altro da configurare: i condimenti sono quelli, e nella tazzina del caff\xE8 non ci vanno perch\xE9 il caff\xE8 lo fa il banco.</p>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
@@ -9771,50 +9799,6 @@ VIEWS.menu = async () => {
     await api('/menu/' + c.dataset.mncomp + '/complemento', { method: 'PUT', body: JSON.stringify({ complemento: c.checked }) });
     show('menu');
   });
-  document.querySelectorAll('[data-cmp]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.cmp;
-    const nome = ($('#mn_n_' + id) || {}).value || 'questo piatto';
-    const d = await api('/menu/' + id + '/complementi');
-    if (!d.disponibili.length) { alert('Non hai ancora nessuna aggiunta.\\n\\nSpunta "Compl." sulle voci che sono condimenti (maionese, insalata, cipolla): poi potrai abbinarle ai piatti.'); return; }
-    const scelti = d.scelti.map(x => Number(x.id));
-    openModal(\`<h3 style="margin-top:0">\u{1F9E9} Complementi di \u201C\${esc(nome)}\u201D</h3>
-      <p class="muted" style="font-size:.82rem">Chi ordina li spunta s\xEC/no dentro il piatto. Ognuno arriva in cucina come riga sotto il piatto e scarica il magazzino per conto suo.</p>
-      <div style="max-height:46vh;overflow:auto;margin:10px 0">\${d.disponibili.map(c => \`<label style="display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px solid #f0ede4">
-        <input type="checkbox" data-cpick="\${c.id}" \${scelti.includes(Number(c.id)) ? 'checked' : ''} style="width:20px;height:20px">
-        <span style="flex:1">\${esc(c.nome)}</span><span class="muted">\${eur(c.prezzo)}</span></label>\`).join('')}</div>
-      <div class="row"><button class="btn gold" id="cmp_save">Salva</button><button class="btn ghost" id="cmp_all">Applica a tutta la categoria</button><button class="btn ghost" data-mclose>Chiudi</button></div>\`);
-    const scelte = () => [...document.querySelectorAll('[data-cpick]')].filter(x => x.checked).map(x => Number(x.dataset.cpick));
-    $('#cmp_save').onclick = async () => {
-      await api('/menu/' + id + '/complementi', { method: 'PUT', body: JSON.stringify({ complementi: scelte() }) });
-      closeModal();
-    };
-    // Gli stessi condimenti valgono per tutti i panini: non si abbinano uno per uno.
-    $('#cmp_all').onclick = async () => {
-      const cat = ($('#mn_c_' + id) || {}).value || '';
-      if (!cat) { alert('Questo articolo non ha una categoria: mettila e riprova.'); return; }
-      if (!confirm(\`Abbinare questi complementi a tutti gli articoli della categoria \u201C\${cat}\u201D?\`)) return;
-      const ids = scelte();
-      const tutti = await api('/menu');
-      const target = tutti.filter(x => (x.categoria || '').trim().toLowerCase() === cat.trim().toLowerCase() && !x.complemento);
-      for (const m of target) {
-        await api('/menu/' + m.id + '/complementi', { method: 'PUT', body: JSON.stringify({ complementi: ids }) });
-      }
-      alert(\`Fatto: \${ids.length} complementi su \${target.length} articoli di \u201C\${cat}\u201D.\`);
-      closeModal();
-    };
-  });
-  $('#mn_add').onclick = async () => { if (!$('#mn_new_n').value) { alert('Nome?'); return; } await api('/menu', { method: 'POST', body: JSON.stringify({ nome: $('#mn_new_n').value, prezzo: Number($('#mn_new_p').value || 0), stazione: $('#mn_new_s').value, zona: $('#mn_new_z').value, categoria: $('#mn_new_c').value }) }); show('menu'); };
-  $('#menu_cmpauto').onclick = async () => {
-    const r = await api('/menu/complementi-auto', { method: 'POST', body: '{}' });
-    if (!r.marcati) {
-      alert('Nessun condimento riconosciuto.\\n\\nLe categorie che hai a men\xF9 sono:\\n\xB7 ' + (r.categorie || []).join('\\n\xB7 ') +
-        '\\n\\nSpunta "Compl." sulle voci che sono aggiunte (maionese, insalata\u2026), poi usa \u{1F9E9} su un piatto e "Applica a tutta la categoria".');
-      return;
-    }
-    alert(\`Riconosciuti \${r.marcati} condimenti (\${(r.categorie_condimenti || []).join(', ')}).\\nAbbinati a \${r.piatti} piatti della Cucina.\` +
-      (r.piatti ? '' : '\\n\\nNessun piatto ha stazione "Cucina": correggi la colonna "Chi prepara" oppure abbina a mano con \u{1F9E9}.'));
-    show('menu');
-  };
   $('#menu_cross').onclick = async () => {
     const d = await api('/menu/cross-cucina', { method: 'POST', body: '{}' });
     openModal(\`<h3 style="margin-top:0">\u{1F373} Da preparare, in entrambi i punti</h3>
@@ -10653,7 +10637,9 @@ async function apriComandaTavolo(numero, chi, zona) {
     const righe = CO.getRighe();
     if (!righe.length) return;
     try {
-      await api('/comande', { method: 'POST', body: JSON.stringify({ origine: 'tavolo', zona, riferimento: String(numero), nome: chi || null, righe }) });
+      const r = await api('/comande', { method: 'POST', body: JSON.stringify({ origine: 'tavolo', zona, riferimento: String(numero), nome: chi || null, righe }) });
+      // Il cameriere deve poterlo dire al cliente prima di andarsene dal tavolo.
+      if (r && r.avviso) alert('\u{1F525} ' + r.avviso);
       closeModal(); show('pianta');
     } catch (e) { $('#ct_msg').textContent = e.message; }
   };
@@ -11100,7 +11086,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.26";
+var VERSION = "5.28";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13436,13 +13422,43 @@ async function prenotaTavolo({ data, turno, persone, socio, tessera_code, nome, 
 }
 async function turnoSuccessivo(ora) {
   const t = await turni();
-  const hhmm = String(ora || "").slice(0, 5);
-  for (const x of t) if (x > hhmm) return x;
+  const hhmm2 = String(ora || "").slice(0, 5);
+  for (const x of t) if (x > hhmm2) return x;
   return null;
 }
 
 // server/routes/admin.js
 init_parametri();
+
+// server/cucina.js
+init_parametri();
+function ordinabileNella(m, zona) {
+  if (m.stazione === "cucina") return true;
+  if (zona !== "bar" && zona !== "garden") return true;
+  return m.zona === zona || m.zona === "comune";
+}
+function prendeComplementi(m) {
+  return m.stazione === "cucina" && !m.complemento;
+}
+function hhmm(ore, minuti) {
+  const h = Math.floor(ore + Math.floor(minuti / 60));
+  const m = minuti % 60;
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+}
+async function primoRitiro(haCucina, adesso = /* @__PURE__ */ new Date()) {
+  if (!haCucina) return null;
+  const apertura = Number(await par("cucina_apertura_ora"));
+  const riscaldo = Number(await par("cucina_riscaldamento_minuti"));
+  if (!Number.isFinite(apertura)) return null;
+  const pronta = hhmm(apertura, Number.isFinite(riscaldo) ? riscaldo : 0);
+  const oraOra = adesso.getHours() * 60 + adesso.getMinutes();
+  const oraPronta = apertura * 60 + (Number.isFinite(riscaldo) ? riscaldo : 0);
+  return oraOra >= oraPronta ? null : pronta;
+}
+function avvisoRitiro(nonPrima) {
+  if (!nonPrima) return null;
+  return `Ordine preso. La cucina consegna dalle ${nonPrima}: piastra e friggitrice devono scaldarsi.`;
+}
 
 // server/referenze.js
 init_db();
@@ -14573,88 +14589,22 @@ adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   if (String(req.query.ordinabile || "") !== "1") return res.json(rows);
   const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
   const z = String(req.query.zona || "");
-  const ordinabili = rows.filter((m) => m.attivo && !m.complemento && (z === "bar" || z === "garden" ? m.zona === z || m.zona === "comune" : true));
-  for (const r of ordinabili) {
-    r.complementi = await db.prepare(
-      `SELECT a.id, a.nome FROM menu_complementi c
-       JOIN menu_articoli a ON a.id = c.complemento_id
-       WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
-    ).all(r.id);
-    if (r.complementi.length) r.supplemento_complementi = supplemento;
+  const ordinabili = rows.filter((m) => m.attivo && !m.complemento && ordinabileNella(m, z));
+  const condimenti = rows.filter((m) => m.complemento && m.attivo).map((m) => ({ id: m.id, nome: m.nome }));
+  if (condimenti.length) {
+    for (const r of ordinabili) {
+      if (!prendeComplementi(r)) continue;
+      r.complementi = condimenti;
+      r.supplemento_complementi = supplemento;
+    }
   }
   res.json(ordinabili);
-});
-adminRouter.get("/menu/:id/complementi", requireCap("comande"), async (req, res) => {
-  const scelti = await db.prepare(
-    `SELECT a.id,a.nome,a.prezzo FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
-     WHERE c.articolo_id=? ORDER BY c.ordine, a.nome`
-  ).all(req.params.id);
-  const disponibili = await db.prepare("SELECT id,nome,prezzo FROM menu_articoli WHERE complemento=1 AND id<>? ORDER BY nome").all(req.params.id);
-  res.json({ scelti, disponibili });
-});
-adminRouter.put("/menu/:id/complementi", requireCap("comande"), async (req, res) => {
-  const ids = Array.isArray(req.body?.complementi) ? req.body.complementi.map(Number).filter(Boolean) : [];
-  await db.prepare("DELETE FROM menu_complementi WHERE articolo_id=?").run(req.params.id);
-  let o = 0;
-  for (const id of ids) {
-    const c = await db.prepare("SELECT id FROM menu_articoli WHERE id=? AND complemento=1").get(id);
-    if (!c) continue;
-    await db.prepare("INSERT OR IGNORE INTO menu_complementi (articolo_id,complemento_id,ordine) VALUES (?,?,?)").run(req.params.id, id, o++);
-  }
-  audit(req.adminUser.username, "complementi", "menu_articoli", req.params.id, `${o} abbinati`);
-  res.json({ ok: true, n: o });
 });
 adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res) => {
   const v = req.body?.complemento ? 1 : 0;
   await db.prepare("UPDATE menu_articoli SET complemento=? WHERE id=?").run(v, req.params.id);
-  if (!v) await db.prepare("DELETE FROM menu_complementi WHERE complemento_id=?").run(req.params.id);
   audit(req.adminUser.username, v ? "segna_complemento" : "torna_articolo", "menu_articoli", req.params.id);
   res.json({ ok: true, complemento: v });
-});
-adminRouter.post("/menu/cross-cucina", requireCap("comande"), async (req, res) => {
-  const cats = Array.isArray(req.body?.categorie) ? req.body.categorie.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
-  const tutti = await db.prepare("SELECT id,nome,categoria,stazione,zona,complemento FROM menu_articoli").all();
-  if (!cats.length) {
-    return res.json({ ok: true, aggiornati: 0, categorie: [...new Set(tutti.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort() });
-  }
-  const target = tutti.filter((m) => !m.complemento && cats.includes(String(m.categoria || "").trim().toLowerCase()));
-  for (const m of target) {
-    await db.prepare("UPDATE menu_articoli SET stazione='cucina', zona='comune' WHERE id=?").run(m.id);
-  }
-  audit(req.adminUser.username, "cross_cucina", "menu_articoli", null, `${target.length} articoli: ${cats.join(", ")}`);
-  res.json({ ok: true, aggiornati: target.length, nomi: target.slice(0, 12).map((m) => m.nome) });
-});
-adminRouter.post("/menu/complementi-auto", requireCap("comande"), async (req, res) => {
-  const CONDIM = /condiment|aggiunt|complement|salse|extra/i;
-  const tutti = await db.prepare("SELECT id,nome,categoria,stazione,complemento FROM menu_articoli").all();
-  const cats = Array.isArray(req.body?.categorie) ? req.body.categorie.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
-  const isCondimento = (m) => cats.length ? cats.includes(String(m.categoria || "").trim().toLowerCase()) : CONDIM.test(String(m.categoria || "")) || m.complemento === 1;
-  const cond = tutti.filter(isCondimento);
-  const categorieViste = [...new Set(tutti.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort();
-  if (!cond.length) {
-    return res.json({ ok: true, marcati: 0, piatti: 0, abbinamenti: 0, categorie: categorieViste, categorie_condimenti: [] });
-  }
-  for (const c of cond) await db.prepare("UPDATE menu_articoli SET complemento=1 WHERE id=?").run(c.id);
-  const catPiatti = Array.isArray(req.body?.categorie_piatti) ? req.body.categorie_piatti.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
-  const ids = cond.map((c) => c.id);
-  const piatti = tutti.filter((m) => !ids.includes(m.id) && (catPiatti.length ? catPiatti.includes(String(m.categoria || "").trim().toLowerCase()) : m.stazione === "cucina"));
-  let abbinamenti = 0;
-  for (const p of piatti) {
-    let o = 0;
-    for (const c of cond) {
-      await db.prepare("INSERT OR IGNORE INTO menu_complementi (articolo_id,complemento_id,ordine) VALUES (?,?,?)").run(p.id, c.id, o++);
-      abbinamenti++;
-    }
-  }
-  audit(req.adminUser.username, "complementi_auto", "menu_articoli", null, `${cond.length} condimenti \xB7 ${piatti.length} piatti`);
-  res.json({
-    ok: true,
-    marcati: cond.length,
-    piatti: piatti.length,
-    abbinamenti,
-    categorie: categorieViste,
-    categorie_condimenti: [...new Set(cond.map((c) => c.categoria || "(senza categoria)"))]
-  });
 });
 adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
@@ -14736,6 +14686,20 @@ adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) 
   }
   audit(req.adminUser.username, "ricategorizza", "menu_articoli", null, `categorizzati ${n}`);
   res.json({ ok: true, categorizzati: n });
+});
+adminRouter.post("/menu/cross-cucina", requireCap("comande"), async (req, res) => {
+  const rows = await db.prepare("SELECT id,nome,categoria FROM menu_articoli").all();
+  const cats = Array.isArray(req.body?.categorie) ? req.body.categorie.map((c) => String(c).trim().toLowerCase()).filter(Boolean) : [];
+  const categorie = [...new Set(rows.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort();
+  if (!cats.length) return res.json({ ok: true, aggiornati: 0, categorie });
+  let aggiornati = 0;
+  for (const m of rows) {
+    if (!cats.includes(String(m.categoria || "").trim().toLowerCase())) continue;
+    await db.prepare("UPDATE menu_articoli SET stazione='cucina', zona='comune' WHERE id=?").run(m.id);
+    aggiornati++;
+  }
+  audit(req.adminUser.username, "cross_cucina", "menu_articoli", null, `${aggiornati} articoli`);
+  res.json({ ok: true, aggiornati, categorie });
 });
 adminRouter.post("/menu/deduci-punto", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
@@ -14853,12 +14817,11 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
     totale += Number(m.prezzo) * qta;
     const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
     const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
-    if (!scelti.length) continue;
+    if (!scelti.length || !prendeComplementi(m)) continue;
     const padre = Number(info2.lastInsertRowid);
     const ammessi = await db.prepare(
-      `SELECT a.id,a.nome,a.magazzino_id FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
-       WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
-    ).all(m.id);
+      "SELECT id,nome,magazzino_id FROM menu_articoli WHERE complemento=1 AND attivo=1 ORDER BY ordine,nome"
+    ).all();
     let messi = 0;
     for (const c of ammessi) {
       if (!scelti.includes(Number(c.id))) continue;
@@ -14870,9 +14833,11 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
       await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id,parent_riga_id) VALUES (?,NULL,?,?,?,?,NULL,'in_coda',NULL,?)").run(cid, "Supplemento condimenti", supplemento, qta, m.stazione, padre);
     }
   }
-  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
+  const haCucina = !!await db.prepare("SELECT 1 x FROM comanda_righe WHERE comanda_id=? AND stazione='cucina' LIMIT 1").get(cid);
+  const nonPrima = await primoRitiro(haCucina);
+  await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(totale, nonPrima, cid);
   audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
-  res.status(201).json(await comandaConRighe(cid));
+  res.status(201).json({ ...await comandaConRighe(cid), avviso: avvisoRitiro(nonPrima) });
 });
 adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) => {
   const stato = req.body && req.body.stato;
@@ -16265,15 +16230,16 @@ publicRouter.get("/albo-casate", async (req, res) => {
 publicRouter.get("/menu", async (req, res) => {
   const z = String(req.query.zona || "");
   const base = "SELECT id,nome,prezzo,stazione,categoria,descrizione,allergeni,zona FROM menu_articoli WHERE attivo=1 AND complemento=0";
-  const rows = z === "bar" || z === "garden" ? await db.prepare(base + " AND zona IN (?, 'comune') ORDER BY ordine,id").all(z) : await db.prepare(base + " ORDER BY ordine,id").all();
+  const tutte = await db.prepare(base + " ORDER BY ordine,id").all();
+  const rows = tutte.filter((m) => ordinabileNella(m, z));
   const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
-  for (const r of rows) {
-    r.complementi = await db.prepare(
-      `SELECT a.id, a.nome FROM menu_complementi c
-       JOIN menu_articoli a ON a.id = c.complemento_id
-       WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
-    ).all(r.id);
-    if (r.complementi.length) r.supplemento_complementi = supplemento;
+  const condimenti = await db.prepare("SELECT id,nome FROM menu_articoli WHERE complemento=1 AND attivo=1 ORDER BY ordine,nome").all();
+  if (condimenti.length) {
+    for (const r of rows) {
+      if (!prendeComplementi(r)) continue;
+      r.complementi = condimenti;
+      r.supplemento_complementi = supplemento;
+    }
   }
   res.json(rows);
 });
@@ -16315,12 +16281,11 @@ publicRouter.post("/self-order", async (req, res) => {
     totale += Number(m.prezzo) * qta;
     const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
     const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
-    if (scelti.length) {
+    if (scelti.length && prendeComplementi(m)) {
       const padre = Number(info2.lastInsertRowid);
       const ammessi = await db.prepare(
-        `SELECT a.id,a.nome,a.prezzo FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
-         WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
-      ).all(m.id);
+        "SELECT id,nome FROM menu_articoli WHERE complemento=1 AND attivo=1 ORDER BY ordine,nome"
+      ).all();
       let messi = 0;
       for (const c of ammessi) {
         if (!scelti.includes(Number(c.id))) continue;
@@ -16337,9 +16302,11 @@ publicRouter.post("/self-order", async (req, res) => {
       }
     }
   }
-  await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
+  const haCucina = !!await db.prepare("SELECT 1 x FROM comanda_righe WHERE comanda_id=? AND stazione='cucina' LIMIT 1").get(cid);
+  const nonPrima = await primoRitiro(haCucina);
+  await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(totale, nonPrima, cid);
   audit(chi || "self", "self_order", "comande", cid, `${punto}${tavolo ? " \xB7 tav " + tavolo : ""} \xB7 \u20AC${totale}`);
-  res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo, eta_min: await etaMin(), push: !!socio });
+  res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo, eta_min: await etaMin(), push: !!socio, non_prima: nonPrima, avviso: avvisoRitiro(nonPrima) });
 });
 publicRouter.get("/push/pubkey", async (req, res) => {
   const { pushEnabled: pushEnabled2, publicKey: publicKey2 } = await Promise.resolve().then(() => (init_push(), push_exports));
@@ -17738,7 +17705,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 17:17" : "online";
+var BUILD = true ? "2026-08-25 17:35" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
