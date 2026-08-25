@@ -3106,6 +3106,23 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .ptile .tx{min-width:0; display:block;}
 .ptile .tx b{display:block; font-size:.82rem; color:var(--navy); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .ptile .tx span{display:block; font-size:.66rem; color:var(--mute); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+/* La Settimana in una schermata: una riga per giorno, titolo e sottotitolo sulla stessa
+   riga con troncamento. Sette righe da ~52px stanno dove prima ne stavano quattro. */
+.evrow{display:flex; align-items:center; gap:10px; position:relative; background:var(--card);
+  border:1px solid var(--line); border-radius:12px; padding:9px 10px 9px 16px; margin-bottom:7px;
+  cursor:pointer; overflow:hidden;}
+.evrow .stripe{position:absolute; left:0; top:0; bottom:0; width:6px;}
+.evrow .gg{flex:0 0 30px; font-size:.66rem; font-weight:800; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted);}
+.evrow .tx{flex:1; min-width:0; display:flex; align-items:baseline; gap:7px;}
+/* Anche il titolo cede spazio: se non lo fa, un titolo lungo si prende tutta la riga e il
+   sottotitolo sparisce. Cosi' i due si accorciano insieme. */
+.evrow .tx b{flex:0 1 auto; min-width:0; max-width:62%; font-size:.92rem; color:var(--navy);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.evrow .tx .sub{flex:1 1 auto; font-size:.78rem; color:var(--muted); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; min-width:0;}
+.evrow .ora{font-size:.72rem; font-weight:700; color:var(--gold-dark,#8a5f18); flex:0 0 auto;}
+.evrow .chev{flex:0 0 auto; color:var(--muted);}
 .evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
 .evcard .stripe{width:6px; flex:0 0 6px;}
 .evcard .body{flex:1; padding:12px 4px 12px 13px; min-width:0;}
@@ -3717,6 +3734,20 @@ function evCardHTML(e, withAction) {
   // Serata cinema: al posto del sottotitolo fisso, il film in programma.
   const sotto = e.film ? \`\u{1F3AC} <b>\${esc(e.film.titolo)}</b>\${e.film.regia ? ' \xB7 ' + esc(e.film.regia) : ''}\${e.film.durata_min ? " \xB7 " + e.film.durata_min + "'" : ''}\` : esc(e.sottotitolo);
   const metaHTML = meta.length ? \`<div class="ev-meta">\${meta.join('')}</div>\` : '';
+  if (!withAction) {
+    // Riga compatta per la Settimana: giorno a sinistra, titolo e sottotitolo sulla STESSA
+    // riga. Cosi' i sette giorni stanno in una schermata sola e il ritmo della settimana si
+    // legge tutto insieme \u2014 che e' il motivo per cui esiste questa schermata. Il resto
+    // (luogo, ora, costo, artista) si vede toccando.
+    const g = String(e.giorno || '').slice(0, 3);
+    const sottoRiga = e.film ? \`\u{1F3AC} \${esc(e.film.titolo)}\` : esc(e.sottotitolo || '');
+    return \`<div class="evrow" role="button" tabindex="0" data-open="\${e.chiave}">
+      <span class="stripe" style="background:\${e.colore}"></span>
+      <span class="gg">\${esc(g)}</span>
+      <span class="tx"><b>\${esc(e.titolo)}</b><span class="sub">\${sottoRiga}</span></span>
+      \${e.ora_inizio ? \`<span class="ora">\${esc(e.ora_inizio)}</span>\` : ''}
+      \${action}</div>\`;
+  }
   return \`<div class="evcard" role="button" tabindex="0" data-open="\${e.chiave}"><span class="stripe" style="background:\${e.colore}"></span><div class="body"><div class="dl">\${dl}</div><h4>\${esc(e.titolo)}</h4><p>\${sotto}</p>\${metaHTML}</div><div class="cta">\${action}</div></div>\`;
 }
 // Tessera compatta: icona a sinistra, titolo e descrizione a destra. Occupa un terzo
@@ -10730,7 +10761,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.19";
+var VERSION = "5.20";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17219,7 +17250,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 07:23" : "online";
+var BUILD = true ? "2026-08-25 08:24" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
