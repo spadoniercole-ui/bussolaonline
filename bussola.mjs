@@ -1582,11 +1582,18 @@ async function migrate() {
   } catch (_) {
   }
   try {
+    if (await getSetting("menu_cucina_comune", "") !== "v1") {
+      await db.exec("UPDATE menu_articoli SET zona='comune' WHERE stazione='cucina' AND zona<>'comune'");
+      await setSetting("menu_cucina_comune", "v1");
+    }
+  } catch (_) {
+  }
+  try {
     if (await getSetting("menu_zona_backfill", "") !== "v1") {
       const { inferPunto: inferPunto2 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
       const arts = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
       for (const m of arts) {
-        const z = m.stazione === "cucina" ? "garden" : inferPunto2(m.nome, m.categoria);
+        const z = m.stazione === "cucina" ? "comune" : inferPunto2(m.nome, m.categoria);
         await db.prepare("UPDATE menu_articoli SET zona=? WHERE id=?").run(z, m.id);
       }
       await setSetting("menu_zona_backfill", "v1");
@@ -3996,7 +4003,7 @@ function renderHome() {
   const hero = evs.find(e => e.chiave === 'gio') || evs[3] || evs[0];
   $('#s-home').innerHTML = \`
     <div class="hero" data-open="\${hero.chiave}" role="button" tabindex="0"><div class="eyebrow">\${T('Stasera')}</div><h2 class="serif">\${esc(hero.titolo)}</h2>
-      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p>\${minorenne() ? '' : \`<button class="btn gold" data-gard-oggi="1">\${esc(hero.cta)}</button>\`}</div></div>
+      <div class="herorow"><p>\${esc(hero.sottotitolo)}</p>\${minorenne() || !String(hero.cta || '').trim() ? '' : \`<button class="btn gold" data-gard-oggi="1">\${esc(hero.cta)}</button>\`}</div></div>
     \${hostCardsHTML()}
     <div class="sect-title">\${T('Prenota')}</div>
     <div class="pgrid">
@@ -4211,10 +4218,15 @@ function showOv() { $('#ov').classList.add('show'); $('.sheet').scrollTop = 0; }
 function closeOv() { $('#ov').classList.remove('show'); if (!state.token) showGate(); }
 function openEvent(k) {
   const e = state.data.eventi.find(x => x.chiave === k); if (!e) return;
-  let btn;
-  if (e.azione === 'go-coppa') btn = \`<button class="btn gold block" data-go="coppa">\${esc(e.cta)}</button>\`;
-  else if (e.azione) btn = \`<button class="btn gold block" data-sheet="\${e.azione}">\${esc(e.cta)}</button>\`;
-  else btn = \`<button class="btn gold block" data-confirm="\${esc(e.titolo)}">\${esc(e.cta)}</button>\`;
+  // Il bottone esiste solo se c'e' qualcosa da fare. Il lunedi' e' il giorno di riposo: non si
+  // prenota niente, e un tasto d'oro vuoto in fondo alla scheda era peggio di nessun tasto.
+  // Se invece un'azione c'e' ma manca l'etichetta, si scrive una parola sensata: l'azione
+  // resta raggiungibile e non si perde per una casella lasciata vuota nel back office.
+  const cta = String(e.cta || '').trim();
+  let btn = '';
+  if (e.azione === 'go-coppa') btn = \`<button class="btn gold block" data-go="coppa">\${esc(cta || T('Vai alla Coppa'))}</button>\`;
+  else if (e.azione) btn = \`<button class="btn gold block" data-sheet="\${e.azione}">\${esc(cta || T('Apri'))}</button>\`;
+  else if (cta) btn = \`<button class="btn gold block" data-confirm="\${esc(e.titolo)}">\${esc(cta)}</button>\`;
   const eyebrowBits = [esc(e.giorno)];
   if (e.ora_inizio) eyebrowBits.push(esc(e.ora_inizio));
   if (e.ambiente) eyebrowBits.push(esc(e.ambiente));
@@ -5047,7 +5059,7 @@ async function openGarden(opz) {
     <div class="sect-title" style="margin-top:6px">\${T('Turni')}</div>
     <div class="card" style="padding:4px 14px">\${turni && turni.turni ? turni.turni.map(turnoBox).join('') : \`<p class="tiny muted" style="padding:8px 0">\${T('Prenotazione non disponibile.')}</p>\`}</div>
     \${mieHTML}
-    <button class="btn navy block" style="margin-top:10px" data-gard-menu>\u{1F37D}\uFE0F \${T('Ordina dal Tavolo')}</button>
+    <button class="btn navy block" style="margin-top:10px" data-gard-menu>\u{1F4F7} \${T('Inquadra il QR del tavolo')}</button>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
 }
@@ -5080,46 +5092,62 @@ async function gardenAnnulla(id) {
   catch (e) { okThen(e.message || T('Non riuscito'), false); return; }
   openGarden();
 }
-async function openMenuGarden() {
-  let menu; try { menu = await api('/menu?zona=garden'); } catch { try { menu = await api('/menu'); } catch { okThen(T('Men\xF9 non disponibile'), false); return; } }
-  // Il tavolo il socio non se lo inventa: gliel'abbiamo assegnato noi quando ha prenotato.
-  // Se una prenotazione c'e', il numero e' gia' scritto; se ordina senza (o e' arrivato senza
-  // QR e senza passare dal personale) lo scrive lui, ed e' l'unica cosa che gli chiediamo.
-  let tavSug = '';
-  if (state.tessera) {
+// Al tavolo del Garden l'ordine lo prende la Crew, oppure si inquadra il QR che sta sul
+// tavolo: quel codice porta gia' con se' il numero, quindi nessuno lo digita e nessuno lo
+// sbaglia. Chiedere il numero a mano era una scorciatoia che apriva la porta agli errori.
+async function openQrTavolo() {
+  const vaiA = (testo) => {
+    const t = String(testo || '').trim();
+    if (!t) return;
+    // Il QR del tavolo contiene l'indirizzo completo dell'ordinazione: si va li' e basta.
     try {
-      const oggi = new Date().toISOString().slice(0, 10);
-      const mie = await api('/garden/mie-prenotazioni?tessera_code=' + encodeURIComponent(state.tessera));
-      const p = (mie || []).find(m => m.data === oggi);
-      if (p && p.tavoli && p.tavoli.length) tavSug = String(p.tavoli[0]);
+      const u = new URL(t, location.origin);
+      if (u.origin === location.origin && u.pathname.startsWith('/ordina')) { location.href = u.href; return; }
     } catch { }
+    // Se invece il codice porta solo il numero, lo si usa come tavolo del Garden.
+    const n = t.match(/\\d+/);
+    if (n) { location.href = '/ordina?p=' + encodeURIComponent('Bussola Garden') + '&t=' + encodeURIComponent(n[0]); return; }
+    okThen(T('Questo codice non \xE8 il QR di un tavolo.'), false);
+  };
+  if (!('BarcodeDetector' in window)) {
+    okThen(T('Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.'), false);
+    return;
   }
-  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Ordina dal Tavolo')}</h2>
-    <div class="field"><label>\${T('Numero del tavolo')}</label>
-      <input id="ord_tav" type="number" min="1" inputmode="numeric" value="\${esc(tavSug)}" placeholder="\${T('es. 7')}">
-      <p class="tiny muted" style="margin-top:4px">\${tavSug ? T('\xC8 il tavolo della tua prenotazione di oggi. Se ti hanno spostato, correggilo.') : T('Lo trovi sul tavolo. Serve a portarti l\u2019ordine dove sei seduto.')}</p></div>
-    <div id="ord_menu" style="max-height:52vh;overflow:auto"></div>
-    <div id="ord_tot" style="font-weight:800;margin-top:8px"></div>
-    <input type="hidden" id="ord_punto" value="Bussola Garden">
-    <button class="btn gold block" style="margin-top:8px" id="ord_send" disabled>\${T('Invia ordine')}</button>
+  let stream = null;
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u{1F37D}\uFE0F \${T('Bussola Garden')}</div><h2>\${T('Inquadra il QR del tavolo')}</h2>
+    <video id="qr_v" autoplay playsinline muted style="width:100%;border-radius:14px;background:#000;max-height:46vh;object-fit:cover"></video>
+    <p class="tiny muted" style="margin-top:8px">\${T('Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.')}</p>
+    <div id="qr_msg" class="tiny muted"></div>
     <button class="btn ghost block" style="margin-top:8px" data-close>\${T('Chiudi')}</button>\`);
   showOv();
-  ORD_COM = Comanda.create({
-    mount: $('#ord_menu'), menu, search: true,
-    onChange: (cart, tot, n) => { const t = $('#ord_tot'); if (t) t.textContent = n ? \`\${n} \${T('prodotti')} \xB7 \${eur(tot)}\` : ''; const s = $('#ord_send'); if (s) s.disabled = !n; }
-  });
-  $('#ord_send').onclick = ordInvia;
+  const stop = () => { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } };
+  const chiudi = $('#ov') && $('#ov').querySelector('[data-close]');
+  if (chiudi) chiudi.addEventListener('click', stop, { once: true });
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const v = $('#qr_v'); v.srcObject = stream;
+    const det = new window.BarcodeDetector({ formats: ['qr_code'] });
+    const cerca = async () => {
+      if (!stream) return;
+      try {
+        const codici = await det.detect(v);
+        if (codici && codici.length) { const testo = codici[0].rawValue; stop(); vaiA(testo); return; }
+      } catch { }
+      setTimeout(cerca, 300);
+    };
+    cerca();
+  } catch (e) {
+    const m = $('#qr_msg');
+    if (m) m.textContent = T('Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.');
+  }
 }
 
 async function ordInvia() {
   const righe = ORD_COM ? ORD_COM.getRighe() : [];
   if (!righe.length) return;
-  // Al Garden si mangia a un tavolo: senza il numero l'ordine non sa dove andare.
-  const tavEl = $('#ord_tav');
-  const tavolo = tavEl ? tavEl.value.trim() : '';
-  if (tavEl && !tavolo) { okThen(T('Indica il numero del tavolo: \xE8 l\xEC che ti portiamo l\u2019ordine.'), false); tavEl.focus(); return; }
+  // In app si ordina solo al banco: il tavolo passa dal QR (pagina /ordina) o dalla Crew.
   $('#ord_send').disabled = true;
-  let r; try { r = await api('/self-order', { method: 'POST', body: JSON.stringify({ punto: $('#ord_punto').value, tavolo: tavolo || undefined, tessera_code: state.tessera, righe }) }); }
+  let r; try { r = await api('/self-order', { method: 'POST', body: JSON.stringify({ punto: $('#ord_punto').value, tessera_code: state.tessera, righe }) }); }
   catch (e) { okThen(e.message || 'Errore', false); $('#ord_send').disabled = false; return; }
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\u2705 \${T('Ordine inviato')}</div><h2>\${T('Comanda')} #\${esc(r.numero)}</h2>
     <p class="sub">\${esc(r.punto)}\${r.tavolo ? \` \xB7 \${T('tavolo')} \${esc(r.tavolo)}\` : ''} \xB7 \${eur(r.totale)} \u2014 \${T('si paga in cassa. Ti avvisiamo quando \xE8 pronto.')}</p>
@@ -6090,7 +6118,7 @@ document.addEventListener('click', (ev) => {
   }
   if (t.dataset.gardPren) return gardenPrenota(t.dataset.gardPren);
   if (t.dataset.gardAnn) return gardenAnnulla(t.dataset.gardAnn);
-  if (t.dataset.gardMenu != null) return openMenuGarden();
+  if (t.dataset.gardMenu != null) return openQrTavolo();
   if (t.dataset.ordina != null) return openOrdina(t.dataset.ordina);
   if (t.dataset.struttSave != null) return strutturaSalva(t.dataset.struttSave);
   if (t.dataset.campi != null) return openCampi();
@@ -8860,7 +8888,9 @@ function pickMetodo(onPick) {
 
 /* ---------- COMANDE (cassa): l'operatore vede il men\xF9 ESATTAMENTE come il cliente ---------- */
 VIEWS.comande = async () => {
-  const menu = (await api('/menu')).filter(m => m.attivo);
+  // Lo stesso elenco che vede il socio: condimenti fuori dalle categorie e spuntabili dentro
+  // il piatto. Se qui si usasse il listino grezzo, al tavolo ricomparirebbero come voci a se'.
+  const menu = await api('/menu?ordinabile=1');
   const garden = ZONA === 'garden';
   // Il pannello self-order (pausa/pressione/ETA/mappa) riguarda il Garden (QR al tavolo): solo l\xEC.
   const so = garden ? await api('/self-order/stato').catch(() => ({ aperto: true, eta_min: 0, config: {} })) : null;
@@ -10596,7 +10626,7 @@ async function stampaQrTavoli(tavoli, ambiente) {
 // Comanda presa DAL TAVOLO: il numero non si digita, e' quello che hai toccato. Con il nome
 // di chi ha prenotato in testa, cosi' si serve chiamando le persone per come si chiamano.
 async function apriComandaTavolo(numero, chi, zona) {
-  const menu = (await api('/menu?zona=' + zona).catch(() => api('/menu'))).filter(m => m.attivo !== 0);
+  const menu = await api('/menu?ordinabile=1&zona=' + zona).catch(() => api('/menu?ordinabile=1'));
   if (!menu.length) { alert('Men\xF9 vuoto: caricalo dalla tab Men\xF9.'); return; }
   openModal(\`<h3>\u{1F9FE} Comanda \xB7 tavolo \${numero}</h3>
     \${chi ? \`<p class="muted" style="margin-top:-4px">per <b>\${esc(chi)}</b></p>\` : ''}
@@ -11070,7 +11100,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.23";
+var VERSION = "5.26";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13591,9 +13621,12 @@ async function risolviPosizione(input) {
 
 // server/routes/admin.js
 init_fitness();
-function menuZona(v) {
+function menuZona(v, stazione) {
   const s = String(v || "").trim().toLowerCase();
-  return s === "garden" ? "garden" : s === "comune" ? "comune" : "bar";
+  if (s === "garden") return "garden";
+  if (s === "comune") return "comune";
+  if (s === "bar") return "bar";
+  return String(stazione || "").toLowerCase() === "cucina" ? "comune" : "bar";
 }
 async function segnaPronta(comandaId) {
   await db.prepare("UPDATE comande SET pronta_at=? WHERE id=? AND pronta_at IS NULL").run((/* @__PURE__ */ new Date()).toISOString(), comandaId);
@@ -14537,7 +14570,19 @@ adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
 });
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
-  res.json(rows);
+  if (String(req.query.ordinabile || "") !== "1") return res.json(rows);
+  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
+  const z = String(req.query.zona || "");
+  const ordinabili = rows.filter((m) => m.attivo && !m.complemento && (z === "bar" || z === "garden" ? m.zona === z || m.zona === "comune" : true));
+  for (const r of ordinabili) {
+    r.complementi = await db.prepare(
+      `SELECT a.id, a.nome FROM menu_complementi c
+       JOIN menu_articoli a ON a.id = c.complemento_id
+       WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
+    ).all(r.id);
+    if (r.complementi.length) r.supplemento_complementi = supplemento;
+  }
+  res.json(ordinabili);
 });
 adminRouter.get("/menu/:id/complementi", requireCap("comande"), async (req, res) => {
   const scelti = await db.prepare(
@@ -14615,13 +14660,13 @@ adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
+  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
   audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : "bar", menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione ?? null, b.allergeni ?? null, b.magazzino_id || null, b.attivo === false ? 0 : 1, req.params.id);
   audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
@@ -14667,7 +14712,7 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     const ex = await db.prepare("SELECT * FROM menu_articoli WHERE nome=?").get(nome);
     const categoria = catImport(r, r.stazione ? stazione : ex ? ex.stazione : stazione, ex);
     const hasPunto = r.punto != null && String(r.punto).trim() !== "";
-    const zonaNew = hasPunto ? menuZona(r.punto) : stazione === "cucina" ? "garden" : inferPunto(nome, categoria);
+    const zonaNew = hasPunto ? menuZona(r.punto, stazione) : stazione === "cucina" ? "comune" : inferPunto(nome, categoria);
     const puntoSignal = hasPunto || !!clean(r.categoria) || !!(r.stazione && String(r.stazione).trim());
     if (ex) {
       await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, puntoSignal ? zonaNew : ex.zona || zonaNew, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
@@ -14694,15 +14739,16 @@ adminRouter.post("/menu/ricategorizza", requireCap("comande"), async (req, res) 
 });
 adminRouter.post("/menu/deduci-punto", requireCap("comande"), async (req, res) => {
   const rows = await db.prepare("SELECT id,nome,categoria,stazione FROM menu_articoli").all();
-  let garden = 0, bar = 0;
+  let garden = 0, bar = 0, entrambi = 0;
   for (const m of rows) {
-    const z = m.stazione === "cucina" ? "garden" : inferPunto(m.nome, m.categoria);
+    const z = m.stazione === "cucina" ? "comune" : inferPunto(m.nome, m.categoria);
     await db.prepare("UPDATE menu_articoli SET zona=? WHERE id=?").run(z, m.id);
-    if (z === "garden") garden++;
+    if (z === "comune") entrambi++;
+    else if (z === "garden") garden++;
     else bar++;
   }
-  audit(req.adminUser.username, "deduci_punto", "menu_articoli", null, `garden ${garden}, bar ${bar}`);
-  res.json({ ok: true, garden, bar });
+  audit(req.adminUser.username, "deduci_punto", "menu_articoli", null, `entrambi ${entrambi}, garden ${garden}, bar ${bar}`);
+  res.json({ ok: true, garden, bar, entrambi });
 });
 adminRouter.put("/menu/:id/magazzino", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
@@ -14799,12 +14845,30 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,zona,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco", "bar"].includes(b.origine) ? b.origine : zona === "bar" ? "bar" : "tavolo", b.riferimento || null, zona, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
+  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
   for (const r of righe) {
     const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.menu_id);
     if (!m) continue;
     const qta = Math.max(1, Math.round(Number(r.qta)));
     totale += Number(m.prezzo) * qta;
-    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
+    const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
+    const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
+    if (!scelti.length) continue;
+    const padre = Number(info2.lastInsertRowid);
+    const ammessi = await db.prepare(
+      `SELECT a.id,a.nome,a.magazzino_id FROM menu_complementi c JOIN menu_articoli a ON a.id=c.complemento_id
+       WHERE c.articolo_id=? AND a.attivo=1 ORDER BY c.ordine, a.nome`
+    ).all(m.id);
+    let messi = 0;
+    for (const c of ammessi) {
+      if (!scelti.includes(Number(c.id))) continue;
+      messi++;
+      await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id,parent_riga_id) VALUES (?,?,?,0,?,?,NULL,'in_coda',?,?)").run(cid, c.id, c.nome, qta, m.stazione, c.magazzino_id || null, padre);
+    }
+    if (messi && supplemento > 0) {
+      totale += supplemento * qta;
+      await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id,parent_riga_id) VALUES (?,NULL,?,?,?,?,NULL,'in_coda',NULL,?)").run(cid, "Supplemento condimenti", supplemento, qta, m.stazione, padre);
+    }
   }
   await db.prepare("UPDATE comande SET totale=? WHERE id=?").run(totale, cid);
   audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
@@ -17623,10 +17687,10 @@ async function seed({ verbose = false } = {}) {
   const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,1,?)");
   const MENU = [
     // nome, prezzo, stazione, punto(zona), categoria, magazzino_id
-    ["Panino salsiccia", 4.5, "cucina", "garden", "panini", null],
-    ["Panino vegetariano", 4, "cucina", "garden", "panini", null],
-    ["Hamburger", 5.5, "cucina", "garden", "panini", null],
-    ["Patatine fritte", 3, "cucina", "garden", "snack", null],
+    ["Panino salsiccia", 4.5, "cucina", "comune", "panini", null],
+    ["Panino vegetariano", 4, "cucina", "comune", "panini", null],
+    ["Hamburger", 5.5, "cucina", "comune", "panini", null],
+    ["Patatine fritte", 3, "cucina", "comune", "snack", null],
     ["Patatine in busta", 1.5, "bar", "bar", "snack", patatine ? patatine.id : null],
     ["Birra media", 4, "bar", "bar", "birre", birra ? birra.id : null],
     ["Acqua 0,5L", 1, "bar", "comune", "bibite", acqua ? acqua.id : null],
@@ -17674,7 +17738,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 16:23" : "online";
+var BUILD = true ? "2026-08-25 17:17" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
