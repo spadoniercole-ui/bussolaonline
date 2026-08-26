@@ -1643,6 +1643,21 @@ async function migrate() {
   } catch (_) {
   }
   try {
+    if (await getSetting("menu_compl_da_categoria", "") !== "v1") {
+      const RX = /condiment|aggiunt|complement|\bsalse\b/i;
+      const arts5 = await db.prepare("SELECT id,categoria,complemento FROM menu_articoli").all();
+      let n5 = 0;
+      for (const m of arts5) {
+        if (Number(m.complemento) === 1 || !RX.test(String(m.categoria || ""))) continue;
+        await db.prepare("UPDATE menu_articoli SET complemento=1 WHERE id=?").run(m.id);
+        n5++;
+      }
+      await setSetting("menu_compl_da_categoria", "v1");
+      if (n5) console.log(`  Menu': ${n5} voci in categoria condimenti ora spuntate come aggiunte.`);
+    }
+  } catch (_) {
+  }
+  try {
     if (await getSetting("menu_alcolici", "") !== "v1") {
       const ALC = /alcolic|birr|vino|vini\b|calice|prosecc|spuman|amar|grappa|distillat|liquor|rum\b|gin\b|vodka|whisky|spritz|apero|cocktail|negroni|mojito|limoncell/i;
       const arts4 = await db.prepare("SELECT id,nome,categoria FROM menu_articoli").all();
@@ -9589,7 +9604,9 @@ VIEWS.menu = async () => {
       </div>\` : '';
   const rows = menu.map(m => \`<tr>
     <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:140px"></td>
-    <td><input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px"></td>
+    <td>\${m.e_condimento
+      ? \`<input id="mn_p_\${m.id}" type="number" step="0.01" value="\${esc(String(m.prezzo))}" style="width:74px;opacity:.45" disabled title="Su un condimento il prezzo non si usa: chi ne sceglie uno o quattro paga lo stesso supplemento (\${eur(m.supplemento || 0)}), che si cambia nei parametri."><div class="muted" style="font-size:.66rem">vale \${eur(m.supplemento || 0)}</div>\`
+      : \`<input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px">\`}</td>
     <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
     <td><select id="mn_z_\${m.id}"><option value="bar" \${(m.zona || 'bar') === 'bar' ? 'selected' : ''}>\u{1F378} Bar</option><option value="garden" \${m.zona === 'garden' ? 'selected' : ''}>\u{1F37D}\uFE0F Garden</option><option value="comune" \${m.zona === 'comune' ? 'selected' : ''}>\u{1F501} Entrambi</option></select></td>
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
@@ -9597,8 +9614,8 @@ VIEWS.menu = async () => {
     <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
     <td style="text-align:center"><input type="checkbox" data-mnalc="\${m.id}" \${m.alcolico ? 'checked' : ''} title="Bevanda alcolica: sotto i 18 anni non si serve, e senza tessera la comanda avvisa chi consegna"></td>
     <td style="text-align:center"><input type="checkbox" data-mncond="\${m.id}" \${m.con_condimenti ? 'checked' : ''} title="Dentro questo prodotto compare la riga \xABcondimenti\xBB da fleggare"></td>
-    <td style="text-align:center"><input type="checkbox" data-mncomp="\${m.id}" \${m.complemento ? 'checked' : ''} title="\xC8 un'aggiunta: si spunta dentro i piatti, non si ordina da sola"></td>
-    <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
+    <td style="text-align:center"><input type="checkbox" data-mncomp="\${m.id}" \${m.e_condimento ? 'checked' : ''} \${m.e_condimento && !m.complemento ? 'title="Lo \xE8 per via della categoria \xAB' + esc(m.categoria || '') + '\xBB: per toglierlo cambia categoria"' : 'title="\xC8 un\\'aggiunta: si spunta dentro i piatti, non si ordina da sola"'}></td>
+    <td class="row"><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
   $('#view').innerHTML = avviso + \`
     <div class="panel"><h3>\u2B06\uFE0F Importa men\xF9 da Excel/CSV</h3>
@@ -9620,7 +9637,7 @@ VIEWS.menu = async () => {
           <button class="btn gold" id="menu_salva">\u{1F4BE} Salva le modifiche</button>
         </div>
       </div>
-      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>\u{1F51E}</b> = bevanda alcolica: sotto i 18 anni non si serve, e a chi ordina senza tessera la comanda ricorda di verificare l'et\xE0. <b>Condimenti</b> = dentro questo prodotto compare la riga \xABcondimenti\xBB, con le aggiunte da fleggare. Mettila sui panini e sui piatti: \xE8 questa spunta a decidere, niente altro. <b>Compl.</b> = questa voce <i>\xE8</i> un'aggiunta (maionese, insalata): sparisce dall'elenco e diventa una delle caselle.</p>
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>\u{1F51E}</b> = bevanda alcolica: sotto i 18 anni non si serve, e a chi ordina senza tessera la comanda ricorda di verificare l'et\xE0. <b>Condimenti</b> = dentro questo prodotto compare la riga \xABcondimenti\xBB, con le aggiunte da fleggare. Mettila sui panini e sui piatti: \xE8 questa spunta a decidere, niente altro. <b>Compl.</b> = questa voce <i>\xE8</i> un'aggiunta (maionese, insalata): sparisce dall'elenco e diventa una delle caselle. Sulle aggiunte <b>il prezzo non si usa</b>: chi ne sceglie una o quattro paga lo stesso supplemento, che si cambia nei parametri (Comande \u2192 Supplemento condimenti).</p>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>\u{1F51E}</th><th>Condimenti</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="11" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
@@ -9636,6 +9653,16 @@ VIEWS.menu = async () => {
     const t = $('#menu_tocchi');
     if (t) t.textContent = \`\${TOCCHI.size} \${TOCCHI.size === 1 ? 'riga modificata' : 'righe modificate'} \\u2014 non ancora salvate\`;
   };
+  // Il cestino era rimasto senza handler: si premeva e non succedeva niente. Cancellare un
+  // prodotto passa comunque dal controllo referenziale, che si oppone se e' in una comanda
+  // aperta \u2014 quindi il messaggio del server va mostrato, non ingoiato.
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    const nome = ($('#mn_n_' + b.dataset.del) || {}).value || 'questo articolo';
+    if (!confirm(\`Eliminare \\u201c\${nome}\\u201d dal listino?\`)) return;
+    try { await api('/menu/' + b.dataset.del, { method: 'DELETE' }); }
+    catch (e) { alert(e.message); return; }
+    show('menu');
+  });
   document.querySelectorAll('[data-mnalc]').forEach(c => c.onchange = () => segna(c.dataset.mnalc, 'alcolico', c.checked));
   document.querySelectorAll('[data-mncond]').forEach(c => c.onchange = () => segna(c.dataset.mncond, 'con_condimenti', c.checked));
   document.querySelectorAll('[data-mncomp]').forEach(c => c.onchange = () => segna(c.dataset.mncomp, 'complemento', c.checked));
@@ -11290,7 +11317,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.45";
+var VERSION = "5.46";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14979,7 +15006,9 @@ adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
 });
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   if (String(req.query.ordinabile || "") !== "1") {
-    return res.json(await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all());
+    const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
+    const suppl = Number(await par("comande_supplemento_complementi")) || 0;
+    return res.json(rows.map((m) => ({ ...m, e_condimento: eCondimento(m) ? 1 : 0, supplemento: suppl })));
   }
   const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
   res.json(voci);
@@ -18505,7 +18534,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 09:53" : "online";
+var BUILD = true ? "2026-08-26 10:42" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
