@@ -1294,6 +1294,26 @@ async function initSchema() {
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Registro storico: la memoria lunga del residence, per le contestazioni. Si scrive e non
+  -- si riscrive mai: una prenotazione disdetta aggiunge una riga, non ne corregge una.
+  -- Nessuna pulizia periodica tocca questa tabella.
+  CREATE TABLE IF NOT EXISTS registro_storico (
+    id            INTEGER PRIMARY KEY,
+    ts            TEXT NOT NULL DEFAULT (datetime('now')),  -- quando e' stato registrato il fatto
+    fatto         TEXT NOT NULL,                            -- prenotazione_creata | prenotazione_cancellata | ...
+    servizio      TEXT NOT NULL,                            -- garden | campi | fitness | stage | cdc | coworking | comande
+    riferimento   TEXT,                                     -- id o numero della prenotazione/comanda
+    socio_id      INTEGER,                                  -- a nome di chi
+    intestatario  TEXT,                                     -- nome leggibile, che resta anche se il socio non c'e' piu'
+    autore        TEXT,                                     -- CHI ha compiuto l'atto: il socio, un operatore, il gestore
+    canale        TEXT,                                     -- app | qr | crew | backoffice
+    quando_servizio TEXT,                                   -- data/turno del servizio a cui si riferisce
+    importo       REAL,
+    dettaglio     TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_registro_ts ON registro_storico(ts);
+  CREATE INDEX IF NOT EXISTS idx_registro_servizio ON registro_storico(servizio, riferimento);
+
   CREATE TABLE IF NOT EXISTS audit_log (
     id       INTEGER PRIMARY KEY,
     utente   TEXT,
@@ -8170,6 +8190,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="cinema">\u{1F3AC} Cinema</button>
       <button data-v="menu">\u{1F354} Men\xF9</button>
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
+      <button data-v="registro">\u{1F4DA} Registro storico</button>
     </div>
   </div>
   <div id="view"></div>
@@ -8511,6 +8532,7 @@ function applyZona() {
   tog('scortecdc', false);     // idem per la Casa di Carta
   tog('menu', ZONA === 'garden' || ZONA === 'bar');                // il men\xF9 serve solo dove si prende la comanda
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
+  tog('registro', ZONA === 'garden' || ZONA === 'bar');            // memoria lunga: dove si prenota e si incassa
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
   const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
   applyAccent();
@@ -9459,6 +9481,15 @@ function stampaMenuPDF(menu, punto, qr, zona) {
 
 VIEWS.menu = async () => {
   const menu = await api('/menu');
+  // L'avviso non si va a cercare: se qualcosa non torna, sta in cima al listino. Nel caso
+  // reale i condimenti erano SPENTI e nessuno poteva accorgersene guardando i panini.
+  const dg = await api('/menu/diagnosi').catch(() => ({ problemi: [] }));
+  const avviso = (dg.problemi || []).length
+    ? \`<div class="panel" style="border-left:4px solid #C0553F;background:#fdf1e7">
+        <b style="color:#8a3a2a">\\u26a0\\ufe0f Il men\\u00f9 non funziona come dovrebbe</b>
+        \${dg.problemi.map(x => \`<div style="margin-top:4px;font-size:.88rem">\${esc(x)}</div>\`).join('')}
+        <div class="row" style="margin-top:8px"><button class="btn ghost sm" id="menu_diag2">\\ud83e\\ude7a Apri la diagnosi</button></div>
+      </div>\` : '';
   const rows = menu.map(m => \`<tr>
     <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:140px"></td>
     <td><input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px"></td>
@@ -9471,7 +9502,7 @@ VIEWS.menu = async () => {
     <td style="text-align:center"><input type="checkbox" data-mncomp="\${m.id}" \${m.complemento ? 'checked' : ''} title="\xC8 un'aggiunta: si spunta dentro i piatti, non si ordina da sola"></td>
     <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
-  $('#view').innerHTML = \`
+  $('#view').innerHTML = avviso + \`
     <div class="panel"><h3>\u2B06\uFE0F Importa men\xF9 da Excel/CSV</h3>
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>prezzo</b>, <b>stazione</b> (cucina/bar), <b>categoria</b>, <b>descrizione</b>, <b>allergeni</b>. Puoi caricare un file solo-prezzi o solo-allergeni: i campi mancanti non vengono sovrascritti.</p>
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button><button class="btn ghost sm" id="menu_exp">\u2B07\uFE0F Esporta men\xF9 (Excel)</button></div>
@@ -9494,6 +9525,7 @@ VIEWS.menu = async () => {
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
   // Un'aggiunta smette di essere una voce da ordinare e diventa una spunta dentro i piatti.
   // La spunta che decide tutto: dentro questo prodotto compare la riga dei condimenti.
+  if ($('#menu_diag2')) $('#menu_diag2').onclick = () => $('#menu_diag').click();
   document.querySelectorAll('[data-mncond]').forEach(c => c.onchange = async () => {
     await api('/menu/' + c.dataset.mncond + '/condimenti', { method: 'PUT', body: JSON.stringify({ con_condimenti: c.checked }) });
   });
@@ -9608,6 +9640,73 @@ VIEWS.menu = async () => {
         }
       };
     } catch (err) { $('#imp_prev').innerHTML = \`<p class="muted">\${esc(err.message)}</p>\`; }
+  };
+};
+
+/* ---------- REGISTRO STORICO: la memoria lunga, per le contestazioni ---------- */
+// Non e' un elenco di log: e' la risposta a "io avevo prenotato", "quel conto non l'ho mai
+// fatto", "chi ha cancellato?". Si cerca per persona, periodo, servizio e tipo di fatto, e si
+// esporta per allegarlo a una risposta scritta. Si legge soltanto: qui dentro non si modifica
+// niente, altrimenti smetterebbe di essere una prova.
+var REG_F = { dal: '', al: '', servizio: '', fatto: '', chi: '' };
+VIEWS.registro = async () => {
+  const q = new URLSearchParams(Object.entries(REG_F).filter(([, v]) => v)).toString();
+  const righe = await api('/registro' + (q ? '?' + q : '')).catch(() => []);
+  const ETICHETTE = {
+    prenotazione_creata: '\u{1F4D7} Prenotazione presa', prenotazione_cancellata: '\u{1F4D5} Prenotazione cancellata',
+    prenotazione_modificata: '\u{1F4D9} Prenotazione modificata', servizio_reso: '\u2705 Servizio reso',
+    comanda_aperta: '\u{1F9FE} Comanda aperta', comanda_chiusa: '\u{1F4B6} Comanda chiusa', comanda_annullata: '\u{1F6AB} Comanda annullata',
+    iscrizione: '\u{1F4D7} Iscrizione', iscrizione_annullata: '\u{1F4D5} Iscrizione annullata'
+  };
+  const corpo = righe.map(r => {
+    let d = '';
+    try { d = r.dettaglio ? Object.entries(JSON.parse(r.dettaglio)).filter(([, v]) => v !== null && v !== '' && !(Array.isArray(v) && !v.length)).map(([k, v]) => \`\${k}: \${Array.isArray(v) ? v.join('/') : v}\`).join(' \xB7 ') : ''; } catch { d = esc(r.dettaglio || ''); }
+    return \`<tr>
+      <td style="white-space:nowrap">\${esc((r.ts || '').replace('T', ' ').slice(0, 16))}</td>
+      <td>\${ETICHETTE[r.fatto] || esc(r.fatto)}</td>
+      <td>\${esc(r.servizio)}\${r.riferimento ? ' <b>#' + esc(String(r.riferimento)) + '</b>' : ''}</td>
+      <td>\${esc(r.intestatario || '\u2014')}</td>
+      <td>\${esc(r.autore || '\u2014')}\${r.canale ? \` <span class="muted">(\${esc(r.canale)})</span>\` : ''}</td>
+      <td>\${esc(r.quando_servizio || '\u2014')}</td>
+      <td style="text-align:right">\${r.importo != null ? eur(r.importo) : ''}</td>
+      <td class="muted" style="font-size:.78rem">\${esc(d)}</td></tr>\`;
+  }).join('');
+  $('#view').innerHTML = \`<div class="panel">
+      <h3 style="margin-top:0">\u{1F4DA} Registro storico</h3>
+      <p class="muted" style="font-size:.82rem">Cosa \xE8 successo, quando, a nome di chi e <b>chi lo ha chiesto</b>. Si conserva quindici anni e non si modifica: una prenotazione disdetta aggiunge una riga, non ne corregge una. Serve davanti a una contestazione sul servizio o sul conto.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin:10px 0">
+        <label>Dal<br><input type="date" id="rg_dal" value="\${esc(REG_F.dal)}"></label>
+        <label>Al<br><input type="date" id="rg_al" value="\${esc(REG_F.al)}"></label>
+        <label>Servizio<br><select id="rg_serv">
+          <option value="">tutti</option>
+          \${['garden', 'campi', 'fitness', 'stage', 'cdc', 'coworking', 'comande'].map(x => \`<option \${REG_F.servizio === x ? 'selected' : ''}>\${x}</option>\`).join('')}
+        </select></label>
+        <label>Fatto<br><select id="rg_fatto">
+          <option value="">tutti</option>
+          \${Object.keys(ETICHETTE).map(k => \`<option value="\${k}" \${REG_F.fatto === k ? 'selected' : ''}>\${ETICHETTE[k].replace(/^\\S+ /, '')}</option>\`).join('')}
+        </select></label>
+        <label>Nome o numero<br><input id="rg_chi" value="\${esc(REG_F.chi)}" placeholder="socio, operatore, n\xB0 comanda"></label>
+        <button class="btn gold sm" id="rg_cerca">Cerca</button>
+        <button class="btn ghost sm" id="rg_reset">Azzera</button>
+        <button class="btn ghost sm" id="rg_csv">\u2193 Esporta (CSV)</button>
+      </div>
+      <p class="muted" style="font-size:.8rem">\${righe.length} \${righe.length === 1 ? 'riga' : 'righe'}\${righe.length >= 300 ? ' (mostrate le pi\xF9 recenti: restringi il periodo per vedere il resto)' : ''}</p>
+      <table><thead><tr><th>Quando</th><th>Fatto</th><th>Servizio</th><th>A nome di</th><th>Chi lo ha fatto</th><th>Per il</th><th>Importo</th><th>Dettagli</th></tr></thead>
+        <tbody>\${corpo || '<tr><td colspan="8" class="muted">Nessuna registrazione per questi filtri.</td></tr>'}</tbody></table>
+    </div>\`;
+  $('#rg_cerca').onclick = () => {
+    REG_F = { dal: $('#rg_dal').value, al: $('#rg_al').value, servizio: $('#rg_serv').value, fatto: $('#rg_fatto').value, chi: $('#rg_chi').value.trim() };
+    show('registro');
+  };
+  $('#rg_reset').onclick = () => { REG_F = { dal: '', al: '', servizio: '', fatto: '', chi: '' }; show('registro'); };
+  // L'esportazione serve ad allegare la prova a una risposta scritta.
+  $('#rg_csv').onclick = () => {
+    const intest = ['quando', 'fatto', 'servizio', 'riferimento', 'a_nome_di', 'chi_lo_ha_fatto', 'canale', 'per_il', 'importo', 'dettaglio'];
+    const csv = [intest.join(';')].concat(righe.map(r => [r.ts, r.fatto, r.servizio, r.riferimento, r.intestatario, r.autore, r.canale, r.quando_servizio, r.importo, (r.dettaglio || '').replace(/[;\\n]/g, ' ')].map(v => \`"\${String(v == null ? '' : v).replace(/"/g, '""')}"\`).join(';'))).join('\\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'registro-storico.csv';
+    a.click();
   };
 };
 
@@ -10929,7 +11028,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.35";
+var VERSION = "5.36";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13392,6 +13491,63 @@ async function diagnosi() {
   };
 }
 
+// server/registro.js
+init_db();
+async function registra({ fatto, servizio, riferimento = null, socio_id = null, intestatario = null, autore = null, canale = null, quando = null, importo = null, dettaglio = null }) {
+  try {
+    await db.prepare(
+      `INSERT INTO registro_storico (fatto, servizio, riferimento, socio_id, intestatario, autore, canale, quando_servizio, importo, dettaglio)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      String(fatto || ""),
+      String(servizio || ""),
+      riferimento == null ? null : String(riferimento),
+      socio_id == null ? null : Number(socio_id),
+      intestatario == null ? null : String(intestatario),
+      autore == null ? null : String(autore),
+      canale == null ? null : String(canale),
+      quando == null ? null : String(quando),
+      importo == null ? null : Number(importo),
+      dettaglio == null ? null : typeof dettaglio === "string" ? dettaglio : JSON.stringify(dettaglio)
+    );
+  } catch (e) {
+    console.error("registro storico: riga non scritta \u2014", e && e.message);
+  }
+}
+async function cerca({ dal = "", al = "", servizio = "", fatto = "", chi = "", limite = 300 } = {}) {
+  const dove = [];
+  const args = [];
+  if (dal) {
+    dove.push("date(ts) >= ?");
+    args.push(dal);
+  }
+  if (al) {
+    dove.push("date(ts) <= ?");
+    args.push(al);
+  }
+  if (servizio) {
+    dove.push("servizio = ?");
+    args.push(servizio);
+  }
+  if (fatto) {
+    dove.push("fatto = ?");
+    args.push(fatto);
+  }
+  if (chi) {
+    dove.push("(intestatario LIKE ? OR autore LIKE ? OR riferimento LIKE ?)");
+    const q = "%" + chi + "%";
+    args.push(q, q, q);
+  }
+  const sql = "SELECT * FROM registro_storico" + (dove.length ? " WHERE " + dove.join(" AND ") : "") + " ORDER BY id DESC LIMIT ?";
+  args.push(Math.min(2e3, Math.max(1, Number(limite) || 300)));
+  return db.prepare(sql).all(...args);
+}
+async function storiaDi(servizio, riferimento) {
+  return db.prepare(
+    "SELECT * FROM registro_storico WHERE servizio=? AND riferimento=? ORDER BY id"
+  ).all(String(servizio), String(riferimento));
+}
+
 // server/referenze.js
 init_db();
 var VINCOLI = {
@@ -14527,6 +14683,19 @@ adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
   res.json(voci);
 });
+adminRouter.get("/registro", requireCap("comande"), async (req, res) => {
+  res.json(await cerca({
+    dal: String(req.query.dal || ""),
+    al: String(req.query.al || ""),
+    servizio: String(req.query.servizio || ""),
+    fatto: String(req.query.fatto || ""),
+    chi: String(req.query.chi || ""),
+    limite: Number(req.query.limite || 300)
+  }));
+});
+adminRouter.get("/registro/storia", requireCap("comande"), async (req, res) => {
+  res.json(await storiaDi(String(req.query.servizio || ""), String(req.query.riferimento || "")));
+});
 adminRouter.get("/menu/diagnosi", requireCap("comande"), async (req, res) => {
   res.json(await diagnosi());
 });
@@ -14822,6 +14991,16 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const haCucina = !!await db.prepare("SELECT 1 x FROM comanda_righe WHERE comanda_id=? AND stazione='cucina' LIMIT 1").get(cid);
   const nonPrima = await primoRitiro(haCucina);
   await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(totale, nonPrima, cid);
+  await registra({
+    fatto: "comanda_aperta",
+    servizio: "comande",
+    riferimento: numero,
+    intestatario: b.nome || null,
+    autore: req.adminUser.username,
+    canale: "crew",
+    importo: totale,
+    dettaglio: { zona: b.zona || null, origine: b.origine || null, riferimento_tavolo: b.riferimento || null, righe: righe.length }
+  });
   audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
   res.status(201).json({ ...await comandaConRighe(cid), avviso: avvisoRitiro(nonPrima) });
 });
@@ -14836,6 +15015,20 @@ adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) =>
   }
   if ((stato === "chiusa" || stato === "consegnata") && prev !== "chiusa") {
     await scaricaMagazzinoDaComanda(req.params.id, req.adminUser.username);
+  }
+  if (stato === "chiusa" || stato === "annullata") {
+    const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
+    await registra({
+      fatto: stato === "chiusa" ? "comanda_chiusa" : "comanda_annullata",
+      servizio: "comande",
+      riferimento: c ? c.numero : req.params.id,
+      socio_id: c ? c.socio_id : null,
+      intestatario: c ? c.nome || null : null,
+      autore: req.adminUser.username,
+      canale: "crew",
+      importo: c ? c.totale : null,
+      dettaglio: { zona: c ? c.zona : null, riferimento_tavolo: c ? c.riferimento : null, stato_precedente: prev }
+    });
   }
   audit(req.adminUser.username, "stato:" + stato, "comande", req.params.id);
   res.json(await comandaConRighe(req.params.id));
@@ -16278,6 +16471,17 @@ publicRouter.post("/self-order", async (req, res) => {
   const nonPrima = await primoRitiro(haCucina);
   await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(totale, nonPrima, cid);
   audit(chi || "self", "self_order", "comande", cid, `${punto}${tavolo ? " \xB7 tav " + tavolo : ""} \xB7 \u20AC${totale}`);
+  await registra({
+    fatto: "comanda_aperta",
+    servizio: "comande",
+    riferimento: numero,
+    socio_id: socio ? socio.id : null,
+    intestatario: socio ? [socio.nome, socio.cognome].filter(Boolean).join(" ") : null,
+    autore: socio ? [socio.nome, socio.cognome].filter(Boolean).join(" ") : "ospite",
+    canale: tavolo ? "qr" : "app",
+    importo: totale,
+    dettaglio: { punto, tavolo: tavolo || null, righe: righeIn.length }
+  });
   res.status(201).json({ ok: true, numero, id: cid, totale, punto, tavolo, eta_min: await etaMin(), push: !!socio, non_prima: nonPrima, avviso: avvisoRitiro(nonPrima) });
 });
 publicRouter.get("/push/pubkey", async (req, res) => {
@@ -16990,6 +17194,17 @@ publicRouter.post("/garden/prenota", async (req, res) => {
       stage = { errore: ps.error, spettacolo: sp.titolo || "spettacolo", ora: sp.ora };
     }
   }
+  await registra({
+    fatto: "prenotazione_creata",
+    servizio: "garden",
+    riferimento: r.id,
+    socio_id: socio ? socio.id : null,
+    intestatario: socio ? [socio.nome, socio.cognome].filter(Boolean).join(" ") : req.body?.nome || null,
+    autore: socio ? [socio.nome, socio.cognome].filter(Boolean).join(" ") : "socio",
+    canale: "app",
+    quando: `${data} \xB7 turno ${r.turno}`,
+    dettaglio: { persone: r.persone, tavoli: r.tavoli || [], stage }
+  });
   try {
     const gg = (/* @__PURE__ */ new Date(data + "T12:00:00Z")).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
     const tav = Array.isArray(r.tavoli) && r.tavoli.length ? r.tavoli.join(", ") : null;
@@ -17017,6 +17232,18 @@ publicRouter.post("/garden/prenotazioni/:id/annulla", async (req, res) => {
   await db.prepare(
     "UPDATE prenotazioni_tavolo SET stato='annullato' WHERE ambiente='stage' AND data=? AND tessera_code=? AND stato='prenotato' AND note='con cena al Garden'"
   ).run(p.data, p.tessera_code || "");
+  const chi = await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(p.tessera_code || "").catch(() => null);
+  await registra({
+    fatto: "prenotazione_cancellata",
+    servizio: "garden",
+    riferimento: p.id,
+    socio_id: chi ? chi.id : null,
+    intestatario: chi ? [chi.nome, chi.cognome].filter(Boolean).join(" ") : p.nome || null,
+    autore: req.body?.tessera_code ? "il socio (dall'app)" : "socio",
+    canale: "app",
+    quando: `${p.data} \xB7 turno ${p.turno || ""}`,
+    dettaglio: { persone: p.persone, motivo: req.body?.motivo || null }
+  });
   audit(req.body?.tessera_code || "socio", "annulla_tavolo", "prenotazioni_tavolo", p.id);
   res.json({ ok: true });
 });
@@ -17678,7 +17905,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 20:42" : "online";
+var BUILD = true ? "2026-08-26 05:33" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
