@@ -3741,6 +3741,11 @@ window.Comanda = (function () {
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
 'use strict';
 
+// Prezzi in euro, con lo stesso formato ovunque. Mancava, e in due punti l'app la chiamava
+// lo stesso: il totale dell'ordine e la conferma. L'eccezione veniva ingoiata dal browser, e
+// l'effetto visibile era che il totale restava vuoto e "Invia ordine" non si accendeva.
+const eur = (n) => '\\u20ac ' + (Number(n) || 0).toFixed(2);
+
 // ---- Stato & preferenze (persistite quando possibile) ---------------------
 const store = {
   get(k, d) { try { const v = localStorage.getItem('koine_' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -5755,7 +5760,7 @@ function convNo(key) { state.rifiuti = Math.min(3, state.rifiuti+1); state.conv[
 
 // ---- Delegazione eventi (un solo listener) --------------------------------
 document.addEventListener('click', (ev) => {
-  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-vuoigiocare],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-fitapri],[data-rassegna],[data-rassegnastampa],[data-fitsett],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
+  const t = ev.target.closest('[data-open],[data-book],[data-campi],[data-partite],[data-campo-pick],[data-campo-date],[data-campo-fasce],[data-prenota],[data-apri],[data-unisci],[data-casamia],[data-lemiecase],[data-collega],[data-strutt-edit],[data-strutt-del],[data-strutt-new],[data-strutt-save],[data-osp-scollega],[data-reg-tipo],[data-reg-cancel],[data-reg-save],[data-reg-back],[data-reg-host],[data-reg-skiphost],[data-req-ok],[data-req-no],[data-savecard],[data-install],[data-opencasata],[data-casata],[data-casatamembri],[data-chat],[data-chat-segnala],[data-vai],[data-cena-subito],[data-partite],[data-aiuto],[data-modo],[data-mappa],[data-gard-oggi],[data-serate-tutte],[data-fitness],[data-cowo],[data-cowo-date],[data-cowo-pers],[data-cowo-pren],[data-cowo-ann],[data-carta],[data-stage],[data-fitpren],[data-fitapri],[data-rassegna],[data-rassegnastampa],[data-fitsett],[data-carta-date],[data-carta-pers],[data-carta-pren],[data-carta-ann],[data-stagepren],[data-ordina],[data-gard-oggi],[data-gard-date],[data-gard-pers],[data-gard-altri],[data-gard-pren],[data-gard-ann],[data-gard-menu],[data-sheet],[data-go],[data-close],[data-confirm],[data-chip],[data-do-book],[data-proposta],[data-lang],[data-conv],[data-ev],[data-dom],[data-login],[data-logout],[data-otp-req],[data-otp-verify],[data-push],[data-map],[data-cap],[data-capm],[data-capsend],[data-convrisp],[data-open-contest],[data-serata],[data-do-serata]');
   if (!t) return;
   if (t.dataset.doSerata != null) return prenotaSerata(t.dataset.doSerata);
   if (t.dataset.serata != null) {
@@ -5804,7 +5809,6 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.cenaSubito) return openCenaSubito();
   if (t.dataset.partite != null) return openPartiteAperte();
   if (t.dataset.aiuto) return openAiuto();
-  if (t.dataset.vuoigiocare) return openVuoiGiocare();
   if (t.dataset.modo) return cambiaModo(t.dataset.modo === '1');
   if (t.dataset.mappa) return openMappa(t.dataset.mappa);
   if (t.dataset.serateTutte != null) return openSerateSpeciali();
@@ -11028,7 +11032,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.36";
+var VERSION = "5.37";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17905,7 +17909,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 05:33" : "online";
+var BUILD = true ? "2026-08-26 05:52" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
