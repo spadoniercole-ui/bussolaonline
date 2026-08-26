@@ -8235,7 +8235,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
     </div>
     <div id="tabs">
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
-      <button data-v="pianta">\u{1F5FA}\uFE0F Tavoli & pianta</button>
+      <button data-v="pianta">\u{1F5FA}\uFE0F Organizzazione sala</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
@@ -9587,7 +9587,7 @@ VIEWS.menu = async () => {
   </tr>\`).join('');
   $('#view').innerHTML = avviso + \`
     <div class="panel"><h3>\u2B06\uFE0F Importa men\xF9 da Excel/CSV</h3>
-      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>prezzo</b>, <b>stazione</b> (cucina/bar), <b>categoria</b>, <b>descrizione</b>, <b>allergeni</b>. Puoi caricare un file solo-prezzi o solo-allergeni: i campi mancanti non vengono sovrascritti.</p>
+      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>prezzo</b>, <b>stazione</b> (cucina/bar), <b>punto</b>, <b>categoria</b>, <b>descrizione</b>, <b>allergeni</b>, <b>attivo</b>, <b>alcolico</b>, <b>condimenti</b>, <b>complemento</b> (questi quattro come s\\u00ec/no). L'intestazione pu\\u00f2 essere scritta come viene: \\u201cPrezzo (\\u20ac)\\u201d o \\u201cPREZZO unitario\\u201d vanno bene. \\u00c8 lo stesso foglio che esce da <b>Esporta men\\u00f9</b>: si corregge nel foglio e si rimette dentro. Puoi caricare un file solo-prezzi o solo-allergeni: i campi mancanti non vengono sovrascritti.</p>
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button><button class="btn ghost sm" id="menu_exp">\u2B07\uFE0F Esporta men\xF9 (Excel)</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
     <div class="panel"><h3>\u{1F5A8}\uFE0F Stampa men\xF9 (PDF)</h3>
@@ -9598,7 +9598,13 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Deduci Punto" assegna a ogni prodotto il punto vendita (Bar o Garden) da nome/categoria: utile per smistare al volo un men\xF9 caricato tutto come "bar". Poi correggi i casi particolari nella colonna <b>Punto</b>.</p>
       
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Da preparare, in entrambi i punti" serve ai prodotti che richiedono una lavorazione e si vendono sia al Bar sia al Garden (panini, fritti, gelati sfusi): li segna <i>Cucina</i> + <i>Entrambi</i> in un colpo solo. Scegli tu le categorie: il resto del men\xF9 non si tocca.</p></div>
-    <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h3 style="margin:0">\u{1F354} Men\xF9 del chiosco</h3>
+        <div class="row" style="gap:8px;align-items:center">
+          <span class="muted" id="menu_tocchi" style="font-size:.82rem"></span>
+          <button class="btn gold" id="menu_salva">\u{1F4BE} Salva le modifiche</button>
+        </div>
+      </div>
       <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>\u{1F51E}</b> = bevanda alcolica: sotto i 18 anni non si serve, e a chi ordina senza tessera la comanda ricorda di verificare l'et\xE0. <b>Condimenti</b> = dentro questo prodotto compare la riga \xABcondimenti\xBB, con le aggiunte da fleggare. Mettila sui panini e sui piatti: \xE8 questa spunta a decidere, niente altro. <b>Compl.</b> = questa voce <i>\xE8</i> un'aggiunta (maionese, insalata): sparisce dall'elenco e diventa una delle caselle.</p>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>\u{1F51E}</th><th>Condimenti</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="11" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
@@ -9625,7 +9631,7 @@ VIEWS.menu = async () => {
   document.querySelectorAll('[id^="mn_s_"]').forEach(el => el.onchange = () => segna(el.id.slice(5), 'stazione', el.value));
   document.querySelectorAll('[id^="mn_z_"]').forEach(el => el.onchange = () => segna(el.id.slice(5), 'zona', el.value));
   document.querySelectorAll('[id^="mn_a_"]').forEach(el => el.onchange = () => segna(el.id.slice(5), 'attivo', el.checked));
-  $('#menu_salva').onclick = async () => {
+  if ($('#menu_salva')) $('#menu_salva').onclick = async () => {
     if (!TOCCHI.size) { alert('Non c\\u2019\\u00e8 niente da salvare.'); return; }
     const r = await api('/menu', { method: 'PUT', body: JSON.stringify({ righe: [...TOCCHI.values()] }) });
     alert(\`Salvate \${r.salvati} righe.\`);
@@ -10233,8 +10239,15 @@ VIEWS.pianta = async () => {
 
   $('#p_reset').onclick = async () => {
     if (!confirm('Ridisegnare la pianta predefinita di questo ambiente dai parametri correnti? Le disposizioni personalizzate di questo ambiente vengono perse.')) return;
-    try { await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) }); PIANTA.sporco = false; show('pianta'); }
-    catch (e) { $('#p_msg').textContent = e.message; }
+    try {
+      await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) });
+      PIANTA.sporco = false; show('pianta');
+    } catch (e) {
+      // Prima il motivo finiva in una riga grigia in fondo alla pagina, che nessuno guarda:
+      // il tasto sembrava semplicemente non funzionare. Un rifiuto va detto in faccia.
+      alert(e.message);
+      if ($('#p_msg')) $('#p_msg').textContent = e.message;
+    }
   };
   // In servizio il tocco su un tavolo (o su una seduta) apre la prenotazione al banco proprio
   // su quello: serve a chi passa dal chiosco e non usa l'app.
@@ -11208,7 +11221,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.42";
+var VERSION = "5.43";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13300,7 +13313,7 @@ async function layoutPredefinito(ambiente = "garden") {
     const r = Math.floor(i / cols);
     const x = (c + 1) / (cols + 1) * 100;
     const y = (r + 1) / (righe + 1) * 100;
-    await ins.run(id, i + 1, 4, "tondo", Number(x.toFixed(1)), Number(y.toFixed(1)));
+    await ins.run(id, i + 1, 4, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)));
   }
   return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
 }
@@ -18352,7 +18365,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 07:43" : "online";
+var BUILD = true ? "2026-08-26 08:19" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
