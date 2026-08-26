@@ -1408,7 +1408,8 @@ async function initSchema() {
     magazzino_id  INTEGER REFERENCES magazzino_articoli(id) ON DELETE SET NULL, -- scarico automatico (tecnicismo, invisibile all'operatore)
     attivo        INTEGER NOT NULL DEFAULT 1,
     ordine        INTEGER NOT NULL DEFAULT 0,
-    complemento   INTEGER NOT NULL DEFAULT 0             -- 1 = e' un condimento/aggiunta: non compare da solo nel menu'
+    complemento   INTEGER NOT NULL DEFAULT 0,            -- 1 = e' un condimento/aggiunta: non compare da solo nel menu'
+    con_condimenti INTEGER NOT NULL DEFAULT 0             -- 1 = dentro questo prodotto compare la riga "condimenti"
   );
   -- Quali complementi si possono spuntare dentro un prodotto. Il legame e' per singolo
   -- prodotto: la maionese sta nel panino, non in tutta la categoria.
@@ -1561,6 +1562,7 @@ async function migrate() {
   await addIfMissing("menu_articoli", "allergeni", "allergeni TEXT");
   await addIfMissing("menu_articoli", "zona", "zona TEXT NOT NULL DEFAULT 'bar'");
   await addIfMissing("menu_articoli", "complemento", "complemento INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("menu_articoli", "con_condimenti", "con_condimenti INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("comanda_righe", "parent_riga_id", "parent_riga_id INTEGER");
   await addIfMissing("comande", "non_prima", "non_prima TEXT");
   await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
@@ -1610,6 +1612,23 @@ async function migrate() {
       }
       if (spostati) console.log(`  Menu': ${spostati} voci assegnate alla cucina (panini, piatti, fritti).`);
       if (aggiunte) console.log(`  Menu': ${aggiunte} voci segnate come aggiunte (condimenti).`);
+    }
+  } catch (_) {
+  }
+  try {
+    if (await getSetting("menu_con_condimenti", "") !== "v1") {
+      const { inferStazione: inferStazione3 } = await Promise.resolve().then(() => (init_menucat(), menucat_exports));
+      const CONDIM2 = /condiment|aggiunt|complement|salse/i;
+      const arts2 = await db.prepare("SELECT id,nome,categoria,complemento FROM menu_articoli").all();
+      let accesi = 0;
+      for (const m of arts2) {
+        if (Number(m.complemento) === 1 || CONDIM2.test(String(m.categoria || ""))) continue;
+        if (inferStazione3(m.nome, m.categoria) !== "cucina") continue;
+        await db.prepare("UPDATE menu_articoli SET con_condimenti=1 WHERE id=?").run(m.id);
+        accesi++;
+      }
+      await setSetting("menu_con_condimenti", "v1");
+      if (accesi) console.log(`  Menu': ${accesi} prodotti segnati "necessita condimenti" (panini e piatti).`);
     }
   } catch (_) {
   }
@@ -3603,7 +3622,7 @@ window.Comanda = (function () {
       const nota = s > 0
         ? \`<div class="cmd-suppl">\${eur(s)} in tutto, quanti che ne scegli</div>\`
         : \`<div class="cmd-suppl">Senza supplemento</div>\`;
-      return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
+      return \`<button class="cmd-more" data-cmore="\${m.id}">condimenti \u25BE</button>
         <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${nota}\${righe}</div>\`;
     }
     function labelScelti(m) {
@@ -3656,7 +3675,7 @@ window.Comanda = (function () {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
-        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'complementi \u25BE' : 'complementi \u25B4'; }
+        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
         return;
       }
       if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
@@ -8300,7 +8319,7 @@ window.Comanda = (function () {
       const nota = s > 0
         ? \`<div class="cmd-suppl">\${eur(s)} in tutto, quanti che ne scegli</div>\`
         : \`<div class="cmd-suppl">Senza supplemento</div>\`;
-      return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
+      return \`<button class="cmd-more" data-cmore="\${m.id}">condimenti \u25BE</button>
         <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${nota}\${righe}</div>\`;
     }
     function labelScelti(m) {
@@ -8353,7 +8372,7 @@ window.Comanda = (function () {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
-        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'complementi \u25BE' : 'complementi \u25B4'; }
+        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
         return;
       }
       if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
@@ -9448,6 +9467,7 @@ VIEWS.menu = async () => {
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
     <td><input id="mn_al_\${m.id}" value="\${esc(m.allergeni || '')}" style="width:150px" placeholder="glutine, latte\u2026"></td>
     <td style="text-align:center"><input type="checkbox" id="mn_a_\${m.id}" \${m.attivo ? 'checked' : ''}></td>
+    <td style="text-align:center"><input type="checkbox" data-mncond="\${m.id}" \${m.con_condimenti ? 'checked' : ''} title="Dentro questo prodotto compare la riga \xABcondimenti\xBB da fleggare"></td>
     <td style="text-align:center"><input type="checkbox" data-mncomp="\${m.id}" \${m.complemento ? 'checked' : ''} title="\xC8 un'aggiunta: si spunta dentro i piatti, non si ordina da sola"></td>
     <td class="row"><button class="btn gold sm" data-sv="\${m.id}">Salva</button><button class="btn danger sm" data-del="\${m.id}">\u{1F5D1}</button></td>
   </tr>\`).join('');
@@ -9465,14 +9485,18 @@ VIEWS.menu = async () => {
       
       <p class="muted" style="font-size:.78rem;margin-top:6px">"Da preparare, in entrambi i punti" serve ai prodotti che richiedono una lavorazione e si vendono sia al Bar sia al Garden (panini, fritti, gelati sfusi): li segna <i>Cucina</i> + <i>Entrambi</i> in un colpo solo. Scegli tu le categorie: il resto del men\xF9 non si tocca.</p></div>
     <div class="panel"><h3>\u{1F354} Men\xF9 del chiosco</h3>
-      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>Compl.</b> = \xE8 un'aggiunta (maionese, insalata): sparisce dall'elenco e compare come spunta dentro <i>ogni</i> piatto che esce dalla cucina. Non c'\xE8 nient'altro da configurare: i condimenti sono quelli, e nella tazzina del caff\xE8 non ci vanno perch\xE9 il caff\xE8 lo fa il banco.</p>
-      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="9" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>Condimenti</b> = dentro questo prodotto compare la riga \xABcondimenti\xBB, con le aggiunte da fleggare. Mettila sui panini e sui piatti: \xE8 questa spunta a decidere, niente altro. <b>Compl.</b> = questa voce <i>\xE8</i> un'aggiunta (maionese, insalata): sparisce dall'elenco e diventa una delle caselle.</p>
+      <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>Condimenti</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="10" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
-  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, zona: $('#mn_z_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $('#mn_a_' + id).checked }) }); show('menu'); });
+  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, zona: $('#mn_z_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $("#mn_a_" + id).checked }) }); show('menu'); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
   // Un'aggiunta smette di essere una voce da ordinare e diventa una spunta dentro i piatti.
+  // La spunta che decide tutto: dentro questo prodotto compare la riga dei condimenti.
+  document.querySelectorAll('[data-mncond]').forEach(c => c.onchange = async () => {
+    await api('/menu/' + c.dataset.mncond + '/condimenti', { method: 'PUT', body: JSON.stringify({ con_condimenti: c.checked }) });
+  });
   document.querySelectorAll('[data-mncomp]').forEach(c => c.onchange = async () => {
     await api('/menu/' + c.dataset.mncomp + '/complemento', { method: 'PUT', body: JSON.stringify({ complemento: c.checked }) });
     show('menu');
@@ -10715,7 +10739,7 @@ window.Comanda = (function () {
       const nota = s > 0
         ? \`<div class="cmd-suppl">\${eur(s)} in tutto, quanti che ne scegli</div>\`
         : \`<div class="cmd-suppl">Senza supplemento</div>\`;
-      return \`<button class="cmd-more" data-cmore="\${m.id}">complementi \u25BE</button>
+      return \`<button class="cmd-more" data-cmore="\${m.id}">condimenti \u25BE</button>
         <div class="cmd-comp" data-cbox="\${m.id}" hidden>\${nota}\${righe}</div>\`;
     }
     function labelScelti(m) {
@@ -10768,7 +10792,7 @@ window.Comanda = (function () {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
-        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'complementi \u25BE' : 'complementi \u25B4'; }
+        if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
         return;
       }
       if (a.dataset.cadd != null) return chg(a.dataset.cadd, 1);
@@ -10905,7 +10929,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.34";
+var VERSION = "5.35";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13287,7 +13311,7 @@ function siVendeIn(m, zona) {
   return m.zona === zona || m.zona === "comune";
 }
 function prendeComplementi(m) {
-  return laPreparaLaCucina(m) && !eCondimento(m);
+  return Number(m.con_condimenti) === 1 && !eCondimento(m);
 }
 async function daOrdinare({ zona = "", soloAttivi = true } = {}) {
   const tutte = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
@@ -13328,6 +13352,7 @@ async function diagnosi() {
   const cond = attivi.filter(eCondimento);
   const condSpenti = spenti.filter(eCondimento);
   const cucina = attivi.filter((m) => laPreparaLaCucina(m) && !eCondimento(m));
+  const conCondimenti = attivi.filter((m) => prendeComplementi(m));
   const banco = attivi.filter((m) => !laPreparaLaCucina(m) && !eCondimento(m));
   const categorie = [...new Set(tutte.map((m) => String(m.categoria || "").trim()).filter(Boolean))].sort();
   const perZona = {};
@@ -13344,10 +13369,10 @@ async function diagnosi() {
   if (!cond.length) {
     problemi.push(condSpenti.length ? `I ${condSpenti.length} condimenti che hai sono SPENTI: riaccendili nella colonna Attivo e compariranno dentro i piatti.` : "Nel listino non c'\xE8 nessun condimento. Metti le voci (maionese, insalata\u2026) in una categoria che si chiami \u201CCondimenti extra\u201D, oppure spunta Compl. su quelle che ci sono.");
   }
-  if (!cucina.length) {
-    problemi.push("Nessun prodotto ha stazione \u201CCucina\u201D: senza cucina i condimenti non hanno dove comparire, e al Bar non arriva nessun piatto. Correggi la colonna \u201CChi prepara\u201D.");
+  if (!conCondimenti.length) {
+    problemi.push("Nessun prodotto ha la spunta \u201CCondimenti\u201D: i condimenti non hanno dove comparire. Mettila sui panini e sui piatti, nella colonna Condimenti del listino.");
   }
-  const tuttoOk = cond.length && cucina.length && inCucinaPerSbaglio.length < 3;
+  const tuttoOk = cond.length && conCondimenti.length && inCucinaPerSbaglio.length < 3;
   return {
     totale: tutte.length,
     attivi: attivi.length,
@@ -13355,13 +13380,14 @@ async function diagnosi() {
     condimenti: cond.map((m) => m.nome),
     condimenti_spenti: condSpenti.map((m) => m.nome),
     piatti_cucina: cucina.length,
+    con_condimenti: conCondimenti.length,
     prodotti_banco: banco.length,
     categorie,
     incoerenze: storte,
     ordinabili_al_bar: perZona.bar,
     ordinabili_al_garden: perZona.garden,
     // Un esempio concreto: il primo piatto di cucina, con quello che ci si spunta dentro.
-    esempio: cucina.length ? { nome: cucina[0].nome, complementi: cond.map((c) => c.nome) } : null,
+    esempio: conCondimenti.length ? { nome: conCondimenti[0].nome, complementi: cond.map((c) => c.nome) } : null,
     problemi: tuttoOk ? [] : problemi
   };
 }
@@ -14510,11 +14536,17 @@ adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res)
   audit(req.adminUser.username, v ? "segna_complemento" : "torna_articolo", "menu_articoli", req.params.id);
   res.json({ ok: true, complemento: v });
 });
+adminRouter.put("/menu/:id/condimenti", requireCap("comande"), async (req, res) => {
+  const v = req.body?.con_condimenti ? 1 : 0;
+  await db.prepare("UPDATE menu_articoli SET con_condimenti=? WHERE id=?").run(v, req.params.id);
+  audit(req.adminUser.username, v ? "con_condimenti" : "senza_condimenti", "menu_articoli", req.params.id);
+  res.json({ ok: true, con_condimenti: v });
+});
 adminRouter.post("/menu", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Nome obbligatorio" });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : b.stazione === "bar" ? "bar" : inferStazione(b.nome, b.categoria), menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord);
+  const info = await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,magazzino_id,attivo,ordine,con_condimenti) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(b.nome, Number(b.prezzo || 0), b.stazione === "cucina" ? "cucina" : b.stazione === "bar" ? "bar" : inferStazione(b.nome, b.categoria), menuZona(b.zona, b.stazione), b.categoria || null, b.descrizione || null, b.allergeni || null, b.magazzino_id || null, b.attivo === false ? 0 : 1, ord, b.con_condimenti ? 1 : 0);
   audit(req.adminUser.username, "crea", "menu_articoli", info.lastInsertRowid, b.nome);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
@@ -14526,7 +14558,7 @@ adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
   const nome = dato("nome") ? b.nome : ex.nome;
   const categoria = dato("categoria") ? b.categoria || null : ex.categoria;
   const stazione = dato("stazione") ? b.stazione === "cucina" ? "cucina" : b.stazione === "bar" ? "bar" : inferStazione(nome, categoria) : ex.stazione;
-  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=? WHERE id=?").run(
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=?,con_condimenti=? WHERE id=?").run(
     nome,
     dato("prezzo") ? Number(b.prezzo || 0) : ex.prezzo,
     stazione,
@@ -14536,6 +14568,7 @@ adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
     dato("allergeni") ? b.allergeni ?? null : ex.allergeni,
     dato("magazzino_id") ? b.magazzino_id || null : ex.magazzino_id,
     dato("attivo") ? b.attivo === false ? 0 : 1 : ex.attivo,
+    dato("con_condimenti") ? b.con_condimenti ? 1 : 0 : ex.con_condimenti,
     req.params.id
   );
   audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
@@ -17590,7 +17623,7 @@ async function seed({ verbose = false } = {}) {
   const birra = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Birra media'").get();
   const acqua = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Acqua naturale 0,5L'").get();
   const patatine = await db.prepare("SELECT id FROM magazzino_articoli WHERE nome='Patatine (buste)'").get();
-  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,magazzino_id,attivo,ordine) VALUES (?,?,?,?,?,?,1,?)");
+  const insMenu = db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,magazzino_id,attivo,ordine,con_condimenti) VALUES (?,?,?,?,?,?,1,?,?)");
   const MENU = [
     // nome, prezzo, stazione, punto(zona), categoria, magazzino_id
     ["Panino salsiccia", 4.5, "cucina", "comune", "panini", null],
@@ -17603,9 +17636,10 @@ async function seed({ verbose = false } = {}) {
     ["Bibita in lattina", 2, "bar", "comune", "bibite", null],
     ["Caff\xE8", 1, "bar", "bar", "caldi", null]
   ];
+  const CON_CONDIMENTI = /panin|hamburger|patatine fritte/i;
   for (let i = 0; i < MENU.length; i++) {
     const m = MENU[i];
-    await insMenu.run(m[0], m[1], m[2], m[3], m[4], m[5], i + 1);
+    await insMenu.run(m[0], m[1], m[2], m[3], m[4], m[5], i + 1, CON_CONDIMENTI.test(m[0]) ? 1 : 0);
   }
   const adminPwd = process.env.ADMIN_PASSWORD || "koine2026";
   const insAdmin = db.prepare("INSERT INTO utenti_admin (username,password_hash,ruolo,permessi) VALUES (?,?,?,?)");
@@ -17644,7 +17678,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-25 20:27" : "online";
+var BUILD = true ? "2026-08-25 20:42" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
