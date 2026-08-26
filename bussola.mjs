@@ -9604,9 +9604,8 @@ VIEWS.menu = async () => {
       </div>\` : '';
   const rows = menu.map(m => \`<tr>
     <td><input id="mn_n_\${m.id}" value="\${esc(m.nome)}" style="min-width:140px"></td>
-    <td>\${m.e_condimento
-      ? \`<input id="mn_p_\${m.id}" type="number" step="0.01" value="\${esc(String(m.prezzo))}" style="width:74px;opacity:.45" disabled title="Su un condimento il prezzo non si usa: chi ne sceglie uno o quattro paga lo stesso supplemento (\${eur(m.supplemento || 0)}), che si cambia nei parametri."><div class="muted" style="font-size:.66rem">vale \${eur(m.supplemento || 0)}</div>\`
-      : \`<input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px">\`}</td>
+    <td><input id="mn_p_\${m.id}" type="number" step="0.01" inputmode="decimal" value="\${esc(String(m.prezzo))}" style="width:74px"\${m.e_condimento ? \` title="Quanto costa condire: questo prezzo si paga una volta sola, che il cliente scelga un condimento o quattro."\` : ''}>
+      \${m.e_condimento ? \`<div class="muted" style="font-size:.66rem">condire costa \${eur(m.supplemento || 0)}</div>\` : ''}</td>
     <td><select id="mn_s_\${m.id}"><option value="bar" \${m.stazione === 'bar' ? 'selected' : ''}>Bar</option><option value="cucina" \${m.stazione === 'cucina' ? 'selected' : ''}>Cucina</option></select></td>
     <td><select id="mn_z_\${m.id}"><option value="bar" \${(m.zona || 'bar') === 'bar' ? 'selected' : ''}>\u{1F378} Bar</option><option value="garden" \${m.zona === 'garden' ? 'selected' : ''}>\u{1F37D}\uFE0F Garden</option><option value="comune" \${m.zona === 'comune' ? 'selected' : ''}>\u{1F501} Entrambi</option></select></td>
     <td><input id="mn_c_\${m.id}" value="\${esc(m.categoria || '')}" style="width:110px"></td>
@@ -9637,7 +9636,7 @@ VIEWS.menu = async () => {
           <button class="btn gold" id="menu_salva">\u{1F4BE} Salva le modifiche</button>
         </div>
       </div>
-      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>\u{1F51E}</b> = bevanda alcolica: sotto i 18 anni non si serve, e a chi ordina senza tessera la comanda ricorda di verificare l'et\xE0. <b>Condimenti</b> = dentro questo prodotto compare la riga \xABcondimenti\xBB, con le aggiunte da fleggare. Mettila sui panini e sui piatti: \xE8 questa spunta a decidere, niente altro. <b>Compl.</b> = questa voce <i>\xE8</i> un'aggiunta (maionese, insalata): sparisce dall'elenco e diventa una delle caselle. Sulle aggiunte <b>il prezzo non si usa</b>: chi ne sceglie una o quattro paga lo stesso supplemento, che si cambia nei parametri (Comande \u2192 Supplemento condimenti).</p>
+      <p class="muted" style="font-size:.8rem;margin-bottom:8px">Ogni prodotto porta due informazioni indipendenti: <b>Chi lo prepara</b> (banco o cucina \u2014 \xE8 quello che smista al KDS) e <b>Dove si vende</b> (Bar, Garden o entrambi). Un panino lo fa la cucina ma si vende in tutti e due i punti: <i>Cucina</i> + <i>Entrambi</i>. <b>\u{1F51E}</b> = bevanda alcolica: sotto i 18 anni non si serve, e a chi ordina senza tessera la comanda ricorda di verificare l'et\xE0. <b>Condimenti</b> = dentro questo prodotto compare la riga \xABcondimenti\xBB, con le aggiunte da fleggare. Mettila sui panini e sui piatti: \xE8 questa spunta a decidere, niente altro. <b>Compl.</b> = questa voce <i>\xE8</i> un'aggiunta (maionese, insalata): sparisce dall'elenco e diventa una delle caselle. Il <b>prezzo delle aggiunte</b> e' quanto costa condire: si paga <b>una volta sola</b>, che il cliente ne scelga una o quattro. Lo decidi tu \u2014 un euro per condire e' una scelta commerciale, non un tecnicismo. Se le aggiunte hanno prezzi diversi vale il piu' alto; a zero condire e' gratis.</p>
       <table><thead><tr><th>Nome</th><th>Prezzo</th><th>Chi prepara</th><th>Dove si vende</th><th>Categoria</th><th>Allergeni</th><th>Attivo</th><th>\u{1F51E}</th><th>Condimenti</th><th>Compl.</th><th></th></tr></thead><tbody>\${rows || '<tr><td colspan="11" class="muted">Nessun articolo. Importa o aggiungi.</td></tr>'}</tbody></table>
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
@@ -11317,7 +11316,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.46";
+var VERSION = "5.47";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13721,11 +13720,17 @@ function siVendeIn(m, zona) {
 function prendeComplementi(m) {
   return Number(m.con_condimenti) === 1 && !eCondimento(m);
 }
+function quantoCostaCondire(condimenti, dalParametro) {
+  const prezzi = condimenti.map((m) => Number(m.prezzo) || 0).filter((p) => p > 0);
+  if (!prezzi.length) return Number(dalParametro) || 0;
+  return Math.max(...prezzi);
+}
 async function daOrdinare({ zona = "", soloAttivi = true } = {}) {
   const tutte = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
   const vive = soloAttivi ? tutte.filter((m) => Number(m.attivo) === 1) : tutte;
-  const condimenti = vive.filter(eCondimento).map((m) => ({ id: m.id, nome: m.nome }));
-  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
+  const righeCond = vive.filter(eCondimento);
+  const condimenti = righeCond.map((m) => ({ id: m.id, nome: m.nome }));
+  const supplemento = quantoCostaCondire(righeCond, await par("comande_supplemento_complementi"));
   const voci = vive.filter((m) => !eCondimento(m) && siVendeIn(m, zona));
   if (condimenti.length) {
     for (const v of voci) {
@@ -13767,6 +13772,8 @@ async function diagnosi() {
   for (const z of ["bar", "garden"]) {
     perZona[z] = attivi.filter((m) => !eCondimento(m) && siVendeIn(m, z)).length;
   }
+  const prezziCond = [...new Set(cond.map((m) => Number(m.prezzo) || 0))];
+  const costoCondire = quantoCostaCondire(cond, await par("comande_supplemento_complementi"));
   const storte = await incoerenze();
   const inCucinaPerSbaglio = storte.filter((x) => x.ora === "cucina");
   const problemi = [];
@@ -13780,7 +13787,10 @@ async function diagnosi() {
   if (!conCondimenti.length) {
     problemi.push("Nessun prodotto ha la spunta \u201CCondimenti\u201D: i condimenti non hanno dove comparire. Mettila sui panini e sui piatti, nella colonna Condimenti del listino.");
   }
-  const tuttoOk = cond.length && conCondimenti.length && inCucinaPerSbaglio.length < 3;
+  if (prezziCond.length > 1) {
+    problemi.push(`I condimenti hanno prezzi diversi (${prezziCond.map((p) => p.toFixed(2)).join(", ")}): condire costa uguale per tutti, quindi vale il piu\u2019 alto \u2014 ${costoCondire.toFixed(2)}. Se non e\u2019 quello che vuoi, mettili tutti allo stesso prezzo.`);
+  }
+  const tuttoOk = cond.length && conCondimenti.length && inCucinaPerSbaglio.length < 3 && prezziCond.length <= 1;
   return {
     totale: tutte.length,
     attivi: attivi.length,
@@ -13789,6 +13799,7 @@ async function diagnosi() {
     condimenti_spenti: condSpenti.map((m) => m.nome),
     piatti_cucina: cucina.length,
     con_condimenti: conCondimenti.length,
+    costo_condire: costoCondire,
     prodotti_banco: banco.length,
     categorie,
     incoerenze: storte,
@@ -15007,7 +15018,10 @@ adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
   if (String(req.query.ordinabile || "") !== "1") {
     const rows = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
-    const suppl = Number(await par("comande_supplemento_complementi")) || 0;
+    const suppl = quantoCostaCondire(
+      (await db.prepare("SELECT * FROM menu_articoli WHERE attivo=1").all()).filter(eCondimento),
+      await par("comande_supplemento_complementi")
+    );
     return res.json(rows.map((m) => ({ ...m, e_condimento: eCondimento(m) ? 1 : 0, supplemento: suppl })));
   }
   const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
@@ -15385,7 +15399,10 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,zona,stato,totale,operatore,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(numero, ["tavolo", "bancone", "chiosco", "bar"].includes(b.origine) ? b.origine : zona === "bar" ? "bar" : "tavolo", b.riferimento || null, zona, "aperta", 0, req.adminUser.username, b.note || null, (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
   const cid = Number(info.lastInsertRowid);
   let totale = 0;
-  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
+  const supplemento = quantoCostaCondire(
+    (await db.prepare("SELECT * FROM menu_articoli WHERE attivo=1").all()).filter(eCondimento),
+    await par("comande_supplemento_complementi")
+  );
   for (const r of righe) {
     const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.menu_id);
     if (!m) continue;
@@ -17035,7 +17052,10 @@ publicRouter.post("/self-order", async (req, res) => {
   const numero = (await db.prepare("SELECT COALESCE(MAX(numero),0)+1 n FROM comande WHERE date(created_at)=date('now')").get()).n;
   const info = await db.prepare("INSERT INTO comande (numero,origine,riferimento,punto,canale,zona,stato,totale,operatore,socio_id,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(numero, "tavolo", tavolo, punto, "self", zonaDaPunto(punto), "aperta", 0, chi || "self", socio ? socio.id : null, b.note || null, now, now);
   const cid = Number(info.lastInsertRowid);
-  const supplemento = Number(await par("comande_supplemento_complementi")) || 0;
+  const supplemento = quantoCostaCondire(
+    (await db.prepare("SELECT * FROM menu_articoli WHERE attivo=1").all()).filter(eCondimento),
+    await par("comande_supplemento_complementi")
+  );
   let totale = 0;
   for (const r of righeIn) {
     const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=? AND attivo=1").get(r.menu_id);
@@ -18534,7 +18554,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 10:42" : "online";
+var BUILD = true ? "2026-08-26 11:08" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
