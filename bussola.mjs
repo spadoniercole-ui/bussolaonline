@@ -2811,6 +2811,36 @@ var init_parametri = __esm({
         etichetta: "Minuti di riscaldamento (piastra e friggitrice)",
         aiuto: "Il tempo che serve alla piastra e alla friggitrice per andare in temperatura. Da qui esce l'ora del primo ritiro possibile: apertura + questi minuti."
       },
+      {
+        chiave: "tavoli_posti_persi_unione",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 2,
+        min: 0,
+        max: 6,
+        etichetta: "Posti persi accostando due tavoli",
+        aiuto: "Due tavoli da quattro accostati non fanno otto posti comodi: gli angoli si perdono e si mangia col gomito del vicino. Qui si dice quanti posti togliere a ogni accostamento \u2014 a due, una tavolata di due tavoli tiene sei persone."
+      },
+      {
+        chiave: "sala_soglia_buona",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 33,
+        min: 5,
+        max: 95,
+        etichetta: "Serata \u201Cbuona\u201D oltre il (%) di prenotato",
+        aiuto: "Sotto questa percentuale la serata e' Facile: c'e' spazio, si puo' essere generosi accostando i tavoli."
+      },
+      {
+        chiave: "sala_soglia_difficile",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 66,
+        min: 10,
+        max: 100,
+        etichetta: "Serata \u201Cdifficile\u201D oltre il (%) di prenotato",
+        aiuto: "Oltre questa percentuale i posti scarseggiano: per una tavolata numerosa si accostano meno tavoli possibile, per non bruciare la sala."
+      },
       // ---- Sport ----
       {
         chiave: "sport_foglio_gara",
@@ -8844,7 +8874,19 @@ function cucinaCard(g) {
   const ref = isBar
     ? \`<span class="row" style="gap:6px"><span class="tsub" style="color:\${c.tx};font-size:1.02rem">\u{1F378} \${esc(g.rif)}</span></span>\`
     : \`<span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${esc(g.rif)}</span><span class="tsub" style="color:\${c.tx}">Tavolo</span></span>\`;
-  const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>\${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \u{1F6CE}</button>\`}<button class="btn ghost sm" data-kstorna="\${r.id}" title="Non si pu\xF2 fare: ingrediente finito, piatto sbagliato">\u21A9\uFE0E</button></div>\`).join('');
+  // Un piatto, una riga. I condimenti si leggono DENTRO il piatto \u2014 \xE8 l\xEC che vanno \u2014 e non
+  // hanno un tasto loro: nessuno manda "in tavola" una maionese per conto suo. Prima erano
+  // quattro voci separate con quattro tasti, e in mezzo il supplemento, che \xE8 una riga di
+  // denaro e in cucina non c'entra niente.
+  const tutte = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r })));
+  const figlieDi = (id) => tutte.filter(x => Number(x.r.parent_riga_id) === Number(id)).map(x => x.r);
+  const righe = tutte.filter(({ r }) => !r.parent_riga_id).map(({ cm, r }) => {
+    const dentro = figlieDi(r.id);
+    return \`<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)">
+      <span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${dentro.length ? \`<div style="font-size:.78rem;color:#5a5346;margin-top:2px">\${dentro.map(f => '\\u21b3 ' + esc(f.nome)).join('<br>')}</div>\` : ''}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
+      \${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \\u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \\ud83d\\udece</button>\`}
+      <button class="btn ghost sm" data-kstorna="\${r.id}" title="Non si pu\\u00f2 fare: ingrediente finito, piatto sbagliato">\\u21a9\\ufe0e</button></div>\`;
+  }).join('');
   // Se l'ordine e' arrivato prima che la piastra fosse calda, la cucina deve saperlo: non e'
   // in ritardo, e' in attesa dell'ora di consegna concordata con chi ha ordinato.
   const attesa = g.comande.map(cm => cm.non_prima).filter(Boolean).sort().pop();
@@ -10084,6 +10126,7 @@ VIEWS.pianta = async () => {
   const stato = \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
         <span>Turno <b>\${esc(PIANTA.turno)}</b> \xB7 <b>\${turnoDati.coperti_prenotati}</b> \${PIANTA.ambiente === 'stage' ? 'in sala' : 'coperti prenotati'}</span>
         <span class="muted">\${turnoDati.posti_liberi} posti liberi su \${turnoDati.posti_totali}</span>
+        \${turnoDati.serata ? \`<span class="tag" style="background:\${turnoDati.serata.livello === 'difficile' ? '#C0553F' : turnoDati.serata.livello === 'buona' ? '#B7791F' : '#2e6b45'};color:#fff" title="\${esc(turnoDati.serata.consiglio)}">Serata \${esc(turnoDati.serata.etichetta)} \xB7 \${turnoDati.serata.pieno}%</span>\` : ''}
       </div>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
         \${PIANTA.modo === 'disposizione' ? \`
@@ -10258,7 +10301,17 @@ VIEWS.pianta = async () => {
 
       const agisci = async (id, stato) => { await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato }) }); closeModal(); show('pianta'); };
       document.querySelectorAll('[data-cchiudi]').forEach(x => x.onclick = () => agisci(x.dataset.cchiudi, 'chiusa'));
-      document.querySelectorAll('[data-cann]').forEach(x => x.onclick = () => agisci(x.dataset.cann, 'annullata'));
+      // "Annulla" buttava via la comanda senza chiedere niente: un dito storto in mezzo al
+      // servizio e il conto del tavolo spariva, con dentro roba gia' mangiata. Ora si dice
+      // cosa si sta per perdere \u2014 numero, importo, quante righe \u2014 e si chiede conferma.
+      document.querySelectorAll('[data-cann]').forEach(x => x.onclick = () => {
+        const c = cs.find(z => String(z.id) === String(x.dataset.cann));
+        const righe = c ? (c.righe || []).filter(r => !r.parent_riga_id && r.stato !== 'stornata') : [];
+        const elenco = righe.slice(0, 6).map(r => \`\\u00b7 \${r.qta}\\u00d7 \${r.nome}\`).join('\\n');
+        const testo = \`ANNULLARE la comanda #\${c ? c.numero : ''} del tavolo \${n}?\\n\\n\${elenco}\${righe.length > 6 ? '\\n\\u2026 e altre ' + (righe.length - 6) : ''}\\n\\nImporto: \${c ? eur(c.totale) : ''}\\n\\nLa comanda sparisce dal conto del tavolo. Se il cliente ha gia' consumato, questa NON e' la strada: usa \\u201cstorna\\u201d sulla singola riga.\`;
+        if (!confirm(testo)) return;
+        agisci(x.dataset.cann, 'annullata');
+      });
       // Il gruppo si sposta: al sole non si sta, si libera un tavolo piu' grande, due tavolate
       // si accorpano. La comanda deve seguirli, altrimenti a fine turno il conto si presenta a
       // chi non ha mangiato quella roba.
@@ -10321,6 +10374,12 @@ VIEWS.pianta = async () => {
       if ($('#tv_unisci')) $('#tv_unisci').onclick = () => {
         const altro = Number(($('#tv_u') || {}).value);
         if (!altro) { $('#tv_msg').textContent = 'Nessun tavolo libero da unire.'; return; }
+        const sr = turnoDati.serata || { max_tavoli_uniti: 3, etichetta: '', consiglio: '' };
+        const gia = 1 + ((t.uniti || []).length);
+        if (gia >= sr.max_tavoli_uniti) {
+          alert(\`Serata \${sr.etichetta}: non accostare piu' di \${sr.max_tavoli_uniti} tavoli.\\n\\n\${sr.consiglio}\`);
+          return;
+        }
         salvaPianta((tav) => {
           const a = tav.find(z => z.numero === n), b2 = tav.find(z => z.numero === altro);
           if (!a || !b2) return;
@@ -10330,7 +10389,9 @@ VIEWS.pianta = async () => {
           // un numero sbagliato e la sala non torna piu'.
           if (a.posti_base == null) a.posti_base = Number(a.posti);
           if (b2.posti_base == null) b2.posti_base = Number(b2.posti);
-          a.posti = Number(a.posti) + Number(b2.posti);
+          // Due tavoli da quattro accostati non fanno otto posti comodi: gli angoli si perdono
+          // e si mangia col gomito del vicino. Quanti toglierne lo dice un parametro.
+          a.posti = Math.max(1, Number(a.posti) + Number(b2.posti) - (Number(turnoDati.posti_persi_unione) || 0));
           a.uniti = [...(a.uniti || []), b2.numero, ...(b2.uniti || [])];
           a.forma = 'rettangolo';
           b2.attivo = false; b2.uniti = [];
@@ -10410,7 +10471,8 @@ VIEWS.pianta = async () => {
   };
   if ($('#p_salva')) $('#p_salva').onclick = async () => {
     try {
-      await api('/tavoli/layout/' + PIANTA.layoutId, { method: 'PUT', body: JSON.stringify({ tavoli: PIANTA.tavoli }) });
+      // Qui la lista e' completa davvero: nell'editor i tavoli si aggiungono e si tolgono.
+      await api('/tavoli/layout/' + PIANTA.layoutId, { method: 'PUT', body: JSON.stringify({ tavoli: PIANTA.tavoli, completo: true }) });
       PIANTA.sporco = false;
       $('#p_msg').textContent = '\u2713 Disposizione salvata.';
     } catch (e) { $('#p_msg').textContent = 'Salvataggio non riuscito: ' + e.message; }
@@ -11134,7 +11196,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.39";
+var VERSION = "5.41";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13391,7 +13453,26 @@ async function statoTurno(data, turno, ambiente = "garden", layoutId = null) {
     posti_totali: postiTot,
     posti_occupati: postiOcc,
     posti_liberi: postiTot - postiOcc,
-    coperti_prenotati: pren.reduce((s, p) => s + Number(p.persone || 0), 0)
+    coperti_prenotati: pren.reduce((s, p) => s + Number(p.persone || 0), 0),
+    posti_persi_unione: Number(await par("tavoli_posti_persi_unione")) || 0,
+    ...await comeVaLaSerata(postiTot, pren)
+  };
+}
+async function comeVaLaSerata(postiTot, pren) {
+  const coperti = pren.reduce((s, p) => s + Number(p.persone || 0), 0);
+  const pieno = postiTot > 0 ? Math.round(coperti / postiTot * 100) : 0;
+  const buona = Number(await par("sala_soglia_buona"));
+  const difficile = Number(await par("sala_soglia_difficile"));
+  const livello = pieno >= difficile ? "difficile" : pieno >= buona ? "buona" : "facile";
+  return {
+    serata: {
+      pieno,
+      livello,
+      etichetta: livello === "difficile" ? "Difficile" : livello === "buona" ? "Buona" : "Facile",
+      // Quanti tavoli si possono accostare per una tavolata numerosa.
+      max_tavoli_uniti: livello === "difficile" ? 2 : 3,
+      consiglio: livello === "difficile" ? "Sala quasi piena: accosta il minimo indispensabile, ogni tavolo in piu' toglie posti a chi arriva." : livello === "buona" ? "Sala che si riempie: accosta con misura, tieni qualche tavolo libero per chi arriva senza prenotazione." : "C'e' spazio: puoi allargare una tavolata su piu' tavoli e farli stare comodi."
+    }
   };
 }
 function assegnaPlatea(liberi, persone, { categoria = "spettacolo", over70 = false, extraAmmessi = true } = {}) {
@@ -15286,7 +15367,7 @@ adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
   const comande = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') ORDER BY id").all());
   const out = [];
   for (const c of comande) {
-    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato NOT IN ('consegnata','stornata') ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
+    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato NOT IN ('consegnata','stornata') AND NOT (parent_riga_id IS NOT NULL AND menu_id IS NULL) ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
     if (righe.length) out.push({ ...c, righe });
   }
   res.json(out);
@@ -15900,9 +15981,16 @@ adminRouter.put("/tavoli/layout/:id", async (req, res) => {
   if (Array.isArray(b.tavoli)) {
     const num = (v, d) => Number.isFinite(Number(v)) ? Number(v) : d;
     const clamp = (v) => Math.max(0, Math.min(100, num(v, 50)));
+    const primaDi = await tavoliDi(l.id);
     await db.prepare("DELETE FROM tavoli WHERE layout_id=?").run(l.id);
+    const inArrivo = new Set((b.tavoli || []).map((t) => num(t.numero, 0)).filter(Boolean));
+    const daTenere = b.completo === true ? [] : primaDi.filter((t) => !inArrivo.has(Number(t.numero)));
     const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo,uniti,posti_base) VALUES (?,?,?,?,?,?,?,?,?)");
     const visti = /* @__PURE__ */ new Set();
+    for (const t of daTenere) {
+      visti.add(Number(t.numero));
+      await ins.run(l.id, t.numero, t.posti, t.forma, t.x, t.y, t.attivo, JSON.stringify(t.uniti || []), t.posti_base == null ? null : Number(t.posti_base));
+    }
     for (const t of b.tavoli) {
       const n = num(t.numero, 0);
       if (!n || visti.has(n)) continue;
@@ -18130,7 +18218,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 06:26" : "online";
+var BUILD = true ? "2026-08-26 07:28" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
