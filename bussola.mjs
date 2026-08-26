@@ -9604,21 +9604,33 @@ VIEWS.menu = async () => {
       <div class="row" style="margin-top:10px"><input id="mn_new_n" placeholder="Nome" style="min-width:150px"><input id="mn_new_p" type="number" step="0.01" inputmode="decimal" placeholder="Prezzo" style="width:90px"><select id="mn_new_s"><option value="bar">Bar</option><option value="cucina">Cucina</option></select><select id="mn_new_z"><option value="bar">\u{1F378} Bar</option><option value="garden">\u{1F37D}\uFE0F Garden</option><option value="comune">\u{1F501} Entrambi</option></select><input id="mn_new_c" placeholder="Categoria" style="width:120px"><button class="btn gold sm" id="mn_add">+ Aggiungi</button></div></div>\`;
 
   // salvataggi riga
-  document.querySelectorAll('[data-sv]').forEach(b => b.onclick = async () => { const id = b.dataset.sv; await api('/menu/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#mn_n_' + id).value, prezzo: Number($('#mn_p_' + id).value), stazione: $('#mn_s_' + id).value, zona: $('#mn_z_' + id).value, categoria: $('#mn_c_' + id).value, allergeni: $('#mn_al_' + id).value, attivo: $("#mn_a_" + id).checked }) }); show('menu'); });
-  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare l\\'articolo?')) return; await api('/menu/' + b.dataset.del, { method: 'DELETE' }); show('menu'); });
-  // Un'aggiunta smette di essere una voce da ordinare e diventa una spunta dentro i piatti.
-  // La spunta che decide tutto: dentro questo prodotto compare la riga dei condimenti.
-  if ($('#menu_diag2')) $('#menu_diag2').onclick = () => $('#menu_diag').click();
-  document.querySelectorAll('[data-mnalc]').forEach(c => c.onchange = async () => {
-    await api('/menu/' + c.dataset.mnalc, { method: 'PUT', body: JSON.stringify({ alcolico: c.checked }) });
-  });
-  document.querySelectorAll('[data-mncond]').forEach(c => c.onchange = async () => {
-    await api('/menu/' + c.dataset.mncond + '/condimenti', { method: 'PUT', body: JSON.stringify({ con_condimenti: c.checked }) });
-  });
-  document.querySelectorAll('[data-mncomp]').forEach(c => c.onchange = async () => {
-    await api('/menu/' + c.dataset.mncomp + '/complemento', { method: 'PUT', body: JSON.stringify({ complemento: c.checked }) });
+  // Niente piu' un salvataggio per ogni riga e per ogni spunta: le modifiche si accumulano
+  // qui e si scrivono tutte insieme con "Salva le modifiche". Con duecento righe, un tasto per
+  // riga vuol dire duecento clic e duecento occasioni di dimenticarsene una.
+  const TOCCHI = new Map();
+  const segna = (id, campo, valore) => {
+    const r = TOCCHI.get(Number(id)) || { id: Number(id) };
+    r[campo] = valore;
+    TOCCHI.set(Number(id), r);
+    const t = $('#menu_tocchi');
+    if (t) t.textContent = \`\${TOCCHI.size} \${TOCCHI.size === 1 ? 'riga modificata' : 'righe modificate'} \\u2014 non ancora salvate\`;
+  };
+  document.querySelectorAll('[data-mnalc]').forEach(c => c.onchange = () => segna(c.dataset.mnalc, 'alcolico', c.checked));
+  document.querySelectorAll('[data-mncond]').forEach(c => c.onchange = () => segna(c.dataset.mncond, 'con_condimenti', c.checked));
+  document.querySelectorAll('[data-mncomp]').forEach(c => c.onchange = () => segna(c.dataset.mncomp, 'complemento', c.checked));
+  // Anche i campi scritti: si segnano quando si esce dalla casella.
+  for (const [pref, campo, conv] of [['mn_n_', 'nome', String], ['mn_p_', 'prezzo', Number], ['mn_c_', 'categoria', String], ['mn_al_', 'allergeni', String]]) {
+    document.querySelectorAll(\`[id^="\${pref}"]\`).forEach(el => el.onchange = () => segna(el.id.slice(pref.length), campo, conv(el.value)));
+  }
+  document.querySelectorAll('[id^="mn_s_"]').forEach(el => el.onchange = () => segna(el.id.slice(5), 'stazione', el.value));
+  document.querySelectorAll('[id^="mn_z_"]').forEach(el => el.onchange = () => segna(el.id.slice(5), 'zona', el.value));
+  document.querySelectorAll('[id^="mn_a_"]').forEach(el => el.onchange = () => segna(el.id.slice(5), 'attivo', el.checked));
+  $('#menu_salva').onclick = async () => {
+    if (!TOCCHI.size) { alert('Non c\\u2019\\u00e8 niente da salvare.'); return; }
+    const r = await api('/menu', { method: 'PUT', body: JSON.stringify({ righe: [...TOCCHI.values()] }) });
+    alert(\`Salvate \${r.salvati} righe.\`);
     show('menu');
-  });
+  };
   $('#menu_cross').onclick = async () => {
     const d = await api('/menu/cross-cucina', { method: 'POST', body: '{}' });
     openModal(\`<h3 style="margin-top:0">\u{1F373} Da preparare, in entrambi i punti</h3>
@@ -11196,7 +11208,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.41";
+var VERSION = "5.42";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14819,6 +14831,12 @@ adminRouter.post("/magazzino/import", requireCap("magazzino"), async (req, res) 
     return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
   }
   if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
+  if (righe.senzaPrezzo && !b.dryRun && !b.forza) {
+    return res.status(409).json({
+      error: "Nel file non trovo nessun prezzo: i prodotti entrerebbero tutti a zero. Le colonne che ho letto sono: " + (righe.intestazioni || []).join(", ") + '. Rinomina la colonna dei prezzi in "prezzo", oppure conferma se vuoi davvero caricarli senza prezzo.',
+      intestazioni: righe.intestazioni || []
+    });
+  }
   const num = toNum;
   if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => ({ ...r, area: magNormArea(r.area), zona: magNormZona(r.zona), giacenza: num(r.giacenza), punto_riordino: num(r.punto_riordino), soglia_preavviso: num(r.soglia_preavviso) })) });
   const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
@@ -14860,8 +14878,21 @@ adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) =
   res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
 });
 adminRouter.get("/menu/export", requireCap("comande"), async (req, res) => {
-  const m = await db.prepare("SELECT nome,prezzo,stazione,zona,categoria,descrizione,allergeni FROM menu_articoli ORDER BY ordine,id").all();
-  const rows = m.map((x) => ({ nome: x.nome, prezzo: Number(x.prezzo), stazione: x.stazione, punto: x.zona || "bar", categoria: x.categoria || "", descrizione: x.descrizione || "", allergeni: x.allergeni || "" }));
+  const m = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
+  const sn = (v) => Number(v) === 1 ? "si" : "no";
+  const rows = m.map((x) => ({
+    nome: x.nome,
+    prezzo: Number(x.prezzo),
+    stazione: x.stazione,
+    punto: x.zona || "bar",
+    categoria: x.categoria || "",
+    descrizione: x.descrizione || "",
+    allergeni: x.allergeni || "",
+    attivo: sn(x.attivo),
+    alcolico: sn(x.alcolico),
+    condimenti: sn(x.con_condimenti),
+    complemento: sn(x.complemento)
+  }));
   res.json({ filename: "menu.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Menu") });
 });
 adminRouter.get("/menu", requireCap("comande"), async (req, res) => {
@@ -14892,6 +14923,37 @@ adminRouter.put("/menu/:id/complemento", requireCap("comande"), async (req, res)
   await db.prepare("UPDATE menu_articoli SET complemento=? WHERE id=?").run(v, req.params.id);
   audit(req.adminUser.username, v ? "segna_complemento" : "torna_articolo", "menu_articoli", req.params.id);
   res.json({ ok: true, complemento: v });
+});
+adminRouter.put("/menu", requireCap("comande"), async (req, res) => {
+  const righe = Array.isArray(req.body?.righe) ? req.body.righe : [];
+  if (!righe.length) return res.json({ ok: true, salvati: 0 });
+  let salvati = 0;
+  for (const r of righe) {
+    const ex = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.id);
+    if (!ex) continue;
+    const dato = (k) => Object.prototype.hasOwnProperty.call(r, k);
+    const nome = dato("nome") ? r.nome : ex.nome;
+    const categoria = dato("categoria") ? r.categoria || null : ex.categoria;
+    const stazione = dato("stazione") ? r.stazione === "cucina" ? "cucina" : r.stazione === "bar" ? "bar" : inferStazione(nome, categoria) : ex.stazione;
+    await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=?,con_condimenti=?,alcolico=?,complemento=? WHERE id=?").run(
+      nome,
+      dato("prezzo") ? Number(r.prezzo || 0) : ex.prezzo,
+      stazione,
+      dato("zona") ? menuZona(r.zona, stazione) : ex.zona,
+      categoria,
+      dato("descrizione") ? r.descrizione ?? null : ex.descrizione,
+      dato("allergeni") ? r.allergeni ?? null : ex.allergeni,
+      dato("magazzino_id") ? r.magazzino_id || null : ex.magazzino_id,
+      dato("attivo") ? r.attivo === false ? 0 : 1 : ex.attivo,
+      dato("con_condimenti") ? r.con_condimenti ? 1 : 0 : ex.con_condimenti,
+      dato("alcolico") ? r.alcolico ? 1 : 0 : ex.alcolico,
+      dato("complemento") ? r.complemento ? 1 : 0 : ex.complemento,
+      ex.id
+    );
+    salvati++;
+  }
+  audit(req.adminUser.username, "salva_listino", "menu_articoli", null, `${salvati} righe`);
+  res.json({ ok: true, salvati });
 });
 adminRouter.put("/menu/:id/condimenti", requireCap("comande"), async (req, res) => {
   const v = req.body?.con_condimenti ? 1 : 0;
@@ -14932,18 +14994,57 @@ adminRouter.put("/menu/:id", requireCap("comande"), async (req, res) => {
   audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
+function normIntestazione(s) {
+  return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\([^)]*\)/g, " ").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+var ALIAS_MENU = {
+  nome: ["nome", "prodotto", "articolo", "name", "descrizione prodotto"],
+  prezzo: ["prezzo", "price", "costo", "importo", "prezzo unitario", "prezzo di vendita"],
+  stazione: ["stazione", "station", "reparto", "chi prepara"],
+  punto: ["punto", "zona", "zone", "point", "dove si vende"],
+  categoria: ["categoria", "category", "gruppo"],
+  descrizione: ["descrizione", "description", "desc", "ingredienti"],
+  allergeni: ["allergeni", "allergen", "allergens"],
+  attivo: ["attivo", "attiva", "active", "in vendita"],
+  alcolico: ["alcolico", "alcolica", "alcol", "18", "minori", "alcohol"],
+  condimenti: ["condimenti", "condimento", "necessita condimenti", "con condimenti"],
+  complemento: ["complemento", "compl", "aggiunta", "e un condimento"]
+};
 function parseMenuFile(fileB64) {
   const json = sheetRows(fileB64);
-  const norm = (s) => String(s || "").trim().toLowerCase();
-  const alias = { nome: ["nome", "prodotto", "articolo", "name"], prezzo: ["prezzo", "price", "costo"], stazione: ["stazione", "station", "reparto"], punto: ["punto", "zona", "zone", "point"], categoria: ["categoria", "category"], descrizione: ["descrizione", "description", "desc"], allergeni: ["allergeni", "allergen", "allergens"] };
-  return json.map((r) => {
+  const trovate = /* @__PURE__ */ new Set();
+  const righe = json.map((r) => {
     const keys = Object.keys(r);
     const pick = (al) => {
-      const k = keys.find((k2) => al.includes(norm(k2)));
+      const k = keys.find((k2) => {
+        const n = normIntestazione(k2);
+        return al.some((a) => n === a || n.startsWith(a + " "));
+      });
+      if (k != null) trovate.add(k);
       return k != null ? r[k] : "";
     };
-    return { nome: pick(alias.nome), prezzo: pick(alias.prezzo), stazione: pick(alias.stazione), punto: pick(alias.punto), categoria: pick(alias.categoria), descrizione: pick(alias.descrizione), allergeni: pick(alias.allergeni) };
+    return {
+      nome: pick(ALIAS_MENU.nome),
+      prezzo: pick(ALIAS_MENU.prezzo),
+      stazione: pick(ALIAS_MENU.stazione),
+      punto: pick(ALIAS_MENU.punto),
+      categoria: pick(ALIAS_MENU.categoria),
+      descrizione: pick(ALIAS_MENU.descrizione),
+      allergeni: pick(ALIAS_MENU.allergeni),
+      attivo: pick(ALIAS_MENU.attivo),
+      alcolico: pick(ALIAS_MENU.alcolico),
+      condimenti: pick(ALIAS_MENU.condimenti),
+      complemento: pick(ALIAS_MENU.complemento)
+    };
   }).filter((r) => String(r.nome).trim());
+  righe.intestazioni = json.length ? Object.keys(json[0]) : [];
+  righe.senzaPrezzo = righe.length > 0 && righe.every((r) => String(r.prezzo ?? "").trim() === "");
+  return righe;
+}
+function siNo(v, sePrecedente) {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "") return sePrecedente;
+  return ["si", "s\xEC", "s", "1", "x", "true", "vero", "y", "yes"].includes(s);
 }
 adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
@@ -14954,6 +15055,12 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
   }
   if (!righe.length) return res.status(400).json({ error: 'Nessuna riga valida (serve almeno la colonna "nome")' });
+  if (righe.senzaPrezzo && !b.dryRun && !b.forza) {
+    return res.status(409).json({
+      error: "Nel file non trovo nessun prezzo: i prodotti entrerebbero tutti a zero. Le colonne che ho letto sono: " + (righe.intestazioni || []).join(", ") + '. Rinomina la colonna dei prezzi in "prezzo", oppure conferma se vuoi davvero caricarli senza prezzo.',
+      intestazioni: righe.intestazioni || []
+    });
+  }
   const clean = (v) => v == null || String(v).trim() === "" ? null : String(v).trim();
   const catImport = (r, staz, ex) => clean(r.categoria) || ex && ex.categoria || inferCategoria(r.nome) || (staz === "cucina" ? "Cucina" : "Bar");
   if (b.dryRun) return res.json({ ok: true, totale: righe.length, anteprima: righe.slice(0, 12).map((r) => {
@@ -14993,11 +15100,24 @@ adminRouter.post("/menu/import", requireCap("comande"), async (req, res) => {
     const zonaNew = hasPunto ? menuZona(r.punto, stazione) : stazione === "cucina" ? "comune" : inferPunto(nome, categoria);
     const puntoSignal = hasPunto || !!clean(r.categoria) || !!(r.stazione && String(r.stazione).trim());
     if (ex) {
-      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, puntoSignal ? zonaNew : ex.zona || zonaNew, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, ex.id);
+      await db.prepare("UPDATE menu_articoli SET prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,attivo=?,alcolico=?,con_condimenti=?,complemento=? WHERE id=?").run(hasPrezzo ? prezzo : ex.prezzo, r.stazione ? stazione : ex.stazione, zonaNew, categoria, descrizione ?? ex.descrizione, allergeni ?? ex.allergeni, siNo(r.attivo, ex.attivo === 1) ? 1 : 0, siNo(r.alcolico, ex.alcolico === 1) ? 1 : 0, siNo(r.condimenti, ex.con_condimenti === 1) ? 1 : 0, siNo(r.complemento, ex.complemento === 1) ? 1 : 0, ex.id);
       aggiornati++;
     } else {
       const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_articoli").get()).n;
-      await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,attivo,ordine) VALUES (?,?,?,?,?,?,?,1,?)").run(nome, prezzo, stazione, zonaNew, categoria, descrizione, allergeni, ord);
+      await db.prepare("INSERT INTO menu_articoli (nome,prezzo,stazione,zona,categoria,descrizione,allergeni,attivo,ordine,alcolico,con_condimenti,complemento) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
+        nome,
+        prezzo,
+        stazione,
+        zonaNew,
+        categoria,
+        descrizione,
+        allergeni,
+        siNo(r.attivo, true) ? 1 : 0,
+        ord,
+        siNo(r.alcolico, false) ? 1 : 0,
+        siNo(r.condimenti, false) ? 1 : 0,
+        siNo(r.complemento, false) ? 1 : 0
+      );
       creati++;
     }
   }
@@ -15341,6 +15461,20 @@ adminRouter.put("/comande/:id/tavolo", requireCap("comande"), async (req, res) =
   const nuovo = String(req.body?.riferimento || "").trim();
   if (!nuovo) return res.status(400).json({ error: "Indica il tavolo di destinazione" });
   if (nuovo === String(c.riferimento || "")) return res.status(400).json({ error: "E' gia' questo il tavolo" });
+  if (c.zona === "garden" && /^\d+$/.test(nuovo)) {
+    const giorno = (c.created_at || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const mappa = await mappaTavoli(giorno).catch(() => null);
+    const cerca2 = (num) => (mappa?.tavoli || []).find((t) => String(t.numero) === String(num) && t.attivo !== 0);
+    const daT = cerca2(c.riferimento), aT = cerca2(nuovo);
+    const unito = (t) => t && Array.isArray(t.uniti) && t.uniti.length > 0;
+    if (unito(daT) || unito(aT)) {
+      const quale = unito(daT) ? `Il tavolo ${c.riferimento} e' accostato a ${daT.uniti.join(", ")}` : `Il tavolo ${nuovo} e' accostato a ${aT.uniti.join(", ")}`;
+      return res.status(409).json({
+        error: `${quale}: una comanda non si sposta da o verso una tavolata unita. Separa i tavoli (o accosta quelli che servono) e poi sposta la comanda.`,
+        tavolo_unito: unito(daT) ? c.riferimento : nuovo
+      });
+    }
+  }
   await db.prepare("UPDATE comande SET riferimento=?, updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), c.id);
   await registra({
     fatto: "comanda_spostata",
@@ -18218,7 +18352,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 07:28" : "online";
+var BUILD = true ? "2026-08-26 07:43" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
