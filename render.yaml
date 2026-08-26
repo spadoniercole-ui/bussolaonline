@@ -20,3 +20,10 @@ services:
         sync: false
       - key: KOINE_ENC_KEY       # chiave di cifratura dati host (AES-256-GCM) — CRITICA: se persa, i dati host non sono recuperabili
         sync: false
+      # Posta: senza queste, i codici di accesso NON partono (restano nei log del server).
+      - key: MAIL_PROVIDER
+        value: resend
+      - key: MAIL_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        value: Bussola Residence <noreply@bussolavillage.it>

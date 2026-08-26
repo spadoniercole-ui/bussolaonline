@@ -111,6 +111,108 @@ var init_push = __esm({
   }
 });
 
+// server/mail.js
+function mailAttiva() {
+  return PROVIDER !== "console" && !!API_KEY;
+}
+function daNomeEmail(s) {
+  const m = String(s).match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  return m ? { nome: m[1] || "", email: m[2] } : { nome: "", email: String(s).trim() };
+}
+function soloTesto(html2) {
+  return String(html2).replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, "").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
+}
+async function viaResend({ a, oggetto, html: html2 }) {
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: FROM, to: [a], subject: oggetto, html: html2, text: soloTesto(html2), ...REPLY_TO ? { reply_to: REPLY_TO } : {} })
+  });
+  if (!r.ok) throw new Error("Resend " + r.status + ": " + (await r.text()).slice(0, 200));
+  return true;
+}
+async function viaBrevo({ a, oggetto, html: html2 }) {
+  const f = daNomeEmail(FROM);
+  const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: { "api-key": API_KEY, "Content-Type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      sender: { email: f.email, name: f.nome || "Bussola Residence" },
+      to: [{ email: a }],
+      subject: oggetto,
+      htmlContent: html2,
+      textContent: soloTesto(html2),
+      ...REPLY_TO ? { replyTo: { email: daNomeEmail(REPLY_TO).email } } : {}
+    })
+  });
+  if (!r.ok) throw new Error("Brevo " + r.status + ": " + (await r.text()).slice(0, 200));
+  return true;
+}
+async function invia({ a, oggetto, html: html2 }) {
+  const dest = String(a || "").trim();
+  if (!dest.includes("@")) return { inviata: false, motivo: "indirizzo non valido" };
+  if (!mailAttiva()) {
+    console.log(`
+\u2709\uFE0F  [posta non configurata] a: ${dest}
+    ${oggetto}
+${soloTesto(html2).split("\n").map((r) => "    " + r).join("\n")}
+`);
+    return { inviata: false, motivo: "console" };
+  }
+  try {
+    if (PROVIDER === "resend") await viaResend({ a: dest, oggetto, html: html2 });
+    else if (PROVIDER === "brevo") await viaBrevo({ a: dest, oggetto, html: html2 });
+    else return { inviata: false, motivo: "fornitore sconosciuto: " + PROVIDER };
+    return { inviata: true };
+  } catch (e) {
+    console.error("posta:", e && e.message);
+    return { inviata: false, motivo: String(e && e.message).slice(0, 160) };
+  }
+}
+function cornice(titolo, corpo) {
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:520px;margin:0 auto;color:#1b2733">
+    <div style="background:#12314b;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
+      <div style="letter-spacing:.16em;font-size:12px;opacity:.85">BUSSOLA RESIDENCE</div>
+      <div style="font-size:19px;font-weight:700;margin-top:2px">${titolo}</div>
+    </div>
+    <div style="background:#faf8f3;padding:22px;border:1px solid #e6e1d6;border-top:0;border-radius:0 0 12px 12px">${corpo}</div>
+    <p style="color:#8a8578;font-size:11px;text-align:center;margin-top:14px">
+      Messaggio automatico: a questo indirizzo non risponde nessuno.</p>
+  </div>`;
+}
+async function inviaCodice(a, codice, minuti) {
+  return invia({
+    a,
+    oggetto: `${codice} \xE8 il tuo codice di accesso \xB7 Bussola Residence`,
+    html: cornice("Il tuo codice di accesso", `
+      <p style="margin-top:0">Scrivi questo codice nell'app per entrare:</p>
+      <p style="font-size:34px;font-weight:800;letter-spacing:.22em;background:#fff;border:2px dashed #c9a227;border-radius:10px;padding:14px;text-align:center;margin:14px 0">${codice}</p>
+      <p>Vale <b>${minuti} minuti</b>, poi scade. Si usa una volta sola.</p>
+      <p style="color:#6b6257;font-size:13px">Se non hai chiesto tu di entrare, ignora questo messaggio: senza il codice non succede niente.</p>`)
+  });
+}
+async function inviaBenvenuto(a, { nome, tessera }) {
+  return invia({
+    a,
+    oggetto: "Benvenuto alla Bussola \xB7 la tua tessera",
+    html: cornice("Benvenuto" + (nome ? ", " + nome : ""), `
+      <p style="margin-top:0">La tua registrazione \xE8 fatta. Questo \xE8 il numero della tua tessera:</p>
+      <p style="font-size:24px;font-weight:800;letter-spacing:.12em;background:#fff;border:1px solid #e6e1d6;border-radius:10px;padding:12px;text-align:center;margin:14px 0">${tessera}</p>
+      <p>Serve per prenotare un campo, iscriverti alle lezioni e partecipare alla Coppa delle Casate.
+      Puoi entrare nell'app con la tessera, oppure con questa e-mail e un codice che ti arriva qui.</p>
+      <p style="color:#6b6257;font-size:13px">Bar e Garden sono aperti a tutti: la tessera non serve per consumare.</p>`)
+  });
+}
+var PROVIDER, API_KEY, FROM, REPLY_TO;
+var init_mail = __esm({
+  "server/mail.js"() {
+    PROVIDER = String(process.env.MAIL_PROVIDER || "console").toLowerCase();
+    API_KEY = process.env.MAIL_API_KEY || "";
+    FROM = process.env.MAIL_FROM || "Bussola Residence <noreply@bussola.local>";
+    REPLY_TO = process.env.MAIL_REPLY_TO || "";
+  }
+});
+
 // server/routes/authuser.js
 import { Router as Router3 } from "express";
 function etaDa(dataNascita) {
@@ -158,7 +260,7 @@ function notifica(socioId, titolo, corpo) {
 async function chiSono(req) {
   return await db.prepare("SELECT id,nome,cognome,ruolo,casata_id,tessera_code FROM soci WHERE tessera_code=? AND attivo=1").get(req.user.tessera_code);
 }
-var authUserRouter, DEV, CAP_SOCI_CASATA, HOST_FIELDS2, CHAT_MAX;
+var authUserRouter, DEV, OTP_MINUTI, OTP_MAX_RICHIESTE, OTP_FINESTRA_MIN, OTP_MAX_TENTATIVI, CAP_SOCI_CASATA, HOST_FIELDS2, CHAT_MAX;
 var init_authuser = __esm({
   "server/routes/authuser.js"() {
     init_asyncroute();
@@ -166,17 +268,38 @@ var init_authuser = __esm({
     init_crypto();
     init_db();
     init_push();
+    init_mail();
     authUserRouter = asyncify(Router3());
     DEV = (process.env.KOINE_ENV || "dev") !== "prod";
+    OTP_MINUTI = 10;
+    OTP_MAX_RICHIESTE = 3;
+    OTP_FINESTRA_MIN = 15;
+    OTP_MAX_TENTATIVI = 5;
     authUserRouter.post("/request-otp", async (req, res) => {
       const email = String(req.body?.email || "").trim().toLowerCase();
       if (!email || !email.includes("@")) return res.status(400).json({ error: "E-mail non valida" });
-      const socio = await db.prepare("SELECT id FROM soci WHERE lower(email)=? AND attivo=1").get(email);
+      const daQuando = Date.now() - OTP_FINESTRA_MIN * 60 * 1e3;
+      const recenti = await db.prepare("SELECT COUNT(*) n FROM otp WHERE email=? AND exp > ?").get(email, daQuando);
+      if (Number(recenti?.n || 0) >= OTP_MAX_RICHIESTE) {
+        audit(email, "otp_troppe_richieste", "otp", "");
+        return res.status(429).json({ error: `Hai gi\xE0 chiesto il codice pi\xF9 volte: aspetta qualche minuto e riprova. Controlla anche la posta indesiderata.` });
+      }
+      const socio = await db.prepare("SELECT id,nome FROM soci WHERE lower(email)=? AND attivo=1").get(email);
       const code = genOtp();
-      const exp = Date.now() + 10 * 60 * 1e3;
-      await db.prepare("INSERT INTO otp (email,code,exp) VALUES (?,?,?)").run(email, code, exp);
-      audit(email, "otp_richiesto", "otp", "", socio ? "utente noto" : "email sconosciuta");
-      res.json({ ok: true, ...DEV ? { dev_code: code, dev_note: "In produzione arriva via e-mail/SMS; qui \xE8 mostrato solo per test." } : {} });
+      const exp = Date.now() + OTP_MINUTI * 60 * 1e3;
+      const ip = String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim();
+      let esito = { inviata: false, motivo: "e-mail non registrata" };
+      if (socio) esito = await inviaCodice(email, code, OTP_MINUTI);
+      await db.prepare("INSERT INTO otp (email,code,exp,ip,inviata,creato_at) VALUES (?,?,?,?,?,?)").run(email, code, exp, ip || null, esito.inviata ? 1 : 0, (/* @__PURE__ */ new Date()).toISOString());
+      audit(email, "otp_richiesto", "otp", "", socio ? esito.inviata ? "inviata" : "NON inviata: " + esito.motivo : "email sconosciuta");
+      res.json({
+        ok: true,
+        // Sempre lo stesso messaggio: chi guarda non deve capire se l'indirizzo esiste.
+        messaggio: `Se questo indirizzo \xE8 registrato, il codice \xE8 in arrivo. Vale ${OTP_MINUTI} minuti.`,
+        // Il codice in chiaro solo quando la posta non e' configurata: senza, in sviluppo non si
+        // entrerebbe piu'. In produzione con la posta accesa non esce mai.
+        ...!mailAttiva() && DEV ? { dev_code: code, dev_note: "Posta non configurata: codice mostrato solo in sviluppo." } : {}
+      });
     });
     authUserRouter.post("/login-tessera", async (req, res) => {
       const code = String(req.body?.tessera_code || "").trim().toUpperCase();
@@ -191,11 +314,23 @@ var init_authuser = __esm({
     authUserRouter.post("/verify-otp", async (req, res) => {
       const email = String(req.body?.email || "").trim().toLowerCase();
       const code = String(req.body?.code || "").trim();
+      const ultimo = await db.prepare("SELECT * FROM otp WHERE email=? AND used=0 ORDER BY id DESC").get(email);
+      if (ultimo && Number(ultimo.tentativi || 0) >= OTP_MAX_TENTATIVI) {
+        await db.prepare("UPDATE otp SET used=1 WHERE id=?").run(ultimo.id);
+        audit(email, "otp_bruciato", "otp", String(ultimo.id), "troppi tentativi");
+        return res.status(429).json({ error: "Troppi tentativi sbagliati: questo codice non vale pi\xF9. Chiedine un altro." });
+      }
       const row = await db.prepare("SELECT * FROM otp WHERE email=? AND code=? AND used=0 ORDER BY id DESC").get(email, code);
-      if (!row || Date.now() > row.exp) return res.status(401).json({ error: "Codice non valido o scaduto" });
+      if (!row || Date.now() > row.exp) {
+        if (ultimo) await db.prepare("UPDATE otp SET tentativi=tentativi+1 WHERE id=?").run(ultimo.id);
+        return res.status(401).json({ error: "Codice non valido o scaduto" });
+      }
       await db.prepare("UPDATE otp SET used=1 WHERE id=?").run(row.id);
       const socio = await db.prepare("SELECT * FROM soci WHERE lower(email)=? AND attivo=1").get(email);
       if (!socio) return res.status(404).json({ error: "Nessun profilo associato a questa e-mail" });
+      if (Number(socio.email_verificata) !== 1) {
+        await db.prepare("UPDATE soci SET email_verificata=1 WHERE id=?").run(socio.id);
+      }
       const token = await createUserSession(socio);
       audit(socio.tessera_code, "login_utente", "soci", socio.id);
       const casata = await db.prepare("SELECT nome,colore FROM casate WHERE id=?").get(socio.casata_id) || {};
@@ -235,7 +370,12 @@ var init_authuser = __esm({
         const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id);
         const token = await createUserSession(socio);
         audit(tessera_code, "auto_registrazione", "soci", id, tipo);
-        res.status(201).json({ token, socio: { tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false } });
+        const posta = email ? await inviaBenvenuto(email, { nome, tessera: tessera_code }) : { inviata: false };
+        res.status(201).json({
+          token,
+          socio: { tessera_code, nome, cognome, ruolo, tipo_profilo: tipo, notifiche_push: false },
+          email_inviata: !!posta.inviata
+        });
       } catch (e) {
         console.error("registrazione:", e?.message || e);
         res.status(400).json({ error: "Registrazione non riuscita" });
@@ -1590,6 +1730,11 @@ async function migrate() {
   await addIfMissing("tavoli", "posti_base", "posti_base INTEGER");
   await addIfMissing("comande", "avviso_cucina", "avviso_cucina TEXT");
   await addIfMissing("comande", "avviso_cucina_at", "avviso_cucina_at TEXT");
+  await addIfMissing("otp", "tentativi", "tentativi INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("otp", "ip", "ip TEXT");
+  await addIfMissing("otp", "inviata", "inviata INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("otp", "creato_at", "creato_at TEXT");
+  await addIfMissing("soci", "email_verificata", "email_verificata INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("comanda_righe", "parent_riga_id", "parent_riga_id INTEGER");
   await addIfMissing("comande", "non_prima", "non_prima TEXT");
   await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
@@ -11316,7 +11461,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.47";
+var VERSION = "5.48";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13868,6 +14013,9 @@ async function storiaDi(servizio, riferimento) {
   ).all(String(servizio), String(riferimento));
 }
 
+// server/routes/admin.js
+init_mail();
+
 // server/referenze.js
 init_db();
 var VINCOLI = {
@@ -15039,6 +15187,32 @@ adminRouter.get("/registro", requireCap("comande"), async (req, res) => {
 });
 adminRouter.get("/registro/storia", requireCap("comande"), async (req, res) => {
   res.json(await storiaDi(String(req.query.servizio || ""), String(req.query.riferimento || "")));
+});
+adminRouter.get("/posta/stato", requireCap("soci"), async (req, res) => {
+  const ultime = await db.prepare(
+    "SELECT email,inviata,creato_at FROM otp WHERE creato_at IS NOT NULL ORDER BY id DESC LIMIT 20"
+  ).all();
+  const inviate = ultime.filter((x) => Number(x.inviata) === 1).length;
+  res.json({
+    attiva: mailAttiva(),
+    fornitore: process.env.MAIL_PROVIDER || "console",
+    mittente: process.env.MAIL_FROM || null,
+    ultime_richieste: ultime.length,
+    ultime_inviate: inviate,
+    avviso: mailAttiva() ? null : "La posta non e' configurata: i codici di accesso NON partono. Chi prova a entrare con l'e-mail resta fuori. Imposta MAIL_PROVIDER, MAIL_API_KEY e MAIL_FROM."
+  });
+});
+adminRouter.post("/posta/prova", requireCap("soci"), async (req, res) => {
+  const a = String(req.body?.email || "").trim();
+  if (!a.includes("@")) return res.status(400).json({ error: "Scrivi l'indirizzo a cui mandare la prova" });
+  const esito = await invia({
+    a,
+    oggetto: "Prova di invio \xB7 Bussola Residence",
+    html: cornice("Prova di invio", '<p style="margin-top:0">Se leggi questo messaggio, le e-mail della Bussola funzionano: i codici di accesso arriveranno.</p>')
+  });
+  audit(req.adminUser.username, "prova_posta", "posta", a, esito.inviata ? "inviata" : "NON inviata: " + esito.motivo);
+  if (!esito.inviata) return res.status(502).json({ error: "Non e' partita: " + esito.motivo, ...esito });
+  res.json({ ok: true, messaggio: "Inviata a " + a + ". Se non arriva entro qualche minuto, guarda nella posta indesiderata." });
 });
 adminRouter.get("/menu/diagnosi", requireCap("comande"), async (req, res) => {
   res.json(await diagnosi());
@@ -18554,7 +18728,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 11:08" : "online";
+var BUILD = true ? "2026-08-26 16:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
