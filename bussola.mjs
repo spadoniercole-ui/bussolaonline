@@ -9760,14 +9760,19 @@ VIEWS.registro = async () => {
     prenotazione_creata: '\u{1F4D7} Prenotazione presa', prenotazione_cancellata: '\u{1F4D5} Prenotazione cancellata',
     prenotazione_modificata: '\u{1F4D9} Prenotazione modificata', servizio_reso: '\u2705 Servizio reso',
     comanda_aperta: '\u{1F9FE} Comanda aperta', comanda_chiusa: '\u{1F4B6} Comanda chiusa', comanda_annullata: '\u{1F6AB} Comanda annullata',
-    iscrizione: '\u{1F4D7} Iscrizione', iscrizione_annullata: '\u{1F4D5} Iscrizione annullata'
+    iscrizione: '\u{1F4D7} Iscrizione', iscrizione_annullata: '\u{1F4D5} Iscrizione annullata',
+    comanda_spostata: '\u27A1\uFE0F Comanda spostata di tavolo',
+    riga_stornata: '\u21A9\uFE0F Riga stornata', riga_sostituita: '\u{1F504} Riga sostituita'
   };
+  // Se domani si registra un fatto nuovo e ci si dimentica l'etichetta, meglio una parola
+  // leggibile che il nome tecnico della colonna: "comanda_spostata" non lo capisce nessuno.
+  const etichettaDi = (f) => ETICHETTE[f] || String(f || '').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
   const corpo = righe.map(r => {
     let d = '';
     try { d = r.dettaglio ? Object.entries(JSON.parse(r.dettaglio)).filter(([, v]) => v !== null && v !== '' && !(Array.isArray(v) && !v.length)).map(([k, v]) => \`\${k}: \${Array.isArray(v) ? v.join('/') : v}\`).join(' \xB7 ') : ''; } catch { d = esc(r.dettaglio || ''); }
     return \`<tr>
       <td style="white-space:nowrap">\${esc((r.ts || '').replace('T', ' ').slice(0, 16))}</td>
-      <td>\${ETICHETTE[r.fatto] || esc(r.fatto)}</td>
+      <td>\${etichettaDi(r.fatto)}</td>
       <td>\${esc(r.servizio)}\${r.riferimento ? ' <b>#' + esc(String(r.riferimento)) + '</b>' : ''}</td>
       <td>\${esc(r.intestatario || '\u2014')}</td>
       <td>\${esc(r.autore || '\u2014')}\${r.canale ? \` <span class="muted">(\${esc(r.canale)})</span>\` : ''}</td>
@@ -9787,7 +9792,7 @@ VIEWS.registro = async () => {
         </select></label>
         <label>Fatto<br><select id="rg_fatto">
           <option value="">tutti</option>
-          \${Object.keys(ETICHETTE).map(k => \`<option value="\${k}" \${REG_F.fatto === k ? 'selected' : ''}>\${ETICHETTE[k].replace(/^\\S+ /, '')}</option>\`).join('')}
+          \${Object.keys(ETICHETTE).map(k => \`<option value="\${k}" \${REG_F.fatto === k ? 'selected' : ''}>\${etichettaDi(k).replace(/^\\S+ /, '')}</option>\`).join('')}
         </select></label>
         <label>Nome o numero<br><input id="rg_chi" value="\${esc(REG_F.chi)}" placeholder="socio, operatore, n\xB0 comanda"></label>
         <button class="btn gold sm" id="rg_cerca">Cerca</button>
@@ -11221,7 +11226,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.43";
+var VERSION = "5.44";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -16556,10 +16561,27 @@ adminRouter.post("/tavoli/layout/rigenera", requireCapAmbiente, async (req, res)
   const amb = ["garden", "carta", "stage"].includes(String(req.body?.ambiente)) ? String(req.body.ambiente) : null;
   if (!amb) return res.status(400).json({ error: "Ambiente non valido" });
   const attive = await db.prepare(
-    "SELECT COUNT(*) n FROM prenotazioni_tavolo WHERE ambiente=? AND stato='prenotato' AND data>=date('now','-1 day')"
-  ).get(amb);
-  if (Number(attive?.n || 0) > 0) {
-    return res.status(409).json({ error: `Ci sono ${attive.n} prenotazioni attive in questo ambiente: liberale prima di ridisegnare la pianta.` });
+    "SELECT id,data,turno,tavoli,nome,persone FROM prenotazioni_tavolo WHERE ambiente=? AND stato='prenotato' AND data>=date('now','-1 day') ORDER BY data,turno"
+  ).all(amb);
+  if (attive.length > 0) {
+    const descrivi = (p) => {
+      let tv = "";
+      try {
+        const a = JSON.parse(p.tavoli || "[]");
+        tv = Array.isArray(a) && a.length ? " \xB7 tavolo " + a.join(", ") : "";
+      } catch (_) {
+      }
+      return `${p.data} \xB7 ${p.turno || ""}${tv}${p.nome ? " \xB7 " + p.nome : ""}${p.persone ? " (" + p.persone + " pers.)" : ""}`;
+    };
+    return res.status(409).json({
+      error: `Non ridisegno la sala: ci sono ${attive.length} prenotazioni ancora in piedi.
+
+` + attive.slice(0, 8).map((p) => "\xB7 " + descrivi(p)).join("\n") + (attive.length > 8 ? `
+\xB7 \u2026 e altre ${attive.length - 8}` : "") + `
+
+Liberale dalla pianta (tocca il tavolo \u2192 Libera) e riprova. Nota: annullare una comanda non libera il tavolo, sono due cose diverse.`,
+      prenotazioni: attive.map((p) => ({ id: p.id, data: p.data, turno: p.turno, nome: p.nome }))
+    });
   }
   const vecchie = await db.prepare("SELECT id FROM tavoli_layout WHERE ambiente=?").all(amb);
   for (const l of vecchie) {
@@ -18365,7 +18387,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 08:19" : "online";
+var BUILD = true ? "2026-08-26 08:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
