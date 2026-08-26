@@ -1588,6 +1588,8 @@ async function migrate() {
   await addIfMissing("comanda_righe", "motivo_storno", "motivo_storno TEXT");
   await addIfMissing("comanda_righe", "stornata_da", "stornata_da TEXT");
   await addIfMissing("tavoli", "posti_base", "posti_base INTEGER");
+  await addIfMissing("comande", "avviso_cucina", "avviso_cucina TEXT");
+  await addIfMissing("comande", "avviso_cucina_at", "avviso_cucina_at TEXT");
   await addIfMissing("comanda_righe", "parent_riga_id", "parent_riga_id INTEGER");
   await addIfMissing("comande", "non_prima", "non_prima TEXT");
   await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
@@ -8885,7 +8887,8 @@ function cucinaCard(g) {
     return \`<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)">
       <span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${dentro.length ? \`<div style="font-size:.78rem;color:#5a5346;margin-top:2px">\${dentro.map(f => '\\u21b3 ' + esc(f.nome)).join('<br>')}</div>\` : ''}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
       \${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \\u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \\ud83d\\udece</button>\`}
-      <button class="btn ghost sm" data-kstorna="\${r.id}" title="Non si pu\\u00f2 fare: ingrediente finito, piatto sbagliato">\\u21a9\\ufe0e</button></div>\`;
+      <button class="btn ghost sm" data-kstorna="\${r.id}" title="Non si pu\\u00f2 fare: il piatto non parte, niente conto e niente scarico">\\u21a9\\ufe0e</button>
+      <button class="btn ghost sm" data-knons="\${r.id}" title="Gi\\u00e0 fatto ma non servito: esce dal conto, la merce resta scaricata">\\ud83d\\uddd1</button></div>\`;
   }).join('');
   // Se l'ordine e' arrivato prima che la piastra fosse calda, la cucina deve saperlo: non e'
   // in ritardo, e' in attesa dell'ora di consegna concordata con chi ha ordinato.
@@ -8956,6 +8959,18 @@ VIEWS.kds = async () => {
     // La cucina pu\xF2 togliere una riga che non \xE8 in grado di fare: ingrediente finito, piatto
     // sbagliato. Prima poteva solo segnarla "pronta" e lasciare il problema alla sala, che se
     // ne accorgeva davanti al cliente. Il motivo \xE8 obbligatorio, e la riga resta scritta.
+    // "Gia' fatto ma non servito" non e' uno storno: il piatto e' stato cucinato, la merce e'
+    // uscita. Fuori dal conto, ma il magazzino la scarica lo stesso \u2014 altrimenti all'inventario
+    // resta un ammanco che nessuno sa spiegare.
+    document.querySelectorAll('[data-knons]').forEach(b => b.onclick = async (e) => {
+      e.stopPropagation();
+      const motivo = prompt('Il piatto \\u00e8 stato fatto ma non servito. Cosa \\u00e8 successo?\\n(il cliente ha rinunciato, sbagliato tavolo, arrivato freddo\\u2026)');
+      if (motivo == null || !motivo.trim()) return;
+      try { await api('/comande/righe/' + b.dataset.knons + '/non-servita', { method: 'PUT', body: JSON.stringify({ motivo: motivo.trim() }) }); }
+      catch (err) { alert(err.message); return; }
+      alert('Tolto dal conto. La merce resta scaricata dal magazzino: il piatto \\u00e8 stato fatto.\\nLa sala vede il tavolo acceso in rosso.');
+      show('kds');
+    });
     document.querySelectorAll('[data-kstorna]').forEach(b => b.onclick = async (e) => {
       e.stopPropagation();
       const motivo = prompt('Perch\xE9 questa riga non si pu\xF2 fare?\\n(ingrediente finito, piatto sbagliato\u2026)');
@@ -10142,6 +10157,13 @@ VIEWS.pianta = async () => {
     (perTavolo[Number(rif)] ??= []).push(c);
   }
   const rossoMin = Number((conf.map_rosso_min ?? 10));
+  // Un messaggio dalla cucina accende il tavolo: e' la cosa piu' urgente che la sala puo'
+  // vedere sulla pianta, perche' dietro c'e' un cliente che aspetta un piatto che non arriva.
+  const avvisoDi = (numero) => {
+    const cs = perTavolo[Number(numero)] || [];
+    const c = cs.find(x => x.avviso_cucina);
+    return c ? c.avviso_cucina : null;
+  };
 
   // Una sola videata. Lo stato del turno c'e' sempre; gli strumenti di disegno compaiono
   // quando si sta modificando, ma la pagina e la mappa restano quelle: non serve una seconda
@@ -10183,6 +10205,7 @@ VIEWS.pianta = async () => {
     const perQuota = { over70: '#7a5c2e', garden: '#2e6b45', spettacolo: '#2f6d8a' };
     const bg = arredo ? '#8d8477' : PIANTA.modo === 'disposizione'
       ? (t.attivo === 0 ? '#d9d4c6' : extra ? '#b08b3e' : 'var(--accent)')
+      : avvisoDi(t.numero) ? '#b14a35'
       : st ? (st.key === 'rosso' ? '#b14a35' : st.key === 'giallo' ? '#c88a2e' : '#2e6b45')
       : occupato ? '#b14a35'
       : extra ? '#b08b3e'
@@ -10192,6 +10215,7 @@ VIEWS.pianta = async () => {
         width:\${palco ? 200 : raggio * 2}px;height:\${palco ? 44 : raggio * 2}px;border-radius:\${t.forma === 'quadrato' ? '10px' : t.forma === 'rettangolo' ? '10px/26px' : '50%'};
         background:\${bg};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;
         font-weight:800;font-size:.85rem;box-shadow:0 2px 6px rgba(0,0,0,.25);cursor:\${arredo ? 'default' : PIANTA.modo === 'disposizione' ? 'grab' : 'pointer'};touch-action:none;user-select:none" \${(PIANTA.modo === 'servizio' && !arredo) ? \`data-pren="\${t.numero}"\` : ''}>
+        \${avvisoDi(t.numero) ? '<span style="position:absolute;top:-6px;right:-6px;background:#fff;color:#b14a35;border:2px solid #b14a35;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:.9rem;font-weight:900">!</span>' : ''}
         <span>\${arredo ? (t.numero === 99 ? '\u{1F3AD}' : t.numero === 90 ? '\u{1F6CE}\uFE0F' : '\u2615') : t.numero + ((t.uniti && t.uniti.length) ? '+' + t.uniti.join('+') : '')}</span>
         <span style="font-weight:500;font-size:.62rem;opacity:.9">\${arredo ? (t.numero === 99 ? 'PALCO' : t.numero === 90 ? 'reception' : 'caff\xE8')
           : st ? (st.mins != null ? st.mins + '\u2032' : 'in corso')
@@ -10295,7 +10319,7 @@ VIEWS.pianta = async () => {
               <button class="btn ghost sm" data-cmuovi="\${c.id}">\u27A1\uFE0E Sposta a un altro tavolo</button>
               <button class="btn danger sm" data-cann="\${c.id}">Annulla</button></div></div>\`).join('')}
           <div class="row" style="align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
-            <label style="font-size:.82rem">Diviso per <input id="cnt_div" type="number" min="1" value="\${t.posti || cs.reduce((n, c) => n + 1, 1)}" style="width:56px"></label>
+            <label style="font-size:.82rem">Diviso per <input id="cnt_div" type="number" min="1" value="\${(pren && pren.persone) || t.posti_usati || t.posti || 2}" style="width:56px" title="Quante persone dividono il conto: se ci sono bambini che non pagano, correggi"></label>
             <b id="cnt_quota" style="color:var(--navy)"></b>
           </div>
           <button class="btn gold block" style="margin-top:8px" data-contochiudi="\${cs.map(c => c.id).join(',')}">\u{1F4B6} Chiudi il conto \xB7 \${eur(totaleTavolo)}</button>
@@ -10303,6 +10327,25 @@ VIEWS.pianta = async () => {
 
       openModal(\`<h3>\${stage ? 'Seduta' : 'Tavolo'} \${n}\${(t.uniti && t.uniti.length) ? ' + ' + t.uniti.join(' + ') : ''}</h3>
         <p class="muted" style="font-size:.84rem;margin-top:-4px">\${t.posti} \${t.posti === 1 ? 'posto' : 'posti'}\${t.tipo === 'extra' ? ' \xB7 extra' : ''} \xB7 \${esc(PIANTA.turno)}</p>
+        \${(() => {
+          // La prima cosa da leggere aprendo un tavolo. In rosso quello che la cucina ha tolto
+          // (c'e' un cliente da avvisare); in blu i piatti pronti da portare. Il resto viene dopo.
+          const conAvviso = cs.filter(x => x.avviso_cucina);
+          const pronte = cs.filter(x => x.stato === 'pronta');
+          let box = '';
+          for (const x of conAvviso) {
+            box += \`<div style="background:#fdecea;border-left:5px solid #b14a35;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px">
+              <b style="color:#8a2a20">Dalla cucina \\u00b7 comanda #\${esc(String(x.numero))}</b>
+              <div style="margin-top:2px">\${esc(x.avviso_cucina)}</div>
+              <button class="btn ghost sm" style="margin-top:8px" data-avvletto="\${x.id}">\\u2713 Ho avvisato il cliente</button></div>\`;
+          }
+          if (pronte.length) {
+            box += \`<div style="background:#e8eef5;border-left:5px solid #1d4e79;border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:8px">
+              <b style="color:#1d4e79">\\ud83d\\udece\\ufe0f Da portare in tavola</b>
+              <div style="margin-top:2px">\${pronte.map(x => 'comanda #' + esc(String(x.numero))).join(' \\u00b7 ')}</div></div>\`;
+          }
+          return box;
+        })()}
         \${chi ? \`<div style="background:#eaf3ec;border-left:4px solid #2e6b45;border-radius:0 8px 8px 0;padding:8px 12px;margin-bottom:10px">
             <b style="color:var(--navy)">\${esc(chi)}</b> \xB7 \${pren.persone} \${pren.persone === 1 ? 'persona' : 'persone'}
             <div class="muted" style="font-size:.78rem">Chiamali per nome: sanno di essere attesi.</div></div>\` : ''}
@@ -10329,6 +10372,12 @@ VIEWS.pianta = async () => {
         <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
       const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal;
 
+      // L'avviso si spegne quando l'operatore dichiara di aver parlato col cliente: non da solo
+      // dopo tot secondi, e non aprendo il tavolo \u2014 aprirlo non vuol dire aver avvisato nessuno.
+      document.querySelectorAll('[data-avvletto]').forEach(b => b.onclick = async () => {
+        await api('/comande/' + b.dataset.avvletto + '/avviso-letto', { method: 'PUT', body: '{}' });
+        closeModal(); show('pianta');
+      });
       const agisci = async (id, stato) => { await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato }) }); closeModal(); show('pianta'); };
       document.querySelectorAll('[data-cchiudi]').forEach(x => x.onclick = () => agisci(x.dataset.cchiudi, 'chiusa'));
       // "Annulla" buttava via la comanda senza chiedere niente: un dito storto in mezzo al
@@ -10348,16 +10397,31 @@ VIEWS.pianta = async () => {
       document.querySelectorAll('[data-cmuovi]').forEach(b => b.onclick = async () => {
         const dove = prompt('Su quale tavolo si spostano?');
         if (dove == null || !String(dove).trim()) return;
-        try { await api('/comande/' + b.dataset.cmuovi + '/tavolo', { method: 'PUT', body: JSON.stringify({ riferimento: String(dove).trim() }) }); }
+        let r;
+        try { r = await api('/comande/' + b.dataset.cmuovi + '/tavolo', { method: 'PUT', body: JSON.stringify({ riferimento: String(dove).trim() }) }); }
         catch (e) { alert(e.message); return; }
+        // Se il tavolo di arrivo e' gia' prenotato per un altro turno, lo spostamento si fa
+        // lo stesso ma chi accoglie deve saperlo.
+        if (r && r.avviso) alert(r.avviso);
         closeModal(); show('pianta');
       });
       // Il conto diviso: la crew dice in quanti sono e legge la quota, senza fare i conti a
       // mente davanti al tavolo. Il totale resta uno: si divide solo per comodita' di chi paga.
+      // Si divide per i POSTI OCCUPATI, non per i posti del tavolo: se sono in tre a un tavolo
+      // da quattro, si divide per tre. E si arrotonda SEMPRE PER ECCESSO al centesimo: fare
+      // pagare a qualcuno un centesimo in meno costringe il cameriere a ricordarsi chi e'
+      // "l'ultimo" mentre quattro persone gli passano i soldi. La differenza o si restituisce
+      // o resta mancia.
       const quota = () => {
         const n = Math.max(1, Number(($('#cnt_div') || {}).value) || 1);
         const q = $('#cnt_quota');
-        if (q) q.textContent = n > 1 ? \`\${eur(totaleTavolo / n)} a testa\` : '';
+        if (!q) return;
+        if (n <= 1) { q.textContent = ''; return; }
+        const aTesta = Math.ceil((totaleTavolo / n) * 100) / 100;
+        const scarto = Math.round((aTesta * n - totaleTavolo) * 100) / 100;
+        q.innerHTML = \`\${eur(aTesta)} a testa\` + (scarto > 0
+          ? \` <span class="muted" style="font-weight:400">(\${eur(aTesta * n)} in tutto \\u00b7 \${eur(scarto)} in pi\\u00f9: resto o mancia)</span>\`
+          : '');
       };
       if ($('#cnt_div')) { $('#cnt_div').oninput = quota; quota(); }
       // Storno di una riga: serve il motivo, perche' e' quello che vale davanti a una
@@ -11226,7 +11290,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.44";
+var VERSION = "5.45";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15438,7 +15502,46 @@ adminRouter.put("/comande/righe/:rigaId/storna", requireCap("comande"), async (r
     importo: -stornato,
     dettaglio: { articolo: r.nome, quantita: r.qta, motivo, in_cucina: r.stato !== "in_coda" }
   });
+  await avvisaLaSala(r.comanda_id, `\u21A9\uFE0E Tolto dalla comanda: ${r.qta}\xD7 ${r.nome} \u2014 ${motivo}. Avvisa il cliente.`);
   audit(req.adminUser.username, "storna_riga", "comanda_righe", r.id, motivo);
+  res.json(await comandaConRighe(r.comanda_id));
+});
+async function avvisaLaSala(comandaId, testo) {
+  await db.prepare("UPDATE comande SET avviso_cucina=?, avviso_cucina_at=? WHERE id=?").run(testo, (/* @__PURE__ */ new Date()).toISOString(), comandaId);
+}
+adminRouter.put("/comande/:id/avviso-letto", requireCap("comande"), async (req, res) => {
+  await db.prepare("UPDATE comande SET avviso_cucina=NULL, avviso_cucina_at=NULL WHERE id=?").run(req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.put("/comande/righe/:rigaId/non-servita", requireCap("comande"), async (req, res) => {
+  const r = await db.prepare("SELECT * FROM comanda_righe WHERE id=?").get(req.params.rigaId);
+  if (!r) return res.status(404).json({ error: "Riga non trovata" });
+  if (r.stato === "stornata" || r.stato === "non_servita") return res.status(409).json({ error: "Questa riga e' gia' fuori dal conto" });
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(r.comanda_id);
+  if (c && (c.stato === "chiusa" || c.stato === "annullata")) {
+    return res.status(409).json({ error: "La comanda e' gia' chiusa." });
+  }
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) return res.status(400).json({ error: "Scrivi cosa e' successo: e' quello che spiega lo sfrido a fine mese." });
+  const figlie = await db.prepare("SELECT * FROM comanda_righe WHERE parent_riga_id=?").all(r.id);
+  for (const id of [r.id].concat(figlie.map((f) => f.id))) {
+    await db.prepare("UPDATE comanda_righe SET stato='non_servita', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo, req.adminUser.username, id);
+  }
+  const tolto = Number(r.prezzo) * Number(r.qta) + figlie.reduce((t, f) => t + Number(f.prezzo) * Number(f.qta), 0);
+  await db.prepare("UPDATE comande SET totale=MAX(0, totale-?), updated_at=? WHERE id=?").run(tolto, (/* @__PURE__ */ new Date()).toISOString(), r.comanda_id);
+  await avvisaLaSala(r.comanda_id, `\u26A0\uFE0F Preparato ma non servito: ${r.qta}\xD7 ${r.nome} \u2014 ${motivo}. Fuori dal conto. Avvisa il cliente.`);
+  await registra({
+    fatto: "riga_non_servita",
+    servizio: "comande",
+    riferimento: c ? c.numero : r.comanda_id,
+    socio_id: c ? c.socio_id : null,
+    intestatario: c ? c.nome || null : null,
+    autore: req.adminUser.username,
+    canale: "crew",
+    importo: -tolto,
+    dettaglio: { articolo: r.nome, quantita: r.qta, motivo, merce_consumata: true }
+  });
+  audit(req.adminUser.username, "non_servita", "comanda_righe", r.id, motivo);
   res.json(await comandaConRighe(r.comanda_id));
 });
 adminRouter.post("/comande/righe/:rigaId/sostituisci", requireCap("comande"), async (req, res) => {
@@ -15493,6 +15596,21 @@ adminRouter.put("/comande/:id/tavolo", requireCap("comande"), async (req, res) =
       });
     }
   }
+  let avvisoTavolo = null;
+  const giornoOra = (c.created_at || "").slice(0, 10) || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const pren = await db.prepare(
+    "SELECT turno,nome,persone,tavoli FROM prenotazioni_tavolo WHERE ambiente='garden' AND stato='prenotato' AND data=? ORDER BY turno"
+  ).all(giornoOra).catch(() => []);
+  for (const p of pren) {
+    let nums = [];
+    try {
+      nums = JSON.parse(p.tavoli || "[]").map(String);
+    } catch (_) {
+    }
+    if (!nums.includes(String(nuovo))) continue;
+    avvisoTavolo = `Attenzione: il tavolo ${nuovo} \xE8 prenotato per le ${p.turno}${p.nome ? " a nome " + p.nome : ""}${p.persone ? " (" + p.persone + " pers.)" : ""}. Lo spostamento \xE8 fatto: tienilo presente per il cambio turno.`;
+    break;
+  }
   await db.prepare("UPDATE comande SET riferimento=?, updated_at=? WHERE id=?").run(nuovo, (/* @__PURE__ */ new Date()).toISOString(), c.id);
   await registra({
     fatto: "comanda_spostata",
@@ -15506,7 +15624,7 @@ adminRouter.put("/comande/:id/tavolo", requireCap("comande"), async (req, res) =
     dettaglio: { da_tavolo: c.riferimento || null, a_tavolo: nuovo, motivo: req.body?.motivo || null }
   });
   audit(req.adminUser.username, "sposta_tavolo", "comande", c.id, `${c.riferimento} -> ${nuovo}`);
-  res.json(await comandaConRighe(c.id));
+  res.json({ ...await comandaConRighe(c.id), avviso: avvisoTavolo });
 });
 adminRouter.delete("/comande/:id", requireCap("comande"), async (req, res) => {
   await db.prepare("DELETE FROM comanda_righe WHERE comanda_id=?").run(req.params.id);
@@ -15519,7 +15637,7 @@ adminRouter.get("/kds", requireCap("comande"), async (req, res) => {
   const comande = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') ORDER BY id").all());
   const out = [];
   for (const c of comande) {
-    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato NOT IN ('consegnata','stornata') AND NOT (parent_riga_id IS NOT NULL AND menu_id IS NULL) ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
+    const righe = staz ? await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stazione=? AND stato NOT IN ('consegnata','stornata','non_servita') AND NOT (parent_riga_id IS NOT NULL AND menu_id IS NULL) ORDER BY id").all(c.id, staz) : await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? AND stato!='consegnata' ORDER BY id").all(c.id);
     if (righe.length) out.push({ ...c, righe });
   }
   res.json(out);
@@ -18387,7 +18505,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 08:54" : "online";
+var BUILD = true ? "2026-08-26 09:53" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
