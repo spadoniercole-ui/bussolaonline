@@ -11461,7 +11461,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.48";
+var VERSION = "5.49";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15691,6 +15691,18 @@ adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) 
   const metodo = metodi.includes(req.body?.metodo) ? req.body.metodo : "contanti";
   const now = (/* @__PURE__ */ new Date()).toISOString();
   await db.prepare("UPDATE comande SET stato=?,metodo_pagamento=?,pagata_at=?,updated_at=? WHERE id=?").run("chiusa", metodo, now, now, c.id);
+  await scaricaMagazzinoDaComanda(c.id, req.adminUser.username);
+  await registra({
+    fatto: "comanda_chiusa",
+    servizio: "comande",
+    riferimento: c.numero,
+    socio_id: c.socio_id,
+    intestatario: c.nome || null,
+    autore: req.adminUser.username,
+    canale: "crew",
+    importo: c.totale,
+    dettaglio: { zona: c.zona, riferimento_tavolo: c.riferimento, metodo }
+  });
   audit(req.adminUser.username, "chiudi", "comande", c.id, `tot ${c.totale} \xB7 ${metodo}`);
   res.json(await comandaConRighe(c.id));
 });
@@ -18728,7 +18740,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-26 16:54" : "online";
+var BUILD = true ? "2026-08-27 11:15" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
