@@ -2974,6 +2974,66 @@ var init_parametri = __esm({
         aiuto: "Il tempo che serve alla piastra e alla friggitrice per andare in temperatura. Da qui esce l'ora del primo ritiro possibile: apertura + questi minuti."
       },
       {
+        chiave: "garden_tavoli",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 12,
+        min: 2,
+        max: 60,
+        etichetta: "Quanti tavoli ha il Garden",
+        aiuto: "Il numero di tavoli della pianta di partenza. Cambiarlo non tocca la sala gia' disegnata: serve il tasto \u201CRipristina predefinita\u201D nella pianta, che ridisegna tutto da capo. Aggiungere tavoli e' sempre possibile; toglierne di gia' prenotati no, e il sistema lo dice."
+      },
+      {
+        chiave: "garden_larghezza_m",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 18,
+        min: 3,
+        max: 120,
+        etichetta: "Larghezza della sala (metri)",
+        aiuto: "La misura vera dello spazio, presa col metro. Serve a sapere se i tavoli che hai disegnato ci stanno davvero: sulla pianta in percentuale un tavolo in piu' entra sempre, nella realta' no."
+      },
+      {
+        chiave: "garden_profondita_m",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 12,
+        min: 3,
+        max: 120,
+        etichetta: "Profondita' della sala (metri)",
+        aiuto: "L'altra misura dello spazio. Larghezza per profondita' danno i metri quadri su cui si fa il conto."
+      },
+      {
+        chiave: "garden_ingombro_tavolo_m",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 2,
+        min: 1,
+        max: 4,
+        etichetta: "Ingombro di un tavolo con le sedie (metri)",
+        aiuto: "Non la misura del piano, ma il quadrato che occupa il tavolo CON le persone sedute: un quadrato da 80 cm con quattro sedie occupa circa due metri per due."
+      },
+      {
+        chiave: "garden_corridoio_m",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 0.9,
+        min: 0.4,
+        max: 3,
+        etichetta: "Passaggio fra i tavoli (metri)",
+        aiuto: "Lo spazio che serve a un cameriere con un vassoio per passare fra due tavoli occupati. Sotto i 90 cm non ci si passa con le mani piene."
+      },
+      {
+        chiave: "garden_posti_per_tavolo",
+        gruppo: "Garden",
+        tipo: "numero",
+        predefinito: 4,
+        min: 2,
+        max: 10,
+        etichetta: "Posti per tavolo",
+        aiuto: "Quante persone siede un tavolo singolo. Quattro e' lo standard: due quadrati accostati fanno una tavolata da sei comodi."
+      },
+      {
         chiave: "tavoli_posti_persi_unione",
         gruppo: "Garden",
         tipo: "numero",
@@ -6238,7 +6298,9 @@ var admin_default = `<!DOCTYPE html>
   .panel[data-fold] > h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;}
   .panel[data-fold] > h3::before{content:'\u25BE';font-size:.8em;color:var(--muted);transition:transform .15s;}
   .panel[data-fold].chiuso > h3::before, .panel[data-fold].chiuso > .fold-testa > h3::before{transform:rotate(-90deg);}
-  .panel[data-fold].chiuso > *:not(h3):not(.fold-testa){display:none;}
+  /* !important perche' molte righe hanno display:flex scritto INLINE: senza, il pannello
+     risultava chiuso ma il contenuto restava visibile, e "Comprimi tutto" sembrava rotto. */
+  .panel[data-fold].chiuso > *:not(h3):not(.fold-testa){display:none !important;}
   .panel[data-fold].chiuso{padding-bottom:12px;}
   .foldbar{display:flex;gap:8px;justify-content:flex-end;margin:-4px 0 10px;}
   /* Il QR arriva come SVG senza dimensioni proprie: dentro un contenitore flex collasserebbe */
@@ -8358,7 +8420,8 @@ input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;backgro
 .panel[data-fold] > .fold-testa{display:flex;align-items:center;gap:8px;}
 .panel[data-fold] > .fold-testa > h3::before, .panel[data-fold] > b.fold-testa::before{content:'\u25BE';font-size:.8em;opacity:.5;transition:transform .15s;display:inline-block;margin-right:6px;}
 .panel[data-fold].chiuso > .fold-testa > h3::before, .panel[data-fold].chiuso > b.fold-testa::before{transform:rotate(-90deg);}
-.panel[data-fold].chiuso > *:not(.fold-testa){display:none;}
+/* !important: le righe con display:flex inline vincerebbero sulla regola. */
+.panel[data-fold].chiuso > *:not(.fold-testa){display:none !important;}
 .panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
 .panel h3{color:var(--accent);font-size:1rem;margin-bottom:10px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
@@ -10453,6 +10516,7 @@ VIEWS.pianta = async () => {
           <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>\` : ''}
         \${PIANTA.ambiente === 'stage' ? '' : '<button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli disegnati">\u{1F533} QR tavoli</button>'}
         <button class="btn ghost sm" id="p_reset">\u21BA Ripristina predefinita</button>
+        <button class="btn ghost sm" id="p_spazio" title="Riporta la pianta alle misure vere della sala">\\ud83d\\udcd0 Ci sta davvero?</button>
       </div>
       <p class="muted" style="font-size:.76rem;margin-top:6px">\${PIANTA.modo === 'disposizione'
         ? \`Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La disposizione decide anche l'ordine di riempimento, che va sempre <b>dal centro verso l'esterno</b>.\`
@@ -10538,6 +10602,27 @@ VIEWS.pianta = async () => {
     catch (e) { $('#p_msg2').textContent = e.message; }
   };
 
+  // La pianta e' in percentuali: un tavolo in piu' ci entra sempre. Qui la si riporta alle
+  // misure vere della sala, prese col metro, e si guarda se con i passaggi liberi ci sta.
+  if ($('#p_spazio')) $('#p_spazio').onclick = async () => {
+    const v = await api('/tavoli/verifica-spazio?ambiente=' + PIANTA.ambiente).catch(() => null);
+    if (!v) { alert('Verifica non disponibile per questo ambiente.'); return; }
+    if (v.misure_mancanti) { alert('Prima scrivi le misure della sala nei parametri: larghezza e profondit\\u00e0 in metri.'); return; }
+    const ok = !v.problemi.length;
+    const riga = (et, val) => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>\${et}</span><b>\${val}</b></div>\`;
+    openModal(\`<h3 style="margin-top:0">\\ud83d\\udcd0 Ci sta davvero?</h3>
+      <div style="background:\${ok ? '#eaf3ec' : '#fdecea'};border-left:5px solid \${ok ? '#2e6b45' : '#b14a35'};border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:10px">
+        <b style="color:\${ok ? '#2e6b45' : '#8a2a20'}">\${ok ? 'S\\u00ec: la sala regge la pianta che hai disegnato.' : 'No, e ti dico di quanto.'}</b>
+        \${v.problemi.map(x => \`<div style="margin-top:4px">\\u00b7 \${esc(x)}</div>\`).join('')}
+      </div>
+      \${riga('Sala', v.sala.larghezza_m + ' \\u00d7 ' + v.sala.profondita_m + ' m \\u00b7 ' + v.sala.mq + ' m\\u00b2')}
+      \${riga('Tavoli disegnati', v.disegnati + ' \\u00b7 ' + v.posti_disegnati + ' posti')}
+      \${riga('Ce ne stanno', v.capienza_teorica + ' \\u00b7 ' + v.posti_teorici + ' posti')}
+      \${riga('Metri quadri per coperto', v.mq_per_coperto == null ? '\\u2014' : v.mq_per_coperto)}
+      \${v.troppo_vicini.length ? \`<p class="muted" style="font-size:.8rem;margin-top:8px">Tavoli troppo vicini: \${v.troppo_vicini.slice(0, 6).map(x => x.a + '\\u2013' + x.b + ' (' + x.luce + ' m)').join(', ')}</p>\` : ''}
+      <p class="muted" style="font-size:.78rem;margin-top:8px">Il conto usa \${v.regole.ingombro_tavolo_m} m di ingombro per tavolo <b>con le sedie occupate</b> e \${v.regole.corridoio_m} m di passaggio. Si cambiano nei parametri, se la tua sala \\u00e8 fatta diversamente.</p>
+      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+  };
   $('#p_reset').onclick = async () => {
     if (!confirm('Ridisegnare la pianta predefinita di questo ambiente dai parametri correnti? Le disposizioni personalizzate di questo ambiente vengono perse.')) return;
     try {
@@ -11562,7 +11647,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.53";
+var VERSION = "5.54";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -13643,7 +13728,8 @@ async function layoutPredefinito(ambiente = "garden") {
   }
   if (ambiente === "stage") return await creaPlateaIniziale();
   if (ambiente === "carta") return await creaSalaCarta();
-  const n = Math.max(1, Number(await getSetting("garden_tavoli", "12")) || 12);
+  const n = Math.max(1, Number(await par("garden_tavoli")) || 12);
+  const postiTavolo = Math.max(1, Number(await par("garden_posti_per_tavolo")) || 4);
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'garden')").run("Standard");
   const id = Number(info.lastInsertRowid);
   const cols = Math.ceil(Math.sqrt(n));
@@ -13654,7 +13740,7 @@ async function layoutPredefinito(ambiente = "garden") {
     const r = Math.floor(i / cols);
     const x = (c + 1) / (cols + 1) * 100;
     const y = (r + 1) / (righe + 1) * 100;
-    await ins.run(id, i + 1, 4, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)));
+    await ins.run(id, i + 1, postiTavolo, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)));
   }
   return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
 }
@@ -13822,6 +13908,61 @@ async function statoTurno(data, turno, ambiente = "garden", layoutId = null) {
     coperti_prenotati: pren.reduce((s, p) => s + Number(p.persone || 0), 0),
     posti_persi_unione: Number(await par("tavoli_posti_persi_unione")) || 0,
     ...await comeVaLaSerata(postiTot, pren)
+  };
+}
+async function verificaSpazio(ambiente = "garden") {
+  const L = Number(await par("garden_larghezza_m")) || 0;
+  const P = Number(await par("garden_profondita_m")) || 0;
+  const ing = Number(await par("garden_ingombro_tavolo_m")) || 2;
+  const cor = Number(await par("garden_corridoio_m")) || 0.9;
+  if (!L || !P) return { misure_mancanti: true };
+  const layout = await layoutPredefinito(ambiente);
+  const tav = (await tavoliDi(layout.id)).filter((t) => Number(t.attivo) !== 0);
+  const inMetri = tav.map((t) => ({
+    numero: t.numero,
+    posti: Number(t.posti),
+    // Una tavolata di piu' tavoli occupa piu' spazio in larghezza: si allunga, non si allarga.
+    larghezza: ing * (1 + (Array.isArray(t.uniti) ? t.uniti.length : 0)),
+    profondita: ing,
+    x: Number(t.x) / 100 * L,
+    y: Number(t.y) / 100 * P
+  }));
+  const fuori = [];
+  for (const t of inMetri) {
+    const mezzaL = t.larghezza / 2, mezzaP = t.profondita / 2;
+    if (t.x - mezzaL < 0 || t.x + mezzaL > L || t.y - mezzaP < 0 || t.y + mezzaP > P) fuori.push(t.numero);
+  }
+  const vicini = [];
+  for (let i = 0; i < inMetri.length; i++) {
+    for (let j = i + 1; j < inMetri.length; j++) {
+      const a = inMetri[i], b = inMetri[j];
+      const dx = Math.abs(a.x - b.x) - (a.larghezza + b.larghezza) / 2;
+      const dy = Math.abs(a.y - b.y) - (a.profondita + b.profondita) / 2;
+      const luce = Math.max(dx, dy);
+      if (luce < cor) vicini.push({ a: a.numero, b: b.numero, luce: Number(luce.toFixed(2)) });
+    }
+  }
+  const passo = ing + cor;
+  const perFila = Math.floor((L + cor) / passo);
+  const file = Math.floor((P + cor) / passo);
+  const capienzaTeorica = Math.max(0, perFila * file);
+  const postiTeorici = capienzaTeorica * (Number(await par("garden_posti_per_tavolo")) || 4);
+  const problemi = [];
+  if (fuori.length) problemi.push(`${fuori.length} ${fuori.length === 1 ? "tavolo esce" : "tavoli escono"} dal perimetro della sala (${fuori.join(", ")}).`);
+  if (vicini.length) problemi.push(`Fra ${vicini.length} coppie di tavoli non passa un cameriere con il vassoio: servono ${cor} m, ce ne sono meno.`);
+  if (tav.length > capienzaTeorica) problemi.push(`Hai disegnato ${tav.length} tavoli ma in ${L}\xD7${P} m ce ne stanno ${capienzaTeorica} rispettando i passaggi.`);
+  return {
+    sala: { larghezza_m: L, profondita_m: P, mq: Number((L * P).toFixed(1)) },
+    regole: { ingombro_tavolo_m: ing, corridoio_m: cor },
+    disegnati: tav.length,
+    posti_disegnati: tav.reduce((s2, t) => s2 + Number(t.posti), 0),
+    capienza_teorica: capienzaTeorica,
+    posti_teorici: postiTeorici,
+    mq_per_coperto: tav.length ? Number((L * P / Math.max(1, tav.reduce((s2, t) => s2 + Number(t.posti), 0))).toFixed(2)) : null,
+    fuori_perimetro: fuori,
+    troppo_vicini: vicini.slice(0, 12),
+    problemi,
+    verdetto: problemi.length ? "non ci sta" : "ci sta"
   };
 }
 async function comeVaLaSerata(postiTot, pren) {
@@ -17027,6 +17168,10 @@ adminRouter.put("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
   audit(req.adminUser.username, "articolo_capsule", "magazzino_articoli", id, "");
   res.json({ ok: true, articolo_id: id || null });
 });
+adminRouter.get("/tavoli/verifica-spazio", requireCapAmbiente, async (req, res) => {
+  const amb = ["garden", "carta"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : "garden";
+  res.json(await verificaSpazio(amb));
+});
 adminRouter.post("/tavoli/layout/rigenera", requireCapAmbiente, async (req, res) => {
   const amb = ["garden", "carta", "stage"].includes(String(req.body?.ambiente)) ? String(req.body.ambiente) : null;
   if (!amb) return res.status(400).json({ error: "Ambiente non valido" });
@@ -18918,7 +19063,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-28 14:46" : "online";
+var BUILD = true ? "2026-08-28 15:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
