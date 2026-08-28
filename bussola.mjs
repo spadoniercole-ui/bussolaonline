@@ -9155,23 +9155,45 @@ VIEWS.bar = async () => {
   const cfg = await api('/self-order/config').catch(() => ({}));
   const rMin = Number(cfg.map_rosso_min || 10);
   const render = async () => {
-    const comande = (await api('/comande').catch(() => [])).filter(c => c.zona === 'bar');
+    // IL BANCO PREPARA QUELLO CHE PREPARA IL BANCO, da qualunque parte arrivi l'ordine.
+    // Prima questa schermata filtrava per ZONA: mostrava tutte le comande del bancone (anche i
+    // panini, che li fa la cucina) e NON mostrava il cocktail ordinato a un tavolo del Garden \u2014
+    // che la cucina a sua volta non vede, perche' lei filtra per stazione. Quel cocktail non lo
+    // vedeva nessuno: restava in un ordine che nessuno preparava, finche' il cliente non lo
+    // reclamava. E' lo stesso principio del menu': chi prepara e dove si vende sono due cose
+    // diverse, e la coda di lavoro segue CHI PREPARA.
+    const comande = await api('/kds?stazione=bar').catch(() => []);
     const now = Date.now();
     const arr = comande.map(c => ({ c, st: statoGruppo([c], rMin, now) }));
     arr.sort((a, b) => (URG[a.st.key] - URG[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)));
     const card = ({ c, st }) => {
       const col = ZCOL[st.key];
       const hhmm = st.since ? new Date(st.since).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-      const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0\${r.parent_riga_id ? ';padding-left:16px' : ''}"><span style="flex:1">\${r.parent_riga_id ? '<span class="muted">\u21B3</span> ' : r.qta + '\xD7 '}\${esc(r.nome)} \${r.parent_riga_id ? '' : (r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}')}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
-      const actions = \`\${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|in_preparazione">\u25B6 Avvia</button>\` : ''}\${c.stato === 'in_preparazione' ? \`<button class="btn ghost sm" data-cs="\${c.id}|pronta">\u2714 Pronta</button>\` : ''}\${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|consegnata">\u{1F6CE} Consegna</button>\` : ''}<button class="btn gold sm" data-ch="\${c.id}">\u{1F4B6} Incassa</button><button class="btn danger sm" data-can="\${c.id}">\u2715</button>\`;
-      return \`<div class="panel" style="border:2px solid \${col.bd};background:\${col.bg};min-width:250px;flex:1 1 250px;max-width:340px;margin:0"><div class="row" style="justify-content:space-between"><b style="color:\${col.tx};font-size:1.05rem">\u{1F378} \${esc(c.riferimento || '\u2014')}</b>\${st.mins != null ? \`<span class="tag" style="background:\${col.bd};color:#fff">\${st.mins}\u2032</span>\` : (st.key === 'verde' ? '<span class="tag ok">\u2714</span>' : '')}</div><div style="font-size:.72rem;color:\${col.tx};font-weight:700">#\${c.numero || c.id}\${hhmm ? ' \xB7 ' + hhmm : ''}</div><div style="margin:8px 0">\${righe}</div><div style="text-align:right;font-weight:800;margin-bottom:6px">\${eur(c.totale)}</div><div class="row">\${actions}</div></div>\`;
+      // Da dove arriva: al banco si ritira, al tavolo si porta. Cambia il gesto, non la coda.
+      const alTavolo = c.zona !== 'bar';
+      const provenienza = alTavolo
+        ? \`<span class="tag" style="background:#1d4e79;color:#fff">\\ud83c\\udf7d\\ufe0f da portare al tavolo \${esc(String(c.riferimento || '?'))}</span>\`
+        : \`<span class="tag" style="background:#8a6d1f;color:#fff">\\ud83c\\udf78 al banco\${c.nome ? ' \\u00b7 ' + esc(c.nome) : ''}</span>\`;
+      const righe = (c.righe || []).map(r => \`<div style="display:flex;gap:6px;font-size:.85rem;padding:2px 0\${r.parent_riga_id ? ';padding-left:16px' : ''}"><span style="flex:1">\${r.parent_riga_id ? '<span class="muted">\\u21b3</span> ' : r.qta + '\\u00d7 '}\${esc(r.nome)}</span><span class="tag \${r.stato === 'consegnata' || r.stato === 'pronta' ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+      // L'incasso resta a chi tiene il conto: una comanda del tavolo si paga al tavolo, e dal
+      // banco si vede solo per prepararla.
+      const azioni = \`\${c.stato === 'aperta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|in_preparazione">\\u25b6 Avvia</button>\` : ''}\` +
+        \`\${c.stato === 'in_preparazione' ? \`<button class="btn gold sm" data-cs="\${c.id}|pronta">Pronta \\u2714</button>\` : ''}\` +
+        \`\${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|consegnata">\${alTavolo ? 'Portata \\ud83c\\udf7d\\ufe0f' : 'Consegnata \\ud83d\\udece\\ufe0f'}</button>\` : ''}\` +
+        \`\${alTavolo ? '' : \`<button class="btn gold sm" data-ch="\${c.id}">\\ud83d\\udcb6 Incassa</button><button class="btn danger sm" data-can="\${c.id}">Annulla</button>\`}\`;
+      return \`<div class="panel" style="border:2px solid \${col.bd};background:\${col.bg};min-width:250px;flex:1 1 250px;max-width:340px;margin:0">
+        <div class="row" style="justify-content:space-between;align-items:center"><b>#\${esc(String(c.numero))}</b><span class="muted" style="font-size:.75rem">\${hhmm}</span></div>
+        <div style="margin:4px 0">\${provenienza}</div>
+        <div style="margin-top:4px">\${righe}</div>
+        <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${azioni}</div></div>\`;
     };
-    $('#view').innerHTML = \`<div class="panel"><h3>\u{1F378} Bar \xB7 comande a nome <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:8px">\xB7 auto-aggiornamento</span></h3>
-      <div class="muted" style="font-size:.76rem">Ordini del bar per nome. <b style="color:#c79200">Giallo</b> in lavorazione \xB7 <b style="color:#d64535">rosso</b> oltre \${rMin}\u2032 \xB7 <b style="color:#3f8f4e">verde</b> consegnato. L'incasso si registra qui.</div></div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">\${arr.map(card).join('') || '<p class="muted">Nessuna comanda bar attiva.</p>'}</div>\`;
+    const alTavolo = arr.filter(x => x.c.zona !== 'bar').length;
+    $('#view').innerHTML = \`<div class="panel"><h3>\\ud83c\\udf78 Banco \\u00b7 da preparare <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:8px">\\u00b7 auto-aggiornata</span></h3>
+      <div class="muted" style="font-size:.76rem">Tutto quello che prepara il banco, <b>da qualunque parte arrivi l'ordine</b>: \${alTavolo ? \`<b>\${alTavolo}</b> \${alTavolo === 1 ? 'ordine' : 'ordini'} da portare a un tavolo del Garden\` : 'al momento solo ordini al banco'}. <b style="color:#c79200">Giallo</b> in lavorazione \\u00b7 <b style="color:#d64535">rosso</b> oltre \${rMin}\\u2032.</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">\${arr.map(card).join('') || '<p class="muted">Niente da preparare al banco. \\ud83c\\udf89</p>'}</div></div>\`;
     document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
     document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => { await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) }); render(); }));
-    document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can, { method: 'DELETE' }); render(); });
+    document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can + '/stato', { method: 'PUT', body: JSON.stringify({ stato: 'annullata' }) }); render(); });
   };
   await render();
   window.__kdsTimer = setInterval(render, 8000);
@@ -11461,7 +11483,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.49";
+var VERSION = "5.50";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -18740,7 +18762,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-27 11:15" : "online";
+var BUILD = true ? "2026-08-28 13:47" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
