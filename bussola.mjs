@@ -1108,30 +1108,42 @@ function audit(utente, azione, entita, entita_id, dettaglio = "") {
   }).catch(() => {
   });
 }
+function cifraControllo(numero) {
+  const somma = String(numero).split("").reduce((acc, d, i) => acc + Number(d) * (i % 6 + 2), 0);
+  return String(11 - somma % 11).slice(-1);
+}
+function formattaTessera(progressivo) {
+  const n = String(progressivo).padStart(6, "0");
+  return `RB-${n}-${cifraControllo(n)}`;
+}
 async function nextTessera() {
-  const rows = await db.prepare("SELECT tessera_code FROM soci WHERE tessera_code LIKE 'BR-2026-%'").all();
+  const rows = await db.prepare("SELECT tessera_code FROM soci WHERE tessera_code LIKE 'RB-%'").all();
   let max = 0;
   for (const r of rows) {
-    const m = /BR-2026-(\d+)/.exec(r.tessera_code || "");
+    const m = /RB-(\d{6})-\d/.exec(String(r.tessera_code || "").toUpperCase());
     if (m) {
       const v = parseInt(m[1], 10);
       if (v > max) max = v;
     }
   }
-  return "BR-2026-" + String(max + 1).padStart(4, "0");
+  return formattaTessera(max + 1);
 }
 async function insertSocioUnique(cols, vals) {
   const iCode = cols.indexOf("tessera_code");
   const placeholders = cols.map(() => "?").join(",");
   const sql = `INSERT INTO soci (${cols.join(",")}) VALUES (${placeholders})`;
   let base = await nextTessera();
-  let baseNum = parseInt(/BR-2026-(\d+)/.exec(base)[1], 10);
+  let baseNum = parseInt(/RB-(\d{6})-\d/.exec(base)[1], 10);
   for (let attempt = 0; attempt < 8; attempt++) {
-    const code = attempt < 6 ? "BR-2026-" + String(baseNum + attempt).padStart(4, "0") : "BR-2026-" + String(baseNum).padStart(4, "0") + "-" + Math.random().toString(36).slice(2, 5).toUpperCase();
+    const code = formattaTessera(baseNum + attempt);
     const args = vals.slice();
     args[iCode] = code;
     try {
       const info = await db.prepare(sql).run(...args);
+      try {
+        await db.prepare("INSERT OR IGNORE INTO tessere (code,socio_id,stato,motivo) VALUES (?,?,'attiva','prima emissione')").run(code, Number(info.lastInsertRowid));
+      } catch (_) {
+      }
       return { id: Number(info.lastInsertRowid), tessera_code: code };
     } catch (e) {
       if (attempt === 7) throw e;
@@ -1754,6 +1766,43 @@ async function migrate() {
   await addIfMissing("comande", "avviso_cucina_at", "avviso_cucina_at TEXT");
   await addIfMissing("fitness_prenotazioni", "dovuta", "dovuta INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("fitness_prenotazioni", "annullata_at", "annullata_at TEXT");
+  await addIfMissing("soci", "prepagata_autorizzata", "prepagata_autorizzata INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("soci", "prepagata_autorizzata_da", "prepagata_autorizzata_da TEXT");
+  await addIfMissing("soci", "prepagata_autorizzata_at", "prepagata_autorizzata_at TEXT");
+  await addIfMissing("soci", "pin_hash", "pin_hash TEXT");
+  await addIfMissing("soci", "pin_tentativi", "pin_tentativi INTEGER NOT NULL DEFAULT 0");
+  await db.exec(`
+  CREATE TABLE IF NOT EXISTS tessere (
+    code        TEXT PRIMARY KEY,
+    socio_id    INTEGER NOT NULL,
+    stato       TEXT NOT NULL DEFAULT 'attiva',      -- attiva | revocata
+    emessa_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    revocata_at TEXT,
+    motivo      TEXT
+  )`);
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_tessere_socio ON tessere(socio_id)");
+  try {
+    if (await getSetting("tessere_registro", "") !== "v1") {
+      for (const r of await db.prepare("SELECT id,tessera_code FROM soci WHERE tessera_code IS NOT NULL").all()) {
+        await db.prepare("INSERT OR IGNORE INTO tessere (code,socio_id,stato,motivo) VALUES (?,?,'attiva','prima emissione')").run(r.tessera_code, r.id);
+      }
+      await setSetting("tessere_registro", "v1");
+    }
+  } catch (_) {
+  }
+  await db.exec(`
+  CREATE TABLE IF NOT EXISTS tessera_movimenti (
+    id        INTEGER PRIMARY KEY,
+    socio_id  INTEGER NOT NULL,
+    tipo      TEXT NOT NULL,                       -- ricarica | spesa | rimborso | rettifica
+    importo   REAL NOT NULL,                       -- positivo carica, negativo scarica
+    saldo_dopo REAL NOT NULL,
+    causale   TEXT,
+    comanda_id INTEGER,
+    operatore TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_tessera_mov ON tessera_movimenti(socio_id, id)");
   await addIfMissing("otp", "tentativi", "tentativi INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("otp", "ip", "ip TEXT");
   await addIfMissing("otp", "inviata", "inviata INTEGER NOT NULL DEFAULT 0");
@@ -2968,6 +3017,42 @@ var init_parametri = __esm({
         aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
       },
       {
+        chiave: "tessera_prepagata",
+        gruppo: "Comande",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "La tessera si puo\u2019 usare come prepagata",
+        aiuto: "Il socio carica un importo e paga con la tessera fino a esaurimento. Il credito NON e\u2019 un incasso: e\u2019 un debito verso il socio, e diventa ricavo mano a mano che consuma. A fine stagione i saldi residui vanno rimborsati o riportati: decidilo prima di accendere questo interruttore."
+      },
+      {
+        chiave: "tessera_ricarica_massima",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 100,
+        min: 5,
+        max: 500,
+        etichetta: "Ricarica massima (\u20AC)",
+        aiuto: "Quanto si puo\u2019 caricare in una volta. Tenerla bassa tiene piccolo anche il problema dei saldi residui a fine stagione."
+      },
+      {
+        chiave: "tessera_pin_oltre",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 0,
+        min: 0,
+        max: 200,
+        etichetta: "PIN richiesto oltre (\u20AC)",
+        aiuto: "Sopra questo importo, per pagare con la tessera serve il PIN del socio. A zero il PIN si chiede sempre \u2014 ed e\u2019 la scelta prudente: il numero di tessera e\u2019 scritto sulla card e progressivo, quindi si indovina. Alzarlo velocizza i caffe\u2019 ma apre una porta."
+      },
+      {
+        chiave: "ricevuta_email_automatica",
+        gruppo: "Comande",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "Manda la copia del conto ai soci senza chiederlo",
+        aiuto: "Spento (consigliato): la copia parte solo se l'operatore scrive un indirizzo alla cassa. Acceso, ogni socio con e-mail riceve una copia per OGNI comanda \u2014 anche per un caff\xE8. Tre caff\xE8 al giorno fanno tre mail al giorno, e in una settimana il socio disattiva le notifiche."
+      },
+      {
         chiave: "comande_supplemento_complementi",
         gruppo: "Comande",
         tipo: "numero",
@@ -4092,6 +4177,15 @@ window.Comanda = (function () {
 // Prezzi in euro, con lo stesso formato ovunque. Mancava, e in due punti l'app la chiamava
 // lo stesso: il totale dell'ordine e la conferma. L'eccezione veniva ingoiata dal browser, e
 // l'effetto visibile era che il totale restava vuoto e "Invia ordine" non si accendeva.
+// Da qualunque supporto arrivi, la tessera e' sempre lo stesso numero: qui si estrae, che sia
+// stato digitato a mano, letto da un QR o aperto da un tag NFC (che porta un indirizzo, non un
+// numero). Senza questo, ogni supporto avrebbe bisogno del suo pezzo di codice.
+function leggiTessera(testo) {
+  const t = String(testo || "").trim().toUpperCase();
+  const m = t.match(/BR-\\d{4}-\\d{3,6}/);
+  return m ? m[0] : "";
+}
+
 const eur = (n) => '\\u20ac ' + (Number(n) || 0).toFixed(2);
 
 // ---- Stato & preferenze (persistite quando possibile) ---------------------
@@ -4113,7 +4207,7 @@ const state = {
 
 // ---- Dati incorporati (fallback anteprima) --------------------------------
 const SEED = {
-  socio: { tessera_code: 'BR-2026-0001', nome: 'Ercole', cognome: '\u2014', ruolo: 'Socio', tipo_profilo: 'socio', casata: 'Aretusa', colore: '#2E6DA4', valida_fino: '2027-05-01', notifiche_push: true },
+  socio: { tessera_code: 'RB-000001-4', nome: 'Ercole', cognome: '\u2014', ruolo: 'Socio', tipo_profilo: 'socio', casata: 'Aretusa', colore: '#2E6DA4', valida_fino: '2027-05-01', notifiche_push: true },
   luoghi: [ { chiave:'chiosco', nome:'Chiosco La Bussola', lat:36.967766, lng:15.221669 }, { chiave:'isola', nome:'Isola ecologica', lat:36.967209, lng:15.221206 } ],
   contest: { titolo:'Il mio nome \xE8 Bond, James Bond', tipo:'cocktail', settimana:'25\u201331 agosto', brief:'Dati 3 liquori, un\\'acqua tonica e un selz, crea il cocktail della tua casata. I primi 3 in vendita nel weekend; a fine settimana la graduatoria della giuria + il bonus vendite (4/2/1 pezzi venduti) assegna i punti Coppa.', stato:'annunciato', vincitore:null },
   serate: [
@@ -4931,7 +5025,7 @@ async function campoDisdici(partitaId) {
 async function giocatoreAggiungi(partitaId) {
   const v = (($('#gioc_v') || {}).value || '').trim();
   if (!v) { okThen(T('Scrivi il nome di chi gioca, oppure la sua tessera.'), false); return; }
-  const corpo = /^BR-/i.test(v) ? { giocatore_tessera: v.toUpperCase() } : { nome: v };
+  const corpo = /^(RB|BR)-/i.test(v) ? { giocatore_tessera: v.toUpperCase() } : { nome: v };
   try { await api('/partite/' + partitaId + '/giocatori', { method: 'POST', body: JSON.stringify({ tessera_code: state.tessera, ...corpo }) }); }
   catch (e) { okThen(e.message, false); return; }
   openChiGioca(partitaId);
@@ -5801,7 +5895,9 @@ async function refreshSocio(force) {
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSocio(); });
 window.addEventListener('focus', () => refreshSocio());
 async function loginTessera() {
-  const code = ($('#gate_tess').value || '').trim().toUpperCase();
+  // Accetta il numero digitato, ma anche un indirizzo intero: chi appoggia la card NFC o
+  // incolla il link della propria tessera non deve stare a estrarne il numero a mano.
+  const code = leggiTessera($('#gate_tess').value) || ($('#gate_tess').value || '').trim().toUpperCase();
   const err = $('#gateErr');
   if (err) err.textContent = '';
   if (!code) { if (err) err.textContent = T('Inserisci il codice tessera.'); return; }
@@ -5827,7 +5923,7 @@ async function loginTessera() {
   }
 }
 function demoPreview() {   // solo per anteprima: usa la tessera demo e i dati SEED se offline
-  state.tessera = 'BR-2026-0001'; store.set('tessera', state.tessera);
+  state.tessera = 'RB-000001-4'; store.set('tessera', state.tessera);
   hideGate(); enterApp();
 }
 
@@ -6344,7 +6440,13 @@ async function init() {
     const h = location.hash.replace('#', ''); if (h && document.getElementById('s-' + h)) go(h);
   } else {
     // Nessuna sessione: si parte SEMPRE dall'accesso
-    if ($('#gate_tess') && state.tessera) $('#gate_tess').value = state.tessera; // pre-compila l'ultima tessera usata
+    // Arrivo da /t/BR-\u2026: e' la card appoggiata o inquadrata. Si precompila e si spiega, invece
+    // di far ritrovare il socio davanti a un campo vuoto dopo aver appoggiato la tessera.
+    const daCard = leggiTessera(new URLSearchParams(location.search).get('t') || '');
+    if (daCard && $('#gate_tess')) {
+      $('#gate_tess').value = daCard;
+      history.replaceState(null, '', location.pathname);
+    } else if ($('#gate_tess') && state.tessera) $('#gate_tess').value = state.tessera; // pre-compila l'ultima tessera usata
     showGate();
   }
   // Il service worker \xE8 registrato dai tag PWA iniettati dal server (server/pwa.js).
@@ -6918,6 +7020,13 @@ async function editSocio(s, all) {
       <div><label>Casata</label><select id="f_casata">\${casataOptions(s?.casata_id)}</select></div>
       <div><label>Tipo profilo</label><select id="f_tipo">\${profili.map(p=>\`<option value="\${p[0]}" \${s?.tipo_profilo===p[0]?'selected':''}>\${p[1]}</option>\`).join('')}</select></div>
       <div id="tutoreWrap"><label>Genitore (per Under 14)</label><select id="f_tutore">\${tutOpts}</select></div>
+      <div id="prepWrap" style="grid-column:1/-1">
+        <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
+          <input type="checkbox" id="f_prep" \${s?.prepagata_autorizzata ? 'checked' : ''} style="margin-top:3px">
+          <span><b>Puo' pagare con la tessera prepagata</b>
+            <div class="muted" style="font-size:.78rem">Per un minorenne serve il consenso di chi ne risponde: qui non si sta scegliendo una comodita', si sta mettendo denaro spendibile in mano a un ragazzo. Per un adulto basta il parametro generale del residence e questa spunta non serve.</div>
+          </span></label>
+      </div>
       <div><label>Ruolo</label><select id="f_ruolo"><option \${s?.ruolo==='socio'?'selected':''}>socio</option><option \${s?.ruolo==='capitano'?'selected':''}>capitano</option><option \${s?.ruolo==='staff'?'selected':''}>staff</option><option value="non_socio" \${s?.ruolo==='non_socio'?'selected':''}>non socio</option></select></div>
       <div><label>Lingua</label><select id="f_lingua">\${['it','en','fr','de','es','zh','ja'].map(l=>\`<option \${s?.lingua===l?'selected':''}>\${l}</option>\`).join('')}</select></div>
       <div id="validaWrap"><label>Tessera valida fino</label><input id="f_valida" type="date" value="\${esc(s?.valida_fino||'2027-05-01')}"></div>
@@ -6938,6 +7047,11 @@ async function editSocio(s, all) {
     const t = $('#f_tipo').value;
     const u = t === 'under14', osp = t === 'ospite_temporaneo', resid = (t === 'residente' || t === 'socio_residente');
     $('#tutoreWrap').style.opacity = u ? '1' : '.5'; $('#under14note').style.display = u ? 'block' : 'none';
+    // Il consenso alla prepagata riguarda SOLO i minorenni: per un adulto basta il parametro
+    // generale, e mostrargli una spunta in piu' farebbe credere che serva anche a lui.
+    const nato = $('#f_nasc') ? $('#f_nasc').value : '';
+    const minore = nato ? (Date.now() - new Date(nato + 'T00:00:00Z').getTime()) / 31557600000 < 18 : u;
+    if ($('#prepWrap')) $('#prepWrap').style.display = minore ? 'block' : 'none';
     // Visitatore (ospite temporaneo): periodo dal/al, niente tessera annuale.
     $('#dalWrap').style.display = osp ? 'block' : 'none';
     $('#alWrap').style.display = osp ? 'block' : 'none';
@@ -6953,7 +7067,10 @@ async function editSocio(s, all) {
     const hw = $('#hostWrap');
     if (hw) { hw.style.display = resid ? 'block' : 'none'; if (!resid) { const fh = $('#f_host'); if (fh) fh.checked = false; } }
   };
-  $('#f_tipo').onchange = syncTipo; syncTipo();
+  $('#f_tipo').onchange = syncTipo;
+  // Anche la data di nascita decide: e' quella a dire se e' un minorenne, non il tipo profilo.
+  if ($('#f_nasc')) $('#f_nasc').onchange = syncTipo;
+  syncTipo();
   $('#mCancel').onclick = closeModal;
   $('#mSave').onclick = async () => {
     const osp = $('#f_tipo').value === 'ospite_temporaneo';
@@ -6962,6 +7079,7 @@ async function editSocio(s, all) {
       emergenza_nome:($('#f_emn')||{}).value||null, emergenza_tel:($('#f_emt')||{}).value||null,
       data_nascita:$('#f_nasc').value, casata_id:$('#f_casata').value||null, ruolo:$('#f_ruolo').value, lingua:$('#f_lingua').value,
       tipo_profilo:$('#f_tipo').value, tutore_id: $('#f_tipo').value==='under14' ? ($('#f_tutore').value||null) : null,
+      prepagata_autorizzata: $('#f_prep') ? $('#f_prep').checked : undefined,
       // Ospite temporaneo: nessuna tessera annuale, ma periodo di soggiorno dal/al.
       valida_fino: osp ? null : $('#f_valida').value,
       soggiorno_dal: osp ? ($('#f_dal').value||null) : null, soggiorno_al: osp ? ($('#f_al').value||null) : null,
@@ -9085,7 +9203,7 @@ const COM_STATI = { aperta: ['Aperta', 'mid'], in_preparazione: ['In preparazion
 const canaleBadge = (c) => c.canale === 'self'
   ? \`<span class="tag mid" style="background:#e7f0f6;color:#12324F">\u{1F64B} Self\${c.punto ? ' \xB7 ' + esc(c.punto) : ''}</span>\`
   : \`<span class="tag" style="background:#eef7ee;color:#2e6b3f">\u{1F464} Staff</span>\`;
-const METODI = [['contanti', '\u{1F4B6} Contanti'], ['carta', '\u{1F4B3} Carta'], ['satispay', '\u{1F4F1} Satispay'], ['buoni', '\u{1F39F}\uFE0F Buoni'], ['altro', '\u2026 Altro']];
+const METODI = [['contanti', '\u{1F4B6} Contanti'], ['carta', '\u{1F4B3} Carta'], ['satispay', '\u{1F4F1} Satispay'], ['buoni', '\u{1F39F}\uFE0F Buoni'], ['altro', '\u2026 Altro'], ['tessera', '\\ud83e\\udeaa Tessera']];
 const metodoLabel = (m) => (METODI.find(x => x[0] === m) || [m, m || '\u2014'])[1];
 // Chooser del metodo di pagamento alla chiusura (overlay touch-friendly).
 function pickMetodo(onPick) {
@@ -9108,8 +9226,20 @@ function pickMetodo(onPick) {
   ov.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
     const m = b.dataset.m;
     const mail = (ov.querySelector('#pm_mail') || {}).value || '';
+    // Con la tessera serve sapere QUALE: si scala il saldo di qualcuno, non si incassa e basta.
+    let tess = '', pin = '';
+    if (m === 'tessera') {
+      // Il campo accetta il numero digitato, il QR inquadrato o l'indirizzo che arriva dal tag
+      // NFC: sono lo stesso identificatore su tre supporti diversi.
+      const grezzo = prompt('Tessera di chi paga: digita il numero, inquadra il QR o appoggia la card') || '';
+      const m = grezzo.trim().toUpperCase().match(/BR-\\d{4}-\\d{3,6}/);
+      tess = m ? m[0] : grezzo.trim();
+      if (!tess) return;
+      // Il PIN lo digita il socio, non l'operatore: e' l'unica cosa che sta solo in testa a lui.
+      pin = (prompt('Fai digitare il PIN al socio (4-6 cifre)') || '').trim();
+    }
     document.body.removeChild(ov);
-    if (m) onPick(m, mail.trim());
+    if (m) onPick(m, mail.trim(), tess, pin);
   });
 }
 
@@ -9465,7 +9595,7 @@ VIEWS.bar = async () => {
       <div class="muted" style="font-size:.76rem">Tutto quello che prepara il banco, <b>da qualunque parte arrivi l'ordine</b>: \${alTavolo ? \`<b>\${alTavolo}</b> \${alTavolo === 1 ? 'ordine' : 'ordini'} da portare a un tavolo del Garden\` : 'al momento solo ordini al banco'}. <b style="color:#c79200">Giallo</b> in lavorazione \\u00b7 <b style="color:#d64535">rosso</b> oltre \${rMin}\\u2032.</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">\${arr.map(card).join('') || '<p class="muted">Niente da preparare al banco. \\ud83c\\udf89</p>'}</div></div>\`;
     document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
-    document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo, email) => { const r = await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo, email }) }); if (r && r.ricevuta_inviata) alert('Copia del conto inviata a ' + r.ricevuta_a + '.\\nLo scontrino fiscale va consegnato lo stesso.'); render(); }));
+    document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo, email, tessera_code, pin) => { const r = await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo, email, tessera_code, pin }) }); if (r && r.ricevuta_inviata) alert('Copia del conto inviata a ' + r.ricevuta_a + '.\\nLo scontrino fiscale va consegnato lo stesso.'); render(); }));
     document.querySelectorAll('[data-can]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la comanda?')) return; await api('/comande/' + b.dataset.can + '/stato', { method: 'PUT', body: JSON.stringify({ stato: 'annullata' }) }); render(); });
   };
   await render();
@@ -10415,7 +10545,7 @@ VIEWS.campi = async () => {
     const id = b.dataset.gioc;
     const v = (($('#gj_' + id) || {}).value || '').trim();
     if (!v) { alert('Scrivi il nome di chi gioca, oppure la sua tessera.'); return; }
-    const corpo = /^BR-/i.test(v) ? { giocatore_tessera: v.toUpperCase() } : { nome: v };
+    const corpo = /^(RB|BR)-/i.test(v) ? { giocatore_tessera: v.toUpperCase() } : { nome: v };
     try { await api('/campi/partite/' + id + '/giocatori', { method: 'POST', body: JSON.stringify(corpo) }); }
     catch (e) { alert(e.message); return; }
     show('campi');
@@ -10568,7 +10698,7 @@ async function renderSalaCarta() {
   $('#carta_pren').onclick = async () => {
     const v = ($('#carta_chi').value || '').trim();
     const body = { data: oggiISO(), turno: CARTA_TURNO, persone: Number($('#carta_p').value) || 2 };
-    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     try { await api('/carta/prenota', { method: 'POST', body: JSON.stringify(body) }); renderSalaCarta(); }
     catch (e) { $('#carta_msg').textContent = e.message; }
   };
@@ -10755,7 +10885,7 @@ VIEWS.pianta = async () => {
   if ($('#p_pren')) $('#p_pren').onclick = async () => {
     const v = $('#p_nome').value.trim();
     const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#p_pers').value) || 2 };
-    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     try { await api('/tavoli/prenota', { method: 'POST', body: JSON.stringify(body) }); show('pianta'); }
     catch (e) { $('#p_msg2').textContent = e.message; }
   };
@@ -10956,10 +11086,10 @@ VIEWS.pianta = async () => {
       if (bottoneConto) bottoneConto.onclick = () => {
         const ids = bottoneConto.dataset.contochiudi.split(',').filter(Boolean);
         if (!confirm(\`Chiudere il conto del tavolo \${n}? Sono \${ids.length} \${ids.length === 1 ? 'comanda' : 'comande'}, pagate insieme.\`)) return;
-        pickMetodo(async (metodo, email) => {
+        pickMetodo(async (metodo, email, tessera_code, pin) => {
           let inviata = null;
           for (const id of ids) {
-            const r = await api('/comande/' + id + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo, email }) });
+            const r = await api('/comande/' + id + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo, email, tessera_code, pin }) });
             // L'indirizzo si usa una volta sola: il cliente non vuole quattro mail per un conto.
             if (r && r.ricevuta_inviata && !inviata) { inviata = r.ricevuta_a; email = ''; }
           }
@@ -11301,7 +11431,7 @@ VIEWS.cinema = async () => {
   $('#cine_add').onclick = async () => {
     const v = ($('#cine_chi').value || '').trim();
     const body = { persone: Number($('#cine_p').value) || 1 };
-    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     try { await api('/proiezioni/' + CINE_SEL + '/prenota', { method: 'POST', body: JSON.stringify(body) }); show('cinema'); }
     catch (e) { $('#cine_msg').textContent = e.message; }
   };
@@ -11391,7 +11521,7 @@ function apriPrenotaTavolo(numero, t) {
   $('#pr_ok').onclick = async () => {
     const v = ($('#pr_chi').value || '').trim();
     const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#pr_p').value) || 1, tavoli: [numero] };
-    if (/^BR-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     const rotta = PIANTA.ambiente === 'carta' ? '/carta/prenota' : stage ? null : '/tavoli/prenota';
     try {
       if (rotta) await api(rotta, { method: 'POST', body: JSON.stringify(body) });
@@ -11822,7 +11952,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.60";
+var VERSION = "5.66";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14507,6 +14637,85 @@ async function storiaDi(servizio, riferimento) {
 // server/routes/admin.js
 init_mail();
 
+// server/tessera.js
+init_db();
+init_parametri();
+init_auth();
+function eMinorenne(socio) {
+  if (!socio?.data_nascita) return false;
+  const nato = (/* @__PURE__ */ new Date(socio.data_nascita + "T00:00:00Z")).getTime();
+  if (!Number.isFinite(nato)) return false;
+  return (Date.now() - nato) / 315576e5 < 18;
+}
+async function statoPrepagata(socio) {
+  const accesa = String(await par("tessera_prepagata")) === "true" || await par("tessera_prepagata") === true;
+  if (!accesa) {
+    return { attiva: false, motivo: "La prepagata non e' attiva in questo residence.", minorenne: eMinorenne(socio) };
+  }
+  if (eMinorenne(socio) && Number(socio.prepagata_autorizzata) !== 1) {
+    return {
+      attiva: false,
+      minorenne: true,
+      motivo: "Per un minorenne serve il consenso di chi ne risponde: si attiva in anagrafica, sulla scheda del ragazzo."
+    };
+  }
+  return { attiva: true, minorenne: eMinorenne(socio), motivo: null };
+}
+async function saldo(socioId) {
+  const r = await db.prepare("SELECT saldo_dopo FROM tessera_movimenti WHERE socio_id=? ORDER BY id DESC LIMIT 1").get(socioId);
+  return Number(r?.saldo_dopo || 0);
+}
+async function muovi({ socioId, tipo, importo, causale, comandaId = null, operatore = null }) {
+  const prima = await saldo(socioId);
+  const dopo = Math.round((prima + Number(importo)) * 100) / 100;
+  if (dopo < -1e-3) return { ok: false, error: `Saldo insufficiente: ci sono ${prima.toFixed(2)} \u20AC.`, saldo: prima };
+  await db.prepare(
+    "INSERT INTO tessera_movimenti (socio_id,tipo,importo,saldo_dopo,causale,comanda_id,operatore) VALUES (?,?,?,?,?,?,?)"
+  ).run(socioId, tipo, Number(importo), dopo, causale || null, comandaId, operatore);
+  return { ok: true, saldo: dopo, prima };
+}
+async function movimenti(socioId, limite = 50) {
+  return db.prepare(
+    "SELECT tipo,importo,saldo_dopo,causale,operatore,created_at FROM tessera_movimenti WHERE socio_id=? ORDER BY id DESC LIMIT ?"
+  ).all(socioId, Math.min(200, Math.max(1, Number(limite) || 50)));
+}
+async function debitoVersoISoci() {
+  const righe = await db.prepare(
+    `SELECT m.socio_id, s.nome, s.cognome, s.tessera_code, m.saldo_dopo FROM tessera_movimenti m
+     JOIN soci s ON s.id = m.socio_id
+     WHERE m.id = (SELECT MAX(id) FROM tessera_movimenti WHERE socio_id = m.socio_id)`
+  ).all();
+  const conCredito = righe.filter((r) => Number(r.saldo_dopo) > 0);
+  return {
+    soci: conCredito.map((r) => ({ nome: `${r.nome} ${r.cognome}`, tessera: r.tessera_code, saldo: Number(r.saldo_dopo) })),
+    totale: Number(conCredito.reduce((s, r) => s + Number(r.saldo_dopo), 0).toFixed(2))
+  };
+}
+var PIN_MAX_TENTATIVI = 5;
+async function impostaPin(socioId, pin) {
+  const p = String(pin || "").trim();
+  if (!/^\d{4,6}$/.test(p)) return { ok: false, error: "Il PIN e' di 4-6 cifre." };
+  if (/^(\d)\1+$/.test(p) || ["1234", "0000", "123456"].includes(p)) {
+    return { ok: false, error: "Scegli un PIN meno prevedibile: 1234 e le cifre tutte uguali sono le prime che si provano." };
+  }
+  await db.prepare("UPDATE soci SET pin_hash=?, pin_tentativi=0 WHERE id=?").run(await hashPassword(p), socioId);
+  return { ok: true };
+}
+async function verificaPin(socio, pin) {
+  if (!socio.pin_hash) return { ok: false, error: "Su questa tessera non c'e' ancora un PIN: si imposta dall'app o al banco." };
+  if (Number(socio.pin_tentativi) >= PIN_MAX_TENTATIVI) {
+    return { ok: false, error: "PIN bloccato dopo troppi tentativi sbagliati: va reimpostato al banco." };
+  }
+  const ok = await verifyPassword(String(pin || ""), socio.pin_hash);
+  if (!ok) {
+    await db.prepare("UPDATE soci SET pin_tentativi=pin_tentativi+1 WHERE id=?").run(socio.id);
+    const restano = PIN_MAX_TENTATIVI - Number(socio.pin_tentativi) - 1;
+    return { ok: false, error: `PIN sbagliato.${restano > 0 ? ` Restano ${restano} tentativi.` : " La tessera e' bloccata."}` };
+  }
+  if (Number(socio.pin_tentativi) > 0) await db.prepare("UPDATE soci SET pin_tentativi=0 WHERE id=?").run(socio.id);
+  return { ok: true };
+}
+
 // server/referenze.js
 init_db();
 var VINCOLI = {
@@ -14834,6 +15043,7 @@ adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
     audit(req.adminUser.username, "crea", "soci", info.lastInsertRowid, code);
     res.status(201).json({ ok: true, id: info.lastInsertRowid, tessera_code: code });
   } catch (e) {
+    console.error("creazione socio fallita:", e && e.message);
     res.status(400).json({ error: "Tessera duplicata o dati non validi" });
   }
 });
@@ -14870,6 +15080,11 @@ adminRouter.put("/soci/:id", requireCap("utenti"), async (req, res) => {
   );
   if (!["residente", "socio_residente"].includes(tipo)) await db.prepare("UPDATE soci SET host=0, host_ko=0 WHERE id=?").run(req.params.id);
   audit(req.adminUser.username, "modifica", "soci", req.params.id);
+  if (Object.prototype.hasOwnProperty.call(b, "prepagata_autorizzata")) {
+    const v = b.prepagata_autorizzata ? 1 : 0;
+    await db.prepare("UPDATE soci SET prepagata_autorizzata=?, prepagata_autorizzata_da=?, prepagata_autorizzata_at=? WHERE id=?").run(v, v ? req.adminUser.username : null, v ? (/* @__PURE__ */ new Date()).toISOString() : null, req.params.id);
+    audit(req.adminUser.username, v ? "prepagata_autorizzata" : "prepagata_revocata", "soci", req.params.id);
+  }
   res.json({ ok: true });
 });
 adminRouter.get("/soci/:id/export", requireCap("utenti"), async (req, res) => {
@@ -15679,6 +15894,103 @@ adminRouter.get("/registro", requireCap("comande"), async (req, res) => {
 adminRouter.get("/registro/storia", requireCap("comande"), async (req, res) => {
   res.json(await storiaDi(String(req.query.servizio || ""), String(req.query.riferimento || "")));
 });
+adminRouter.get("/tessera/:code/saldo", requireCap("comande"), async (req, res) => {
+  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=?").get(String(req.params.code).toUpperCase());
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const st = await statoPrepagata(socio);
+  res.json({
+    socio: { nome: socio.nome, cognome: socio.cognome, tessera: socio.tessera_code },
+    prepagata: st,
+    saldo: await saldo(socio.id),
+    movimenti: await movimenti(socio.id, 20),
+    ricarica_massima: Number(await par("tessera_ricarica_massima")) || 100
+  });
+});
+adminRouter.post("/tessera/:code/ricarica", requireCap("comande"), async (req, res) => {
+  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=?").get(String(req.params.code).toUpperCase());
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const st = await statoPrepagata(socio);
+  if (!st.attiva) return res.status(409).json({ error: st.motivo });
+  const importo = Math.round(Number(req.body?.importo || 0) * 100) / 100;
+  const massimo = Number(await par("tessera_ricarica_massima")) || 100;
+  if (!(importo > 0)) return res.status(400).json({ error: "Scrivi quanto sta caricando" });
+  if (importo > massimo) return res.status(400).json({ error: `La ricarica massima e' ${massimo} \u20AC.` });
+  const m = await muovi({ socioId: socio.id, tipo: "ricarica", importo, causale: req.body?.metodo || "contanti", operatore: req.adminUser.username });
+  await registra({
+    fatto: "ricarica_tessera",
+    servizio: "tessera",
+    riferimento: socio.tessera_code,
+    socio_id: socio.id,
+    intestatario: `${socio.nome} ${socio.cognome}`,
+    autore: req.adminUser.username,
+    canale: "crew",
+    importo,
+    dettaglio: { metodo: req.body?.metodo || "contanti", saldo_dopo: m.saldo, nota: "anticipo, non ricavo" }
+  });
+  audit(req.adminUser.username, "ricarica_tessera", "soci", socio.id, `${importo} \u20AC`);
+  res.json({ ok: true, saldo: m.saldo });
+});
+adminRouter.post("/tessera/:code/rimborso", requireCap("comande"), async (req, res) => {
+  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=?").get(String(req.params.code).toUpperCase());
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const attuale = await saldo(socio.id);
+  const importo = Math.round(Number(req.body?.importo ?? attuale) * 100) / 100;
+  if (!(importo > 0)) return res.status(400).json({ error: "Non c'e' credito da rimborsare" });
+  const m = await muovi({ socioId: socio.id, tipo: "rimborso", importo: -importo, causale: "rimborso del residuo", operatore: req.adminUser.username });
+  if (!m.ok) return res.status(409).json({ error: m.error });
+  await registra({
+    fatto: "rimborso_tessera",
+    servizio: "tessera",
+    riferimento: socio.tessera_code,
+    socio_id: socio.id,
+    intestatario: `${socio.nome} ${socio.cognome}`,
+    autore: req.adminUser.username,
+    canale: "crew",
+    importo: -importo,
+    dettaglio: { saldo_dopo: m.saldo }
+  });
+  res.json({ ok: true, saldo: m.saldo });
+});
+adminRouter.post("/soci/:id/nuova-tessera", requireCap("utenti"), async (req, res) => {
+  const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(req.params.id);
+  if (!socio) return res.status(404).json({ error: "Socio non trovato" });
+  const motivo = String(req.body?.motivo || "").trim();
+  if (!motivo) return res.status(400).json({ error: "Scrivi perche' la stai rifacendo: persa, rovinata, non funziona, credenziali dimenticate." });
+  const vecchia = socio.tessera_code;
+  const nuova = await nextTessera();
+  await db.prepare("UPDATE tessere SET stato='revocata', revocata_at=?, motivo=? WHERE code=?").run((/* @__PURE__ */ new Date()).toISOString(), motivo, vecchia);
+  await db.prepare("INSERT OR REPLACE INTO tessere (code,socio_id,stato,motivo) VALUES (?,?,'attiva',?)").run(nuova, socio.id, "sostituisce " + vecchia);
+  await db.prepare("UPDATE soci SET tessera_code=? WHERE id=?").run(nuova, socio.id);
+  if (req.body?.azzera_credenziali) {
+    await db.prepare("UPDATE soci SET pin_hash=NULL, pin_tentativi=0 WHERE id=?").run(socio.id);
+  }
+  audit(req.adminUser.username, "nuova_tessera", "soci", socio.id, `${vecchia} \u2192 ${nuova} \xB7 ${motivo}`);
+  await registra({
+    fatto: "tessera_sostituita",
+    servizio: "tessera",
+    riferimento: nuova,
+    socio_id: socio.id,
+    intestatario: `${socio.nome} ${socio.cognome}`,
+    autore: req.adminUser.username,
+    canale: "backoffice",
+    dettaglio: { vecchia, nuova, motivo, credenziali_azzerate: !!req.body?.azzera_credenziali }
+  });
+  res.json({ ok: true, tessera: nuova, precedente: vecchia });
+});
+adminRouter.get("/soci/:id/tessere", requireCap("utenti"), async (req, res) => {
+  res.json(await db.prepare("SELECT code,stato,emessa_at,revocata_at,motivo FROM tessere WHERE socio_id=? ORDER BY emessa_at DESC").all(req.params.id));
+});
+adminRouter.put("/tessera/:code/pin", requireCap("comande"), async (req, res) => {
+  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=?").get(String(req.params.code).toUpperCase());
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const r = await impostaPin(socio.id, req.body?.pin);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  audit(req.adminUser.username, "imposta_pin", "soci", socio.id);
+  res.json({ ok: true, messaggio: "PIN impostato. Il socio lo usa per pagare con la tessera." });
+});
+adminRouter.get("/tessere/debito", requireCap("comande"), async (req, res) => {
+  res.json(await debitoVersoISoci());
+});
 adminRouter.get("/posta/stato", requireCap("soci"), async (req, res) => {
   const ultime = await db.prepare(
     "SELECT email,inviata,creato_at FROM otp WHERE creato_at IS NOT NULL ORDER BY id DESC LIMIT 20"
@@ -16178,13 +16490,35 @@ adminRouter.post("/comande/:id/chiudi", requireCap("comande"), async (req, res) 
   const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
   if (!c) return res.status(404).json({ error: "Comanda non trovata" });
   if (c.stato === "chiusa") return res.json(await comandaConRighe(req.params.id));
-  const metodi = ["contanti", "carta", "satispay", "buoni", "altro"];
+  const metodi = ["contanti", "carta", "satispay", "buoni", "tessera", "altro"];
   const metodo = metodi.includes(req.body?.metodo) ? req.body.metodo : "contanti";
   const now = (/* @__PURE__ */ new Date()).toISOString();
+  if (metodo === "tessera") {
+    const tess = String(req.body?.tessera_code || "").trim() || (c.socio_id ? (await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(c.socio_id))?.tessera_code : "");
+    const socioT = tess ? await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=?").get(String(tess).toUpperCase()) : null;
+    if (!socioT) return res.status(400).json({ error: "Serve la tessera di chi paga" });
+    const st = await statoPrepagata(socioT);
+    if (!st.attiva) return res.status(409).json({ error: st.motivo });
+    const soglia = Number(await par("tessera_pin_oltre"));
+    if (Number(c.totale) > soglia) {
+      const v = await verificaPin(socioT, req.body?.pin);
+      if (!v.ok) return res.status(403).json({ error: v.error, serve_pin: true });
+    }
+    const m = await muovi({
+      socioId: socioT.id,
+      tipo: "spesa",
+      importo: -Number(c.totale),
+      causale: `comanda #${c.numero}`,
+      comandaId: c.id,
+      operatore: req.adminUser.username
+    });
+    if (!m.ok) return res.status(409).json({ error: m.error + " Paga la differenza in un altro modo, oppure ricarica." });
+  }
   await db.prepare("UPDATE comande SET stato=?,metodo_pagamento=?,pagata_at=?,updated_at=? WHERE id=?").run("chiusa", metodo, now, now, c.id);
   await scaricaMagazzinoDaComanda(c.id, req.adminUser.username);
   let ricevuta = { inviata: false };
-  const dest = String(req.body?.email || "").trim() || (c.socio_id ? (await db.prepare("SELECT email FROM soci WHERE id=?").get(c.socio_id))?.email : "") || "";
+  const auto = String(await par("ricevuta_email_automatica")) === "true" || await par("ricevuta_email_automatica") === true;
+  const dest = String(req.body?.email || "").trim() || (auto && c.socio_id ? (await db.prepare("SELECT email FROM soci WHERE id=?").get(c.socio_id))?.email : "") || "";
   if (dest.includes("@")) {
     const rr = await db.prepare("SELECT nome,prezzo,qta FROM comanda_righe WHERE comanda_id=? AND stato<>'stornata' ORDER BY id").all(c.id);
     ricevuta = await inviaRicevuta(dest, {
@@ -18106,7 +18440,7 @@ function settimanaDi(dataISO) {
   const dom = new Date(lun.getTime() + 6 * 864e5);
   return { da: lun.toISOString().slice(0, 10), a: dom.toISOString().slice(0, 10) };
 }
-var socioAttivoByTessera = async (t) => t ? await db.prepare("SELECT id,nome,cognome,attivo,data_nascita FROM soci WHERE tessera_code=?").get(t) : null;
+var socioAttivoByTessera = async (t) => t ? await db.prepare("SELECT id,nome,cognome,tessera_code,attivo,data_nascita FROM soci WHERE tessera_code=?").get(t) : null;
 async function slotBloccati(campoId, data) {
   const out = /* @__PURE__ */ new Map();
   const rows = await db.prepare("SELECT slot_da,slot_a,motivo,nota FROM campi_blocchi WHERE campo_id=? AND data=?").all(campoId, data);
@@ -18427,6 +18761,68 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
 }
 publicRouter.post("/campi/:id/prenota", (req, res) => creaPrenotazione(req, res, false));
 publicRouter.post("/campi/:id/partita", (req, res) => creaPrenotazione(req, res, true));
+publicRouter.get("/estratto-conto", async (req, res) => {
+  const socio = await socioAttivoByTessera(req.query.tessera_code);
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const dal = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dal || "")) ? String(req.query.dal) : "2000-01-01";
+  const al = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.al || "")) ? String(req.query.al) : "2999-12-31";
+  const voci = [];
+  for (const c of await db.prepare(
+    `SELECT numero, zona, punto, totale, metodo_pagamento, date(created_at) g FROM comande
+     WHERE socio_id=? AND stato='chiusa' AND date(created_at) BETWEEN ? AND ? ORDER BY id DESC`
+  ).all(socio.id, dal, al)) {
+    voci.push({ data: c.g, servizio: c.zona === "garden" ? "Garden" : "Bar", cosa: `Comanda #${c.numero}`, importo: Number(c.totale), pagato: c.metodo_pagamento || null });
+  }
+  for (const f of await db.prepare(
+    `SELECT p.pagato, p.stato, p.dovuta, s.data, s.ora, s.prezzo, c.nome FROM fitness_prenotazioni p
+     JOIN fitness_sedute s ON s.id=p.seduta_id JOIN corsi_fitness c ON c.id=s.corso_id
+     WHERE p.tessera_code=? AND s.data BETWEEN ? AND ? ORDER BY s.data DESC`
+  ).all(socio.tessera_code, dal, al).catch(() => [])) {
+    if (f.stato === "annullato" && Number(f.dovuta) !== 1) continue;
+    voci.push({
+      data: f.data,
+      servizio: "Fitness",
+      cosa: `${f.nome} \xB7 ${f.ora}` + (f.stato === "annullato" ? " (disdetta tardiva)" : ""),
+      importo: Number(f.prezzo || 0),
+      pagato: Number(f.pagato) === 1 ? "gia' pagato" : null
+    });
+  }
+  for (const c of await db.prepare(
+    `SELECT p.data, p.slot, ca.nome FROM prenotazioni_campo p JOIN campi ca ON ca.id=p.campo_id
+     WHERE p.tessera_code=? AND p.stato='prenotato' AND p.data BETWEEN ? AND ? ORDER BY p.data DESC`
+  ).all(socio.tessera_code, dal, al).catch(() => [])) {
+    voci.push({ data: c.data, servizio: "Sport", cosa: `${c.nome} \xB7 ${c.slot}`, importo: 0, pagato: null });
+  }
+  for (const t of await db.prepare(
+    `SELECT data, turno, persone, ambiente FROM prenotazioni_tavolo
+     WHERE tessera_code=? AND stato='prenotato' AND data BETWEEN ? AND ? ORDER BY data DESC`
+  ).all(socio.tessera_code, dal, al).catch(() => [])) {
+    voci.push({
+      data: t.data,
+      servizio: t.ambiente === "stage" ? "Stage" : t.ambiente === "carta" ? "Casa di Carta" : "Garden",
+      cosa: `${t.persone} ${t.persone === 1 ? "posto" : "posti"} \xB7 ${t.turno}`,
+      importo: 0,
+      pagato: null
+    });
+  }
+  voci.sort((a, b) => a.data < b.data ? 1 : a.data > b.data ? -1 : 0);
+  const perServizio = {};
+  for (const v of voci) {
+    perServizio[v.servizio] ??= { volte: 0, speso: 0 };
+    perServizio[v.servizio].volte++;
+    perServizio[v.servizio].speso += v.importo;
+  }
+  res.json({
+    socio: { nome: socio.nome, cognome: socio.cognome, tessera: socio.tessera_code },
+    dal: dal === "2000-01-01" ? null : dal,
+    al: al === "2999-12-31" ? null : al,
+    voci,
+    per_servizio: Object.entries(perServizio).map(([servizio, v]) => ({ servizio, volte: v.volte, speso: Number(v.speso.toFixed(2)) })),
+    totale: Number(voci.reduce((s2, v) => s2 + v.importo, 0).toFixed(2)),
+    volte_gratis: voci.filter((v) => v.importo === 0).length,
+    nota: "Qui c'e' solo quello che hai fatto con la tessera. Al Bar e al Garden si e' serviti anche senza: quelle consumazioni non compaiono."
+  });
+});
 publicRouter.post("/partite/:id/annulla", async (req, res) => {
   const pa = await db.prepare("SELECT * FROM partite_aperte WHERE id=?").get(req.params.id);
   if (!pa || pa.stato === "annullata") return res.status(404).json({ error: "Prenotazione non trovata" });
@@ -19283,13 +19679,13 @@ async function seed({ verbose = false } = {}) {
   await insLuogo.run("isola", "Isola ecologica", 36.967209, 15.221206, 2);
   const insSocio = db.prepare(`INSERT INTO soci (tessera_code,nome,cognome,email,casata_id,ruolo,tipo_profilo,tutore_id,lingua,consenso_privacy,consenso_marketing,notifiche_push,valida_fino)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  await insSocio.run("BR-2026-0001", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
-  await insSocio.run("BR-2026-0002", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
-  const genitoreId = (await insSocio.run("BR-2026-0003", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01")).lastInsertRowid;
-  await insSocio.run("BR-2026-0004", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
-  await insSocio.run("BR-2026-0005", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
-  await db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='BR-2026-0005'").run();
-  const residenteId = Number((await insSocio.run("BR-2026-0100", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30")).lastInsertRowid);
+  await insSocio.run("RB-000001-4", "Ercole", "\u2014", "socio@example.com", casataId["Aretusa"], "socio", "socio", null, "it", 1, 0, 1, "2027-05-01");
+  await insSocio.run("RB-000002-8", "Giulia", "R.", "giulia@example.com", casataId["Ortigia"], "capitano", "socio", null, "it", 1, 1, 1, "2027-05-01");
+  const genitoreId = (await insSocio.run("RB-000003-1", "Marco", "V.", "marco@example.com", casataId["Neapolis"], "socio", "genitore", null, "en", 1, 0, 1, "2027-05-01")).lastInsertRowid;
+  await insSocio.run("RB-000004-5", "Sara", "V.", "", casataId["Neapolis"], "socio", "under14", genitoreId, "it", 1, 0, 0, "2027-05-01");
+  await insSocio.run("RB-000005-9", "Luca", "P.", "luca@example.com", casataId["Ciane"], "socio", "ospite_temporaneo", null, "fr", 1, 0, 0, null);
+  await db.prepare("UPDATE soci SET soggiorno_dal='2026-08-10', soggiorno_al='2026-08-24' WHERE tessera_code='RB-000005-9'").run();
+  const residenteId = Number((await insSocio.run("RB-000100-6", "Chiara", "T.", "residente@example.com", null, "socio", "residente", null, "it", 1, 0, 0, "2026-09-30")).lastInsertRowid);
   await db.prepare("UPDATE soci SET host=1 WHERE id=?").run(residenteId);
   const struttInfo = await db.prepare("INSERT INTO strutture (socio_id,dati_cifrati,attivo) VALUES (?,?,1)").run(residenteId, encryptJSON({
     nome: "Villa Aretusa",
@@ -19302,12 +19698,12 @@ async function seed({ verbose = false } = {}) {
     lat: 37.0361,
     lng: 15.2969
   }));
-  await db.prepare("UPDATE soci SET struttura_id=? WHERE tessera_code='BR-2026-0005'").run(Number(struttInfo.lastInsertRowid));
+  await db.prepare("UPDATE soci SET struttura_id=? WHERE tessera_code='RB-000006-2'").run(Number(struttInfo.lastInsertRowid));
   const ort = casataId["Ortigia"];
   const compagni = [["Anna", "B."], ["Paolo", "C."], ["Elena", "D."], ["Davide", "F."], ["Marta", "G."], ["Sara", "L."]];
   for (let i = 0; i < compagni.length; i++) {
     const n = compagni[i];
-    await insSocio.run(`BR-2026-00${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
+    await insSocio.run(`RB-000007-6${(6 + i).toString().padStart(2, "0")}`, n[0], n[1], "", ort, "socio", "socio", null, "it", 1, 0, i % 2, "2027-05-01");
   }
   const insRifTipo = db.prepare("INSERT INTO rifiuti_tipi (nome,colore,ordine) VALUES (?,?,?)");
   const RIF_TIPI = [["Organico", "#6b4a2b", 1], ["Plastica e lattine", "#d99a00", 2], ["Carta e cartone", "#2E6DA4", 3], ["Vetro", "#3f7a4a", 4], ["Indifferenziato", "#6b6f73", 5]];
@@ -19413,7 +19809,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-28 20:07" : "online";
+var BUILD = true ? "2026-08-29 05:29" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
@@ -19455,6 +19851,10 @@ app.get(["/", "/index.html"], (req, res) => html(res, FRONTEND));
 app.get(["/admin", "/admin/", "/admin/index.html"], (req, res) => html(res, ADMIN));
 app.get(["/chiosco", "/chiosco/", "/chiosco/index.html"], (req, res) => html(res, CHIOSCO));
 app.get(["/ordina", "/ordina/", "/ordina/index.html"], (req, res) => html(res, ordina_default));
+app.get("/t/:code", (req, res) => {
+  const code = String(req.params.code || "").trim().toUpperCase();
+  res.redirect(302, "/?t=" + encodeURIComponent(code));
+});
 app.use((req, res) => res.status(404).json({ error: "Non trovato" }));
 app.use((err, req, res, next) => {
   console.error("Errore API:", err?.message || err);
