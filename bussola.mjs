@@ -2478,9 +2478,18 @@ async function migrate() {
     try {
       if (await getSetting("campi_gestione_tennis", "") !== "v1") {
         await db.prepare(
-          "UPDATE campi SET gestione='tennis' WHERE lower(nome) LIKE '%tennis%' OR lower(sport) LIKE '%tennis%' OR lower(nome) LIKE '%volley%' OR lower(sport) LIKE '%volley%'"
+          `UPDATE campi SET gestione='tennis'
+         WHERE (lower(nome) LIKE '%beach volley%' OR lower(sport)='volley'
+             OR lower(nome) LIKE '%beach tennis%'
+             OR (lower(nome) LIKE '%tennis%' AND lower(nome) NOT LIKE '%touch%' AND lower(nome) NOT LIKE '%picker%' AND lower(nome) NOT LIKE '%pickle%'))`
         ).run();
         await setSetting("campi_gestione_tennis", "v1");
+      }
+      if (await getSetting("campi_gestione_tennis_fix", "") !== "v1") {
+        await db.prepare(
+          "UPDATE campi SET gestione='chiosco' WHERE gestione='tennis' AND (lower(nome) LIKE '%touch%' OR lower(nome) LIKE '%picker%' OR lower(nome) LIKE '%pickle%')"
+        ).run();
+        await setSetting("campi_gestione_tennis_fix", "v1");
       }
     } catch (_) {
     }
@@ -10401,9 +10410,10 @@ VIEWS.menu = async () => {
 VIEWS.tennis = async () => {
   const oggi = new Date().toISOString().slice(0, 10);
   const data = window.__tennisData || oggi;
-  const [campi, giornata] = await Promise.all([
+  const [campi, giornata, blocchi] = await Promise.all([
     api('/tennis/campi').catch(() => []),
-    api('/tennis/giornata?data=' + data).catch(() => ({ righe: [], incassato: 0, da_incassare: 0 }))
+    api('/tennis/giornata?data=' + data).catch(() => ({ righe: [], incassato: 0, da_incassare: 0 })),
+    api('/tennis/blocchi?data=' + data).catch(() => [])
   ]);
 
   const riga = (r) => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
@@ -10432,6 +10442,30 @@ VIEWS.tennis = async () => {
       </div>
       \${(giornata.righe || []).length ? (giornata.righe || []).map(riga).join('') : '<p class="muted">Nessuna prenotazione per questa data.</p>'}
     </div>
+    <div class="panel"><h3>\u{1F3BE} Prenota al banco</h3>
+      <p class="muted" style="font-size:.82rem">Serve la tessera del socio: resta lui il titolare. Il prezzo lo calcola il listino.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="tp_campo">\${campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('')}</select>
+        <input id="tp_slot" placeholder="18:00" style="width:80px">
+        <input id="tp_tess" placeholder="Tessera socio" style="min-width:150px">
+        <select id="tp_uso"><option value="campo">campo</option><option value="lezione">lezione privata</option></select>
+        <button class="btn gold sm" id="ten_pren">Prenota</button>
+      </div></div>
+
+    <div class="panel"><h3>\u{1F6A7} Campo indisponibile</h3>
+      <p class="muted" style="font-size:.82rem">Manutenzione, torneo, lezioni tutto il pomeriggio, o semplicemente oggi non lo affitti.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="tb_campo">\${campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('')}</select>
+        <input id="tb_da" value="09:00" style="width:70px"> \u2013 <input id="tb_a" value="22:00" style="width:70px">
+        <select id="tb_m"><option value="manutenzione">manutenzione</option><option value="torneo">torneo</option><option value="lezioni">lezioni</option><option value="chiuso">chiuso</option></select>
+        <button class="btn gold sm" id="ten_blocca">+ Blocca</button>
+      </div>
+      \${(blocchi || []).length ? (blocchi || []).map(b => \`<div class="row" style="justify-content:space-between;font-size:.85rem;padding:4px 0;border-bottom:1px solid var(--line)">
+        <span>\${esc(b.campo)} \xB7 \${esc(b.dalle)}\u2013\${esc(b.alle)} \xB7 \${esc(b.motivo || '')}</span>
+        <button class="btn ghost sm" data-tenblkdel="\${b.id}">\u2715</button></div>\`).join('')
+        : '<p class="muted" style="font-size:.82rem;margin-top:6px">Nessun blocco per questa data.</p>'}
+    </div>
+
     \${campi.map(c => \`<div class="panel"><h3>\${esc(c.nome)} <span class="muted" style="font-weight:400;font-size:.8rem">\xB7 \${esc(c.sport || '')}</span></h3>
       \${listinoDi(c)}
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
@@ -10444,6 +10478,32 @@ VIEWS.tennis = async () => {
       </div></div>\`).join('')}\`;
 
   $('#ten_data').onchange = () => { window.__tennisData = $('#ten_data').value; show('tennis'); };
+  // Prenotare al banco e chiudere il campo: sono i due gesti quotidiani di chi affitta, e
+  // devono stare qui, non nel back office del gestore dell'app.
+  if ($('#ten_pren')) $('#ten_pren').onclick = async () => {
+    const corpo = {
+      campo_id: Number($('#tp_campo').value), data,
+      slot: $('#tp_slot').value, tessera_code: ($('#tp_tess').value || '').trim(),
+      tipo_uso: $('#tp_uso').value
+    };
+    if (!corpo.tessera_code) { alert('Serve la tessera del socio: resta lui il titolare.'); return; }
+    try { const r = await api('/tennis/prenota', { method: 'POST', body: JSON.stringify(corpo) }); alert(r.prezzo > 0 ? \`Prenotato \\u00b7 \${eur(r.prezzo)} da incassare.\` : 'Prenotato.'); }
+    catch (e) { alert(e.message); return; }
+    show('tennis');
+  };
+  if ($('#ten_blocca')) $('#ten_blocca').onclick = async () => {
+    try {
+      await api('/tennis/blocchi', { method: 'POST', body: JSON.stringify({
+        campo_id: Number($('#tb_campo').value), data,
+        dalle: $('#tb_da').value, alle: $('#tb_a').value, motivo: $('#tb_m').value
+      }) });
+    } catch (e) { alert(e.message); return; }
+    show('tennis');
+  };
+  document.querySelectorAll('[data-tenblkdel]').forEach(b => b.onclick = async () => {
+    await api('/tennis/blocchi/' + b.dataset.tenblkdel, { method: 'DELETE' });
+    show('tennis');
+  });
   document.querySelectorAll('[data-tenpag]').forEach(b => b.onclick = async () => {
     const [id, v] = b.dataset.tenpag.split('|');
     await api('/tennis/prenotazioni/' + id + '/pagato', { method: 'PUT', body: JSON.stringify({ pagato: v === '1' }) });
@@ -12063,7 +12123,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.68";
+var VERSION = "5.69";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17106,6 +17166,73 @@ adminRouter.delete("/tennis/tariffe/:id", requireCap("tennis"), async (req, res)
   await db.prepare("DELETE FROM campi_tariffe WHERE id=?").run(req.params.id);
   res.json({ ok: true });
 });
+async function campoDelTennis(id) {
+  const c = await db.prepare("SELECT * FROM campi WHERE id=?").get(id);
+  return c && String(c.gestione || "chiosco") === "tennis" ? c : null;
+}
+adminRouter.put("/tennis/campi/:id", requireCap("tennis"), async (req, res) => {
+  const c = await campoDelTennis(req.params.id);
+  if (!c) return res.status(404).json({ error: "Questo campo non e' fra i tuoi" });
+  const b = req.body || {};
+  await db.prepare(
+    "UPDATE campi SET nome=?,sport=?,apertura=?,chiusura=?,durata_slot=?,posti_default=?,max_slot_prenotazione=?,attivo=? WHERE id=?"
+  ).run(
+    b.nome ?? c.nome,
+    b.sport ?? c.sport,
+    b.apertura ?? c.apertura,
+    b.chiusura ?? c.chiusura,
+    Number(b.durata_slot ?? c.durata_slot) || 60,
+    Number(b.posti_default ?? c.posti_default) || 4,
+    Number(b.max_slot_prenotazione ?? c.max_slot_prenotazione) || 2,
+    b.attivo === false ? 0 : 1,
+    c.id
+  );
+  audit(req.adminUser.username, "modifica_campo", "campi", c.id);
+  res.json({ ok: true });
+});
+adminRouter.get("/tennis/blocchi", requireCap("tennis"), async (req, res) => {
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.data || "")) ? String(req.query.data) : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  res.json(await db.prepare(
+    `SELECT b.id, b.data, b.slot_da AS dalle, b.slot_a AS alle, b.motivo, b.nota, c.nome AS campo
+     FROM campi_blocchi b JOIN campi c ON c.id=b.campo_id
+     WHERE c.gestione='tennis' AND b.data=? ORDER BY b.slot_da`
+  ).all(data).catch(() => []));
+});
+adminRouter.post("/tennis/blocchi", requireCap("tennis"), async (req, res) => {
+  const c = await campoDelTennis(req.body?.campo_id);
+  if (!c) return res.status(404).json({ error: "Questo campo non e' fra i tuoi" });
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
+  await db.prepare("INSERT INTO campi_blocchi (campo_id,data,slot_da,slot_a,motivo,nota) VALUES (?,?,?,?,?,?)").run(c.id, b.data, b.dalle || c.apertura, b.alle || c.chiusura, b.motivo || "manutenzione", b.nota || null);
+  audit(req.adminUser.username, "blocca_campo", "campi", c.id, `${b.data} ${b.dalle || ""}-${b.alle || ""}`);
+  res.status(201).json({ ok: true });
+});
+adminRouter.delete("/tennis/blocchi/:id", requireCap("tennis"), async (req, res) => {
+  const b = await db.prepare("SELECT * FROM campi_blocchi WHERE id=?").get(req.params.id);
+  if (!b || !await campoDelTennis(b.campo_id)) return res.status(404).json({ error: "Blocco non trovato" });
+  await db.prepare("DELETE FROM campi_blocchi WHERE id=?").run(b.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/tennis/prenota", requireCap("tennis"), async (req, res) => {
+  const c = await campoDelTennis(req.body?.campo_id);
+  if (!c) return res.status(404).json({ error: "Questo campo non e' fra i tuoi" });
+  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(String(req.body?.tessera_code || "").toUpperCase());
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const slot = String(req.body?.slot || "");
+  const occupato = await db.prepare("SELECT 1 x FROM prenotazioni_campo WHERE campo_id=? AND data=? AND slot=? AND stato='prenotato'").get(c.id, req.body?.data, slot);
+  if (occupato) return res.status(409).json({ error: "Fascia gia' occupata" });
+  const conto = await prezzoPrenotazione(c, slot, 1, req.body?.tipo_uso === "lezione" ? "lezione" : "campo");
+  const pa = await db.prepare(
+    "INSERT INTO partite_aperte (campo_id,data,slot,slot_fine,n_slot,posti_totali,aperta_ai_soci,stato,creatore_tessera,creatore_nome,titolare_socio_id) VALUES (?,?,?,?,1,?,0,'completa',?,?,?)"
+  ).run(c.id, req.body?.data, slot, slot, c.posti_default, socio.tessera_code, `${socio.nome} ${socio.cognome}`, socio.id);
+  const pid = Number(pa.lastInsertRowid);
+  await db.prepare(
+    "INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato,partita_id,titolare_socio_id,prezzo,tipo_uso) VALUES (?,?,?,'privata',?,?,?,'prenotato',?,?,?,?)"
+  ).run(c.id, req.body?.data, slot, socio.id, socio.tessera_code, `${socio.nome} ${socio.cognome}`, pid, socio.id, conto.prezzo, req.body?.tipo_uso === "lezione" ? "lezione" : "campo");
+  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(pid, socio.id, socio.tessera_code, `${socio.nome} ${socio.cognome}`);
+  audit(req.adminUser.username, "prenota_campo_banco", "campi", c.id, `${req.body?.data} ${slot} \xB7 ${conto.prezzo} \u20AC`);
+  res.status(201).json({ ok: true, prezzo: conto.prezzo });
+});
 adminRouter.get("/tennis/giornata", requireCap("tennis"), async (req, res) => {
   const data = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.data || "")) ? String(req.query.data) : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const righe = await db.prepare(
@@ -18846,8 +18973,10 @@ publicRouter.get("/campi/:id/disponibilita", async (req, res) => {
   let quota = null;
   const socio = await socioAttivoByTessera(req.query.tessera_code);
   if (socio && socio.attivo !== 0) {
-    const usate = await prenSettimana(campo.id, socio.id, data);
-    quota = { usate, massimo: campo.max_pren_settimana, residue: Math.max(0, campo.max_pren_settimana - usate) };
+    if (String(campo.gestione || "chiosco") !== "tennis") {
+      const usate = await prenSettimana(campo.id, socio.id, data);
+      quota = { usate, massimo: campo.max_pren_settimana, residue: Math.max(0, campo.max_pren_settimana - usate) };
+    }
   }
   const listinoCampo = await db.prepare("SELECT etichetta,da_ora,a_ora,tipo_uso,prezzo_ora FROM campi_tariffe WHERE campo_id=? AND attiva=1 ORDER BY tipo_uso,id").all(campo.id);
   res.json({
@@ -18907,7 +19036,8 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
     return res.status(409).json({ error: `Puoi prenotare al massimo ${maxSlot} ${maxSlot === 1 ? "fascia" : "fasce"} di seguito (${min} minuti)` });
   }
   const usate = await prenSettimana(campo.id, socio.id, data);
-  if (await par("campi_limita_settimana") && usate >= campo.max_pren_settimana) {
+  const aPagamento = String(campo.gestione || "chiosco") === "tennis";
+  if (!aPagamento && await par("campi_limita_settimana") && usate >= campo.max_pren_settimana) {
     return res.status(409).json({ error: `Hai gi\xE0 ${usate} prenotazioni questa settimana su ${campo.nome} (massimo ${campo.max_pren_settimana})` });
   }
   const noCampo = await bloccoMinorenne(socio, "campo");
@@ -20052,7 +20182,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-29 14:07" : "online";
+var BUILD = true ? "2026-08-29 14:27" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
