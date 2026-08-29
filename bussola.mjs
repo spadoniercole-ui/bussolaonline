@@ -5001,7 +5001,11 @@ async function openCampi(campoId) {
   }).join('');
   // Quante fasce di oggi sono gia' passate: si dice, invece di far sparire mezza giornata
   // senza spiegazioni.
-  const passate = (fasce || []).filter((x) => x.stato === 'passato').length;
+  // \`disp.slots\` e' l'elenco vero: ieri avevo scritto \`fasce\`, che non esiste. L'eccezione
+  // arrivava DOPO aver disegnato le righe ma PRIMA di agganciare i tasti, quindi le fasce si
+  // vedevano e non si poteva prenotare niente \u2014 l'errore piu' insidioso, perche' la schermata
+  // sembra a posto.
+  const passate = (disp.slots || []).filter((x) => x.stato === 'passato').length;
   const notaPassate = passate
     ? \`<p class="muted" style="font-size:.78rem;margin-top:6px">\${passate} \${passate === 1 ? T('fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.') : T('fasce di oggi sono gi\xE0 passate e non si possono prenotare.')}</p>\`
     : '';
@@ -9090,6 +9094,10 @@ function allowedZones() {
   if (ME.gestore || caps.includes('magazzino')) z.push('magazzino');
   if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // risultati live
   if (ME.gestore || caps.includes('campi')) z.push('campi');       // prenotazioni campi al banco
+  // Il modulo tennis vive col SUO permesso: chi affitta i campi a pagamento non ha bisogno di
+  // avere anche quelli gratuiti del chiosco. Senza questa riga il modulo esisteva ma non
+  // compariva a nessuno, e per vederlo bisognava dare anche "campi" \u2014 che e' un'altra cosa.
+  if (ME.gestore || caps.includes('tennis')) z.push('tennis');     // campi a pagamento: listino e incassi
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
   if (ME.gestore || caps.includes('fitness')) z.push('fitness');   // lezioni con istruttore
@@ -9097,7 +9105,7 @@ function allowedZones() {
   return z;
 }
 // Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Stage (cinema e spettacoli)' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', tennis: 'Tennis & Beach', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Stage (cinema e spettacoli)' };
 // Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
   const el = document.querySelector('#zonaSwitch');
@@ -9113,7 +9121,7 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  const PRIMA = { garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
+  const PRIMA = { garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', tennis: 'tennis', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
   show(PRIMA[ZONA] || 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -12055,7 +12063,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.67";
+var VERSION = "5.68";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -20044,7 +20052,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-29 12:38" : "online";
+var BUILD = true ? "2026-08-29 14:07" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
