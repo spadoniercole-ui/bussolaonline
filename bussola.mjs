@@ -1779,6 +1779,12 @@ async function migrate() {
   await addIfMissing("soci", "prepagata_autorizzata_at", "prepagata_autorizzata_at TEXT");
   await addIfMissing("soci", "pin_hash", "pin_hash TEXT");
   await addIfMissing("soci", "pin_tentativi", "pin_tentativi INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("soci", "sesso", "sesso TEXT");
+  await addIfMissing("soci", "nucleo", "nucleo TEXT");
+  await addIfMissing("soci", "gioca_coppa", "gioca_coppa INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("casate", "schierata", "schierata INTEGER NOT NULL DEFAULT 1");
+  await addIfMissing("casate", "capitano_socio_id", "capitano_socio_id INTEGER");
+  await addIfMissing("casate", "vice_socio_id", "vice_socio_id INTEGER");
   await db.exec(`
   CREATE TABLE IF NOT EXISTS tessere (
     code        TEXT PRIMARY KEY,
@@ -3112,6 +3118,72 @@ var init_parametri = __esm({
         aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
       },
       {
+        chiave: "coppa_quota_rosa",
+        gruppo: "Casate",
+        tipo: "numero",
+        predefinito: 50,
+        min: 0,
+        max: 100,
+        etichetta: "Quota di rappresentanza (%)",
+        aiuto: "Percentuale minima di donne in ogni casata, arrotondata per DIFETTO. Al 50% su una casata da 12 fanno almeno 6. La quota si misura sul totale della casata, non fascia per fascia: sulle fasce sarebbe quasi sempre impossibile da rispettare."
+      },
+      {
+        chiave: "coppa_casata_posti",
+        gruppo: "Casate",
+        tipo: "numero",
+        predefinito: 12,
+        min: 3,
+        max: 30,
+        etichetta: "Massimo giocatori per casata",
+        aiuto: "Il tetto di una casata. E\u2019 al massimo che la quota di rappresentanza diventa tassativa: sotto, e\u2019 un obiettivo che si insegue mentre la casata si riempie."
+      },
+      {
+        chiave: "coppa_casata_min",
+        gruppo: "Casate",
+        tipo: "numero",
+        predefinito: 3,
+        min: 2,
+        max: 12,
+        etichetta: "Minimo per scendere in campo",
+        aiuto: "Quante persone servono perche\u2019 una casata esista. Tre sono quelle che stanno in campo in un calcetto o in un basket: sotto, non si gioca. Le casate si schierano sempre, anche piccole."
+      },
+      {
+        chiave: "coppa_min_under14",
+        gruppo: "Casate",
+        tipo: "numero",
+        predefinito: 2,
+        min: 0,
+        max: 6,
+        etichetta: "Under 14 per casata",
+        aiuto: "Quanti ragazzi sotto i 14 anni deve avere ogni casata."
+      },
+      {
+        chiave: "coppa_min_over70",
+        gruppo: "Casate",
+        tipo: "numero",
+        predefinito: 2,
+        min: 0,
+        max: 6,
+        etichetta: "Over 70 per casata",
+        aiuto: "Quanti soci sopra i 70 anni deve avere ogni casata. E' il vincolo piu' difficile da rispettare: se non ce ne sono abbastanza iscritti, il sistema lo dice invece di formare casate irregolari in silenzio."
+      },
+      {
+        chiave: "coppa_chiusura_formazioni",
+        gruppo: "Casate",
+        tipo: "testo",
+        predefinito: "",
+        etichetta: "Chiusura delle formazioni (AAAA-MM-GG HH:MM)",
+        aiuto: "Fino a questo momento si entra, si esce e si cambia casata. Dopo, le formazioni si congelano e restano quelle. Vuoto = nessuna scadenza."
+      },
+      {
+        chiave: "coppa_riapertura",
+        gruppo: "Casate",
+        tipo: "testo",
+        predefinito: "",
+        etichetta: "Riapertura di meta\u2019 stagione (AAAA-MM-GG)",
+        aiuto: "Un solo giorno in cui si puo\u2019 cambiare casata, e solo se non si e\u2019 ancora giocato nessun torneo. Riaperture continue trasformano la Coppa in un mercato: chi perde cambia squadra."
+      },
+      {
         chiave: "tessera_prepagata",
         gruppo: "Comande",
         tipo: "bool",
@@ -3781,19 +3853,23 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .ptile .tx span{display:block; font-size:.66rem; color:var(--mute); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 /* La Settimana in una schermata: una riga per giorno, titolo e sottotitolo sulla stessa
    riga con troncamento. Sette righe da ~52px stanno dove prima ne stavano quattro. */
-.evrow{display:flex; align-items:center; gap:10px; position:relative; background:var(--card);
-  border:1px solid var(--line); border-radius:12px; padding:9px 10px 9px 16px; margin-bottom:7px;
+/* DUE RIGHE PER GIORNO. Su una riga sola titolo e sottotitolo si contendevano lo spazio e
+   finivano tutti e due tagliati: "Vi aspettiamo per conos..." accanto a "Arrivi, partenze e
+   rip...". Sette giorni stanno comodamente in una schermata anche a due righe, e la settimana
+   si legge per intero invece che a meta'. */
+.evrow{display:flex; align-items:center; gap:12px; position:relative; background:var(--card);
+  border:1px solid var(--line); border-radius:12px; padding:12px 12px 12px 18px; margin-bottom:9px;
   cursor:pointer; overflow:hidden;}
 .evrow .stripe{position:absolute; left:0; top:0; bottom:0; width:6px;}
-.evrow .gg{flex:0 0 30px; font-size:.66rem; font-weight:800; letter-spacing:.06em;
+.evrow .gg{flex:0 0 34px; font-size:.7rem; font-weight:800; letter-spacing:.06em;
   text-transform:uppercase; color:var(--muted);}
-.evrow .tx{flex:1; min-width:0; display:flex; align-items:baseline; gap:7px;}
-/* Anche il titolo cede spazio: se non lo fa, un titolo lungo si prende tutta la riga e il
-   sottotitolo sparisce. Cosi' i due si accorciano insieme. */
-.evrow .tx b{flex:0 1 auto; min-width:0; max-width:62%; font-size:.92rem; color:var(--navy);
+.evrow .tx{flex:1; min-width:0; display:block;}
+/* Il titolo ha la riga tutta per se': non deve piu' cedere spazio a nessuno. */
+.evrow .tx b{display:block; font-size:1rem; line-height:1.25; color:var(--navy);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-.evrow .tx .sub{flex:1 1 auto; font-size:.78rem; color:var(--muted); white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; min-width:0;}
+.evrow .tx .sub{display:block; margin-top:2px; font-size:.82rem; line-height:1.3;
+  color:var(--muted); overflow:hidden; text-overflow:ellipsis;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
 .evrow .ora{font-size:.72rem; font-weight:700; color:var(--gold-dark,#8a5f18); flex:0 0 auto;}
 .evrow .chev{flex:0 0 auto; color:var(--muted);}
 .evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
@@ -4481,10 +4557,10 @@ function evCardHTML(e, withAction) {
   const sotto = e.film ? \`\u{1F3AC} <b>\${esc(e.film.titolo)}</b>\${e.film.regia ? ' \xB7 ' + esc(e.film.regia) : ''}\${e.film.durata_min ? " \xB7 " + e.film.durata_min + "'" : ''}\` : esc(e.sottotitolo);
   const metaHTML = meta.length ? \`<div class="ev-meta">\${meta.join('')}</div>\` : '';
   if (!withAction) {
-    // Riga compatta per la Settimana: giorno a sinistra, titolo e sottotitolo sulla STESSA
-    // riga. Cosi' i sette giorni stanno in una schermata sola e il ritmo della settimana si
-    // legge tutto insieme \u2014 che e' il motivo per cui esiste questa schermata. Il resto
-    // (luogo, ora, costo, artista) si vede toccando.
+    // Riga della Settimana: giorno a sinistra, titolo su una riga e sottotitolo sotto. Su una
+    // riga sola i due si contendevano lo spazio e finivano tagliati tutti e due; a due righe si
+    // leggono per intero e i sette giorni stanno comunque in una schermata. Il resto (luogo,
+    // costo, artista) si vede toccando.
     const g = String(e.giorno || '').slice(0, 3);
     const sottoRiga = e.film ? \`\u{1F3AC} \${esc(e.film.titolo)}\` : esc(e.sottotitolo || '');
     return \`<div class="evrow" role="button" tabindex="0" data-open="\${e.chiave}">
@@ -12421,7 +12497,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.73";
+var VERSION = "5.76";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14466,7 +14542,7 @@ async function pressione(cfg) {
 }
 async function statoCompleto() {
   const cfg = await getConfig();
-  const eta = await etaMin(cfg);
+  const eta2 = await etaMin(cfg);
   const press = await pressione(cfg);
   const attive = await activeOrders();
   const sospeso_pressione = cfg.aperto && cfg.press_auto && press;
@@ -14476,7 +14552,7 @@ async function statoCompleto() {
     ordinabile,
     sospeso_pressione,
     pressione: press,
-    eta_min: eta,
+    eta_min: eta2,
     attive,
     config: cfg
   };
@@ -14608,6 +14684,299 @@ async function tabellone(torneoId) {
     turni: turni2,
     da_giocare: partite.filter((p) => p.a_nome && p.b_nome && !p.vincitore).length
   };
+}
+
+// server/casate_composizione.js
+init_db();
+init_parametri();
+var FASCE = [
+  { nome: "under14", da: 0, a: 13 },
+  { nome: "15-22", da: 14, a: 22 },
+  { nome: "23-30", da: 23, a: 30 },
+  { nome: "31-38", da: 31, a: 38 },
+  { nome: "39-46", da: 39, a: 46 },
+  { nome: "47-54", da: 47, a: 54 },
+  { nome: "55-62", da: 55, a: 62 },
+  { nome: "63-69", da: 63, a: 69 },
+  { nome: "over70", da: 70, a: 200 }
+];
+function eta(dataNascita) {
+  if (!dataNascita) return null;
+  const n = (/* @__PURE__ */ new Date(dataNascita + "T00:00:00Z")).getTime();
+  if (!Number.isFinite(n)) return null;
+  return Math.floor((Date.now() - n) / 315576e5);
+}
+function fasciaDi(anni) {
+  if (anni == null) return "sconosciuta";
+  return (FASCE.find((f) => anni >= f.da && anni <= f.a) || {}).nome || "sconosciuta";
+}
+async function nuclei(giocatori) {
+  const perId = new Map(giocatori.map((g) => [g.id, g]));
+  const chiave = (g) => {
+    if (g.nucleo) return "n:" + String(g.nucleo).trim().toLowerCase();
+    if (g.tutore_id && perId.has(g.tutore_id)) {
+      const t = perId.get(g.tutore_id);
+      return t.nucleo ? "n:" + String(t.nucleo).trim().toLowerCase() : "t:" + g.tutore_id;
+    }
+    return "s:" + g.id;
+  };
+  const gruppi = /* @__PURE__ */ new Map();
+  for (const g of giocatori) {
+    const k = chiave(g);
+    if (!gruppi.has(k)) gruppi.set(k, []);
+    gruppi.get(k).push(g);
+  }
+  return [...gruppi.values()].map((membri) => ({
+    membri,
+    dimensione: membri.length,
+    under14: membri.filter((m) => eta(m.data_nascita) != null && eta(m.data_nascita) < 14).length,
+    over70: membri.filter((m) => eta(m.data_nascita) != null && eta(m.data_nascita) >= 70).length,
+    donne: membri.filter((m) => String(m.sesso || "").toUpperCase() === "F").length
+  }));
+}
+function mescola2(v) {
+  const a = v.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function quotaRichiesta(quanti, regole) {
+  return Math.floor(quanti * regole.quota / 100);
+}
+function minimoRichiesto(quanti, minimoPieno, posti) {
+  if (!minimoPieno) return 0;
+  return Math.min(minimoPieno, Math.floor(quanti * minimoPieno / posti));
+}
+function quantoServe(casata, nucleo, regole) {
+  if (casata.membri.length + nucleo.dimensione > regole.posti) return -1;
+  let punti = 0;
+  const u14Serve = minimoRichiesto(casata.membri.length + nucleo.dimensione, regole.minUnder14, regole.posti);
+  if (nucleo.under14 && casata.under14 < u14Serve) punti += 100 * Math.min(nucleo.under14, u14Serve - casata.under14);
+  const o70Serve = minimoRichiesto(casata.membri.length + nucleo.dimensione, regole.minOver70, regole.posti);
+  if (nucleo.over70 && casata.over70 < o70Serve) punti += 100 * Math.min(nucleo.over70, o70Serve - casata.over70);
+  const serviranno = quotaRichiesta(casata.membri.length + nucleo.dimensione, regole);
+  if (nucleo.donne && casata.donne < serviranno) punti += 60 * Math.min(nucleo.donne, serviranno - casata.donne);
+  for (const m of nucleo.membri) {
+    const f = fasciaDi(eta(m.data_nascita));
+    if (!casata.fasce.has(f)) punti += 8;
+  }
+  punti += regole.posti - casata.membri.length;
+  return punti;
+}
+function esitoDisponibilita(giocatori, dimensioni, { minUnder14, minOver70, quota, posti }) {
+  const conta = (f) => giocatori.filter(f).length;
+  const u14 = conta((g) => eta(g.data_nascita) != null && eta(g.data_nascita) < 14);
+  const o70 = conta((g) => eta(g.data_nascita) != null && eta(g.data_nascita) >= 70);
+  const donne = conta((g) => String(g.sesso || "").toUpperCase() === "F");
+  const somma = (f) => dimensioni.reduce((n, q) => n + f(q), 0);
+  const servU14 = somma((q) => minimoRichiesto(q, minUnder14, posti));
+  const servO70 = somma((q) => minimoRichiesto(q, minOver70, posti));
+  const servD = somma((q) => Math.floor(q * quota / 100));
+  return {
+    under14: { iscritti: u14, servono: servU14, mancano: Math.max(0, servU14 - u14) },
+    over70: { iscritti: o70, servono: servO70, mancano: Math.max(0, servO70 - o70) },
+    donne: { iscritti: donne, servono: servD, mancano: Math.max(0, servD - donne) }
+  };
+}
+async function componi({ soloAnteprima = true } = {}) {
+  const posti = Number(await par("coppa_casata_posti")) || 12;
+  const minUnder14 = Number(await par("coppa_min_under14")) || 0;
+  const minOver70 = Number(await par("coppa_min_over70")) || 0;
+  const quota = Number(await par("coppa_quota_rosa")) || 0;
+  const minDonne = Math.floor(posti * quota / 100);
+  const minimo = Number(await par("coppa_casata_min")) || 3;
+  const regole = { posti, minimo, minUnder14, minOver70, minDonne, quota };
+  const casateDb = await db.prepare("SELECT id,nome,colore FROM casate ORDER BY id").all();
+  const giocatori = await db.prepare(
+    "SELECT id,nome,cognome,tessera_code,data_nascita,sesso,nucleo,tutore_id,casata_id FROM soci WHERE attivo=1 AND gioca_coppa=1"
+  ).all();
+  const senzaSesso = giocatori.filter((g) => !["F", "M"].includes(String(g.sesso || "").toUpperCase()));
+  const senzaData = giocatori.filter((g) => eta(g.data_nascita) == null);
+  const quante = casateDb.length;
+  const gruppi = mescola2(await nuclei(giocatori));
+  gruppi.sort((a, b) => b.dimensione - a.dimensione);
+  const casate = casateDb.slice(0, quante).map((c) => ({
+    id: c.id,
+    nome: c.nome,
+    colore: c.colore,
+    membri: [],
+    under14: 0,
+    over70: 0,
+    donne: 0,
+    fasce: /* @__PURE__ */ new Set()
+  }));
+  const fuori = [];
+  for (const n of gruppi) {
+    let migliore = null, punteggio = -1;
+    for (const c of casate) {
+      const p = quantoServe(c, n, regole);
+      if (p > punteggio) {
+        punteggio = p;
+        migliore = c;
+      }
+    }
+    if (!migliore || punteggio < 0) {
+      fuori.push(n);
+      continue;
+    }
+    migliore.membri.push(...n.membri);
+    migliore.under14 += n.under14;
+    migliore.over70 += n.over70;
+    migliore.donne += n.donne;
+    for (const m of n.membri) migliore.fasce.add(fasciaDi(eta(m.data_nascita)));
+  }
+  const problemi = [];
+  for (const c of casate) {
+    if (c.membri.length < minimo) problemi.push({ casata: c.nome, cosa: "non puo' scendere in campo", dettaglio: `${c.membri.length} su ${minimo} minimi`, grave: true });
+    const u14Serve = minimoRichiesto(c.membri.length, minUnder14, posti);
+    const o70Serve = minimoRichiesto(c.membri.length, minOver70, posti);
+    if (c.under14 < u14Serve) problemi.push({ casata: c.nome, cosa: "under 14", dettaglio: `${c.under14} su ${u14Serve} per una casata da ${c.membri.length}`, grave: c.membri.length >= posti });
+    if (c.over70 < o70Serve) problemi.push({ casata: c.nome, cosa: "over 70", dettaglio: `${c.over70} su ${o70Serve} per una casata da ${c.membri.length}`, grave: c.membri.length >= posti });
+    const serve = quotaRichiesta(c.membri.length, regole);
+    if (c.donne < serve) {
+      problemi.push({
+        casata: c.nome,
+        cosa: "quota di rappresentanza",
+        dettaglio: `${c.donne} donne su ${serve} per una casata da ${c.membri.length}` + (c.membri.length >= posti ? " (casata piena: qui la quota e' tassativa)" : ""),
+        grave: c.membri.length >= posti
+      });
+    }
+  }
+  const esito = {
+    regole: { posti, minimo, minUnder14, minOver70, quota, minDonne },
+    iscritti: giocatori.length,
+    casate_schierabili: quante,
+    casate_totali: casateDb.length,
+    casate: casate.map((c) => ({
+      id: c.id,
+      nome: c.nome,
+      colore: c.colore,
+      membri: c.membri.map((m) => ({
+        id: m.id,
+        nome: `${m.nome} ${m.cognome}`,
+        tessera: m.tessera_code,
+        eta: eta(m.data_nascita),
+        fascia: fasciaDi(eta(m.data_nascita)),
+        sesso: m.sesso || null
+      })),
+      quanti: c.membri.length,
+      under14: c.under14,
+      over70: c.over70,
+      donne: c.donne,
+      fasce: [...c.fasce].sort()
+    })),
+    in_attesa: fuori.flatMap((n) => n.membri.map((m) => ({ id: m.id, nome: `${m.nome} ${m.cognome}` }))),
+    problemi,
+    // LA CAUSA, non solo il sintomo. Sei casate che dicono "manca un over 70" sono sei righe
+    // che non spiegano niente; "servono 16 over 70, ne sono iscritti 9" dice al gestore che il
+    // problema non e' il sorteggio, e che deve andare a cercare sette persone.
+    disponibilita: esitoDisponibilita(giocatori, casate.map((c) => c.membri.length), { minUnder14, minOver70, quota, posti }),
+    avvisi: [
+      ...senzaSesso.length ? [`${senzaSesso.length} iscritti non hanno il sesso in anagrafica: senza, la quota di rappresentanza non si puo' calcolare su di loro.`] : [],
+      ...senzaData.length ? [`${senzaData.length} iscritti non hanno la data di nascita: non si sa in quale fascia stanno, ne' se sono under 14 o over 70.`] : [],
+      ...fuori.length ? [`${fuori.reduce((n2, x) => n2 + x.dimensione, 0)} iscritti non trovano posto: tutte le casate sono al massimo di ${posti}.`] : [],
+      ...casate.some((c) => c.membri.length < minimo) ? [`Alcune casate non arrivano a ${minimo} giocatori: sotto quel numero non si scende in campo nemmeno a calcetto.`] : []
+    ].concat((() => {
+      const d = esitoDisponibilita(giocatori, casate.map((c) => c.membri.length), { minUnder14, minOver70, quota, posti });
+      const righe = [];
+      if (d.under14.mancano) righe.push(`Servono ${d.under14.servono} under 14 e ne sono iscritti ${d.under14.iscritti}: ne mancano ${d.under14.mancano}. Non e' il sorteggio, e' che non ci sono.`);
+      if (d.over70.mancano) righe.push(`Servono ${d.over70.servono} over 70 e ne sono iscritti ${d.over70.iscritti}: ne mancano ${d.over70.mancano}. Nessuna composizione puo' rimediare: vanno cercati.`);
+      if (d.donne.mancano) righe.push(`La quota chiede ${d.donne.servono} donne in tutto e ne sono iscritte ${d.donne.iscritti}: ne mancano ${d.donne.mancano}.`);
+      return righe;
+    })())
+  };
+  if (!soloAnteprima) {
+    for (const c of casate) {
+      for (const m of c.membri) await db.prepare("UPDATE soci SET casata_id=? WHERE id=?").run(c.id, m.id);
+    }
+    for (const n of fuori) {
+      for (const m of n.membri) await db.prepare("UPDATE soci SET casata_id=NULL WHERE id=?").run(m.id);
+    }
+    const schierate = casate.filter((c) => c.membri.length >= minimo).map((c) => c.id);
+    await db.prepare("UPDATE casate SET schierata=0").run();
+    for (const id of schierate) await db.prepare("UPDATE casate SET schierata=1 WHERE id=?").run(id);
+  }
+  return esito;
+}
+async function proponiCapitani() {
+  const proposte = [];
+  for (const c of await db.prepare("SELECT id,nome,capitano_socio_id,vice_socio_id FROM casate ORDER BY id").all()) {
+    const membri = await db.prepare(
+      "SELECT id,nome,cognome,data_nascita,email,telefono,tipo_profilo,created_at FROM soci WHERE casata_id=? AND attivo=1 AND gioca_coppa=1"
+    ).all(c.id);
+    const adulti = membri.filter((m) => {
+      const a = eta(m.data_nascita);
+      return a != null && a >= 18 && a < 75;
+    });
+    const punteggio = (m) => {
+      let p = 0;
+      if (m.email) p += 40;
+      if (m.telefono) p += 30;
+      if (m.tipo_profilo === "residente") p += 25;
+      else if (m.tipo_profilo === "socio") p += 10;
+      p += Math.max(0, 10 - Math.floor((Date.now() - Date.parse(m.created_at || "")) / 864e5 / 30));
+      return p;
+    };
+    const ordinati = adulti.sort((a, b) => punteggio(b) - punteggio(a));
+    proposte.push({
+      casata_id: c.id,
+      casata: c.nome,
+      capitano_attuale: c.capitano_socio_id,
+      vice_attuale: c.vice_socio_id,
+      capitano: ordinati[0] ? { id: ordinati[0].id, nome: `${ordinati[0].nome} ${ordinati[0].cognome}`, perche: motivoCapitano(ordinati[0]) } : null,
+      vice: ordinati[1] ? { id: ordinati[1].id, nome: `${ordinati[1].nome} ${ordinati[1].cognome}`, perche: motivoCapitano(ordinati[1]) } : null,
+      // Se non c'e' nessun adulto raggiungibile, si dice: e' un problema vero, non un dettaglio.
+      avviso: !ordinati.length ? "Nessun maggiorenne in questa casata: il capitano non si puo' proporre." : !ordinati[0].email && !ordinati[0].telefono ? "Il capitano proposto non ha ne' e-mail ne' telefono: nessuno potra' avvisarlo." : null
+    });
+  }
+  return proposte;
+}
+function motivoCapitano(m) {
+  const r = [];
+  if (m.email) r.push("raggiungibile per e-mail");
+  if (m.telefono) r.push("e per telefono");
+  if (m.tipo_profilo === "residente") r.push("residente per tutta la stagione");
+  return r.length ? r.join(", ") : "nessun contatto: da verificare";
+}
+async function statoCasate() {
+  const posti = Number(await par("coppa_casata_posti")) || 12;
+  const minUnder14 = Number(await par("coppa_min_under14")) || 0;
+  const minOver70 = Number(await par("coppa_min_over70")) || 0;
+  const quota = Number(await par("coppa_quota_rosa")) || 0;
+  const minimo = Number(await par("coppa_casata_min")) || 3;
+  const minDonne = Math.floor(posti * quota / 100);
+  const out = [];
+  for (const c of await db.prepare("SELECT id,nome,colore,schierata FROM casate ORDER BY id").all()) {
+    const membri = await db.prepare("SELECT data_nascita,sesso FROM soci WHERE casata_id=? AND attivo=1 AND gioca_coppa=1").all(c.id);
+    const under14 = membri.filter((m) => eta(m.data_nascita) != null && eta(m.data_nascita) < 14).length;
+    const over70 = membri.filter((m) => eta(m.data_nascita) != null && eta(m.data_nascita) >= 70).length;
+    const donne = membri.filter((m) => String(m.sesso || "").toUpperCase() === "F").length;
+    const mancano = [];
+    const u14Serve = minimoRichiesto(membri.length, minUnder14, posti);
+    const o70Serve = minimoRichiesto(membri.length, minOver70, posti);
+    const dServe = Math.floor(membri.length * quota / 100);
+    if (membri.length < minimo) mancano.push(`${minimo - membri.length} per scendere in campo`);
+    if (under14 < u14Serve) mancano.push(`${u14Serve - under14} under 14`);
+    if (over70 < o70Serve) mancano.push(`${o70Serve - over70} over 70`);
+    if (donne < dServe) mancano.push(`${dServe - donne} donne per la quota`);
+    out.push({
+      id: c.id,
+      nome: c.nome,
+      colore: c.colore,
+      quanti: membri.length,
+      under14,
+      over70,
+      donne,
+      in_regola: mancano.length === 0,
+      // Si scende in campo dal minimo in su: in campo, a calcetto o a basket, ne vanno tre.
+      puo_giocare: membri.length >= minimo,
+      schierata: Number(c.schierata) === 1,
+      mancano
+    });
+  }
+  return { regole: { posti, minimo, minUnder14, minOver70, quota, minDonne }, casate: out };
 }
 
 // server/tavoli.js
@@ -15608,7 +15977,7 @@ adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
   if (!b.nome || !b.cognome) return res.status(400).json({ error: "Nome e cognome obbligatori" });
   const tipo = b.tipo_profilo ?? "socio";
   const ruolo = tipo === "ospite_temporaneo" ? "non_socio" : b.ruolo ?? "socio";
-  const cols = ["tessera_code", "nome", "cognome", "email", "telefono", "data_nascita", "casata_id", "ruolo", "tipo_profilo", "tutore_id", "lingua", "consenso_privacy", "consenso_marketing", "consenso_foto", "notifiche_push", "valida_fino", "soggiorno_dal", "soggiorno_al"];
+  const cols = ["tessera_code", "nome", "cognome", "email", "telefono", "data_nascita", "casata_id", "ruolo", "tipo_profilo", "tutore_id", "lingua", "consenso_privacy", "consenso_marketing", "consenso_foto", "notifiche_push", "valida_fino", "sesso", "nucleo", "gioca_coppa", "soggiorno_dal", "soggiorno_al"];
   const vals = [
     b.tessera_code || "",
     b.nome,
@@ -15626,6 +15995,13 @@ adminRouter.post("/soci", requireCap("utenti_ins"), async (req, res) => {
     b.consenso_foto ? 1 : 0,
     b.notifiche_push ? 1 : 0,
     b.valida_fino ?? null,
+    // Il sesso serve alla quota di rappresentanza delle casate, il nucleo tiene insieme la
+    // famiglia nel sorteggio, e "gioca_coppa" distingue chi vuole giocare da chi e' socio e
+    // basta: assegnare d'ufficio chi non ha chiesto di giocare significa ritrovarsi una casata
+    // in meno alla sfilata.
+    ["F", "M"].includes(String(b.sesso || "").toUpperCase()) ? String(b.sesso).toUpperCase() : null,
+    b.nucleo ?? null,
+    b.gioca_coppa ? 1 : 0,
     b.soggiorno_dal ?? null,
     b.soggiorno_al ?? null
   ];
@@ -17692,6 +18068,43 @@ function capTorneo(req) {
 function requireCapTorneo(req, res, next) {
   return requireCap(capTorneo(req))(req, res, next);
 }
+adminRouter.get("/casate/composizione", requireCap("casate"), async (req, res) => {
+  res.json(await componi({ soloAnteprima: true }));
+});
+adminRouter.post("/casate/composizione", requireCap("casate"), async (req, res) => {
+  if (!req.body?.conferma) {
+    return res.status(400).json({ error: "Guarda prima l'anteprima: questa operazione riscrive la casata di tutti gli iscritti." });
+  }
+  const esito = await componi({ soloAnteprima: false });
+  audit(req.adminUser.username, "componi_casate", "casate", null, `${esito.iscritti} iscritti \xB7 ${esito.casate_schierabili} casate`);
+  await registra({
+    fatto: "casate_composte",
+    servizio: "casate",
+    riferimento: null,
+    autore: req.adminUser.username,
+    canale: "backoffice",
+    dettaglio: { iscritti: esito.iscritti, casate: esito.casate_schierabili, problemi: esito.problemi.length }
+  });
+  res.json(esito);
+});
+adminRouter.get("/casate/capitani", requireCap("casate"), async (req, res) => {
+  res.json(await proponiCapitani());
+});
+adminRouter.put("/casate/:id/capitano", requireCap("casate"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM casate WHERE id=?").get(req.params.id);
+  if (!c) return res.status(404).json({ error: "Casata non trovata" });
+  const cap = req.body?.capitano_socio_id ? await db.prepare("SELECT * FROM soci WHERE id=? AND casata_id=?").get(req.body.capitano_socio_id, c.id) : null;
+  const vice = req.body?.vice_socio_id ? await db.prepare("SELECT * FROM soci WHERE id=? AND casata_id=?").get(req.body.vice_socio_id, c.id) : null;
+  if (req.body?.capitano_socio_id && !cap) return res.status(400).json({ error: "Il capitano dev'essere uno della casata" });
+  if (req.body?.vice_socio_id && !vice) return res.status(400).json({ error: "Il vice dev'essere uno della casata" });
+  if (cap && vice && cap.id === vice.id) return res.status(400).json({ error: "Capitano e vice non possono essere la stessa persona: il vice serve proprio per quando il capitano non c'e'." });
+  await db.prepare("UPDATE casate SET capitano_socio_id=?, vice_socio_id=? WHERE id=?").run(cap ? cap.id : null, vice ? vice.id : null, c.id);
+  audit(req.adminUser.username, "capitano_casata", "casate", c.id, cap ? `${cap.nome} ${cap.cognome}` : "nessuno");
+  res.json({ ok: true });
+});
+adminRouter.get("/casate/stato", requireCap("casate"), async (req, res) => {
+  res.json(await statoCasate());
+});
 adminRouter.get("/tornei", requireCapTorneo, async (req, res) => {
   const g = req.query.gestione === "tennis" ? "tennis" : "chiosco";
   res.json(await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? ORDER BY created_at DESC").all(g));
@@ -19911,8 +20324,8 @@ publicRouter.get("/garden/turni", async (req, res) => {
   res.json({ data, turni: out });
 });
 async function bloccoMinorenne(socio, cosa) {
-  const eta = etaDi(socio);
-  if (eta == null || eta >= 18) return null;
+  const eta2 = etaDi(socio);
+  if (eta2 == null || eta2 >= 18) return null;
   const perTramite = " Chiedi a un adulto di farlo per te.";
   if (cosa === "ordine") return "Per ordinare serve un adulto: fino ai 18 anni non si possono fare acquisti da soli." + perTramite;
   if (cosa === "serata") return "La serata ha una quota: fino ai 18 anni la prenota un adulto." + perTramite;
@@ -20095,7 +20508,7 @@ publicRouter.post("/cinema/:id/prenota", async (req, res) => {
   if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const nome = (socio.nome + " " + (socio.cognome || "")).trim();
-  const eta = etaDi(socio);
+  const eta2 = etaDi(socio);
   const r = await prenotaTavolo({
     data: p.data,
     turno: p.ora,
@@ -20108,7 +20521,7 @@ publicRouter.post("/cinema/:id/prenota", async (req, res) => {
     proiezione_id: p.id,
     layout_id: p.layout_id,
     categoria: "spettacolo",
-    over70: eta != null && eta >= 70
+    over70: eta2 != null && eta2 >= 70
   });
   if (r.error) return res.status(409).json({ error: r.error });
   audit(req.body.tessera_code, "prenota_cinema", "proiezioni", p.id, `${p.data} ${p.ora} \xB7 ${r.persone}p`);
@@ -20727,7 +21140,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-30 08:27" : "online";
+var BUILD = true ? "2026-08-30 10:07" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
