@@ -1798,6 +1798,58 @@ async function migrate() {
     attiva    INTEGER NOT NULL DEFAULT 1
   )`);
   await db.exec("CREATE INDEX IF NOT EXISTS idx_tariffe_campo ON campi_tariffe(campo_id)");
+  await db.exec(`
+  CREATE TABLE IF NOT EXISTS tornei_ko (
+    id        INTEGER PRIMARY KEY,
+    nome      TEXT NOT NULL,
+    disciplina TEXT,
+    gestione  TEXT NOT NULL DEFAULT 'chiosco',        -- chi lo organizza: chiosco | tennis
+    posti     INTEGER NOT NULL,                       -- 4, 8, 16, 32: un tabellone deve essere pieno
+    quota     REAL NOT NULL DEFAULT 0,
+    data      TEXT,
+    stato     TEXT NOT NULL DEFAULT 'iscrizioni',     -- iscrizioni | sorteggiato | concluso
+    vincitore TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS tornei_ko_iscritti (
+    id        INTEGER PRIMARY KEY,
+    torneo_id INTEGER NOT NULL REFERENCES tornei_ko(id) ON DELETE CASCADE,
+    socio_id  INTEGER,
+    tessera_code TEXT,
+    nome      TEXT NOT NULL,
+    pagato    INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Il tabellone: una riga per partita, con il turno e la posizione. La partita successiva si
+  -- ricava dalla posizione, cosi' il vincitore sale da solo senza che nessuno lo trascini.
+  CREATE TABLE IF NOT EXISTS tornei_ko_partite (
+    id        INTEGER PRIMARY KEY,
+    torneo_id INTEGER NOT NULL REFERENCES tornei_ko(id) ON DELETE CASCADE,
+    turno     INTEGER NOT NULL,                       -- 1 = primo turno, poi 2, 3...
+    posizione INTEGER NOT NULL,                       -- 0,1,2... dentro il turno
+    a_nome    TEXT,
+    b_nome    TEXT,
+    a_iscritto INTEGER,
+    b_iscritto INTEGER,
+    vincitore TEXT,
+    punteggio TEXT,
+    giocata_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ko_partite ON tornei_ko_partite(torneo_id, turno, posizione);
+
+  CREATE TABLE IF NOT EXISTS tennis_incassi (
+    id INTEGER PRIMARY KEY,
+    prenotazione_id INTEGER,
+    campo_id INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    slot TEXT,
+    importo REAL NOT NULL,
+    metodo TEXT,
+    operatore TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
   try {
     if (await getSetting("tessere_registro", "") !== "v1") {
       for (const r of await db.prepare("SELECT id,tessera_code FROM soci WHERE tessera_code IS NOT NULL").all()) {
@@ -8800,6 +8852,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
       <button data-v="pianta">\u{1F5FA}\uFE0F Organizzazione sala</button>
       <button data-v="tennis">\u{1F3BE} Campi &amp; tariffe</button>
+      <button data-v="tornei">\u{1F3C6} Tornei</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
@@ -9150,7 +9203,8 @@ function applyZona() {
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
   tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
   tog('campi', ZONA === 'campi');
-  tog('tennis', ZONA === 'tennis');                                // campi a pagamento: listino e incassi
+  tog('tennis', ZONA === 'tennis');
+  tog('tornei', ZONA === 'tennis' || ZONA === 'campi');            // tabelloni a eliminazione diretta                                // campi a pagamento: listino e incassi
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
   tog('fitness', ZONA === 'fitness');
@@ -10609,6 +10663,108 @@ VIEWS.tennis = async () => {
     if (!confirm('Togliere questa tariffa?')) return;
     await api('/tennis/tariffe/' + b.dataset.tendel, { method: 'DELETE' });
     show('tennis');
+  });
+};
+
+/* ---------- TORNEI A ELIMINAZIONE DIRETTA ----------
+   Altra cosa dalla Coppa delle Casate: qui si gioca una sera, si perde e si va a casa. Il
+   tabellone e' 4/8/16/32 perche' a eliminazione diretta ogni turno dimezza: con un numero
+   diverso qualcuno arriverebbe in finale avendo giocato una partita in meno. */
+VIEWS.tornei = async () => {
+  const gest = ZONA === 'tennis' ? 'tennis' : 'chiosco';
+  const lista = await api('/tornei?gestione=' + gest).catch(() => []);
+  const apertoId = window.__torneoAperto || (lista[0] && lista[0].id);
+  const tab = apertoId ? await api('/tornei/' + apertoId).catch(() => null) : null;
+
+  const partita = (p) => \`<div class="row" style="justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1;font-size:.9rem">
+        \${p.a_nome ? \`<b\${p.vincitore === p.a_nome ? '' : ' style="font-weight:400"'}>\${esc(p.a_nome)}</b>\` : '<span class="muted">\u2014 in attesa \u2014</span>'}
+        <span class="muted"> vs </span>
+        \${p.b_nome ? \`<b\${p.vincitore === p.b_nome ? '' : ' style="font-weight:400"'}>\${esc(p.b_nome)}</b>\` : '<span class="muted">\u2014 in attesa \u2014</span>'}
+        \${p.punteggio ? \`<span class="muted"> \xB7 \${esc(p.punteggio)}</span>\` : ''}
+      </div>
+      \${p.a_nome && p.b_nome && !p.vincitore
+        ? \`<div class="row" style="gap:4px">
+            <input id="pt_\${p.id}" placeholder="6-3" style="width:70px;font-size:.85rem">
+            <button class="btn ghost sm" data-vince="\${p.id}|\${esc(p.a_nome)}">\${esc(p.a_nome)}</button>
+            <button class="btn ghost sm" data-vince="\${p.id}|\${esc(p.b_nome)}">\${esc(p.b_nome)}</button>
+          </div>\`
+        : p.vincitore ? \`<span class="tag ok">passa \${esc(p.vincitore)}</span>\` : ''}
+    </div>\`;
+
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>\u{1F3C6} Tornei a eliminazione diretta</h3>
+      <p class="muted" style="font-size:.82rem">Si gioca una sera: iscrizioni, sorteggio cieco, e avanti fino alla finale. Il tabellone \xE8 da <b>4, 8, 16 o 32</b>: a eliminazione diretta ogni turno dimezza, e con un numero diverso qualcuno passerebbe il turno senza giocare.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
+        <input id="nt_disc" placeholder="Disciplina" style="width:130px">
+        <select id="nt_posti"><option>4</option><option>8</option><option>16</option><option>32</option></select>
+        <input id="nt_data" type="date">
+        <button class="btn gold sm" id="nt_crea">+ Crea torneo</button>
+      </div>
+      \${lista.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">\${lista.map(t => \`<button class="btn \${String(t.id) === String(apertoId) ? 'gold' : 'ghost'} sm" data-tsel="\${t.id}">\${esc(t.nome)} <span class="muted">\${t.posti}</span></button>\`).join('')}</div>\` : ''}
+    </div>
+
+    \${tab ? \`<div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">\${esc(tab.torneo.nome)}</h3>
+        <span class="tag \${tab.torneo.stato === 'concluso' ? 'ok' : 'mid'}">\${esc(tab.torneo.stato)}</span>
+      </div>
+      \${tab.torneo.vincitore ? \`<p style="font-size:1.05rem;margin:8px 0"><b>\u{1F3C6} \${esc(tab.torneo.vincitore)}</b></p>\` : ''}
+      \${tab.torneo.stato === 'iscrizioni' ? \`
+        <p class="muted" style="font-size:.85rem">Iscritti <b>\${tab.iscritti.length}</b> su \${tab.torneo.posti}\${tab.posti_liberi ? \` \xB7 mancano \${tab.posti_liberi}\` : ' \xB7 il tabellone \xE8 pieno'}</p>
+        <div style="margin:6px 0">\${tab.iscritti.map(i => \`<span class="tag" style="margin:2px">\${esc(i.nome)} <button class="btn ghost sm" data-tisdel="\${i.id}" style="padding:0 4px">\u2715</button></span>\`).join('') || '<span class="muted">Nessun iscritto.</span>'}</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="ti_v" placeholder="Nome, oppure tessera" style="min-width:170px">
+          <button class="btn ghost sm" id="ti_add">+ Iscrivi</button>
+          \${tab.posti_liberi === 0 ? '<button class="btn gold sm" id="ti_sort">\u{1F3B2} Sorteggia il tabellone</button>' : '<span class="muted" style="font-size:.82rem">Il sorteggio si fa a tabellone pieno.</span>'}
+        </div>\` : ''}
+      \${tab.torneo.stato !== 'iscrizioni' ? tab.turni.map(t => \`<div style="margin-top:12px">
+        <b style="color:var(--navy)">\${esc(t.nome)}</b>
+        \${t.partite.map(partita).join('')}</div>\`).join('') : ''}
+    </div>\` : ''}\`;
+
+  $('#nt_crea').onclick = async () => {
+    const nome = ($('#nt_nome').value || '').trim();
+    if (!nome) { alert('Dai un nome al torneo.'); return; }
+    try {
+      const r = await api('/tornei', { method: 'POST', body: JSON.stringify({
+        nome, disciplina: $('#nt_disc').value, posti: Number($('#nt_posti').value),
+        data: $('#nt_data').value, gestione: gest
+      }) });
+      window.__torneoAperto = r.id;
+    } catch (e) { alert(e.message); return; }
+    show('tornei');
+  };
+  document.querySelectorAll('[data-tsel]').forEach(b => b.onclick = () => { window.__torneoAperto = b.dataset.tsel; show('tornei'); });
+  if ($('#ti_add')) $('#ti_add').onclick = async () => {
+    const v = ($('#ti_v').value || '').trim();
+    if (!v) { alert('Scrivi il nome, oppure la tessera.'); return; }
+    const corpo = /^(RB|BR)-/i.test(v) ? { tessera_code: v.toUpperCase() } : { nome: v };
+    try { await api('/tornei/' + apertoId + '/iscritti', { method: 'POST', body: JSON.stringify(corpo) }); }
+    catch (e) { alert(e.message); return; }
+    show('tornei');
+  };
+  document.querySelectorAll('[data-tisdel]').forEach(b => b.onclick = async () => {
+    await api('/tornei/' + apertoId + '/iscritti/' + b.dataset.tisdel, { method: 'DELETE' });
+    show('tornei');
+  });
+  if ($('#ti_sort')) $('#ti_sort').onclick = async () => {
+    if (!confirm('Sorteggiare il tabellone? Il sorteggio \xE8 cieco e si fa una volta sola.')) return;
+    try { await api('/tornei/' + apertoId + '/sorteggia', { method: 'POST', body: '{}' }); }
+    catch (e) { alert(e.message); return; }
+    show('tornei');
+  };
+  document.querySelectorAll('[data-vince]').forEach(b => b.onclick = async () => {
+    const i = b.dataset.vince.indexOf('|');
+    const id = b.dataset.vince.slice(0, i), chi = b.dataset.vince.slice(i + 1);
+    try {
+      const r = await api('/tornei/partite/' + id, { method: 'PUT', body: JSON.stringify({
+        vincitore: chi, punteggio: (($('#pt_' + id) || {}).value || '').trim()
+      }) });
+      if (r.finale) alert('\u{1F3C6} ' + r.vincitore + ' vince il torneo.');
+    } catch (e) { alert(e.message); return; }
+    show('tornei');
   });
 };
 
@@ -12206,7 +12362,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.70";
+var VERSION = "5.71";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14303,6 +14459,92 @@ async function prezzoPrenotazione(campo, slot, nSlot = 1, tipoUso = "campo") {
 }
 async function listino(campoId) {
   return db.prepare("SELECT * FROM campi_tariffe WHERE campo_id=? ORDER BY tipo_uso, id").all(campoId);
+}
+
+// server/tornei.js
+init_db();
+var POSTI_AMMESSI = [4, 8, 16, 32];
+function mescola(v) {
+  const a = v.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function turniNecessari(posti) {
+  return Math.log2(posti);
+}
+function nomeTurno(turno, posti) {
+  const totali = turniNecessari(posti);
+  const restanti = totali - turno;
+  if (restanti === 0) return "Finale";
+  if (restanti === 1) return "Semifinali";
+  if (restanti === 2) return "Quarti";
+  if (restanti === 3) return "Ottavi";
+  return `${Math.pow(2, restanti + 1)}\xBA di finale`;
+}
+async function sorteggia(torneoId) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.stato !== "iscrizioni") return { ok: false, error: "Il sorteggio si fa una volta sola: questo torneo e' gia' partito." };
+  const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY id").all(torneoId);
+  if (iscritti.length !== Number(t.posti)) {
+    return { ok: false, error: `Il tabellone e' da ${t.posti}: ci sono ${iscritti.length} iscritti. Servono esattamente ${t.posti}, altrimenti qualcuno passa il turno senza giocare.` };
+  }
+  const mescolati = mescola(iscritti);
+  await db.prepare("DELETE FROM tornei_ko_partite WHERE torneo_id=?").run(torneoId);
+  for (let i = 0; i < mescolati.length / 2; i++) {
+    const a = mescolati[i * 2], b = mescolati[i * 2 + 1];
+    await db.prepare(
+      "INSERT INTO tornei_ko_partite (torneo_id,turno,posizione,a_nome,b_nome,a_iscritto,b_iscritto) VALUES (?,1,?,?,?,?,?)"
+    ).run(torneoId, i, a.nome, b.nome, a.id, b.id);
+  }
+  for (let turno = 2; turno <= turniNecessari(t.posti); turno++) {
+    const partite = Number(t.posti) / Math.pow(2, turno);
+    for (let i = 0; i < partite; i++) {
+      await db.prepare("INSERT INTO tornei_ko_partite (torneo_id,turno,posizione) VALUES (?,?,?)").run(torneoId, turno, i);
+    }
+  }
+  await db.prepare("UPDATE tornei_ko SET stato='sorteggiato' WHERE id=?").run(torneoId);
+  return { ok: true };
+}
+async function registraRisultato2(partitaId, vincitore, punteggio) {
+  const p = await db.prepare("SELECT * FROM tornei_ko_partite WHERE id=?").get(partitaId);
+  if (!p) return { ok: false, error: "Partita non trovata" };
+  if (!p.a_nome || !p.b_nome) return { ok: false, error: "Questa partita non ha ancora i due giocatori: mancano i risultati del turno prima." };
+  if (![p.a_nome, p.b_nome].includes(vincitore)) {
+    return { ok: false, error: `Il vincitore dev'essere uno dei due: ${p.a_nome} o ${p.b_nome}.` };
+  }
+  await db.prepare("UPDATE tornei_ko_partite SET vincitore=?, punteggio=?, giocata_at=? WHERE id=?").run(vincitore, punteggio || null, (/* @__PURE__ */ new Date()).toISOString(), p.id);
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(p.torneo_id);
+  if (p.turno >= turniNecessari(t.posti)) {
+    await db.prepare("UPDATE tornei_ko SET stato='concluso', vincitore=? WHERE id=?").run(vincitore, t.id);
+    return { ok: true, finale: true, vincitore };
+  }
+  const dopo = await db.prepare("SELECT * FROM tornei_ko_partite WHERE torneo_id=? AND turno=? AND posizione=?").get(t.id, p.turno + 1, Math.floor(p.posizione / 2));
+  if (dopo) {
+    const campo = p.posizione % 2 === 0 ? "a_nome" : "b_nome";
+    await db.prepare(`UPDATE tornei_ko_partite SET ${campo}=? WHERE id=?`).run(vincitore, dopo.id);
+  }
+  return { ok: true };
+}
+async function tabellone(torneoId) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return null;
+  const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE torneo_id=? ORDER BY turno,posizione").all(torneoId);
+  const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY id").all(torneoId);
+  const turni2 = [];
+  for (let n = 1; n <= turniNecessari(t.posti); n++) {
+    turni2.push({ turno: n, nome: nomeTurno(n, t.posti), partite: partite.filter((p) => p.turno === n) });
+  }
+  return {
+    torneo: t,
+    iscritti,
+    posti_liberi: Math.max(0, Number(t.posti) - iscritti.length),
+    turni: turni2,
+    da_giocare: partite.filter((p) => p.a_nome && p.b_nome && !p.vincitore).length
+  };
 }
 
 // server/tavoli.js
@@ -17370,6 +17612,95 @@ adminRouter.post("/tennis/prenota", requireCap("tennis"), async (req, res) => {
   audit(req.adminUser.username, "prenota_campo_banco", "campi", c.id, `${req.body?.data} ${slot} \xB7 ${conto.prezzo} \u20AC`);
   res.status(201).json({ ok: true, prezzo: conto.prezzo });
 });
+function capTorneo(req) {
+  return req.query.gestione === "tennis" || req.body?.gestione === "tennis" ? "tennis" : "campi";
+}
+function requireCapTorneo(req, res, next) {
+  return requireCap(capTorneo(req))(req, res, next);
+}
+adminRouter.get("/tornei", requireCapTorneo, async (req, res) => {
+  const g = req.query.gestione === "tennis" ? "tennis" : "chiosco";
+  res.json(await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? ORDER BY created_at DESC").all(g));
+});
+adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
+  const b = req.body || {};
+  if (!b.nome) return res.status(400).json({ error: "Dai un nome al torneo" });
+  const posti = Number(b.posti);
+  if (!POSTI_AMMESSI.includes(posti)) {
+    return res.status(400).json({
+      error: `Il tabellone dev'essere da ${POSTI_AMMESSI.join(", ")}. Con un numero diverso qualcuno passerebbe il turno senza giocare, e il torneo comincerebbe con un'ingiustizia.`
+    });
+  }
+  const info = await db.prepare(
+    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data) VALUES (?,?,?,?,?,?)"
+  ).run(b.nome, b.disciplina || null, b.gestione === "tennis" ? "tennis" : "chiosco", posti, Number(b.quota) || 0, b.data || null);
+  audit(req.adminUser.username, "crea_torneo", "tornei", info.lastInsertRowid, `${b.nome} \xB7 ${posti} posti`);
+  res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
+});
+adminRouter.get("/tornei/:id", requireCap("campi"), async (req, res) => {
+  const t = await tabellone(req.params.id);
+  if (!t) return res.status(404).json({ error: "Torneo non trovato" });
+  res.json(t);
+});
+adminRouter.post("/tornei/:id/iscritti", requireCap("campi"), async (req, res) => {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(req.params.id);
+  if (!t) return res.status(404).json({ error: "Torneo non trovato" });
+  if (t.stato !== "iscrizioni") return res.status(409).json({ error: "Le iscrizioni sono chiuse: il tabellone e' gia' stato sorteggiato." });
+  const quanti = (await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(t.id)).n;
+  if (Number(quanti) >= Number(t.posti)) return res.status(409).json({ error: `Il tabellone da ${t.posti} e' pieno.` });
+  const tess = String(req.body?.tessera_code || "").trim();
+  let nome = String(req.body?.nome || "").trim();
+  let socioId = null;
+  if (tess) {
+    const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(tess.toUpperCase());
+    if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+    const gia = await db.prepare("SELECT 1 x FROM tornei_ko_iscritti WHERE torneo_id=? AND upper(tessera_code)=?").get(t.id, tess.toUpperCase());
+    if (gia) return res.status(409).json({ error: "Questo socio e' gia' iscritto" });
+    socioId = socio.id;
+    nome = `${socio.nome} ${socio.cognome}`.trim();
+  } else if (!nome) {
+    return res.status(400).json({ error: "Serve un nome, oppure la tessera" });
+  }
+  await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,socio_id,tessera_code,nome,pagato) VALUES (?,?,?,?,?)").run(t.id, socioId, tess || null, nome, req.body?.pagato ? 1 : 0);
+  const ora = (await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(t.id)).n;
+  res.status(201).json({ ok: true, iscritti: Number(ora), posti: Number(t.posti), pieno: Number(ora) === Number(t.posti) });
+});
+adminRouter.delete("/tornei/:id/iscritti/:iscrittoId", requireCap("campi"), async (req, res) => {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(req.params.id);
+  if (!t || t.stato !== "iscrizioni") return res.status(409).json({ error: "Il tabellone e' gia' sorteggiato: non si tolgono piu' iscritti." });
+  await db.prepare("DELETE FROM tornei_ko_iscritti WHERE id=? AND torneo_id=?").run(req.params.iscrittoId, t.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/tornei/:id/sorteggia", requireCap("campi"), async (req, res) => {
+  const r = await sorteggia(req.params.id);
+  if (!r.ok) return res.status(409).json({ error: r.error });
+  audit(req.adminUser.username, "sorteggia_torneo", "tornei", req.params.id);
+  res.json({ ok: true, tabellone: await tabellone(req.params.id) });
+});
+adminRouter.put("/tornei/partite/:id", requireCap("campi"), async (req, res) => {
+  const r = await registraRisultato2(req.params.id, String(req.body?.vincitore || "").trim(), req.body?.punteggio);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  const p = await db.prepare("SELECT torneo_id FROM tornei_ko_partite WHERE id=?").get(req.params.id);
+  audit(req.adminUser.username, "risultato_torneo", "tornei", p?.torneo_id, req.body?.vincitore);
+  res.json({ ok: true, finale: !!r.finale, vincitore: r.vincitore || null, tabellone: await tabellone(p.torneo_id) });
+});
+adminRouter.get("/tennis/incassi", requireCap("tennis"), async (req, res) => {
+  if (req.adminUser.ruolo === "gestore") {
+    return res.status(403).json({ error: "Gli incassi dei campi a pagamento sono di chi li gestisce: il residence non li vede." });
+  }
+  const dal = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dal || "")) ? String(req.query.dal) : "2000-01-01";
+  const al = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.al || "")) ? String(req.query.al) : "2999-12-31";
+  const righe = await db.prepare(
+    `SELECT i.*, c.nome AS campo FROM tennis_incassi i JOIN campi c ON c.id=i.campo_id
+     WHERE i.data BETWEEN ? AND ? ORDER BY i.data DESC, i.slot`
+  ).all(dal, al);
+  res.json({
+    dal,
+    al,
+    righe,
+    totale: Number(righe.reduce((s2, r) => s2 + Number(r.importo), 0).toFixed(2))
+  });
+});
 adminRouter.get("/tennis/giornata", requireCap("tennis"), async (req, res) => {
   const data = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.data || "")) ? String(req.query.data) : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const righe = await db.prepare(
@@ -17378,13 +17709,22 @@ adminRouter.get("/tennis/giornata", requireCap("tennis"), async (req, res) => {
      FROM prenotazioni_campo p JOIN campi c ON c.id=p.campo_id
      WHERE c.gestione='tennis' AND p.data=? AND p.stato='prenotato' ORDER BY p.slot, c.nome`
   ).all(data);
+  const suoi = req.adminUser.ruolo !== "gestore";
   const daIncassare = righe.filter((r) => Number(r.prezzo) > 0 && Number(r.pagato) !== 1);
   res.json({
     data,
-    righe,
-    incassato: Number(righe.filter((r) => Number(r.pagato) === 1).reduce((s2, r) => s2 + Number(r.prezzo), 0).toFixed(2)),
-    da_incassare: Number(daIncassare.reduce((s2, r) => s2 + Number(r.prezzo), 0).toFixed(2)),
-    quanti_da_incassare: daIncassare.length
+    righe: suoi ? righe : righe.map((r) => {
+      const { prezzo, pagato, ...senzaSoldi } = r;
+      return senzaSoldi;
+    }),
+    ...suoi ? {
+      incassato: Number(righe.filter((r) => Number(r.pagato) === 1).reduce((s2, r) => s2 + Number(r.prezzo), 0).toFixed(2)),
+      da_incassare: Number(daIncassare.reduce((s2, r) => s2 + Number(r.prezzo), 0).toFixed(2)),
+      quanti_da_incassare: daIncassare.length
+    } : {
+      incassi_nascosti: true,
+      nota: "Gli incassi dei campi a pagamento sono di chi li gestisce: il residence non li vede."
+    }
   });
 });
 adminRouter.put("/tennis/prenotazioni/:id/pagato", requireCap("tennis"), async (req, res) => {
@@ -17394,18 +17734,9 @@ adminRouter.put("/tennis/prenotazioni/:id/pagato", requireCap("tennis"), async (
   await db.prepare("UPDATE prenotazioni_campo SET pagato=? WHERE id=?").run(pagato, p.id);
   audit(req.adminUser.username, pagato ? "incassa_campo" : "storna_incasso_campo", "campi", p.campo_id, `${p.data} ${p.slot} \xB7 ${p.prezzo} \u20AC`);
   if (pagato) {
-    await registra({
-      fatto: "incasso_campo",
-      servizio: "tennis",
-      riferimento: p.id,
-      socio_id: p.socio_id,
-      intestatario: p.nome || null,
-      autore: req.adminUser.username,
-      canale: "crew",
-      importo: Number(p.prezzo),
-      quando: `${p.data} \xB7 ${p.slot}`,
-      dettaglio: { tipo_uso: p.tipo_uso, metodo: req.body?.metodo || null }
-    });
+    await db.prepare(
+      "INSERT INTO tennis_incassi (prenotazione_id,campo_id,data,slot,importo,metodo,operatore) VALUES (?,?,?,?,?,?,?)"
+    ).run(p.id, p.campo_id, p.data, p.slot, Number(p.prezzo), req.body?.metodo || null, req.adminUser.username);
   }
   res.json({ ok: true });
 });
@@ -20319,7 +20650,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-29 14:43" : "online";
+var BUILD = true ? "2026-08-30 05:21" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
