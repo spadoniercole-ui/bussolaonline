@@ -180,14 +180,14 @@ function cornice(titolo, corpo) {
       Messaggio automatico: a questo indirizzo non risponde nessuno.</p>
   </div>`;
 }
-async function inviaCodice(a, codice, minuti2) {
+async function inviaCodice(a, codice, minuti3) {
   return invia({
     a,
     oggetto: `${codice} \xE8 il tuo codice di accesso \xB7 Bussola Residence`,
     html: cornice("Il tuo codice di accesso", `
       <p style="margin-top:0">Scrivi questo codice nell'app per entrare:</p>
       <p style="font-size:34px;font-weight:800;letter-spacing:.22em;background:#fff;border:2px dashed #c9a227;border-radius:10px;padding:14px;text-align:center;margin:14px 0">${codice}</p>
-      <p>Vale <b>${minuti2} minuti</b>, poi scade. Si usa una volta sola.</p>
+      <p>Vale <b>${minuti3} minuti</b>, poi scade. Si usa una volta sola.</p>
       <p style="color:#6b6257;font-size:13px">Se non hai chiesto tu di entrare, ignora questo messaggio: senza il codice non succede niente.</p>`)
   });
 }
@@ -1786,6 +1786,65 @@ async function migrate() {
   await addIfMissing("casate", "capitano_socio_id", "capitano_socio_id INTEGER");
   await addIfMissing("casate", "vice_socio_id", "vice_socio_id INTEGER");
   await db.exec(`
+  CREATE TABLE IF NOT EXISTS piazzole (
+    id       INTEGER PRIMARY KEY,
+    nome     TEXT NOT NULL UNIQUE,
+    larghezza_m REAL,
+    profondita_m REAL,
+    attiva   INTEGER NOT NULL DEFAULT 1,
+    ordine   INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS ombrelloni (
+    id          INTEGER PRIMARY KEY,
+    piazzola_id INTEGER NOT NULL REFERENCES piazzole(id) ON DELETE CASCADE,
+    numero      INTEGER NOT NULL,
+    posti       INTEGER NOT NULL DEFAULT 2,
+    x           REAL NOT NULL DEFAULT 50,
+    y           REAL NOT NULL DEFAULT 50,
+    attivo      INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS idx_ombrelloni_piazzola ON ombrelloni(piazzola_id);
+
+  -- Una presa: chi, quale ombrellone, quale fascia, quando ha cominciato e quando ha smesso.
+  -- Il nucleo e' scritto qui e non dedotto: se domani la famiglia cambia codice, la storia di
+  -- ieri deve restare quella che era.
+  CREATE TABLE IF NOT EXISTS ombrellone_prese (
+    id           INTEGER PRIMARY KEY,
+    ombrellone_id INTEGER NOT NULL REFERENCES ombrelloni(id) ON DELETE CASCADE,
+    data         TEXT NOT NULL,
+    fascia       TEXT NOT NULL,                  -- mattina | pomeriggio
+    socio_id     INTEGER,
+    tessera_code TEXT,
+    nome         TEXT,
+    nucleo       TEXT,
+    presa_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    scade_at     TEXT,
+    rilasciata_at TEXT,
+    stato        TEXT NOT NULL DEFAULT 'attiva'  -- attiva | rilasciata | scaduta
+  );
+  CREATE INDEX IF NOT EXISTS idx_prese_giorno ON ombrellone_prese(data, fascia);
+
+  -- Chiusure: vento, manutenzione, marea.
+  CREATE TABLE IF NOT EXISTS piazzole_blocchi (
+    id          INTEGER PRIMARY KEY,
+    piazzola_id INTEGER NOT NULL REFERENCES piazzole(id) ON DELETE CASCADE,
+    data        TEXT NOT NULL,
+    fascia      TEXT,
+    motivo      TEXT NOT NULL DEFAULT 'vento',
+    nota        TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  try {
+    if (await getSetting("piazzole_default", "") !== "v1") {
+      const insP = db.prepare("INSERT OR IGNORE INTO piazzole (nome,ordine) VALUES (?,?)");
+      const nomi = ["Grande", "Caltagirone", "Piccola", "Quadrata"];
+      for (let i = 0; i < nomi.length; i++) await insP.run(nomi[i], i + 1);
+      await setSetting("piazzole_default", "v1");
+    }
+  } catch (_) {
+  }
+  await db.exec(`
   CREATE TABLE IF NOT EXISTS tessere (
     code        TEXT PRIMARY KEY,
     socio_id    INTEGER NOT NULL,
@@ -3116,6 +3175,47 @@ var init_parametri = __esm({
         dipende_da: "comande_chiusura_automatica",
         etichetta: "Dopo quante ore",
         aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
+      },
+      {
+        chiave: "beach_mattina_da",
+        gruppo: "Spiaggia",
+        tipo: "ora",
+        predefinito: "08:00",
+        etichetta: "Fascia del mattino \u2014 da",
+        aiuto: "Le fasce sono FISSE, non quattro ore da quando arrivi. Con le ore mobili chi prende alle 10:20 libera alle 14:20, un orario che non serve a nessuno; e chi arriva alle 15 trova occupato fino alle 19:20 anche se quello se ne va alle 18."
+      },
+      { chiave: "beach_mattina_a", gruppo: "Spiaggia", tipo: "ora", predefinito: "13:00", etichetta: "Fascia del mattino \u2014 a", aiuto: "Fine della prima fascia." },
+      { chiave: "beach_pomeriggio_da", gruppo: "Spiaggia", tipo: "ora", predefinito: "13:00", etichetta: "Fascia del pomeriggio \u2014 da", aiuto: "Inizio della seconda fascia." },
+      { chiave: "beach_pomeriggio_a", gruppo: "Spiaggia", tipo: "ora", predefinito: "19:00", etichetta: "Fascia del pomeriggio \u2014 a", aiuto: "Fine della seconda fascia: dopo, gli ombrelloni tornano liberi per il giorno dopo." },
+      {
+        chiave: "beach_posti_ombrellone",
+        gruppo: "Spiaggia",
+        tipo: "numero",
+        predefinito: 2,
+        min: 1,
+        max: 6,
+        etichetta: "Persone per ombrellone",
+        aiuto: "Due: oltre, serve il secondo ombrellone. E\u2019 la misura che decide quanti ombrelloni prende un nucleo numeroso \u2014 accostati, e contano come una presa sola."
+      },
+      {
+        chiave: "beach_fasce_al_giorno",
+        gruppo: "Spiaggia",
+        tipo: "numero",
+        predefinito: 2,
+        min: 1,
+        max: 2,
+        etichetta: "Fasce al giorno per nucleo",
+        aiuto: "Quante volte al giorno un nucleo familiare puo\u2019 prendere un ombrellone. Due: mattina e pomeriggio, e poi basta fino al giorno dopo."
+      },
+      {
+        chiave: "beach_avviso_minuti",
+        gruppo: "Spiaggia",
+        tipo: "numero",
+        predefinito: 15,
+        min: 0,
+        max: 60,
+        etichetta: "Avviso prima della scadenza (minuti)",
+        aiuto: "Quanto prima si avvisa chi sta sotto l\u2019ombrellone che la fascia sta per finire. Senza avviso, la scadenza arriva addosso a chi e\u2019 li\u2019 in costume e produce solo discussioni."
       },
       {
         chiave: "coppa_quota_rosa",
@@ -7217,6 +7317,9 @@ async function editSocio(s, all) {
   if (!isNew) hostInfo = await api('/soci/' + s.id + '/host').catch(() => null);
   const genitori = (all || []).filter(x => x.tipo_profilo === 'genitore');
   const profili = [['socio','Socio'],['residente','Residente'],['socio_residente','Socio residente'],['ospite_temporaneo','Visitatore (non socio)'],['genitore','Genitore'],['under14','Under 14 (figlio)']];
+  // I nuclei gia' usati: si sceglie da quelli invece di riscrivere il codice a mano e
+  // sbagliarlo \u2014 un codice storpiato e' una famiglia separata.
+  const nucleiNoti = [...new Set((all || []).map(x => x.nucleo).filter(Boolean))].sort();
   const tutOpts = \`<option value="">\u2014 nessuno \u2014</option>\` + genitori.map(g => \`<option value="\${g.id}" \${s?.tutore_id==g.id?'selected':''}>\${esc(g.nome)} \${esc(g.cognome)}</option>\`).join('');
   modal(\`<h3>\${isNew?'Nuovo profilo':'Modifica profilo'}</h3>
     <div class="grid2">
@@ -7230,6 +7333,16 @@ async function editSocio(s, all) {
       </div>
       <p class="muted" style="font-size:.78rem">Compare nel tasto <b>Chiedi aiuto</b> dell'app, accanto al 112. Utile soprattutto per i soci anziani.</p>
       <div><label>Data di nascita</label><input id="f_nasc" type="date" value="\${esc(s?.data_nascita||'')}"></div>
+      <div><label>Sesso</label><select id="f_sesso">
+        <option value="" \${!s?.sesso?'selected':''}>\u2014 da indicare \u2014</option>
+        <option value="F" \${s?.sesso==='F'?'selected':''}>F</option>
+        <option value="M" \${s?.sesso==='M'?'selected':''}>M</option>
+      </select></div>
+      <div style="grid-column:1/-1"><label>Nucleo familiare</label>
+        <input id="f_nucleo" list="nuclei_noti" value="\${esc(s?.nucleo||'')}" placeholder="es. Rossi-villa12">
+        <datalist id="nuclei_noti">\${nucleiNoti.map(n=>\`<option value="\${esc(n)}">\`).join('')}</datalist>
+        <p class="muted" style="font-size:.78rem;margin:2px 0 0">Chi ha lo stesso codice viaggia insieme: non si separa nella composizione delle casate, e in spiaggia conta come una presa sola. Un codice qualsiasi, purch\xE9 uguale per tutti i familiari.</p>
+      </div>
       <div><label>Casata</label><select id="f_casata">\${casataOptions(s?.casata_id)}</select></div>
       <div><label>Tipo profilo</label><select id="f_tipo">\${profili.map(p=>\`<option value="\${p[0]}" \${s?.tipo_profilo===p[0]?'selected':''}>\${p[1]}</option>\`).join('')}</select></div>
       <div id="tutoreWrap"><label>Genitore (per Under 14)</label><select id="f_tutore">\${tutOpts}</select></div>
@@ -7293,6 +7406,8 @@ async function editSocio(s, all) {
       data_nascita:$('#f_nasc').value, casata_id:$('#f_casata').value||null, ruolo:$('#f_ruolo').value, lingua:$('#f_lingua').value,
       tipo_profilo:$('#f_tipo').value, tutore_id: $('#f_tipo').value==='under14' ? ($('#f_tutore').value||null) : null,
       prepagata_autorizzata: $('#f_prep') ? $('#f_prep').checked : undefined,
+      sesso: $('#f_sesso') ? ($('#f_sesso').value || null) : undefined,
+      nucleo: $('#f_nucleo') ? (($('#f_nucleo').value || '').trim() || null) : undefined,
       // Ospite temporaneo: nessuna tessera annuale, ma periodo di soggiorno dal/al.
       valida_fino: osp ? null : $('#f_valida').value,
       soggiorno_dal: osp ? ($('#f_dal').value||null) : null, soggiorno_al: osp ? ($('#f_al').value||null) : null,
@@ -12505,7 +12620,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.77";
+var VERSION = "5.78";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -12726,6 +12841,10 @@ var CAPS_DELEGABILI = [
   // Chiosco: comande + KDS (cassa/cameriere/stazioni)
   "campi",
   // Prenotazione campi (config campi + regole + prospetto prenotazioni)
+  "beach",
+  // La spiaggia: piazzole, ombrelloni, prese. Sulle piazzole non c'e' nessuno della crew —
+  // questo permesso serve a chi guarda la situazione, sistema un disallineamento e chiude una
+  // piazzola quando tira vento.
   "tennis_campi",
   // Delegato dei campi a pagamento: apre e chiude le fasce, prenota, disdice, blocca un campo.
   // NON vede il listino e NON vede il fatturato — il gestore puo' mandare qualcuno al banco
@@ -14987,6 +15106,10 @@ async function statoCasate() {
   return { regole: { posti, minimo, minUnder14, minOver70, quota, minDonne }, casate: out };
 }
 
+// server/spiaggia.js
+init_db();
+init_parametri();
+
 // server/tavoli.js
 init_db();
 init_parametri();
@@ -15419,14 +15542,138 @@ async function turnoSuccessivo(ora) {
   return null;
 }
 
+// server/spiaggia.js
+var FASCE2 = ["mattina", "pomeriggio"];
+async function orari() {
+  return {
+    mattina: { da: String(await par("beach_mattina_da") || "08:00"), a: String(await par("beach_mattina_a") || "13:00") },
+    pomeriggio: { da: String(await par("beach_pomeriggio_da") || "13:00"), a: String(await par("beach_pomeriggio_a") || "19:00") }
+  };
+}
+var minuti2 = (hhmm2) => {
+  const [h, m] = String(hhmm2 || "0:0").split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+async function fasceOggi() {
+  const o = await orari();
+  const ora = adessoInSicilia();
+  return FASCE2.map((f) => ({
+    fascia: f,
+    da: o[f].da,
+    a: o[f].a,
+    in_corso: ora.minuti >= minuti2(o[f].da) && ora.minuti < minuti2(o[f].a),
+    passata: ora.minuti >= minuti2(o[f].a),
+    minuti_alla_fine: Math.max(0, minuti2(o[f].a) - ora.minuti)
+  }));
+}
+async function chiudiScadute(data) {
+  const o = await orari();
+  const ora = adessoInSicilia();
+  if (data !== ora.data) return 0;
+  let n = 0;
+  for (const f of FASCE2) {
+    if (ora.minuti < minuti2(o[f].a)) continue;
+    const r = await db.prepare(
+      "UPDATE ombrellone_prese SET stato='scaduta', rilasciata_at=datetime('now') WHERE data=? AND fascia=? AND stato='attiva'"
+    ).run(data, f);
+    n += Number(r?.changes || 0);
+  }
+  return n;
+}
+async function situazione(piazzolaId, data, fascia) {
+  await chiudiScadute(data);
+  const ombrelloni = await db.prepare("SELECT * FROM ombrelloni WHERE piazzola_id=? AND attivo=1 ORDER BY numero").all(piazzolaId);
+  const prese = await db.prepare(
+    "SELECT * FROM ombrellone_prese WHERE data=? AND fascia=? AND stato='attiva'"
+  ).all(data, fascia);
+  const bloccata = await db.prepare(
+    "SELECT * FROM piazzole_blocchi WHERE piazzola_id=? AND data=? AND (fascia IS NULL OR fascia=?)"
+  ).get(piazzolaId, data, fascia);
+  return {
+    bloccata: bloccata ? { motivo: bloccata.motivo, nota: bloccata.nota } : null,
+    ombrelloni: ombrelloni.map((o) => {
+      const p = prese.find((x) => x.ombrellone_id === o.id);
+      return {
+        id: o.id,
+        numero: o.numero,
+        posti: o.posti,
+        x: o.x,
+        y: o.y,
+        libero: !p && !bloccata,
+        preso_da: p ? p.nome || p.tessera_code : null,
+        nucleo: p ? p.nucleo : null,
+        presa_id: p ? p.id : null
+      };
+    })
+  };
+}
+function nucleoDi(socio) {
+  const n = String(socio?.nucleo || "").trim();
+  return n ? n.toLowerCase() : "socio:" + socio.id;
+}
+async function prendi({ socio, ombrelloneId, data, fascia, quanti = 1 }) {
+  if (!FASCE2.includes(fascia)) return { ok: false, error: "Fascia non valida" };
+  const ora = adessoInSicilia();
+  if (data !== ora.data) {
+    return { ok: false, error: "L'ombrellone si prende il giorno stesso: chi arriva prende. Se si prenotasse la sera prima, la mattina dopo meta' spiaggia risulterebbe occupata e sarebbe vuota." };
+  }
+  await chiudiScadute(data);
+  const o = await orari();
+  if (ora.minuti >= minuti2(o[fascia].a)) return { ok: false, error: `La fascia del ${fascia} e' finita alle ${o[fascia].a}.` };
+  const omb = await db.prepare("SELECT * FROM ombrelloni WHERE id=? AND attivo=1").get(ombrelloneId);
+  if (!omb) return { ok: false, error: "Ombrellone non trovato" };
+  const bloccata = await db.prepare(
+    "SELECT * FROM piazzole_blocchi WHERE piazzola_id=? AND data=? AND (fascia IS NULL OR fascia=?)"
+  ).get(omb.piazzola_id, data, fascia);
+  if (bloccata) return { ok: false, error: `Piazzola chiusa: ${bloccata.motivo}${bloccata.nota ? " \u2014 " + bloccata.nota : ""}` };
+  const giaPreso = await db.prepare(
+    "SELECT * FROM ombrellone_prese WHERE ombrellone_id=? AND data=? AND fascia=? AND stato='attiva'"
+  ).get(ombrelloneId, data, fascia);
+  if (giaPreso) return { ok: false, error: `Gia' preso da ${giaPreso.nome || "un altro socio"}.` };
+  const nucleo = nucleoDi(socio);
+  const maxFasce = Number(await par("beach_fasce_al_giorno")) || 2;
+  const inQuestaFascia = await db.prepare(
+    "SELECT COUNT(*) n FROM ombrellone_prese WHERE data=? AND fascia=? AND lower(nucleo)=? AND stato='attiva'"
+  ).get(data, fascia, nucleo);
+  if (Number(inQuestaFascia.n) > 0) {
+    return { ok: false, error: "La tua famiglia ha gia' un ombrellone in questa fascia. Se siete in tanti, prendine un altro accanto: contano come uno solo.", gia_preso: true };
+  }
+  const oggi2 = await db.prepare(
+    "SELECT COUNT(DISTINCT fascia) n FROM ombrellone_prese WHERE data=? AND lower(nucleo)=?"
+  ).get(data, nucleo);
+  if (Number(oggi2.n) >= maxFasce) {
+    return { ok: false, error: `Oggi la tua famiglia ha gia' usato ${maxFasce} fasce: si riprende domani.` };
+  }
+  const scade = `${data} ${o[fascia].a}`;
+  const info = await db.prepare(
+    "INSERT INTO ombrellone_prese (ombrellone_id,data,fascia,socio_id,tessera_code,nome,nucleo,scade_at) VALUES (?,?,?,?,?,?,?,?)"
+  ).run(ombrelloneId, data, fascia, socio.id, socio.tessera_code, `${socio.nome} ${socio.cognome || ""}`.trim(), nucleo, scade);
+  const posti = Number(await par("beach_posti_ombrellone")) || 2;
+  return {
+    ok: true,
+    id: Number(info.lastInsertRowid),
+    scade_alle: o[fascia].a,
+    nota: quanti > posti ? `Un ombrellone tiene ${posti} persone: per essere in ${quanti} prendetene un altro accanto, conta come una presa sola.` : null
+  };
+}
+async function rilascia({ socio, presaId }) {
+  const p = await db.prepare("SELECT * FROM ombrellone_prese WHERE id=?").get(presaId);
+  if (!p || p.stato !== "attiva") return { ok: false, error: "Presa non trovata" };
+  if (String(p.nucleo || "") !== nucleoDi(socio) && p.socio_id !== socio.id) {
+    return { ok: false, error: "Questo ombrellone l'ha preso qualcun altro." };
+  }
+  await db.prepare("UPDATE ombrellone_prese SET stato='rilasciata', rilasciata_at=datetime('now') WHERE id=?").run(p.id);
+  return { ok: true };
+}
+
 // server/routes/admin.js
 init_parametri();
 
 // server/cucina.js
 init_parametri();
-function hhmm(ore, minuti2) {
-  const h = Math.floor(ore + Math.floor(minuti2 / 60));
-  const m = minuti2 % 60;
+function hhmm(ore, minuti3) {
+  const h = Math.floor(ore + Math.floor(minuti3 / 60));
+  const m = minuti3 % 60;
   return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
 }
 async function primoRitiro(haCucina, adesso = /* @__PURE__ */ new Date()) {
@@ -18076,6 +18323,91 @@ function capTorneo(req) {
 function requireCapTorneo(req, res, next) {
   return requireCap(capTorneo(req))(req, res, next);
 }
+adminRouter.get("/spiaggia", requireCap("beach"), async (req, res) => {
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.data || "")) ? String(req.query.data) : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  await chiudiScadute(data);
+  const fasce = await fasceOggi();
+  const attuale = fasce.find((f) => f.in_corso) || fasce[0];
+  const fascia = ["mattina", "pomeriggio"].includes(String(req.query.fascia)) ? String(req.query.fascia) : attuale.fascia;
+  const piazzole = await db.prepare("SELECT * FROM piazzole ORDER BY ordine,id").all();
+  const out = [];
+  for (const p of piazzole) {
+    const sit = await situazione(p.id, data, fascia);
+    out.push({
+      ...p,
+      ...sit,
+      occupati: sit.ombrelloni.filter((o) => !o.libero).length,
+      totale: sit.ombrelloni.length
+    });
+  }
+  res.json({ data, fascia, fasce, piazzole: out });
+});
+adminRouter.put("/spiaggia/piazzole/:id", requireCap("beach"), async (req, res) => {
+  const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
+  const b = req.body || {};
+  await db.prepare("UPDATE piazzole SET nome=?,larghezza_m=?,profondita_m=?,attiva=? WHERE id=?").run(b.nome ?? p.nome, b.larghezza_m ?? p.larghezza_m, b.profondita_m ?? p.profondita_m, b.attiva === false ? 0 : 1, p.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/spiaggia/piazzole/:id/ombrelloni", requireCap("beach"), async (req, res) => {
+  const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
+  const quanti = Math.max(1, Math.min(60, Number(req.body?.quanti) || 1));
+  const posti = Number(req.body?.posti) || Number(await par("beach_posti_ombrellone")) || 2;
+  const max = (await db.prepare("SELECT COALESCE(MAX(numero),0) n FROM ombrelloni WHERE piazzola_id=?").get(p.id)).n;
+  const ins = db.prepare("INSERT INTO ombrelloni (piazzola_id,numero,posti,x,y) VALUES (?,?,?,?,?)");
+  const cols = Math.ceil(Math.sqrt(quanti));
+  for (let i = 0; i < quanti; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    await ins.run(
+      p.id,
+      Number(max) + i + 1,
+      posti,
+      Number(((c + 1) / (cols + 1) * 100).toFixed(1)),
+      Number(((r + 1) / (Math.ceil(quanti / cols) + 1) * 100).toFixed(1))
+    );
+  }
+  audit(req.adminUser.username, "aggiunge_ombrelloni", "piazzole", p.id, `${quanti} su ${p.nome}`);
+  res.status(201).json({ ok: true, aggiunti: quanti });
+});
+adminRouter.delete("/spiaggia/ombrelloni/:id", requireCap("beach"), async (req, res) => {
+  const o = await db.prepare("SELECT * FROM ombrelloni WHERE id=?").get(req.params.id);
+  if (!o) return res.status(404).json({ error: "Ombrellone non trovato" });
+  const usato = await db.prepare("SELECT COUNT(*) n FROM ombrellone_prese WHERE ombrellone_id=? AND stato='attiva'").get(o.id);
+  if (Number(usato.n) > 0) return res.status(409).json({ error: "C'e' qualcuno sotto: si toglie quando la fascia finisce." });
+  await db.prepare("DELETE FROM ombrelloni WHERE id=?").run(o.id);
+  res.json({ ok: true });
+});
+adminRouter.post("/spiaggia/blocchi", requireCap("beach"), async (req, res) => {
+  const b = req.body || {};
+  const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(b.piazzola_id);
+  if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
+  await db.prepare("INSERT INTO piazzole_blocchi (piazzola_id,data,fascia,motivo,nota) VALUES (?,?,?,?,?)").run(p.id, b.data, ["mattina", "pomeriggio"].includes(b.fascia) ? b.fascia : null, b.motivo || "vento", b.nota || null);
+  audit(req.adminUser.username, "chiude_piazzola", "piazzole", p.id, `${b.data} \xB7 ${b.motivo || "vento"}`);
+  res.status(201).json({ ok: true });
+});
+adminRouter.delete("/spiaggia/blocchi/:id", requireCap("beach"), async (req, res) => {
+  await db.prepare("DELETE FROM piazzole_blocchi WHERE id=?").run(req.params.id);
+  res.json({ ok: true });
+});
+adminRouter.put("/spiaggia/prese/:id/chiudi", requireCap("beach"), async (req, res) => {
+  const p = await db.prepare("SELECT * FROM ombrellone_prese WHERE id=?").get(req.params.id);
+  if (!p || p.stato !== "attiva") return res.status(404).json({ error: "Presa non trovata" });
+  await db.prepare("UPDATE ombrellone_prese SET stato='rilasciata', rilasciata_at=datetime('now') WHERE id=?").run(p.id);
+  audit(req.adminUser.username, "libera_ombrellone", "spiaggia", p.ombrellone_id, p.nome || "");
+  await registra({
+    fatto: "ombrellone_liberato_dal_banco",
+    servizio: "spiaggia",
+    riferimento: p.id,
+    socio_id: p.socio_id,
+    intestatario: p.nome || null,
+    autore: req.adminUser.username,
+    canale: "crew",
+    dettaglio: { motivo: req.body?.motivo || null }
+  });
+  res.json({ ok: true });
+});
 adminRouter.get("/casate/composizione", requireCap("casate"), async (req, res) => {
   res.json(await componi({ soloAnteprima: true }));
 });
@@ -19777,8 +20109,8 @@ async function quotaUsata(campoId, socioId, da, a) {
 async function fasceAmmesse(campo) {
   const perFascia = Math.max(1, Number(campo.durata_slot) || 60);
   const dichiarato = Math.max(1, Number(campo.max_slot_prenotazione) || 1);
-  const minuti2 = Math.max(perFascia, Number(await par("campi_durata_massima_minuti")) || 120);
-  const daTempo = Math.max(1, Math.floor(minuti2 / perFascia));
+  const minuti3 = Math.max(perFascia, Number(await par("campi_durata_massima_minuti")) || 120);
+  const daTempo = Math.max(1, Math.floor(minuti3 / perFascia));
   if (!await par("campi_limita_durata")) return daTempo;
   return Math.max(1, Math.min(dichiarato, daTempo));
 }
@@ -19820,7 +20152,7 @@ function istanteSlot(data, slot) {
 }
 async function liberaDecadute(campo, data) {
   if (!await par("campi_numero_legale")) return 0;
-  const minuti2 = Math.max(1, Number(await par("campi_numero_legale_minuti")) || 30);
+  const minuti3 = Math.max(1, Number(await par("campi_numero_legale_minuti")) || 30);
   const minGio = Math.max(1, Number(campo.min_giocatori) || 1);
   if (minGio <= 1) return 0;
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
@@ -19830,11 +20162,11 @@ async function liberaDecadute(campo, data) {
   ).all(campo.id, data);
   let liberate = 0;
   for (const p of partite) {
-    const scadenza = new Date(istanteSlot(p.data, p.slot).getTime() - minuti2 * 6e4);
+    const scadenza = new Date(istanteSlot(p.data, p.slot).getTime() - minuti3 * 6e4);
     if (/* @__PURE__ */ new Date() < scadenza) continue;
     const creata = p.created_at ? /* @__PURE__ */ new Date(String(p.created_at).replace(" ", "T") + "Z") : null;
     if (creata && creata >= scadenza) {
-      const grazia = Math.min(creata.getTime() + Math.min(10, minuti2) * 6e4, istanteSlot(p.data, p.slot).getTime());
+      const grazia = Math.min(creata.getTime() + Math.min(10, minuti3) * 6e4, istanteSlot(p.data, p.slot).getTime());
       if ((/* @__PURE__ */ new Date()).getTime() < grazia) continue;
     }
     const n = (await db.prepare("SELECT COUNT(*) n FROM partita_iscritti WHERE partita_id=?").get(p.id)).n;
@@ -19850,8 +20182,8 @@ async function statoNumeroLegale(campo, p, iscritti) {
   if (!await par("campi_numero_legale")) return null;
   const minGio = Math.max(1, Number(campo.min_giocatori) || 1);
   if (minGio <= 1) return null;
-  const minuti2 = Math.max(1, Number(await par("campi_numero_legale_minuti")) || 30);
-  const scadenza = new Date(istanteSlot(p.data, p.slot).getTime() - minuti2 * 6e4);
+  const minuti3 = Math.max(1, Number(await par("campi_numero_legale_minuti")) || 30);
+  const scadenza = new Date(istanteSlot(p.data, p.slot).getTime() - minuti3 * 6e4);
   return {
     minimo: minGio,
     iscritti,
@@ -20100,6 +20432,58 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
 }
 publicRouter.post("/campi/:id/prenota", (req, res) => creaPrenotazione(req, res, false));
 publicRouter.post("/campi/:id/partita", (req, res) => creaPrenotazione(req, res, true));
+publicRouter.get("/spiaggia", async (req, res) => {
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const piazzole = await db.prepare("SELECT id,nome FROM piazzole WHERE attiva=1 ORDER BY ordine,id").all();
+  const fasce = await fasceOggi();
+  const attuale = fasce.find((f) => f.in_corso) || fasce.find((f) => !f.passata) || fasce[fasce.length - 1];
+  const fascia = ["mattina", "pomeriggio"].includes(String(req.query.fascia)) ? String(req.query.fascia) : attuale.fascia;
+  const out = [];
+  for (const p of piazzole) out.push({ ...p, ...await situazione(p.id, oggi2, fascia) });
+  res.json({ data: oggi2, fascia, fasce, piazzole: out, posti_ombrellone: Number(await par("beach_posti_ombrellone")) || 2 });
+});
+publicRouter.post("/spiaggia/prendi", async (req, res) => {
+  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  if (!socio || socio.attivo === 0) return res.status(404).json({ error: "Serve la tessera di un socio" });
+  const pieno = await db.prepare("SELECT id,nome,cognome,tessera_code,nucleo FROM soci WHERE id=?").get(socio.id);
+  const r = await prendi({
+    socio: pieno,
+    ombrelloneId: req.body?.ombrellone_id,
+    data: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+    fascia: req.body?.fascia,
+    quanti: Number(req.body?.quanti) || 1
+  });
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "ombrellone_preso",
+    servizio: "spiaggia",
+    riferimento: r.id,
+    socio_id: pieno.id,
+    intestatario: `${pieno.nome} ${pieno.cognome || ""}`.trim(),
+    autore: `${pieno.nome} ${pieno.cognome || ""}`.trim(),
+    canale: "app",
+    quando: `${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)} \xB7 ${req.body?.fascia}`,
+    dettaglio: { ombrellone_id: req.body?.ombrellone_id, nucleo: pieno.nucleo || null }
+  });
+  res.status(201).json(r);
+});
+publicRouter.post("/spiaggia/rilascia", async (req, res) => {
+  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  if (!socio) return res.status(404).json({ error: "Serve la tessera di un socio" });
+  const pieno = await db.prepare("SELECT id,nome,cognome,nucleo FROM soci WHERE id=?").get(socio.id);
+  const r = await rilascia({ socio: pieno, presaId: req.body?.presa_id });
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "ombrellone_rilasciato",
+    servizio: "spiaggia",
+    riferimento: req.body?.presa_id,
+    socio_id: pieno.id,
+    intestatario: `${pieno.nome} ${pieno.cognome || ""}`.trim(),
+    autore: `${pieno.nome} ${pieno.cognome || ""}`.trim(),
+    canale: "app"
+  });
+  res.json(r);
+});
 publicRouter.get("/estratto-conto", async (req, res) => {
   const socio = await socioAttivoByTessera(req.query.tessera_code);
   if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
@@ -20659,17 +21043,17 @@ publicRouter.get("/partite-aperte/:id/giocatori", async (req, res) => {
 async function liberaTavoliCarta(data) {
   if (!await par("carta_numero_legale")) return 0;
   const minGio = Math.max(1, Number(await par("carta_min_giocatori")) || 1);
-  const minuti2 = Math.max(1, Number(await par("carta_numero_legale_minuti")) || 20);
+  const minuti3 = Math.max(1, Number(await par("carta_numero_legale_minuti")) || 20);
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   if (data > oggi2) return 0;
   const pren = await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE ambiente='carta' AND data=? AND stato='prenotato'").all(data);
   let liberate = 0;
   for (const p of pren) {
-    const scadenza = new Date((/* @__PURE__ */ new Date(`${p.data}T${String(p.turno).slice(0, 5)}:00`)).getTime() - minuti2 * 6e4);
+    const scadenza = new Date((/* @__PURE__ */ new Date(`${p.data}T${String(p.turno).slice(0, 5)}:00`)).getTime() - minuti3 * 6e4);
     if (/* @__PURE__ */ new Date() < scadenza) continue;
     const creata = p.created_at ? /* @__PURE__ */ new Date(String(p.created_at).replace(" ", "T") + "Z") : null;
     const inizio = (/* @__PURE__ */ new Date(`${p.data}T${String(p.turno).slice(0, 5)}:00`)).getTime();
-    if (creata && creata >= scadenza && (/* @__PURE__ */ new Date()).getTime() < Math.min(creata.getTime() + Math.min(10, minuti2) * 6e4, inizio)) continue;
+    if (creata && creata >= scadenza && (/* @__PURE__ */ new Date()).getTime() < Math.min(creata.getTime() + Math.min(10, minuti3) * 6e4, inizio)) continue;
     if (Number(p.persone) >= minGio) continue;
     await db.prepare("UPDATE prenotazioni_tavolo SET stato='annullato' WHERE id=?").run(p.id);
     audit("sistema", "decadenza_tavolo_carta", "prenotazioni_tavolo", p.id, `${p.data} ${p.turno} \xB7 ${p.persone}/${minGio}`);
@@ -21148,7 +21532,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-30 10:36" : "online";
+var BUILD = true ? "2026-08-30 17:01" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
