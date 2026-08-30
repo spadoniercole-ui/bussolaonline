@@ -1785,12 +1785,18 @@ async function migrate() {
   await addIfMissing("casate", "schierata", "schierata INTEGER NOT NULL DEFAULT 1");
   await addIfMissing("casate", "capitano_socio_id", "capitano_socio_id INTEGER");
   await addIfMissing("casate", "vice_socio_id", "vice_socio_id INTEGER");
+  await addIfMissing("piazzole", "file", "file INTEGER");
+  await addIfMissing("piazzole", "colonne", "colonne INTEGER");
   await db.exec(`
   CREATE TABLE IF NOT EXISTS piazzole (
     id       INTEGER PRIMARY KEY,
     nome     TEXT NOT NULL UNIQUE,
     larghezza_m REAL,
     profondita_m REAL,
+    -- File e colonne: la piazzola si disegna come le altre piante (Garden, Stage, coworking).
+    -- Senza, gli ombrelloni finiscono in una griglia inventata che non somiglia alla spiaggia.
+    file INTEGER,
+    colonne INTEGER,
     attiva   INTEGER NOT NULL DEFAULT 1,
     ordine   INTEGER NOT NULL DEFAULT 0
   );
@@ -10967,22 +10973,47 @@ VIEWS.beach = async () => {
   const d = await api('/spiaggia?data=' + data + (fascia ? '&fascia=' + fascia : '')).catch(() => null);
   if (!d) { $('#view').innerHTML = '<div class="panel"><p class="muted">Spiaggia non disponibile.</p></div>'; return; }
 
-  const omb = (p, o) => \`<div title="\${o.libero ? 'libero' : 'preso da ' + esc(o.preso_da || '')}"
-      style="width:44px;height:44px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;
-             background:\${o.libero ? '#eaf3ec' : '#fdecea'};border:2px solid \${o.libero ? '#2e6b45' : '#b14a35'};font-size:.7rem;font-weight:700">
-      <span>\${o.numero}</span>\${o.libero ? '' : \`<button class="btn ghost sm" style="padding:0 4px;font-size:.6rem" data-liberaomb="\${o.presa_id}">libera</button>\`}</div>\`;
+  // IL COLORE DICE QUANTO MANCA, non da quanto sono li'. Chi guarda la piazzola vuole sapere
+  // dove si liberera' qualcosa fra poco: e' l'unica cosa che serve a chi aspetta.
+  const COLORI = {
+    libero:        { bg: '#eaf3ec', bd: '#2e6b45', tx: '#1f4a30', et: 'libero' },
+    inizio:        { bg: '#fdf1e7', bd: '#d98324', tx: '#8a5214', et: 'inizio fascia' },
+    seconda_meta:  { bg: '#f3e9df', bd: '#8a5a2b', tx: '#5c3a18', et: 'seconda met\xE0' },
+    in_scadenza:   { bg: '#fdecea', bd: '#b14a35', tx: '#8a2a20', et: 'ultima mezz\u2019ora' },
+    scaduto:       { bg: '#fdecea', bd: '#b14a35', tx: '#8a2a20', et: 'scaduto' },
+    occupato:      { bg: '#f3e9df', bd: '#8a5a2b', tx: '#5c3a18', et: 'occupato' },
+    bloccato:      { bg: '#eceff1', bd: '#90a4ae', tx: '#546e7a', et: 'piazzola chiusa' }
+  };
+
+  const omb = (o) => {
+    const c = COLORI[o.stato_uso] || COLORI.libero;
+    const alert = o.non_rilasciato;
+    return \`<button data-ombsel="\${o.id}" title="\${esc(o.preso_da || c.et)}"
+      style="width:52px;height:52px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;
+             background:\${alert ? '#fdecea' : c.bg};border:\${alert ? '3px' : '2px'} solid \${alert ? '#b14a35' : c.bd};color:\${c.tx};font-size:.72rem;font-weight:700;padding:0">
+      <span style="font-size:.9rem">\${o.numero}</span>
+      \${alert ? '<span style="font-size:.55rem;font-weight:900;color:#b14a35">NON RESO</span>'
+        : o.minuti_alla_fine != null && o.stato_uso !== 'libero' ? \`<span style="font-size:.55rem;font-weight:600">\${o.minuti_alla_fine}\u2032</span>\` : ''}
+    </button>\`;
+  };
+
+  const legenda = Object.entries(COLORI).filter(([k]) => ['libero', 'inizio', 'seconda_meta', 'in_scadenza'].includes(k))
+    .map(([, c]) => \`<span style="display:inline-flex;align-items:center;gap:4px;font-size:.74rem;margin-right:10px">
+      <span style="width:12px;height:12px;border-radius:3px;background:\${c.bg};border:2px solid \${c.bd};display:inline-block"></span>\${c.et}</span>\`).join('') +
+    \`<span style="display:inline-flex;align-items:center;gap:4px;font-size:.74rem"><span style="width:12px;height:12px;border-radius:3px;background:#fdecea;border:3px solid #b14a35;display:inline-block"></span><b style="color:#b14a35">non reso a fine fascia</b></span>\`;
 
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u26F1\uFE0F Piazzole</h3>
       <p class="muted" style="font-size:.82rem">Sulle piazzole non c'\xE8 nessuno di noi: qui si guarda la situazione, si sistema un disallineamento e si chiude una piazzola quando tira vento. Il resto dipende da chi dichiara e da chi rilascia.</p>
       <div class="row" style="gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
         <input type="date" id="be_data" value="\${data}">
-        \${(d.fasce || []).map(f => \`<button class="btn \${f.fascia === d.fascia ? 'gold' : 'ghost'} sm" data-befascia="\${f.fascia}">\${f.fascia} \${esc(f.da)}\u2013\${esc(f.a)}\${f.in_corso ? ' \xB7  in corso' : ''}</button>\`).join('')}
-      </div></div>
+        \${(d.fasce || []).map(f => \`<button class="btn \${f.fascia === d.fascia ? 'gold' : 'ghost'} sm" data-befascia="\${f.fascia}">\${f.fascia} \${esc(f.da)}\u2013\${esc(f.a)}\${f.in_corso ? ' \xB7 in corso' : ''}</button>\`).join('')}
+      </div>
+      <div style="margin-top:10px">\${legenda}</div></div>
 
     \${d.piazzole.map(p => \`<div class="panel">
       <div class="row" style="justify-content:space-between;align-items:center">
-        <h3 style="margin:0">\${esc(p.nome)} <span class="muted" style="font-weight:400;font-size:.82rem">\xB7 \${p.occupati}/\${p.totale} occupati</span></h3>
+        <h3 style="margin:0">\${esc(p.nome)} <span class="muted" style="font-weight:400;font-size:.82rem">\xB7 \${p.occupati}/\${p.totale} occupati\${p.larghezza_m ? \` \xB7 \${p.larghezza_m}\xD7\${p.profondita_m} m\` : ' \xB7 <b style="color:#b14a35">misure mancanti</b>'}</span></h3>
         <div class="row" style="gap:6px">
           <button class="btn ghost sm" data-beverifica="\${p.id}">\u{1F4D0} Ci stanno?</button>
           <button class="btn ghost sm" data-beconf="\${p.id}">\u2699\uFE0E Misure</button>
@@ -10991,25 +11022,66 @@ VIEWS.beach = async () => {
       \${p.bloccata ? \`<div style="background:#fdecea;border-left:4px solid #b14a35;border-radius:0 8px 8px 0;padding:8px 10px;margin:8px 0">
         <b style="color:#8a2a20">Chiusa \xB7 \${esc(p.bloccata.motivo)}</b>\${p.bloccata.nota ? ' \u2014 ' + esc(p.bloccata.nota) : ''}</div>\` : ''}
       \${p.ombrelloni.length
-        ? \`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\${p.ombrelloni.map(o => omb(p, o)).join('')}</div>\`
-        : '<p class="muted" style="font-size:.82rem;margin-top:6px">Nessun ombrellone: aggiungili con \u2699\uFE0E Misure.</p>'}
+        ? \`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\${p.ombrelloni.map(omb).join('')}</div>\`
+        : \`<p class="muted" style="font-size:.82rem;margin-top:6px">\${p.larghezza_m ? 'Nessun ombrellone: aggiungili qui sotto.' : 'Prima le misure: senza, non si sa se gli ombrelloni ci stanno.'}</p>\`}
       <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
         <input id="be_n_\${p.id}" type="number" min="1" max="40" value="6" style="width:70px">
-        <button class="btn ghost sm" data-beadd="\${p.id}">+ Ombrelloni</button>
+        <button class="btn ghost sm" data-beadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled title="Prima le misure"'}>+ Ombrelloni</button>
+        \${p.ombrelloni.length ? \`<button class="btn ghost sm" data-besvuota="\${p.id}">\u{1F5D1} Svuota</button>\` : ''}
         <select id="be_m_\${p.id}"><option value="vento">vento</option><option value="marea">marea</option><option value="manutenzione">manutenzione</option></select>
         <button class="btn danger sm" data-beblocca="\${p.id}">Chiudi la piazzola oggi</button>
       </div></div>\`).join('')}\`;
 
   $('#be_data').onchange = () => { window.__beachData = $('#be_data').value; show('beach'); };
   document.querySelectorAll('[data-befascia]').forEach(b => b.onclick = () => { window.__beachFascia = b.dataset.befascia; show('beach'); });
-  document.querySelectorAll('[data-liberaomb]').forEach(b => b.onclick = async () => {
-    if (!confirm('Liberare questo ombrellone? Fallo solo se sei sicuro che non ci sia pi\xF9 nessuno: sulla piazzola non c\\'\xE8 nessuno di noi a controllare.')) return;
-    await api('/spiaggia/prese/' + b.dataset.liberaomb + '/chiudi', { method: 'PUT', body: JSON.stringify({ motivo: 'liberato dal banco' }) });
-    show('beach');
+
+  // Toccare un ombrellone: e' il gesto che mancava. Da qui si assegna al banco chi non ha
+  // l'app, si libera chi non c'e' piu', si toglie un ombrellone messo per sbaglio.
+  const tutti = d.piazzole.flatMap(p => p.ombrelloni.map(o => ({ ...o, piazzola: p.nome })));
+  document.querySelectorAll('[data-ombsel]').forEach(b => b.onclick = () => {
+    const o = tutti.find(x => String(x.id) === String(b.dataset.ombsel));
+    if (!o) return;
+    openModal(\`<h3 style="margin-top:0">\u26F1\uFE0F \${esc(o.piazzola)} \xB7 ombrellone \${o.numero}</h3>
+      <p class="muted" style="font-size:.84rem">\${o.libero ? 'Libero.' : \`Preso da <b>\${esc(o.preso_da || '\u2014')}</b>\${o.minuti_alla_fine != null ? \` \xB7 mancano \${o.minuti_alla_fine} minuti\` : ''}\`}\${o.non_rilasciato ? ' \xB7 <b style="color:#b14a35">non reso a fine fascia</b>' : ''}</p>
+      \${o.libero ? \`<div class="field"><label>Assegna al banco (per chi non ha l'app)</label>
+        <input id="ob_tess" placeholder="Tessera del socio">
+        <button class="btn gold block" style="margin-top:8px" data-obassegna="\${o.id}">Assegna</button></div>\` : ''}
+      \${o.presa_id ? \`<button class="btn ghost block" style="margin-top:8px" data-oblibera="\${o.presa_id}">Libera l'ombrellone</button>\` : ''}
+      \${o.libero ? \`<button class="btn danger block" style="margin-top:8px" data-obtogli="\${o.id}">\u{1F5D1} Togli questo ombrellone</button>\` : ''}
+      <button class="btn ghost block" style="margin-top:8px" data-mclose>Chiudi</button>\`);
+    const b1 = $('#mbox').querySelector('[data-obassegna]');
+    if (b1) b1.onclick = async () => {
+      const t = ($('#ob_tess').value || '').trim();
+      if (!t) { alert('Serve la tessera del socio.'); return; }
+      try { await api('/spiaggia/assegna', { method: 'POST', body: JSON.stringify({ tessera_code: t, ombrellone_id: o.id, fascia: d.fascia }) }); }
+      catch (e) { alert(e.message); return; }
+      closeModal(); show('beach');
+    };
+    const b2 = $('#mbox').querySelector('[data-oblibera]');
+    if (b2) b2.onclick = async () => {
+      if (!confirm('Liberare questo ombrellone? Fallo solo se sei sicuro che non ci sia pi\xF9 nessuno: sulla piazzola non c\\'\xE8 nessuno di noi a controllare.')) return;
+      await api('/spiaggia/prese/' + o.presa_id + '/chiudi', { method: 'PUT', body: JSON.stringify({ motivo: 'liberato dal banco' }) });
+      closeModal(); show('beach');
+    };
+    const b3 = $('#mbox').querySelector('[data-obtogli]');
+    if (b3) b3.onclick = async () => {
+      if (!confirm('Togliere l\\'ombrellone ' + o.numero + '?')) return;
+      try { await api('/spiaggia/ombrelloni/' + o.id, { method: 'DELETE' }); }
+      catch (e) { alert(e.message); return; }
+      closeModal(); show('beach');
+    };
   });
+
   document.querySelectorAll('[data-beadd]').forEach(b => b.onclick = async () => {
     const q = Number(($('#be_n_' + b.dataset.beadd) || {}).value) || 1;
-    await api('/spiaggia/piazzole/' + b.dataset.beadd + '/ombrelloni', { method: 'POST', body: JSON.stringify({ quanti: q }) });
+    try { await api('/spiaggia/piazzole/' + b.dataset.beadd + '/ombrelloni', { method: 'POST', body: JSON.stringify({ quanti: q }) }); }
+    catch (e) { alert(e.message); return; }
+    show('beach');
+  });
+  document.querySelectorAll('[data-besvuota]').forEach(b => b.onclick = async () => {
+    if (!confirm('Togliere tutti gli ombrelloni di questa piazzola?')) return;
+    try { await api('/spiaggia/piazzole/' + b.dataset.besvuota + '/ombrelloni', { method: 'DELETE' }); }
+    catch (e) { alert(e.message); return; }
     show('beach');
   });
   document.querySelectorAll('[data-beblocca]').forEach(b => b.onclick = async () => {
@@ -11021,18 +11093,22 @@ VIEWS.beach = async () => {
   document.querySelectorAll('[data-beconf]').forEach(b => b.onclick = () => {
     const p = d.piazzole.find(x => String(x.id) === String(b.dataset.beconf));
     openModal(\`<h3 style="margin-top:0">\u2699\uFE0E \${esc(p.nome)}</h3>
-      <p class="muted" style="font-size:.82rem">Le misure servono a sapere quanti ombrelloni ci stanno. Il numero per\xF2 lo decidi tu guardando la piazzola: alberi, docce e passaggi non li conosce nessuna formula.</p>
+      <p class="muted" style="font-size:.82rem">Misure, file e colonne: servono a disegnare la piazzola come le altre piante. Il numero di ombrelloni per\xF2 lo decidi tu guardando la spiaggia \u2014 alberi, docce e passaggi non li conosce nessuna formula.</p>
       <div class="grid2" style="gap:8px">
         <label>Nome<input id="bp_nome" value="\${esc(p.nome)}"></label>
         <label>Larghezza (m)<input id="bp_l" type="number" step="0.5" value="\${p.larghezza_m ?? ''}"></label>
         <label>Profondit\xE0 (m)<input id="bp_p" type="number" step="0.5" value="\${p.profondita_m ?? ''}"></label>
+        <label>File<input id="bp_f" type="number" min="1" value="\${p.file ?? ''}" placeholder="dalle misure"></label>
+        <label>Colonne<input id="bp_c" type="number" min="1" value="\${p.colonne ?? ''}" placeholder="dalle misure"></label>
       </div>
       <div class="row" style="gap:8px;margin-top:12px">
         <button class="btn gold sm" id="bp_salva">Salva</button>
         <button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
     $('#bp_salva').onclick = async () => {
       await api('/spiaggia/piazzole/' + p.id, { method: 'PUT', body: JSON.stringify({
-        nome: $('#bp_nome').value, larghezza_m: Number($('#bp_l').value) || null, profondita_m: Number($('#bp_p').value) || null
+        nome: $('#bp_nome').value,
+        larghezza_m: Number($('#bp_l').value) || null, profondita_m: Number($('#bp_p').value) || null,
+        file: Number($('#bp_f').value) || null, colonne: Number($('#bp_c').value) || null
       }) });
       closeModal(); show('beach');
     };
@@ -11049,7 +11125,6 @@ VIEWS.beach = async () => {
       <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Piazzola</span><b>\${v.misure.larghezza_m} \xD7 \${v.misure.profondita_m} m \xB7 \${v.misure.mq} m\xB2</b></div>
       <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ombrelloni disposti</span><b>\${v.disposti}</b></div>
       <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ce ne stanno (indicativo)</span><b>\${v.capienza_indicativa} \xB7 \${v.persone} persone</b></div>
-      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Metri quadri per ombrellone</span><b>\${v.mq_per_ombrellone ?? '\u2014'}</b></div>
       <p class="muted" style="font-size:.78rem;margin-top:8px">\${esc(v.nota)} Il conto usa \${v.regole.ingombro_m} m di ingombro e \${v.regole.passaggio_m} m di passaggio.</p>
       <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
   });
@@ -12751,7 +12826,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.79";
+var VERSION = "5.80";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15720,20 +15795,41 @@ async function situazione(piazzolaId, data, fascia) {
   const bloccata = await db.prepare(
     "SELECT * FROM piazzole_blocchi WHERE piazzola_id=? AND data=? AND (fascia IS NULL OR fascia=?)"
   ).get(piazzolaId, data, fascia);
+  const o = await orari();
+  const ora = adessoInSicilia();
+  const inizio = minuti2(o[fascia].da), fine = minuti2(o[fascia].a);
+  const meta = inizio + (fine - inizio) / 2;
+  const scadute = await db.prepare(
+    "SELECT * FROM ombrellone_prese WHERE data=? AND fascia=? AND stato='scaduta'"
+  ).all(data, fascia);
+  const statoUso = (p) => {
+    if (!p) return "libero";
+    if (data !== ora.data) return "occupato";
+    if (ora.minuti >= fine) return "scaduto";
+    if (fine - ora.minuti <= 30) return "in_scadenza";
+    return ora.minuti < meta ? "inizio" : "seconda_meta";
+  };
   return {
     bloccata: bloccata ? { motivo: bloccata.motivo, nota: bloccata.nota } : null,
-    ombrelloni: ombrelloni.map((o) => {
-      const p = prese.find((x) => x.ombrellone_id === o.id);
+    fascia_da: o[fascia].da,
+    fascia_a: o[fascia].a,
+    ombrelloni: ombrelloni.map((omb) => {
+      const p = prese.find((x) => x.ombrellone_id === omb.id);
+      const sc = !p ? scadute.find((x) => x.ombrellone_id === omb.id) : null;
       return {
-        id: o.id,
-        numero: o.numero,
-        posti: o.posti,
-        x: o.x,
-        y: o.y,
+        id: omb.id,
+        numero: omb.numero,
+        posti: omb.posti,
+        x: omb.x,
+        y: omb.y,
         libero: !p && !bloccata,
-        preso_da: p ? p.nome || p.tessera_code : null,
+        stato_uso: bloccata ? "bloccato" : statoUso(p),
+        // Non rilasciato a fine fascia: non e' un'infrazione da punire, e' un dato da vedere.
+        non_rilasciato: !!sc,
+        preso_da: p ? p.nome || p.tessera_code : sc ? sc.nome || sc.tessera_code : null,
         nucleo: p ? p.nucleo : null,
-        presa_id: p ? p.id : null
+        presa_id: p ? p.id : null,
+        minuti_alla_fine: p && data === ora.data ? Math.max(0, fine - ora.minuti) : null
       };
     })
   };
@@ -18518,7 +18614,10 @@ adminRouter.get("/spiaggia", requireCap("beach"), async (req, res) => {
     out.push({
       ...p,
       ...sit,
-      occupati: sit.ombrelloni.filter((o) => !o.libero).length,
+      // Occupati = con qualcuno sotto. Una piazzola chiusa per vento non ha nessun ombrellone
+      // "libero", ma non e' occupata: contarli come tali diceva "4/4 occupati" su una spiaggia
+      // deserta, e impediva persino di svuotarla.
+      occupati: sit.ombrelloni.filter((o) => o.presa_id).length,
       totale: sit.ombrelloni.length
     });
   }
@@ -18533,29 +18632,76 @@ adminRouter.put("/spiaggia/piazzole/:id", requireCap("beach"), async (req, res) 
   const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
   const b = req.body || {};
-  await db.prepare("UPDATE piazzole SET nome=?,larghezza_m=?,profondita_m=?,attiva=? WHERE id=?").run(b.nome ?? p.nome, b.larghezza_m ?? p.larghezza_m, b.profondita_m ?? p.profondita_m, b.attiva === false ? 0 : 1, p.id);
+  await db.prepare("UPDATE piazzole SET nome=?,larghezza_m=?,profondita_m=?,file=?,colonne=?,attiva=? WHERE id=?").run(
+    b.nome ?? p.nome,
+    b.larghezza_m ?? p.larghezza_m,
+    b.profondita_m ?? p.profondita_m,
+    b.file ?? p.file,
+    b.colonne ?? p.colonne,
+    b.attiva === false ? 0 : 1,
+    p.id
+  );
   res.json({ ok: true });
 });
 adminRouter.post("/spiaggia/piazzole/:id/ombrelloni", requireCap("beach"), async (req, res) => {
   const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
+  if (!Number(p.larghezza_m) || !Number(p.profondita_m)) {
+    return res.status(409).json({ error: `Prima le misure di ${p.nome}: senza, non si sa se gli ombrelloni ci stanno.`, misure_mancanti: true });
+  }
   const quanti = Math.max(1, Math.min(60, Number(req.body?.quanti) || 1));
   const posti = Number(req.body?.posti) || Number(await par("beach_posti_ombrellone")) || 2;
+  const gia = Number((await db.prepare("SELECT COUNT(*) n FROM ombrelloni WHERE piazzola_id=?").get(p.id)).n);
+  const v = await verificaPiazzola(p.id);
+  if (v && v.capienza_indicativa && gia + quanti > v.capienza_indicativa) {
+    return res.status(409).json({
+      error: `In ${p.nome} (${v.misure.larghezza_m}\xD7${v.misure.profondita_m} m) ce ne stanno ${v.capienza_indicativa} lasciando ${v.regole.passaggio_m} m di passaggio: ne hai gia' ${gia} e ne stai aggiungendo ${quanti}.`,
+      capienza: v.capienza_indicativa,
+      gia
+    });
+  }
+  const passo = (Number(await par("beach_ingombro_ombrellone_m")) || 3) + (Number(await par("beach_passaggio_m")) || 1.5);
+  const cols = Math.max(1, Number(p.colonne) || Math.floor((Number(p.larghezza_m) + 0.01) / passo) || 1);
+  const righe = Math.max(1, Number(p.file) || Math.ceil((gia + quanti) / cols));
   const max = (await db.prepare("SELECT COALESCE(MAX(numero),0) n FROM ombrelloni WHERE piazzola_id=?").get(p.id)).n;
   const ins = db.prepare("INSERT INTO ombrelloni (piazzola_id,numero,posti,x,y) VALUES (?,?,?,?,?)");
-  const cols = Math.ceil(Math.sqrt(quanti));
   for (let i = 0; i < quanti; i++) {
-    const c = i % cols, r = Math.floor(i / cols);
+    const idx = gia + i;
+    const c = idx % cols, r = Math.floor(idx / cols);
     await ins.run(
       p.id,
       Number(max) + i + 1,
       posti,
       Number(((c + 1) / (cols + 1) * 100).toFixed(1)),
-      Number(((r + 1) / (Math.ceil(quanti / cols) + 1) * 100).toFixed(1))
+      Number(((r + 1) / (righe + 1) * 100).toFixed(1))
     );
   }
   audit(req.adminUser.username, "aggiunge_ombrelloni", "piazzole", p.id, `${quanti} su ${p.nome}`);
-  res.status(201).json({ ok: true, aggiunti: quanti });
+  res.status(201).json({ ok: true, aggiunti: quanti, file: righe, colonne: cols });
+});
+adminRouter.delete("/spiaggia/piazzole/:id/ombrelloni", requireCap("beach"), async (req, res) => {
+  const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
+  const occupati = Number((await db.prepare(
+    "SELECT COUNT(*) n FROM ombrellone_prese pr JOIN ombrelloni o ON o.id=pr.ombrellone_id WHERE o.piazzola_id=? AND pr.stato='attiva'"
+  ).get(p.id)).n);
+  if (occupati > 0) return res.status(409).json({ error: `Ci sono ${occupati} ombrelloni occupati: si svuota quando la fascia finisce.` });
+  const r = await db.prepare("DELETE FROM ombrelloni WHERE piazzola_id=?").run(p.id);
+  audit(req.adminUser.username, "svuota_piazzola", "piazzole", p.id, p.nome);
+  res.json({ ok: true, tolti: Number(r?.changes || 0) });
+});
+adminRouter.post("/spiaggia/assegna", requireCap("beach"), async (req, res) => {
+  const socio = await db.prepare("SELECT id,nome,cognome,tessera_code,nucleo FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(String(req.body?.tessera_code || "").toUpperCase());
+  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const r = await prendi({
+    socio,
+    ombrelloneId: req.body?.ombrellone_id,
+    data: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+    fascia: req.body?.fascia
+  });
+  if (!r.ok) return res.status(409).json(r);
+  audit(req.adminUser.username, "assegna_ombrellone", "spiaggia", req.body?.ombrellone_id, `${socio.nome} ${socio.cognome}`);
+  res.status(201).json(r);
 });
 adminRouter.delete("/spiaggia/ombrelloni/:id", requireCap("beach"), async (req, res) => {
   const o = await db.prepare("SELECT * FROM ombrelloni WHERE id=?").get(req.params.id);
@@ -21721,7 +21867,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-30 17:36" : "online";
+var BUILD = true ? "2026-08-30 17:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
