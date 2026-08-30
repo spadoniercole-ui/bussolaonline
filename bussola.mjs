@@ -2911,7 +2911,7 @@ function normalizza(def, raw) {
     if (def.max != null) n = Math.min(def.max, n);
     return n;
   }
-  if (def.tipo === "testo") {
+  if (["testo", "data", "dataora", "ora", "telefono"].includes(def.tipo)) {
     const t = String(raw).trim().slice(0, 120);
     return t || def.predefinito;
   }
@@ -3170,7 +3170,7 @@ var init_parametri = __esm({
       {
         chiave: "coppa_chiusura_formazioni",
         gruppo: "Casate",
-        tipo: "testo",
+        tipo: "dataora",
         predefinito: "",
         etichetta: "Chiusura delle formazioni (AAAA-MM-GG HH:MM)",
         aiuto: "Fino a questo momento si entra, si esce e si cambia casata. Dopo, le formazioni si congelano e restano quelle. Vuoto = nessuna scadenza."
@@ -3178,7 +3178,7 @@ var init_parametri = __esm({
       {
         chiave: "coppa_riapertura",
         gruppo: "Casate",
-        tipo: "testo",
+        tipo: "data",
         predefinito: "",
         etichetta: "Riapertura di meta\u2019 stagione (AAAA-MM-GG)",
         aiuto: "Un solo giorno in cui si puo\u2019 cambiare casata, e solo se non si e\u2019 ancora giocato nessun torneo. Riaperture continue trasformano la Coppa in un mercato: chi perde cambia squadra."
@@ -3401,7 +3401,7 @@ var init_parametri = __esm({
       {
         chiave: "fitness_griglia_da",
         gruppo: "Fitness",
-        tipo: "testo",
+        tipo: "ora",
         predefinito: "16:00",
         etichetta: "Calendario lezioni \xB7 prima ora",
         aiuto: "La griglia settimanale parte sempre da questa ora, anche se non ci sono lezioni: cosi' ha una forma stabile e le lezioni si collocano invece di comparire dove capita. Se una lezione e' piu' presto, la griglia si allarga da sola."
@@ -3409,7 +3409,7 @@ var init_parametri = __esm({
       {
         chiave: "fitness_griglia_a",
         gruppo: "Fitness",
-        tipo: "testo",
+        tipo: "ora",
         predefinito: "20:00",
         etichetta: "Calendario lezioni \xB7 ultima ora",
         aiuto: "L'ultima ora mostrata. Come sopra: se una lezione e' piu' tardi, la griglia si allarga."
@@ -3445,11 +3445,11 @@ var init_parametri = __esm({
       },
       {
         chiave: "aiuto_numero",
-        gruppo: "Accessibilita\u0300",
-        tipo: "testo",
+        gruppo: "Accessibilit\xE0",
+        tipo: "telefono",
         predefinito: "",
-        etichetta: "Numero del chiosco",
-        aiuto: "Il numero che squilla al chiosco. Compare fra i numeri rapidi dell'app, accanto al 112. Se vuoto, resta solo il 112 e l'eventuale contatto familiare del socio. Non e\u0300 un numero di soccorso: e\u0300 il nostro telefono."
+        etichetta: "Numero del chiosco (per locandine e bacheche)",
+        aiuto: "Il numero che squilla al chiosco. NON compare piu\u2019 fra i numeri rapidi dell'app \u2014 li\u2019 restano il 112 e il contatto familiare del socio, che sono gli unici due che rispondono in un'emergenza. Serve per le locandine in bacheca e per chi chiede informazioni: spiegazioni, orari, ragguagli. Ordini e prenotazioni no: quelle si chiudono a sistema, ed \xE8 l'unico modo per avere un tavolo o un posto a un evento."
       },
       {
         chiave: "carta_prenotazione",
@@ -8264,6 +8264,14 @@ VIEWS.parametri = async () => {
   const campo = (p) => {
     if (p.tipo === 'bool') return \`<label class="check" style="margin:0"><input type="checkbox" class="p_in" data-pk="\${esc(p.chiave)}" data-pt="bool" \${p.valore ? 'checked' : ''}> <b>\${p.valore ? 'S\xCC' : 'NO'}</b></label>\`;
     if (p.tipo === 'numero') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="numero" type="number" \${p.min != null ? \`min="\${p.min}"\` : ''} \${p.max != null ? \`max="\${p.max}"\` : ''} value="\${esc(String(p.valore ?? p.predefinito))}" style="width:110px">\`;
+    // Un parametro di TESTO non e' una scelta fra opzioni: senza \`opzioni\` diventava una
+    // tendina vuota, e il gestore non poteva scrivere ne' una data ne' un numero di telefono.
+    // Il tipo decide il campo: data, ora, telefono, testo libero.
+    if (p.tipo === 'data') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="date" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
+    if (p.tipo === 'dataora') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="datetime-local" value="\${esc(String(p.valore ?? p.predefinito ?? '').replace(' ', 'T').slice(0, 16))}" style="width:100%">\`;
+    if (p.tipo === 'ora') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="time" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
+    if (p.tipo === 'telefono') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="tel" inputmode="tel" placeholder="+39 \u2026" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
+    if (p.tipo === 'testo' && !(p.opzioni || []).length) return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="text" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
     return \`<select class="p_in" data-pk="\${esc(p.chiave)}" data-pt="scelta">\${(p.opzioni || []).map(o => \`<option value="\${esc(o.valore)}" \${o.valore === (p.valore ?? p.predefinito) ? 'selected' : ''}>\${esc(o.etichetta)}</option>\`).join('')}</select>\`;
   };
   const blocchi = gruppi.map(g => \`<div class="panel"><h3>\${esc(g)}</h3>
@@ -12497,7 +12505,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.76";
+var VERSION = "5.77";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -21140,7 +21148,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-30 10:07" : "online";
+var BUILD = true ? "2026-08-30 10:36" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
