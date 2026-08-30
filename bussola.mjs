@@ -3177,6 +3177,34 @@ var init_parametri = __esm({
         aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
       },
       {
+        chiave: "beach_attiva",
+        gruppo: "Spiaggia",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "Gestione degli ombrelloni attiva",
+        aiuto: "Spenta di serie, e non e\u2019 prudenza eccessiva: e\u2019 l\u2019unico servizio in cui il sistema non puo\u2019 far rispettare niente. Sulle piazzole non c\u2019e\u2019 nessuno, quindi tutto dipende dal fatto che la gente dichiari e rilasci. Provala una stagione: se non dichiarano, spegnila e non resta nessun rudere acceso."
+      },
+      {
+        chiave: "beach_ingombro_ombrellone_m",
+        gruppo: "Spiaggia",
+        tipo: "numero",
+        predefinito: 3,
+        min: 1.5,
+        max: 6,
+        etichetta: "Ingombro di un ombrellone (metri)",
+        aiuto: "Il quadrato che occupa l\u2019ombrellone CON i lettini e le persone sotto: non il diametro del telo. Tre metri e\u2019 la misura di un ombrellone con due sdraio."
+      },
+      {
+        chiave: "beach_passaggio_m",
+        gruppo: "Spiaggia",
+        tipo: "numero",
+        predefinito: 1.5,
+        min: 0.8,
+        max: 4,
+        etichetta: "Passaggio fra gli ombrelloni (metri)",
+        aiuto: "Lo spazio per passare fra due ombrelloni occupati, con le borse e i bambini. Sotto il metro e mezzo si cammina sugli asciugamani degli altri."
+      },
+      {
         chiave: "beach_mattina_da",
         gruppo: "Spiaggia",
         tipo: "ora",
@@ -9088,7 +9116,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
         <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="tennis">\u{1F3BE} Tennis &amp; Beach</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option><option value="cinema">\u{1F3AD} Stage</option></select>
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">\u{1F33F} Garden</option><option value="bar">\u{1F378} Bar</option><option value="cucina">\u{1F373} Cucina</option><option value="magazzino">\u{1F4E6} Magazzino</option><option value="sport">\u{1F3C6} Sport</option><option value="campi">\u{1F3BE} Campi</option><option value="tennis">\u{1F3BE} Tennis &amp; Beach</option><option value="beach">\u26F1\uFE0F Spiaggia</option><option value="serate">\u{1F37D}\uFE0F Serate</option><option value="cdc">\u{1F4DA} Casa di Carta</option><option value="fitness">\u{1F9D8} Fitness</option><option value="cinema">\u{1F3AD} Stage</option></select>
         </label>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -9098,6 +9126,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
       <button data-v="pianta">\u{1F5FA}\uFE0F Organizzazione sala</button>
       <button data-v="tennis">\u{1F3BE} Campi &amp; tariffe</button>
       <button data-v="tornei">\u{1F3C6} Tornei</button>
+      <button data-v="beach">\u26F1\uFE0F Piazzole</button>
       <button data-v="bar">\u{1F378} Bar</button>
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
@@ -9408,6 +9437,7 @@ function allowedZones() {
   // vedeva nessun modulo, con il messaggio "non hai ancora nessun permesso operativo" \u2014 cioe'
   // il permesso c'era ma non apriva niente.
   if (ME.gestore || caps.includes('tennis') || caps.includes('tennis_campi')) z.push('tennis');
+  if (ME.gestore || caps.includes('beach')) z.push('beach');                       // piazzole e ombrelloni
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
   if (ME.gestore || caps.includes('fitness')) z.push('fitness');   // lezioni con istruttore
@@ -9415,7 +9445,7 @@ function allowedZones() {
   return z;
 }
 // Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', tennis: 'Tennis & Beach', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Stage (cinema e spettacoli)' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Sport', campi: 'Campi', tennis: 'Tennis & Beach', beach: 'Spiaggia', serate: 'Serate & cena', cdc: 'Casa di Carta', fitness: 'Area fitness', cinema: 'Stage (cinema e spettacoli)' };
 // Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
 function filterZoneSelectors(zone) {
   const el = document.querySelector('#zonaSwitch');
@@ -9431,7 +9461,7 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  const PRIMA = { garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', tennis: 'tennis', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
+  const PRIMA = { garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
   show(PRIMA[ZONA] || 'comande');
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -9452,6 +9482,7 @@ function applyZona() {
   tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
   tog('campi', ZONA === 'campi');
   tog('tennis', ZONA === 'tennis');
+  tog('beach', ZONA === 'beach');
   tog('tornei', ZONA === 'tennis' || ZONA === 'campi');            // tabelloni a eliminazione diretta                                // campi a pagamento: listino e incassi
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
@@ -10921,6 +10952,106 @@ VIEWS.tennis = async () => {
     if (!confirm('Togliere questa tariffa?')) return;
     await api('/tennis/tariffe/' + b.dataset.tendel, { method: 'DELETE' });
     show('tennis');
+  });
+};
+
+/* ---------- SPIAGGIA: piazzole e ombrelloni ----------
+   Sulle piazzole non c'e' nessuno della crew. Questo modulo non "gestisce" la spiaggia: la
+   guarda da lontano, sistema un disallineamento quando qualcuno segnala, e chiude una piazzola
+   quando tira vento. Tutto il resto dipende dal fatto che la gente dichiari e rilasci \u2014 ed e'
+   il motivo per cui l'intera gestione ha un interruttore per spegnerla. */
+VIEWS.beach = async () => {
+  const oggi = new Date().toISOString().slice(0, 10);
+  const data = window.__beachData || oggi;
+  const fascia = window.__beachFascia || '';
+  const d = await api('/spiaggia?data=' + data + (fascia ? '&fascia=' + fascia : '')).catch(() => null);
+  if (!d) { $('#view').innerHTML = '<div class="panel"><p class="muted">Spiaggia non disponibile.</p></div>'; return; }
+
+  const omb = (p, o) => \`<div title="\${o.libero ? 'libero' : 'preso da ' + esc(o.preso_da || '')}"
+      style="width:44px;height:44px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+             background:\${o.libero ? '#eaf3ec' : '#fdecea'};border:2px solid \${o.libero ? '#2e6b45' : '#b14a35'};font-size:.7rem;font-weight:700">
+      <span>\${o.numero}</span>\${o.libero ? '' : \`<button class="btn ghost sm" style="padding:0 4px;font-size:.6rem" data-liberaomb="\${o.presa_id}">libera</button>\`}</div>\`;
+
+  $('#view').innerHTML = \`
+    <div class="panel"><h3>\u26F1\uFE0F Piazzole</h3>
+      <p class="muted" style="font-size:.82rem">Sulle piazzole non c'\xE8 nessuno di noi: qui si guarda la situazione, si sistema un disallineamento e si chiude una piazzola quando tira vento. Il resto dipende da chi dichiara e da chi rilascia.</p>
+      <div class="row" style="gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <input type="date" id="be_data" value="\${data}">
+        \${(d.fasce || []).map(f => \`<button class="btn \${f.fascia === d.fascia ? 'gold' : 'ghost'} sm" data-befascia="\${f.fascia}">\${f.fascia} \${esc(f.da)}\u2013\${esc(f.a)}\${f.in_corso ? ' \xB7  in corso' : ''}</button>\`).join('')}
+      </div></div>
+
+    \${d.piazzole.map(p => \`<div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">\${esc(p.nome)} <span class="muted" style="font-weight:400;font-size:.82rem">\xB7 \${p.occupati}/\${p.totale} occupati</span></h3>
+        <div class="row" style="gap:6px">
+          <button class="btn ghost sm" data-beverifica="\${p.id}">\u{1F4D0} Ci stanno?</button>
+          <button class="btn ghost sm" data-beconf="\${p.id}">\u2699\uFE0E Misure</button>
+        </div>
+      </div>
+      \${p.bloccata ? \`<div style="background:#fdecea;border-left:4px solid #b14a35;border-radius:0 8px 8px 0;padding:8px 10px;margin:8px 0">
+        <b style="color:#8a2a20">Chiusa \xB7 \${esc(p.bloccata.motivo)}</b>\${p.bloccata.nota ? ' \u2014 ' + esc(p.bloccata.nota) : ''}</div>\` : ''}
+      \${p.ombrelloni.length
+        ? \`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\${p.ombrelloni.map(o => omb(p, o)).join('')}</div>\`
+        : '<p class="muted" style="font-size:.82rem;margin-top:6px">Nessun ombrellone: aggiungili con \u2699\uFE0E Misure.</p>'}
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <input id="be_n_\${p.id}" type="number" min="1" max="40" value="6" style="width:70px">
+        <button class="btn ghost sm" data-beadd="\${p.id}">+ Ombrelloni</button>
+        <select id="be_m_\${p.id}"><option value="vento">vento</option><option value="marea">marea</option><option value="manutenzione">manutenzione</option></select>
+        <button class="btn danger sm" data-beblocca="\${p.id}">Chiudi la piazzola oggi</button>
+      </div></div>\`).join('')}\`;
+
+  $('#be_data').onchange = () => { window.__beachData = $('#be_data').value; show('beach'); };
+  document.querySelectorAll('[data-befascia]').forEach(b => b.onclick = () => { window.__beachFascia = b.dataset.befascia; show('beach'); });
+  document.querySelectorAll('[data-liberaomb]').forEach(b => b.onclick = async () => {
+    if (!confirm('Liberare questo ombrellone? Fallo solo se sei sicuro che non ci sia pi\xF9 nessuno: sulla piazzola non c\\'\xE8 nessuno di noi a controllare.')) return;
+    await api('/spiaggia/prese/' + b.dataset.liberaomb + '/chiudi', { method: 'PUT', body: JSON.stringify({ motivo: 'liberato dal banco' }) });
+    show('beach');
+  });
+  document.querySelectorAll('[data-beadd]').forEach(b => b.onclick = async () => {
+    const q = Number(($('#be_n_' + b.dataset.beadd) || {}).value) || 1;
+    await api('/spiaggia/piazzole/' + b.dataset.beadd + '/ombrelloni', { method: 'POST', body: JSON.stringify({ quanti: q }) });
+    show('beach');
+  });
+  document.querySelectorAll('[data-beblocca]').forEach(b => b.onclick = async () => {
+    const motivo = ($('#be_m_' + b.dataset.beblocca) || {}).value || 'vento';
+    if (!confirm('Chiudere la piazzola per ' + motivo + '? Nessuno potr\xE0 prendere un ombrellone.')) return;
+    await api('/spiaggia/blocchi', { method: 'POST', body: JSON.stringify({ piazzola_id: Number(b.dataset.beblocca), data, motivo }) });
+    show('beach');
+  });
+  document.querySelectorAll('[data-beconf]').forEach(b => b.onclick = () => {
+    const p = d.piazzole.find(x => String(x.id) === String(b.dataset.beconf));
+    openModal(\`<h3 style="margin-top:0">\u2699\uFE0E \${esc(p.nome)}</h3>
+      <p class="muted" style="font-size:.82rem">Le misure servono a sapere quanti ombrelloni ci stanno. Il numero per\xF2 lo decidi tu guardando la piazzola: alberi, docce e passaggi non li conosce nessuna formula.</p>
+      <div class="grid2" style="gap:8px">
+        <label>Nome<input id="bp_nome" value="\${esc(p.nome)}"></label>
+        <label>Larghezza (m)<input id="bp_l" type="number" step="0.5" value="\${p.larghezza_m ?? ''}"></label>
+        <label>Profondit\xE0 (m)<input id="bp_p" type="number" step="0.5" value="\${p.profondita_m ?? ''}"></label>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="btn gold sm" id="bp_salva">Salva</button>
+        <button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+    $('#bp_salva').onclick = async () => {
+      await api('/spiaggia/piazzole/' + p.id, { method: 'PUT', body: JSON.stringify({
+        nome: $('#bp_nome').value, larghezza_m: Number($('#bp_l').value) || null, profondita_m: Number($('#bp_p').value) || null
+      }) });
+      closeModal(); show('beach');
+    };
+  });
+  document.querySelectorAll('[data-beverifica]').forEach(b => b.onclick = async () => {
+    const v = await api('/spiaggia/piazzole/' + b.dataset.beverifica + '/verifica').catch(() => null);
+    if (!v) return;
+    if (v.misure_mancanti) { alert(v.nota); return; }
+    const ok = !v.problemi.length;
+    openModal(\`<h3 style="margin-top:0">\u{1F4D0} \${esc(v.piazzola)}</h3>
+      <div style="background:\${ok ? '#eaf3ec' : '#fdecea'};border-left:5px solid \${ok ? '#2e6b45' : '#b14a35'};border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:10px">
+        <b style="color:\${ok ? '#2e6b45' : '#8a2a20'}">\${esc(v.verdetto)}</b>
+        \${v.problemi.map(x => \`<div style="margin-top:4px">\xB7 \${esc(x)}</div>\`).join('')}</div>
+      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Piazzola</span><b>\${v.misure.larghezza_m} \xD7 \${v.misure.profondita_m} m \xB7 \${v.misure.mq} m\xB2</b></div>
+      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ombrelloni disposti</span><b>\${v.disposti}</b></div>
+      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ce ne stanno (indicativo)</span><b>\${v.capienza_indicativa} \xB7 \${v.persone} persone</b></div>
+      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Metri quadri per ombrellone</span><b>\${v.mq_per_ombrellone ?? '\u2014'}</b></div>
+      <p class="muted" style="font-size:.78rem;margin-top:8px">\${esc(v.nota)} Il conto usa \${v.regole.ingombro_m} m di ingombro e \${v.regole.passaggio_m} m di passaggio.</p>
+      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
   });
 };
 
@@ -12620,7 +12751,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.78";
+var VERSION = "5.79";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -15665,6 +15796,57 @@ async function rilascia({ socio, presaId }) {
   await db.prepare("UPDATE ombrellone_prese SET stato='rilasciata', rilasciata_at=datetime('now') WHERE id=?").run(p.id);
   return { ok: true };
 }
+async function verificaPiazzola(piazzolaId) {
+  const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(piazzolaId);
+  if (!p) return null;
+  const L = Number(p.larghezza_m) || 0;
+  const P = Number(p.profondita_m) || 0;
+  const ing = Number(await par("beach_ingombro_ombrellone_m")) || 3;
+  const pass = Number(await par("beach_passaggio_m")) || 1.5;
+  const ombrelloni = await db.prepare("SELECT * FROM ombrelloni WHERE piazzola_id=? AND attivo=1 ORDER BY numero").all(p.id);
+  if (!L || !P) {
+    return {
+      piazzola: p.nome,
+      misure_mancanti: true,
+      disposti: ombrelloni.length,
+      nota: "Senza le misure della piazzola non si puo' dire se ci stanno: si prendono col metro, una volta sola."
+    };
+  }
+  const passo = ing + pass;
+  const perFila = Math.max(0, Math.floor((L + pass) / passo));
+  const file = Math.max(0, Math.floor((P + pass) / passo));
+  const capienza = perFila * file;
+  const inMetri = ombrelloni.map((o) => ({ numero: o.numero, x: Number(o.x) / 100 * L, y: Number(o.y) / 100 * P }));
+  const vicini = [];
+  for (let i = 0; i < inMetri.length; i++) {
+    for (let j = i + 1; j < inMetri.length; j++) {
+      const dx = Math.abs(inMetri[i].x - inMetri[j].x) - ing;
+      const dy = Math.abs(inMetri[i].y - inMetri[j].y) - ing;
+      const luce = Math.max(dx, dy);
+      if (luce < pass - 0.01) vicini.push({ a: inMetri[i].numero, b: inMetri[j].numero, luce: Number(luce.toFixed(2)) });
+    }
+  }
+  const fuori = inMetri.filter((o) => o.x - ing / 2 < -0.01 || o.x + ing / 2 > L + 0.01 || o.y - ing / 2 < -0.01 || o.y + ing / 2 > P + 0.01).map((o) => o.numero);
+  const problemi = [];
+  if (ombrelloni.length > capienza) problemi.push(`Ne hai disposti ${ombrelloni.length} ma in ${L}\xD7${P} m ce ne stanno ${capienza} lasciando ${pass} m di passaggio.`);
+  if (vicini.length) problemi.push(`Fra ${vicini.length} coppie di ombrelloni non ci si passa: servono ${pass} m, ce ne sono meno.`);
+  if (fuori.length) problemi.push(`${fuori.length} ombrelloni escono dal perimetro della piazzola (${fuori.join(", ")}).`);
+  return {
+    piazzola: p.nome,
+    misure: { larghezza_m: L, profondita_m: P, mq: Number((L * P).toFixed(1)) },
+    regole: { ingombro_m: ing, passaggio_m: pass },
+    disposti: ombrelloni.length,
+    capienza_indicativa: capienza,
+    persone: capienza * (Number(await par("beach_posti_ombrellone")) || 2),
+    mq_per_ombrellone: ombrelloni.length ? Number((L * P / ombrelloni.length).toFixed(1)) : null,
+    troppo_vicini: vicini.slice(0, 12),
+    fuori_perimetro: fuori,
+    problemi,
+    verdetto: problemi.length ? ombrelloni.length > capienza ? "troppi ombrelloni" : "disposizione da rivedere" : "ci stanno",
+    // Il numero resta una decisione di chi guarda la spiaggia: qui si dice solo se torna.
+    nota: "La capienza e' indicativa: alberi, docce e passaggi non li conosce nessuna formula. Gli ombrelloni si dispongono a mano, questo conto dice se ci stanno."
+  };
+}
 
 // server/routes/admin.js
 init_parametri();
@@ -18342,6 +18524,11 @@ adminRouter.get("/spiaggia", requireCap("beach"), async (req, res) => {
   }
   res.json({ data, fascia, fasce, piazzole: out });
 });
+adminRouter.get("/spiaggia/piazzole/:id/verifica", requireCap("beach"), async (req, res) => {
+  const v = await verificaPiazzola(req.params.id);
+  if (!v) return res.status(404).json({ error: "Piazzola non trovata" });
+  res.json(v);
+});
 adminRouter.put("/spiaggia/piazzole/:id", requireCap("beach"), async (req, res) => {
   const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
@@ -20433,6 +20620,7 @@ async function creaPrenotazione(req, res, apertaDiDefault) {
 publicRouter.post("/campi/:id/prenota", (req, res) => creaPrenotazione(req, res, false));
 publicRouter.post("/campi/:id/partita", (req, res) => creaPrenotazione(req, res, true));
 publicRouter.get("/spiaggia", async (req, res) => {
+  if (!await par("beach_attiva")) return res.status(404).json({ error: "La gestione degli ombrelloni non e' attiva." });
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const piazzole = await db.prepare("SELECT id,nome FROM piazzole WHERE attiva=1 ORDER BY ordine,id").all();
   const fasce = await fasceOggi();
@@ -20443,6 +20631,7 @@ publicRouter.get("/spiaggia", async (req, res) => {
   res.json({ data: oggi2, fascia, fasce, piazzole: out, posti_ombrellone: Number(await par("beach_posti_ombrellone")) || 2 });
 });
 publicRouter.post("/spiaggia/prendi", async (req, res) => {
+  if (!await par("beach_attiva")) return res.status(409).json({ error: "La gestione degli ombrelloni non e' attiva." });
   const socio = await socioAttivoByTessera(req.body?.tessera_code);
   if (!socio || socio.attivo === 0) return res.status(404).json({ error: "Serve la tessera di un socio" });
   const pieno = await db.prepare("SELECT id,nome,cognome,tessera_code,nucleo FROM soci WHERE id=?").get(socio.id);
@@ -21532,7 +21721,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-30 17:01" : "online";
+var BUILD = true ? "2026-08-30 17:36" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
