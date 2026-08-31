@@ -3922,6 +3922,7 @@ var frontend_default = `<!DOCTYPE html>
 <meta name="theme-color" content="#12324F">
 <meta name="description" content="Bussola Residence \u2014 l'app del residence di Fontane Bianche: eventi, sport, Coppa delle Casate, tessera e guida.">
 <title>Bussola Residence \u2014 App</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <!-- PWA: manifest + service worker iniettati dal server (server/pwa.js) -->
 <style>
 :root{
@@ -3935,7 +3936,7 @@ var frontend_default = `<!DOCTYPE html>
      L'oro resta, ma come bordo e accento \u2014 non piu' come fondo di un pulsante da leggere. */
   --navy:#102A43; --gold:#8a5a12; --teal:#12524c; --coral:#9E2B20;
   --plum:#4b3d7a; --sage:#2f5a2d; --ink:#101418; --paper:#F4F1E9;
-  --mute:#3c4a54; --line:#101418; --card:#FFFFFF;
+  --mute:#3c4a54; --tratto:#101418; --line:var(--tratto); --card:#FFFFFF;
   --scale:1;                 /* controllo dimensione testo (accessibilit\xE0) */
   --tap:56px;                /* area tocco: al sole e con le mani bagnate serve larga */
   --focus:#0a66c2;
@@ -7225,8 +7226,9 @@ var admin_default = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bussola Residence \u2014 Back office</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
-  :root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--mute:#5a6b75;--line:#e3e1d6;--bg:#f4f2ea;--card:#fff;}
+  :root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--mute:#49525A;--riga:#E3E1D6; --line:var(--riga);--bg:#f4f2ea;--card:#fff;}
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;}
   a{color:var(--navy);}
@@ -9979,8 +9981,9 @@ var chiosco_default = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#12324F">
 <title>Bussola Crew</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
-:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--line:#E3E1D6;--muted:#5a6670;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
+:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--riga:#E3E1D6; --line:var(--riga);--muted:#49525A;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:16px}
 input,select,button{font-family:inherit;font-size:1rem}
@@ -10004,7 +10007,35 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
 #top{background:linear-gradient(135deg,#12324F,#1c4a6e);color:#fff;padding:calc(12px + env(safe-area-inset-top)) 16px 0;position:sticky;top:0;z-index:5}
 #top .brand{font-weight:800;letter-spacing:.5px;font-size:1.05rem}
 #top .who{font-size:.75rem;opacity:.85}
+/* Alto contrasto: l'app del socio ce l'aveva gia', il Crew no \u2014 ed era il Crew a lavorare al
+   sole, con le mani occupate e senza poter cambiare posto. La scelta si ricorda sul dispositivo. */
+body.hc{--muted:#31383E; --riga:#B9B6A8; --paper:#FBF9F2}
+body.hc .panel{border-color:#8F8B7C}
 #tabs{display:flex;gap:4px;margin-top:10px;overflow-x:auto}
+/* La barra dei moduli. Su schermo largo sta a sinistra e non si muove; sotto i 900 px diventa
+   una riga che scorre, perche' una colonna da tredici voci su un telefono mangia meta' schermo
+   e chi serve ai tavoli il telefono ce l'ha in mano, non al banco. */
+#corpo{display:flex;align-items:flex-start;gap:0}
+#moduli{flex:0 0 200px;position:sticky;top:0;align-self:stretch;background:var(--card);border-right:2px solid var(--riga);padding:8px 0;display:flex;flex-direction:column;gap:1px;min-height:60vh}
+#moduli .grp{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:12px 12px 4px;font-weight:800}
+#moduli button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;background:transparent;border:none;border-left:3px solid transparent;color:var(--ink);font-weight:700;text-align:left;padding:12px;min-height:44px;cursor:pointer;font-size:.9rem}
+#moduli button:hover{background:var(--paper)}
+#moduli button.on{background:var(--ink);color:#fff}
+/* La pastiglia esiste solo se c'e' un numero. Con :empty disegnava comunque il suo bordo, e
+   accanto a ogni modulo compariva un trattino che sembrava un valore: un contatore vuoto deve
+   sparire, non mostrare una casella. */
+#moduli button .n{font-size:.72rem;font-weight:800;border:2px solid currentColor;border-radius:4px;padding:0 5px;min-width:20px;text-align:center}
+#moduli button .n:empty{display:none}
+#moduli #chiSono{overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;line-height:1.35}
+#moduli button.urge .n{background:var(--coral);border-color:var(--coral);color:#fff}
+#moduli #chiSono{margin-top:auto;padding:10px 12px;border-top:2px solid var(--riga);font-size:.75rem;color:var(--muted)}
+#corpo #view{flex:1;min-width:0}
+@media (max-width:900px){
+  #corpo{display:block}
+  #moduli{position:static;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:2px solid var(--riga);min-height:0;padding:0}
+  #moduli .grp,#moduli #chiSono{display:none}
+  #moduli button{width:auto;white-space:nowrap;border-left:none;border-bottom:3px solid transparent;min-height:52px}
+}
 #tabs button{background:transparent;border:none;color:#cfe0ee;font-weight:700;padding:10px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
 #tabs button.on{background:var(--paper);color:var(--navy)}
 #view{padding:16px;max-width:1360px;margin:0 auto}
@@ -10091,35 +10122,7 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
     <div class="row" style="justify-content:space-between">
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
-        <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
-          <!-- I moduli sono raggruppati per MESTIERE, non per ordine di aggiunta: chi lavora in
-               cucina non deve scorrere la spiaggia per trovare il suo posto. Dentro il gruppo
-               l'ordine e' di frequenza: prima quello che si apre ogni giorno.
-               Nomi e icone sono tutti diversi fra loro: "Campi" e "Tennis & Beach" con la stessa
-               pallina da tennis, uno sotto l'altro, erano una trappola. -->
-          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700">
-            <optgroup label="Ristorazione">
-              <option value="garden">\u{1F33F} Garden</option>
-              <option value="bar">\u{1F378} Bar</option>
-              <option value="cucina">\u{1F373} Cucina</option>
-              <option value="serate">\u{1F37D}\uFE0F Serate</option>
-            </optgroup>
-            <optgroup label="Sport e spiaggia">
-              <option value="campi">\u26BD Campi liberi</option>
-              <option value="tennis">\u{1F3BE} Area tennis</option>
-              <option value="fitness">\u{1F9D8} Fitness</option>
-              <option value="beach">\u26F1\uFE0F Spiaggia</option>
-              <option value="sport">\u{1F3C5} Tabellone</option>
-            </optgroup>
-            <optgroup label="Cultura">
-              <option value="cinema">\u{1F3AD} Stage</option>
-              <option value="cdc">\u{1F4DA} Casa di Carta</option>
-            </optgroup>
-            <optgroup label="Logistica">
-              <option value="magazzino">\u{1F4E6} Magazzino</option>
-            </optgroup>
-          </select>
-        </label>
+        <button id="hcBtn" title="Alza il contrasto" style="background:transparent;border:1px solid #cfe0ee;color:#cfe0ee;border-radius:4px;padding:4px 9px;font-weight:700;cursor:pointer">A\u25D0</button>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
     </div>
@@ -10142,7 +10145,13 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
       <button data-v="registro">\u{1F5C4}\uFE0F Registro storico</button>
     </div>
   </div>
-  <div id="view"></div>
+  <div id="corpo">
+    <!-- I moduli scendono da navigazione a deposito: durante il servizio non si naviga, si
+         guarda "Adesso" e si torna al tavolo. La barra e' sempre visibile, non e' un menu' che
+         si apre: cercare dove sono le cose e' il tempo che al picco non si ha. -->
+    <nav id="moduli" aria-label="Moduli"></nav>
+    <div id="view"></div>
+  </div>
 </div>
 
 <div id="modal" class="modal hide"><div class="mbg" id="modalBg"></div><div class="mbox" id="mbox"></div></div>
@@ -10420,14 +10429,29 @@ async function login() {
     // Accesso a Bussola Crew: basta UN permesso operativo (comande o magazzino); si vedono solo le zone consentite.
     const zone = allowedZones();
     if (!zone.length) throw new Error('Il tuo utente non ha ancora nessun permesso operativo. Chiedi al gestore di abilitarti ad almeno uno di questi moduli: ' + Object.values(CAP_MODULO).join(' \xB7 ') + '.');
-    filterZoneSelectors(zone);
+    ME.username = j.user.username;
+    try { applyContrasto(localStorage.getItem('bussola_hc') === '1'); } catch (_) {}
+    disegnaModuli(zone);
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
-    const zs = $('#zonaSwitch'); if (zs && !zs.__wired) { zs.__wired = true; zs.onchange = () => setZona(zs.value); }
-    // Modulo iniziale: l'ultimo usato su questo dispositivo (se ancora consentito) \u2192 altrimenti il primo consentito.
-    const salvata = (() => { try { return localStorage.getItem('bussola_zona'); } catch (_) { return null; } })();
-    setZona(zone.includes(salvata) ? salvata : zone[0]);
+    // Si atterra su ADESSO, non su un modulo. Prima il sistema ricordava l'ultimo modulo usato
+    // su questo dispositivo, e nello scenario vero era peggio del niente: sei assegnato allo
+    // sport, dai una mano al bar per dieci minuti, e domani ti si apre il bar. La macchina
+    // indovinava invece di ubbidire. Adesso non indovina niente: apre la coda del turno.
+    // Il modulo resta ricordato per quando ci torni, ma non decide piu' dove atterri.
+    ZONA = (() => { try { const z = localStorage.getItem('bussola_zona'); return zone.includes(z) ? z : zone[0]; } catch (_) { return zone[0]; } })();
+    applyZona();
+    show('adesso'); segnaModulo('adesso');
+    avviaAdesso();
   } catch (e) { $('#loginErr').textContent = e.message; }
+}
+// Alto contrasto, come nell'app del socio: chi lavora al sole lo alza e il sistema se lo
+// ricorda su questo dispositivo. Con questo interruttore la regola sul testo secondario torna
+// una sola per tutte e due le anime.
+function applyContrasto(on) {
+  document.body.classList.toggle('hc', !!on);
+  try { localStorage.setItem('bussola_hc', on ? '1' : '0'); } catch (_) {}
+  const b = document.querySelector('#hcBtn'); if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
 function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
 // Zone consentite in base ai permessi: comande \u2192 garden/bar/cucina \xB7 magazzino \u2192 magazzino.
@@ -10453,23 +10477,45 @@ function allowedZones() {
   return z;
 }
 // Ogni permesso operativo ha il suo modulo: serve a spiegare a chi resta fuori cosa gli manca.
+// I moduli, raggruppati per MESTIERE e non per ordine di aggiunta. Erano le <optgroup> del
+// menu' a tendina; ora disegnano la barra laterale. Nomi e icone tutti diversi fra loro.
+const MODULI = [
+  ['Ristorazione',     [['garden','\u{1F33F}','Garden'], ['bar','\u{1F378}','Bar'], ['cucina','\u{1F373}','Cucina'], ['serate','\u{1F37D}\uFE0F','Serate']]],
+  ['Sport e spiaggia', [['campi','\u26BD','Campi liberi'], ['tennis','\u{1F3BE}','Area tennis'], ['fitness','\u{1F9D8}','Fitness'], ['beach','\u26F1\uFE0F','Spiaggia'], ['sport','\u{1F3C5}','Tabellone']]],
+  ['Cultura',          [['cinema','\u{1F3AD}','Stage'], ['cdc','\u{1F4DA}','Casa di Carta']]],
+  ['Logistica',        [['magazzino','\u{1F4E6}','Magazzino']]],
+];
 const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Tabellone', campi: 'Campi liberi', tennis: 'Area tennis', beach: 'Spiaggia', serate: 'Serate', cdc: 'Casa di Carta', fitness: 'Fitness', cinema: 'Stage' };
-// Selettore modulo nel topbar: mostra solo le opzioni consentite e SPARISCE se c'\xE8 un solo modulo.
-function filterZoneSelectors(zone) {
-  const el = document.querySelector('#zonaSwitch');
-  if (!el) return;
-  Array.from(el.options).forEach(o => { const ok = zone.includes(o.value); o.hidden = !ok; o.disabled = !ok; });
-  // Un gruppo di cui non resta nessuna voce va nascosto anche lui: su alcuni browser
-  // l'intestazione dell'optgroup resta visibile anche con tutte le opzioni nascoste, e
-  // l'operatore legge "Cultura" senza niente sotto \u2014 sembra un modulo che non si apre.
-  Array.from(el.querySelectorAll('optgroup')).forEach(g => {
-    const vive = Array.from(g.querySelectorAll('option')).some(o => !o.hidden);
-    g.hidden = !vive; g.disabled = !vive;
+// La barra dei moduli. Non e' un menu' che si apre: sta li'. Cercare dove sono le cose e' il
+// tempo che al picco non si ha.
+// "Adesso" e' in cima e non e' un modulo: e' la coda del turno, cioe' cio' che chiede una
+// persona da TUTTI i moduli su cui hai permesso. Durante il servizio non si naviga \u2014 si guarda
+// cosa manca e si torna al tavolo. I moduli restano sotto, come deposito.
+function disegnaModuli(zone) {
+  const nav = document.querySelector('#moduli');
+  if (!nav) return;
+  let h = \`<button data-z="adesso"><span>\u26A1 Adesso</span><span class="n" id="n_adesso"></span></button>\`;
+  for (const [gruppo, voci] of MODULI) {
+    const mie = voci.filter(([z]) => zone.includes(z));
+    if (!mie.length) continue;   // un gruppo senza voci non si annuncia: "Cultura" con niente sotto sembra un modulo che non si apre
+    h += \`<div class="grp">\${esc(gruppo)}</div>\`;
+    for (const [z, ico, nome] of mie)
+      h += \`<button data-z="\${z}"><span>\${ico} \${esc(nome)}</span><span class="n" id="n_\${z}"></span></button>\`;
+  }
+  h += \`<div id="chiSono"></div>\`;
+  nav.innerHTML = h;
+  nav.querySelectorAll('button[data-z]').forEach(b => b.onclick = () => {
+    if (b.dataset.z === 'adesso') { ZONA_PRIMA = null; show('adesso'); segnaModulo('adesso'); }
+    else setZona(b.dataset.z);
   });
-  if (!zone.includes(el.value)) el.value = zone[0];
-  const wrap = el.closest('label') || el;   // se un solo modulo, il selettore non serve \u2192 nascondilo
-  wrap.style.display = zone.length > 1 ? '' : 'none';
+  const chi = nav.querySelector('#chiSono');
+  if (chi) chi.innerHTML = \`<b>\${esc(ME.username || '')}</b><br>\${esc((ME.caps || []).join(' \xB7 ') || (ME.gestore ? 'gestore' : ''))}\`;
 }
+function segnaModulo(z) {
+  document.querySelectorAll('#moduli button[data-z]').forEach(b => b.classList.toggle('on', b.dataset.z === z));
+}
+let ZONA_PRIMA = null;
+
 // Cambio zona AL VOLO (stessa persona): resta nelle zone consentite dai permessi.
 function setZona(z) {
   const allow = allowedZones();
@@ -10507,7 +10553,7 @@ function applyZona() {
   tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
   tog('registro', ZONA === 'garden' || ZONA === 'bar');            // memoria lunga: dove si prenota e si incassa
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
-  const zs = document.querySelector('#zonaSwitch'); if (zs) zs.value = ZONA;
+  segnaModulo(ZONA);
   applyAccent();
 }
 // Accento-colore per FUNZIONE: identit\xE0 unica, ma la topbar e i titoli si tingono in base alla zona,
@@ -10592,6 +10638,10 @@ function abilitaFold() {
 async function show(v) {
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  // La barra laterale segue la vista: se sei in Adesso e' Adesso a essere acceso, altrimenti
+  // il modulo in cui ti trovi. Senza, si resta con due cose accese e non si sa dove si e'.
+  try { segnaModulo(v === 'adesso' ? 'adesso' : ZONA); } catch (_) {}
+  document.querySelectorAll('#tabs').forEach(t => t.classList.toggle('hide', v === 'adesso'));
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   window.__tab = v;
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
@@ -10901,6 +10951,89 @@ function cucinaDetail(g) {
 }
 
 /* ---------- CUCINA: piatti da cucinare raggruppati per tavolo (Garden) / nome (Bar), per urgenza ---------- */
+/* ---------- ADESSO: la coda del turno ----------------------------------------------------
+   Non e' un cruscotto e non e' un modulo: e' cio' che chiede una persona, da tutti i moduli su
+   cui hai permesso, in ordine di attesa. Durante il servizio nessuno naviga: si guarda cosa
+   manca e si torna al tavolo.
+   Il filtro dei permessi NON e' qui: sta sul server. Quello che arriva, l'operatore lo puo'
+   leggere; quello che non deve vedere non parte nemmeno, conteggi a zero compresi. */
+let ADESSO_TIMER = null;
+VIEWS.adesso = async () => {
+  const d = await api('/adesso');
+  const righe = Object.entries(d.riga || {});
+  const ETICHETTA = { comande_aperte: 'Comande aperte', righe_stornate_oggi: 'Storni di oggi' };
+
+  const card = (v) => {
+    const quando = v.attesa >= 1 ? \`da \${v.attesa} min\` : (v.entro ? \`entro le \${esc(v.entro)}\` : 'ora');
+    const bottoni = (v.azioni || []).map(a =>
+      \`<button class="btn sm" data-az="\${esc(a.id)}" data-com="\${a.comanda || ''}">\${esc(a.testo)}</button>\`).join(' ');
+    return \`<div class="panel" style="border-left:4px solid var(--ink);margin-bottom:8px">
+      <div class="row" style="justify-content:space-between;align-items:baseline;gap:8px">
+        <span class="tag">\${esc(v.fonte || v.modulo)}</span>
+        <span class="muted" style="font-size:.8rem">\${quando}</span></div>
+      <div style="font-weight:800;margin:6px 0 2px">\${esc(v.titolo)}</div>
+      \${v.corpo ? \`<div class="muted" style="font-size:.86rem">\${esc(v.corpo)}</div>\` : ''}
+      \${bottoni ? \`<div class="row" style="gap:6px;margin-top:8px">\${bottoni}</div>\` : ''}
+    </div>\`;
+  };
+
+  $('#view').innerHTML = \`
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2 style="margin:0">Adesso</h2>
+      <span class="muted" style="font-size:.85rem">\${esc(d.oggi)} \xB7 \${esc(d.ora)}</span></div>
+    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:10px">
+      <div style="flex:1 1 420px;min-width:0">
+        \${d.voci.length ? d.voci.map(card).join('') : \`
+          <div class="panel"><div style="font-weight:800">Non c\\u2019\\u00e8 niente in sospeso.</div>
+          <div class="muted" style="font-size:.86rem">\\u00c8 lo stato normale di una serata che gira. Quando qualcosa si ferma, compare qui.</div></div>\`}
+      </div>
+      <div style="flex:0 1 260px">
+        <div class="panel">
+          <div class="muted" style="font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800">Il turno in una riga</div>
+          \${righe.length ? righe.map(([k, n]) =>
+            \`<div class="row" style="justify-content:space-between;padding:4px 0"><span>\${esc(ETICHETTA[k] || k)}</span><b>\${esc(String(n))}</b></div>\`).join('')
+            : '<div class="muted" style="font-size:.85rem;margin-top:6px">Niente da riassumere per i tuoi permessi.</div>'}
+          <div class="muted" style="font-size:.78rem;margin-top:10px;border-top:2px solid var(--riga);padding-top:8px">
+            Gli incassi non stanno qui. Questa \\u00e8 la schermata del servizio, non della cassa.</div>
+        </div>
+      </div>
+    </div>\`;
+
+  $('#view').querySelectorAll('[data-az]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const com = b.closest('[data-com]') && b.closest('[data-com]').dataset.com;
+    try {
+      if (b.dataset.az === 'avviso-letto') await api('/comande/' + com + '/avviso-letto', { method: 'PUT' });
+      await VIEWS.adesso();
+    } catch (e) { b.disabled = false; alert(e.message); }
+  });
+  contatori(d.voci);
+};
+
+// I contatori sulla barra: dicono cosa e' arretrato senza aprire niente. Senza un ordine di
+// servizio sono LORO il meccanismo con cui la crew si ridistribuisce: se lo sport finisce e il
+// Garden e' a sette, ci si sposta perche' lo si vede, non perche' qualcuno lo dice.
+function contatori(voci) {
+  const per = {};
+  for (const v of voci || []) per[v.modulo] = (per[v.modulo] || 0) + 1;
+  document.querySelectorAll('#moduli button[data-z]').forEach(b => {
+    const z = b.dataset.z;
+    const n = z === 'adesso' ? (voci || []).length : (per[z] || 0);
+    const el = b.querySelector('.n');
+    if (el) el.textContent = n ? String(n) : '';
+    // Rosso solo dove il rosso e' un allarme: qui non ci sono bottoni rossi, quindi non c'e'
+    // ambiguita' fra "questo chiede aiuto" e "premi qui".
+    b.classList.toggle('urge', z === 'adesso' && n > 0);
+  });
+}
+// Si aggiorna da solo: chi ha le mani occupate non tira giu' la pagina per ricaricare.
+function avviaAdesso() {
+  if (ADESSO_TIMER) clearInterval(ADESSO_TIMER);
+  ADESSO_TIMER = setInterval(async () => {
+    try { const d = await api('/adesso'); contatori(d.voci); if (window.__tab === 'adesso') await VIEWS.adesso(); } catch (_) {}
+  }, 45000);
+}
+
 VIEWS.kds = async () => {
   const cfg = await api('/self-order/config').catch(() => ({}));
   const rMin = Number(cfg.map_rosso_min || 10);
@@ -12112,6 +12245,7 @@ VIEWS.riepilogo = async () => {
 $('#loginBtn').onclick = login;
 $('#p').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
+$('#hcBtn').onclick = () => applyContrasto(!document.body.classList.contains('hc'));
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.v));
 
 
@@ -13307,6 +13441,7 @@ var ordina_default = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Ordina \xB7 Bussola</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
   :root{--navy:#12324F;--gold:#C9A227;--bg:#f3efe6;--line:#cbd2d8}
   *{box-sizing:border-box}
@@ -13677,7 +13812,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.90";
+var VERSION = true ? "5.94.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -20680,6 +20815,136 @@ Liberale dalla pianta (tocca il tavolo \u2192 Libera) e riprova. Nota: annullare
   audit(req.adminUser.username, "rigenera_pianta", "tavoli_layout", nuovo.id, amb);
   res.json({ ok: true, layout: { id: nuovo.id, nome: nuovo.nome, ambiente: nuovo.ambiente } });
 });
+adminRouter.get("/adesso", async (req, res) => {
+  const u = req.adminUser;
+  const puo = (...caps) => caps.some((c) => hasCap(u, c));
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const ora = (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5);
+  const adesso = Date.now();
+  const minutiDa = (t) => {
+    if (!t) return 0;
+    const s = String(t).includes("T") ? String(t) : String(t).replace(" ", "T") + "Z";
+    return Math.max(0, Math.round((adesso - new Date(s).getTime()) / 6e4));
+  };
+  const voci = [];
+  const v = (o) => voci.push({ attesa: 0, ...o });
+  if (puo("comande")) {
+    const avvisi = await db.prepare(
+      "SELECT id,numero,zona,riferimento,avviso_cucina,avviso_cucina_at FROM comande WHERE avviso_cucina IS NOT NULL AND stato NOT IN ('chiusa','annullata')"
+    ).all();
+    for (const c of avvisi)
+      v({
+        fonte: "cucina \u2192 sala",
+        modulo: c.zona === "bar" ? "bar" : "garden",
+        chiave: "avviso:" + c.id,
+        attesa: minutiDa(c.avviso_cucina_at),
+        titolo: `${c.riferimento || "Comanda #" + c.numero} \xB7 messaggio dalla cucina`,
+        corpo: c.avviso_cucina,
+        azioni: [{ id: "avviso-letto", testo: "Ho avvisato il cliente", comanda: c.id }]
+      });
+    const tardi = await db.prepare(
+      "SELECT id,numero,zona,riferimento,created_at FROM comande WHERE stato IN ('aperta','in_preparazione') ORDER BY created_at"
+    ).all();
+    for (const c of tardi) {
+      const m = minutiDa(c.created_at);
+      if (m < 10) continue;
+      v({
+        fonte: "comande",
+        modulo: c.zona === "bar" ? "bar" : "garden",
+        chiave: "tardi:" + c.id,
+        attesa: m,
+        titolo: `${c.riferimento || "Comanda #" + c.numero} \xB7 aperta da ${m} minuti`,
+        corpo: "Pi\xF9 resta aperta, peggio arriva."
+      });
+    }
+    const alPasse = await db.prepare(
+      `SELECT c.id, c.numero, c.zona, c.riferimento, c.created_at AS da, COUNT(*) n
+       FROM comanda_righe r JOIN comande c ON c.id=r.comanda_id
+       WHERE r.stato='pronta' AND c.stato NOT IN ('chiusa','annullata')
+       GROUP BY c.id ORDER BY c.created_at`
+    ).all().catch(() => []);
+    for (const c of alPasse)
+      v({
+        fonte: "cucina",
+        modulo: c.zona === "bar" ? "bar" : "garden",
+        chiave: "passe:" + c.id,
+        attesa: minutiDa(c.da),
+        titolo: `${c.riferimento || "Comanda #" + c.numero} \xB7 ${c.n} ${c.n === 1 ? "piatto fermo" : "piatti fermi"} al passe`,
+        corpo: "Pronti in cucina e non ancora portati."
+      });
+  }
+  if (puo("campi")) {
+    const ap = await db.prepare(
+      `SELECT p.id, p.slot, p.posti_totali, p.creatore_nome, c.nome campo,
+              (SELECT COUNT(*) FROM partita_iscritti i WHERE i.partita_id=p.id) iscritti
+       FROM partite_aperte p JOIN campi c ON c.id=p.campo_id
+       WHERE p.data=? AND p.stato='aperta' ORDER BY p.slot`
+    ).all(oggi2).catch(() => []);
+    for (const p of ap) {
+      if (p.iscritti >= p.posti_totali) continue;
+      v({
+        fonte: "campi",
+        modulo: "campi",
+        chiave: "partita:" + p.id,
+        entro: p.slot,
+        titolo: `${p.campo} delle ${p.slot} non ha il numero legale`,
+        corpo: `Aperta da ${p.creatore_nome || "un socio"}: ${p.iscritti} su ${p.posti_totali}.`
+      });
+    }
+  }
+  if (puo("fitness")) {
+    const lez = await db.prepare(
+      `SELECT s.id, s.ora, s.min_iscritti, c.nome,
+              (SELECT COUNT(*) FROM fitness_prenotazioni p WHERE p.seduta_id=s.id AND p.stato='prenotato') iscritti
+       FROM fitness_sedute s JOIN corsi_fitness c ON c.id=s.corso_id
+       WHERE s.data=? AND s.stato='programmata' ORDER BY s.ora`
+    ).all(oggi2).catch(() => []);
+    for (const l of lez) {
+      if (l.iscritti >= l.min_iscritti) continue;
+      v({
+        fonte: "fitness",
+        modulo: "fitness",
+        chiave: "lezione:" + l.id,
+        entro: l.ora,
+        titolo: `${l.nome} delle ${l.ora} e' sotto il minimo`,
+        corpo: `${l.iscritti} su ${l.min_iscritti}. Sotto il minimo la lezione non parte.`
+      });
+    }
+  }
+  if (puo("magazzino")) {
+    const neg = await db.prepare("SELECT COUNT(*) n FROM magazzino_articoli WHERE giacenza < 0").get().catch(() => ({ n: 0 }));
+    if (Number(neg?.n)) v({
+      fonte: "magazzino",
+      modulo: "magazzino",
+      chiave: "negativi",
+      attesa: 9999,
+      titolo: `${neg.n} articoli con giacenza negativa`,
+      corpo: "Si sta vendendo merce che a sistema non c\u2019\xE8."
+    });
+  }
+  if (puo("proposte")) {
+    const p = await db.prepare("SELECT COUNT(*) n, MIN(created_at) da FROM proposte WHERE stato='ricevuta'").get().catch(() => null);
+    if (Number(p?.n)) v({
+      fonte: "serate",
+      modulo: "serate",
+      chiave: "proposte",
+      attesa: minutiDa(p.da),
+      titolo: `${p.n} proposte da leggere`,
+      corpo: "Diventano la scaletta della prossima serata."
+    });
+  }
+  voci.sort((a, b) => (b.attesa || 0) - (a.attesa || 0) || String(a.entro || "").localeCompare(String(b.entro || "")));
+  const riga = {};
+  if (puo("comande")) {
+    const ap = await db.prepare("SELECT COUNT(*) n FROM comande WHERE stato IN ('aperta','in_preparazione','pronta')").get();
+    const st = await db.prepare(
+      "SELECT COUNT(*) n FROM comanda_righe r JOIN comande c ON c.id=r.comanda_id WHERE r.stato='stornata' AND date(c.created_at)=?"
+    ).get(oggi2).catch(() => ({ n: 0 }));
+    riga.comande_aperte = Number(ap?.n || 0);
+    riga.righe_stornate_oggi = Number(st?.n || 0);
+  }
+  res.json({ oggi: oggi2, ora, voci, riga });
+});
 adminRouter.get("/cruscotto", async (req, res) => {
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const ora = (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5);
@@ -22828,7 +23093,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-31 10:44" : "online";
+var BUILD = true ? "2026-08-31 11:34" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
