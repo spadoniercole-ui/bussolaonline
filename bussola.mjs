@@ -1426,6 +1426,10 @@ async function initSchema() {
     persone     INTEGER NOT NULL DEFAULT 1,
     importo     REAL NOT NULL DEFAULT 0,                    -- quota \xD7 persone (da saldare)
     stato       TEXT NOT NULL DEFAULT 'da_saldare',         -- da_saldare | saldata | annullata
+    canale      TEXT NOT NULL DEFAULT 'app',                 -- app | banco
+    ticket      TEXT,                                        -- emesso al saldo, si mostra all'ingresso
+    ticket_at   TEXT,
+    ingresso_at TEXT,                                        -- quando il ticket e' stato validato
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -2638,6 +2642,26 @@ async function migrate() {
           "UPDATE campi SET gestione='chiosco' WHERE gestione='tennis' AND (lower(nome) LIKE '%touch%' OR lower(nome) LIKE '%picker%' OR lower(nome) LIKE '%pickle%')"
         ).run();
         await setSetting("campi_gestione_tennis_fix", "v1");
+      }
+      await addIfMissing("serate_prenotazioni", "canale", "canale TEXT NOT NULL DEFAULT 'app'");
+      await addIfMissing("serate_prenotazioni", "ticket", "ticket TEXT");
+      await addIfMissing("serate_prenotazioni", "ticket_at", "ticket_at TEXT");
+      await addIfMissing("serate_prenotazioni", "ingresso_at", "ingresso_at TEXT");
+      if (await getSetting("permesso_cucina_split", "") !== "v1") {
+        const ops = await db.prepare("SELECT id,permessi FROM utenti_admin WHERE permessi IS NOT NULL").all();
+        for (const o of ops) {
+          let p = [];
+          try {
+            p = JSON.parse(o.permessi) || [];
+          } catch (_) {
+            p = String(o.permessi || "").split(",").map((x) => x.trim()).filter(Boolean);
+          }
+          if (Array.isArray(p) && p.includes("comande") && !p.includes("cucina")) {
+            p.push("cucina");
+            await db.prepare("UPDATE utenti_admin SET permessi=? WHERE id=?").run(JSON.stringify(p), o.id);
+          }
+        }
+        await setSetting("permesso_cucina_split", "v1");
       }
     } catch (_) {
     }
@@ -4627,7 +4651,9 @@ function leggiTessera(testo) {
   return m ? m[0] : "";
 }
 
-const eur = (n) => '\\u20ac ' + (Number(n) || 0).toFixed(2);
+// Gli importi si scrivono all'italiana: \u20AC 1.234,50, non \u20AC 1234.50. Con il punto sembravano
+// scritti da una macchina \u2014 ed e' quello che erano: \`toFixed(2)\` formatta all'inglese e basta.
+const eur = (n) => '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // ---- Stato & preferenze (persistite quando possibile) ---------------------
 const store = {
@@ -7948,7 +7974,7 @@ VIEWS.installa = async () => {
 // doveva indovinare. Il ripiego \`CAP_LABEL[c] || c\` non lo faceva vedere come un difetto.
 // I nomi dei moduli Crew sono gli stessi del selettore in alto: chi d\xE0 il permesso e chi lo
 // riceve devono chiamare la stessa cosa allo stesso modo. C'\xE8 un test che lo verifica.
-const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', tabellone:'Crew \xB7 Tabellone (risultati live)', contest:'Contest', serate:'Crew \xB7 Serate', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', comande:'Crew \xB7 Comande e Cucina', campi:'Crew \xB7 Campi liberi (gratuiti)', menu:'Men\xF9 & listino (decide cosa si vende)', beach:'Crew \xB7 Spiaggia (piazzole)', fitness:'Crew \xB7 Fitness', cinema:'Crew \xB7 Stage (platea e ingressi)', tennis:'Area tennis: gestore del servizio', tennis_campi:'Area tennis: solo prenotazioni e blocchi' };
+const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', tabellone:'Crew \xB7 Tabellone (risultati live)', contest:'Contest', serate:'Crew \xB7 Serate', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', cucina:'Crew \xB7 Cucina (solo le code di preparazione)', comande:'Crew \xB7 Comande e Cucina', campi:'Crew \xB7 Campi liberi (gratuiti)', menu:'Men\xF9 & listino (decide cosa si vende)', beach:'Crew \xB7 Spiaggia (piazzole)', fitness:'Crew \xB7 Fitness', cinema:'Crew \xB7 Stage (platea e ingressi)', tennis:'Area tennis: gestore del servizio', tennis_campi:'Area tennis: solo prenotazioni e blocchi' };
 VIEWS.operatori = async () => {
   const d = await api('/operatori');
   const caps = d.caps_delegabili;
@@ -9262,7 +9288,7 @@ VIEWS.fitness = async () => {
     fetch(API_BASE + '/api/fitness').then(r => r.json()).catch(() => ({}))
   ]);
   const FIT_PAR = { griglia_da: pub.griglia_da || '16:00', griglia_a: pub.griglia_a || '20:00' };
-  const eur2 = (v) => '\u20AC ' + Number(v || 0).toFixed(2);
+  const eur2 = eur;   // era una seconda copia che formattava all'inglese: stessa funzione, un posto solo.
   const righe = corsi.map(c => \`<tr>
       <td><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:\${esc(c.colore || '#2f6d8a')};margin-right:7px;vertical-align:middle"></span><b>\${esc(c.nome)}</b>\${c.masterclass ? ' <span class="tag mid">masterclass</span>' : ''}<div class="muted">\${esc(c.descrizione || '')}</div></td>
       <td>\${esc(c.istruttore || '\u2014')}</td>
@@ -9670,7 +9696,9 @@ function abilitaFold() {
    Chi serve ai tavoli il menu' lo deve avere PRONTO, non lo deve decidere. Qui sta col
    manager, e le rotte del server sono protette dal permesso "menu": nascondere la scheda e
    basta sarebbe stato un rimedio di facciata, perche' l'interfaccia si salta e il server no. */
-const eur = (n) => '\\u20ac ' + Number(n || 0).toFixed(2);
+// Gli importi si scrivono all'italiana: \u20AC 1.234,50, non \u20AC 1234.50. Con il punto sembravano
+// scritti da una macchina \u2014 ed e' quello che erano: \`toFixed(2)\` formatta all'inglese e basta.
+const eur = (n) => '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function downloadB64(filename, mime, b64) {
   const bin = atob(b64); const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
@@ -10030,6 +10058,28 @@ body.hc .panel{border-color:#8F8B7C}
 #moduli button.urge .n{background:var(--coral);border-color:var(--coral);color:#fff}
 #moduli #chiSono{margin-top:auto;padding:10px 12px;border-top:2px solid var(--riga);font-size:.75rem;color:var(--muted)}
 #corpo #view{flex:1;min-width:0}
+/* IL CONTO IN CORSO resta sotto gli occhi. Prima era una colonna accanto al menu': su schermo
+   stretto andava a capo SOTTO tutto il listino, e per vedere cosa si era battuto bisognava
+   scorrere l'intera pagina \u2014 proprio nel momento in cui si deve confermare davanti al cliente.
+   Ora e' appiccicato in alto mentre il menu' scorre, e su schermo stretto sale sopra il menu'. */
+.co-conto{position:sticky;top:8px;align-self:flex-start;max-height:calc(100vh - 120px);overflow:auto}
+/* LA GRIGLIA DI RIQUADRI \u2014 una forma sola, la stessa per tavoli, code di cucina, campi, casate
+   e sale. L'operatore la impara una volta e la riconosce in ogni modulo: numero grande in alto
+   a sinistra, stato in alto a destra, due righe di dettaglio sotto, azioni in fondo.
+   Il colore dice lo stato e NON e' mai un bottone: rosso vuol dire "questo chiede te". */
+.griglia{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-top:10px}
+.riq{border:2px solid var(--ink);border-radius:4px;background:var(--card);padding:10px 12px;min-height:96px;display:flex;flex-direction:column;gap:4px}
+.riq .cap{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.riq .num{font-weight:800;font-size:1.15rem;line-height:1}
+.riq .st{font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;font-weight:800}
+.riq .det{font-size:.82rem;color:var(--muted);line-height:1.35}
+.riq .azioni{margin-top:auto;display:flex;gap:6px;flex-wrap:wrap;padding-top:8px}
+.riq.libero{border-color:var(--riga)} .riq.libero .num,.riq.libero .st{color:var(--muted)}
+.riq.attesa{border-color:var(--ink)}
+.riq.chiama{border-color:var(--coral)} .riq.chiama .st{color:var(--coral)}
+.riq.fatto{background:var(--ink);color:#fff;border-color:var(--ink)} .riq.fatto .det{color:#cfd6dc}
+@media (max-width:560px){.griglia{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
+@media (max-width:900px){ .co-conto{order:-1;width:100%;top:0;max-height:none} }
 @media (max-width:900px){
   #corpo{display:block}
   #moduli{position:static;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:2px solid var(--riga);min-height:0;padding:0}
@@ -10136,6 +10186,7 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
       <button data-v="kds">\u{1F373} Cucina</button>
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
       <button data-v="sport">\u{1F3C5} Tabellone</button>
+      <button data-v="coppa">\u{1F6E1}\uFE0F Coppa delle Casate</button>
       <button data-v="campi">\u26BD Campi liberi</button>
       <button data-v="serate">\u{1F37D}\uFE0F Serate</button>
       <button data-v="cdc">\u{1F4DA} Casa di Carta</button>
@@ -10404,7 +10455,9 @@ let TOKEN = null, ME = { gestore: false, caps: [] }, PAR = {};
 let ZONA = (typeof localStorage !== 'undefined' && localStorage.getItem('bussola_zona')) || 'garden';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const eur = (n) => '\u20AC ' + Number(n || 0).toFixed(2);
+// Gli importi si scrivono all'italiana: \u20AC 1.234,50, non \u20AC 1234.50. Con il punto sembravano
+// scritti da una macchina \u2014 ed e' quello che erano: \`toFixed(2)\` formatta all'inglese e basta.
+const eur = (n) => '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // L'indirizzo del server si puo' impostare da fuori: si accetta il nome nuovo e si continua
 // ad accettare quello vecchio, perche' potrebbe essere gia' scritto in una pagina che non
 // controlliamo. Rinominare a secco avrebbe rotto quelle installazioni senza avvisare nessuno.
@@ -10458,9 +10511,19 @@ function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').s
 function allowedZones() {
   const caps = ME.caps || [];
   const z = [];
-  if (ME.gestore || caps.includes('comande')) z.push('garden', 'bar', 'cucina');
+  // SALA: Garden e Bar insieme. La crew si ridistribuisce fra i due durante la serata, quindi
+  // separarli col permesso vorrebbe dire dire "non puoi aiutare il tuo collega".
+  if (ME.gestore || caps.includes('comande')) z.push('garden', 'bar');
+  // CUCINA: mondo a se'. Non tocca tavoli, non tocca pagamenti, non puo' intervenire sul resto
+  // \u2014 e per lo stesso motivo il resto non deve stare fra i piedi a chi prepara. Permesso suo.
+  // Il gestore la vede perche' e' supervisore.
+  if (ME.gestore || caps.includes('cucina')) z.push('cucina');
   if (ME.gestore || caps.includes('magazzino')) z.push('magazzino');
   if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // risultati live
+  // La Coppa non e' il tabellone di una disciplina: e' la classifica generale delle otto
+  // casate, che si somma su tutte le discipline piu' i contest. Chi segna i risultati in campo
+  // e chi guarda come sta andando la Coppa sono due lavori diversi, e due permessi diversi.
+  if (ME.gestore || caps.includes('casate')) z.push('coppa');
   if (ME.gestore || caps.includes('campi')) z.push('campi');       // prenotazioni campi al banco
   // Il modulo tennis vive col SUO permesso: chi affitta i campi a pagamento non ha bisogno di
   // avere anche quelli gratuiti del chiosco. Senza questa riga il modulo esisteva ma non
@@ -10469,7 +10532,10 @@ function allowedZones() {
   // vedeva nessun modulo, con il messaggio "non hai ancora nessun permesso operativo" \u2014 cioe'
   // il permesso c'era ma non apriva niente.
   if (ME.gestore || caps.includes('tennis') || caps.includes('tennis_campi')) z.push('tennis');
-  if (ME.gestore || caps.includes('beach')) z.push('beach');                       // piazzole e ombrelloni
+  // SPIAGGIA: non e' un modulo della crew. Sulle piazzole non c'e' nessuno del personale, e
+  // l'autogestione obbligata e' il problema, non la soluzione: mettere qui un modulo operativo
+  // prometteva un presidio che non esiste. Resta al gestore, che deve poterla configurare.
+  if (ME.gestore) z.push('beach');
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
   if (ME.gestore || caps.includes('fitness')) z.push('fitness');   // lezioni con istruttore
@@ -10481,11 +10547,11 @@ function allowedZones() {
 // menu' a tendina; ora disegnano la barra laterale. Nomi e icone tutti diversi fra loro.
 const MODULI = [
   ['Ristorazione',     [['garden','\u{1F33F}','Garden'], ['bar','\u{1F378}','Bar'], ['cucina','\u{1F373}','Cucina'], ['serate','\u{1F37D}\uFE0F','Serate']]],
-  ['Sport e spiaggia', [['campi','\u26BD','Campi liberi'], ['tennis','\u{1F3BE}','Area tennis'], ['fitness','\u{1F9D8}','Fitness'], ['beach','\u26F1\uFE0F','Spiaggia'], ['sport','\u{1F3C5}','Tabellone']]],
+  ['Sport',            [['campi','\u26BD','Campi liberi'], ['tennis','\u{1F3BE}','Area tennis'], ['fitness','\u{1F9D8}','Fitness'], ['sport','\u{1F3C5}','Tabellone'], ['coppa','\u{1F6E1}\uFE0F','Coppa delle Casate']]],
   ['Cultura',          [['cinema','\u{1F3AD}','Stage'], ['cdc','\u{1F4DA}','Casa di Carta']]],
-  ['Logistica',        [['magazzino','\u{1F4E6}','Magazzino']]],
+  ['Logistica',        [['magazzino','\u{1F4E6}','Magazzino'], ['beach','\u26F1\uFE0F','Spiaggia']]],
 ];
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Tabellone', campi: 'Campi liberi', tennis: 'Area tennis', beach: 'Spiaggia', serate: 'Serate', cdc: 'Casa di Carta', fitness: 'Fitness', cinema: 'Stage' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Tabellone', campi: 'Campi liberi', tennis: 'Area tennis', casate: 'Coppa delle Casate', beach: 'Spiaggia', serate: 'Serate', cdc: 'Casa di Carta', fitness: 'Fitness', cinema: 'Stage' };
 // La barra dei moduli. Non e' un menu' che si apre: sta li'. Cercare dove sono le cose e' il
 // tempo che al picco non si ha.
 // "Adesso" e' in cima e non e' un modulo: e' la coda del turno, cioe' cio' che chiede una
@@ -10508,8 +10574,15 @@ function disegnaModuli(zone) {
     if (b.dataset.z === 'adesso') { ZONA_PRIMA = null; show('adesso'); segnaModulo('adesso'); }
     else setZona(b.dataset.z);
   });
+  // In fondo alla barra si legge chi sei e cosa puoi fare. Prima elencava i nomi TECNICI dei
+  // permessi \u2014 "utenti_ins", "cdc", "beach" \u2014 che sono nomi per il codice, non per una persona:
+  // lo stesso difetto che avevamo appena tolto dalla schermata Operatori. Qui si scrivono i
+  // moduli, con il nome che l'operatore legge un centimetro piu' su.
   const chi = nav.querySelector('#chiSono');
-  if (chi) chi.innerHTML = \`<b>\${esc(ME.username || '')}</b><br>\${esc((ME.caps || []).join(' \xB7 ') || (ME.gestore ? 'gestore' : ''))}\`;
+  if (chi) {
+    const nomi = MODULI.flatMap(([, v]) => v).filter(([z]) => zone.includes(z)).map(([, , n]) => n);
+    chi.innerHTML = \`<b>\${esc(ME.username || '')}</b><br>\${ME.gestore ? 'tutti i moduli' : esc(nomi.join(' \xB7 '))}\`;
+  }
 }
 function segnaModulo(z) {
   document.querySelectorAll('#moduli button[data-z]').forEach(b => b.classList.toggle('on', b.dataset.z === z));
@@ -10522,8 +10595,11 @@ function setZona(z) {
   ZONA = allow.includes(z) ? z : (allow[0] || 'garden');
   try { localStorage.setItem('bussola_zona', ZONA); } catch (_) {}
   applyZona();
-  const PRIMA = { garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
-  show(PRIMA[ZONA] || 'comande');
+  // Dove si atterra aprendo un modulo. Il Bar c'era solo come ripiego implicito
+  // (\`PRIMA[ZONA] || 'comande'\`): funzionava, ma un ripiego non si puo' verificare, e un
+  // modulo aggiunto domani senza la sua riga finirebbe zitto sulle comande del bar.
+  const PRIMA = { bar: 'comande', garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', coppa: 'coppa', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
+  show(PRIMA[ZONA] || 'comande');   // il ripiego resta per sicurezza, ma ora ogni zona ha la sua riga
 }
 // Mostra solo i tab pertinenti alla zona corrente:
 //  Garden \u2192 Comande+Tavoli+Giacenze \xB7 Bar \u2192 Comande+Bar+Giacenze \xB7 Cucina \u2192 Cucina \xB7 Magazzino \u2192 hub Centrale/Bar/Garden.
@@ -10541,6 +10617,7 @@ function applyZona() {
   tog('scorte', false);        // il magazzino si legge nel suo modulo, non da ogni zona
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
   tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
+  tog('coppa', ZONA === 'coppa');                                  // classifica generale delle casate
   tog('campi', ZONA === 'campi');
   tog('tennis', ZONA === 'tennis');
   tog('beach', ZONA === 'beach');
@@ -10550,8 +10627,13 @@ function applyZona() {
   tog('fitness', ZONA === 'fitness');
   tog('cinema', ZONA === 'cinema');
   tog('scortecdc', false);     // idem per la Casa di Carta
-  tog('riepilogo', ZONA === 'garden' || ZONA === 'bar');           // riepilogo comande: solo Garden/Bar
-  tog('registro', ZONA === 'garden' || ZONA === 'bar');            // memoria lunga: dove si prenota e si incassa
+  // Il riepilogo degli incassi e il registro storico sono del MANAGER, non di chi serve ai
+  // tavoli: durante il turno l'andamento della serata non e' un dato che serve, e' un dato che
+  // distrae. Restano al gestore, che dietro la cassa ci sta.
+  // Attenzione a non confonderlo con l'altro "riepilogo": quello che serve alla crew e' il
+  // CONTO IN CORSO prima di confermare l'ordine, e sta dentro la comanda.
+  tog('riepilogo', ME.gestore && (ZONA === 'garden' || ZONA === 'bar'));
+  tog('registro', ME.gestore && (ZONA === 'garden' || ZONA === 'bar'));
   const z = document.querySelector('#login #zona'); if (z) z.value = ZONA;
   segnaModulo(ZONA);
   applyAccent();
@@ -10577,6 +10659,9 @@ const ZONA_ACCENT = {
   cdc:       { a: '#7a5c2e', g1: '#5f4723', g2: '#96733d', nome: 'Casa di Carta' },
   fitness:   { a: '#2f7d8a', g1: '#245e68', g2: '#3f9daa', nome: 'Fitness' },
   cinema:    { a: '#4a3f6b', g1: '#372f52', g2: '#5f5188', nome: 'Stage' },
+  // Oliva: e' il varco piu' largo rimasto nella ruota (71\xB0), 35\xB0 da Bar e da Casa di Carta.
+  // Bianco su g1: 8,41 \u2014 dentro la fascia degli altri.
+  coppa:     { a: '#5d6b1f', g1: '#485218', g2: '#76882a', nome: 'Coppa delle Casate' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -10783,9 +10868,9 @@ VIEWS.comande = async () => {
       <div class="row" style="margin-bottom:8px">\${entry}</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap">
         <div style="flex:2;min-width:280px">
-          \${menu.length ? '<div id="co_menu"></div>' : '<p class="muted">Men\xF9 vuoto. Vai su \u201CMen\xF9\u201D per caricarlo.</p>'}
+          \${menu.length ? '<div id="co_menu"></div>' : '<p class="muted">Men\xF9 vuoto. Lo carica il gestore dal back office, sezione \u201CMen\xF9 &amp; listino\u201D.</p>'}
         </div>
-        <div style="flex:1;min-width:230px" class="panel">
+        <div style="flex:1;min-width:260px" class="panel co-conto">
           <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
           <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
           <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
@@ -10957,6 +11042,30 @@ function cucinaDetail(g) {
    manca e si torna al tavolo.
    Il filtro dei permessi NON e' qui: sta sul server. Quello che arriva, l'operatore lo puo'
    leggere; quello che non deve vedere non parte nemmeno, conteggi a zero compresi. */
+// LA GRIGLIA DI RIQUADRI. Una forma sola per tutti i moduli: tavoli, code di cucina, campi,
+// casate, sale. L'operatore la impara una volta e la ritrova dovunque, invece di imparare una
+// schermata per modulo.
+//   numero  grande in alto a sinistra (il tavolo, il campo, la casata)
+//   stato   in alto a destra, in maiuscoletto
+//   det     una o due righe di dettaglio
+//   azioni  in fondo, sempre nello stesso posto
+//   tono    libero | attesa | chiama | fatto \u2014 il colore dice lo STATO, mai "premi qui".
+function riquadro({ num, stato, det, azioni, tono }) {
+  return \`<div class="riq \${tono || 'attesa'}">
+    <div class="cap"><span class="num">\${esc(String(num))}</span><span class="st">\${esc(stato || '')}</span></div>
+    \${(det || []).filter(Boolean).map(d => \`<div class="det">\${d}</div>\`).join('')}
+    \${azioni && azioni.length ? \`<div class="azioni">\${azioni.join('')}</div>\` : ''}
+  </div>\`;
+}
+const griglia = (riquadri, vuoto) => riquadri.length
+  ? \`<div class="griglia">\${riquadri.join('')}</div>\`
+  : \`<div class="panel"><p class="muted">\${esc(vuoto || 'Niente da mostrare.')}</p></div>\`;
+// La legenda si scrive una volta e vale per tutte le griglie: se ogni modulo se ne inventa una,
+// i colori smettono di voler dire la stessa cosa.
+const legenda = (voci) => \`<div class="row" style="gap:14px;flex-wrap:wrap;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-top:8px">\`
+  + voci.map(([t, l]) => \`<span><span style="display:inline-block;width:11px;height:11px;border:2px solid \${t === 'chiama' ? 'var(--coral)' : t === 'libero' ? 'var(--riga)' : 'var(--ink)'};background:\${t === 'fatto' ? 'var(--ink)' : 'transparent'};vertical-align:-1px;margin-right:5px;border-radius:2px"></span>\${esc(l)}</span>\`).join('')
+  + \`</div>\`;
+
 let ADESSO_TIMER = null;
 VIEWS.adesso = async () => {
   const d = await api('/adesso');
@@ -10981,8 +11090,12 @@ VIEWS.adesso = async () => {
     <div class="row" style="justify-content:space-between;align-items:baseline">
       <h2 style="margin:0">Adesso</h2>
       <span class="muted" style="font-size:.85rem">\${esc(d.oggi)} \xB7 \${esc(d.ora)}</span></div>
-    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:10px">
-      <div style="flex:1 1 420px;min-width:0">
+    <!-- La colonna si ferma: su uno schermo largo la card si allargava a mille pixel e il
+         riepilogo finiva all'estremita' opposta, con l'occhio che doveva attraversare tutto lo
+         schermo per leggere due numeri. Le due colonne restano vicine e la riga di testo resta
+         lunga quanto si legge. -->
+    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:10px;max-width:1060px">
+      <div style="flex:1 1 420px;min-width:0;max-width:720px">
         \${d.voci.length ? d.voci.map(card).join('') : \`
           <div class="panel"><div style="font-weight:800">Non c\\u2019\\u00e8 niente in sospeso.</div>
           <div class="muted" style="font-size:.86rem">\\u00c8 lo stato normale di una serata che gira. Quando qualcosa si ferma, compare qui.</div></div>\`}
@@ -11203,6 +11316,65 @@ let SPORT_DISC = null;
 const spDot = (c) => \`<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:\${/^#|rgb/.test(String(c || '')) ? esc(c) : '#' + esc(String(c || '888'))};vertical-align:middle;margin-right:5px;border:1px solid rgba(0,0,0,.2)"></span>\`;
 // "Girone A" arriva gia' col suo nome per esteso: non anteporre un'altra volta la parola.
 const nomeGirone = (n) => /girone/i.test(String(n || '')) ? String(n) : 'Girone ' + String(n || '');
+
+/* ---------- COPPA DELLE CASATE -----------------------------------------------------------
+   Non e' il tabellone di una disciplina: e' come sta andando la stagione. Otto casate, una
+   riga di punti che si somma su tutte le discipline piu' i contest.
+   La classifica NON si calcola qui: la calcola il server (\`/coppa/cartellone\`), che e' lo
+   stesso conto che vede il socio nell'app. Due calcoli della stessa classifica prima o poi
+   danno due numeri diversi, e quel giorno tocca spiegarlo a otto capitani. */
+VIEWS.coppa = async () => {
+  const d = await api('/coppa/cartellone').catch(() => null);
+  if (!d || !d.graduatoria) { $('#view').innerHTML = '<div class="panel"><p class="muted">Cartellone non disponibile.</p></div>'; return; }
+  const g = d.graduatoria;
+  const disc = (d.discipline || []);
+  const massimo = Math.max(1, ...g.map(c => Number(c.punti) || 0));
+  const primo = Number((g[0] || {}).punti) || 0;
+
+  // Un riquadro per casata. Il colore della casata sta sul bordo sinistro, che e' il suo segno.
+  //
+  // Due cose che avevo sbagliato e si vedono solo a schermo:
+  // 1. avevo colorato di ROSSO l'ultima. Ma qui il rosso vuol dire "questo chiede te", e
+  //    l'ultima in classifica non chiede niente a nessuno: e' una classifica, non un allarme.
+  //    Usare il rosso per dire "male" lo svuota di significato dove serve davvero.
+  // 2. a punteggi tutti a zero dichiarava una vincitrice ("in testa") e uno stacco di "-0".
+  //    Prima che si giochi non c'e' nessuna testa e nessuna coda.
+  const iniziata = massimo > 0;
+  const riquadri = g.map((c, i) => {
+    const punti = Number(c.punti) || 0;
+    const tono = !iniziata ? 'libero' : punti === 0 ? 'libero' : i === 0 ? 'fatto' : 'attesa';
+    const stacco = !iniziata ? 'da giocare' : primo === punti ? (i === 0 ? 'in testa' : 'a pari') : \`-\${primo - punti}\`;
+    return \`<div class="riq \${tono}" style="border-left:8px solid \${esc(c.colore || 'var(--ink)')}">
+      <div class="cap"><span class="num">\${i + 1}. \${esc(c.nome)}</span><span class="st">\${esc(stacco)}</span></div>
+      <div class="det"><b style="font-size:1.05rem">\${punti}</b> punti \xB7 tornei \${Number(c.tornei) || 0} \xB7 contest \${Number(c.contest) || 0}</div>
+      <div class="det" style="background:\${tono === 'fatto' ? '#ffffff33' : 'var(--riga)'};height:6px;border-radius:3px;overflow:hidden">
+        <span style="display:block;height:6px;width:\${Math.round(punti / massimo * 100)}%;background:\${esc(c.colore || 'var(--ink)')}"></span></div>
+      \${c.motto ? \`<div class="det" style="font-style:italic">\${esc(c.motto)}</div>\` : ''}
+    </div>\`;
+  });
+
+  // Chi ha gia' dato punti e chi no: serve a sapere quanta stagione resta, non a fare tabelle.
+  const chiuse = disc.filter(x => g.some(c => ((d.celle || {})[x.id] || {})[c.id] > 0));
+  const aperte = disc.filter(x => !chiuse.includes(x));
+
+  $('#view').innerHTML = \`
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+      <h3 style="margin:0">\u{1F6E1}\uFE0F Coppa delle Casate</h3>
+      <span class="muted" style="font-size:.85rem">\${chiuse.length} discipline assegnate \xB7 \${aperte.length} ancora da giocare</span></div>
+      <div class="muted" style="font-size:.82rem;margin-top:4px">La classifica la calcola il server: \xE8 lo stesso conto che vede il socio nell\u2019app.</div>
+      \${legenda([['fatto', 'in testa'], ['attesa', 'in corsa'], ['libero', 'ancora a zero']])}
+      \${griglia(riquadri, 'Nessuna casata.')}</div>
+
+    <div class="panel"><b style="color:var(--navy)">Discipline</b>
+      \${griglia(disc.map(x => {
+        const punti = g.map(c => ({ nome: c.nome, p: ((d.celle || {})[x.id] || {})[c.id] || 0 })).filter(r => r.p > 0).sort((a, b) => b.p - a.p);
+        return riquadro({
+          num: x.nome, stato: punti.length ? 'assegnata' : 'da giocare',
+          tono: punti.length ? 'fatto' : 'libero',
+          det: punti.length ? [punti.slice(0, 3).map(r => \`\${esc(r.nome)} \${r.p}\`).join(' \xB7 ')] : ['Nessun punto ancora assegnato.']
+        });
+      }), 'Nessuna disciplina in cartellone.')}</div>\`;
+};
 
 VIEWS.sport = async () => {
   // Solo le discipline in cartellone quest'anno: se il gestore ne ha spente sei, non deve
@@ -12367,39 +12539,114 @@ let SERATA_SEL = null;
 VIEWS.serate = async () => {
   const serate = await api('/serate').catch(() => []);
   if (!serate.length) { $('#view').innerHTML = '<div class="panel"><p class="muted">Nessuna serata configurata. Le serate si creano nel back office.</p></div>'; return; }
-  if (!SERATA_SEL || !serate.some(s => s.id === SERATA_SEL)) SERATA_SEL = serate[0].id;
+  // Si apre sulla prima serata ANCORA VIVA, non sulla prima dell'elenco: le serate sono quattro
+  // sparse sulla stagione, e ad agosto la prima e' quella di maggio. Chi apre il modulo durante
+  // il servizio non deve cominciare cercando quella giusta.
+  if (!SERATA_SEL || !serate.some(s => s.id === SERATA_SEL))
+    SERATA_SEL = (serate.find(x => !x.chiusa) || serate[serate.length - 1]).id;
   const s = serate.find(x => x.id === SERATA_SEL);
   const pren = await api(\`/serate/\${s.id}/prenotazioni\`).catch(() => []);
   const attive = pren.filter(p => p.stato !== 'annullata');
   const coperti = attive.reduce((n, p) => n + Number(p.persone || 0), 0);
+  const entrati = pren.filter(p => p.ingresso_at).reduce((n, p) => n + Number(p.persone || 0), 0);
   const daIncassare = pren.filter(p => p.stato === 'da_saldare').reduce((n, p) => n + Number(p.importo || 0), 0);
   const chips = serate.map(x => \`<button class="btn \${x.id === SERATA_SEL ? 'gold' : 'ghost'} sm" data-sersel="\${x.id}">\${esc(x.titolo)}</button>\`).join('');
-  const righe = pren.map(p => {
-    const stato = p.stato === 'saldata' ? '<span class="tag ok">saldata</span>' : p.stato === 'annullata' ? '<span class="tag">annullata</span>' : '<span class="tag no">da saldare</span>';
-    return \`<div class="card" style="padding:10px 12px;margin-bottom:8px">
-      <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
-        <b>\${esc(p.nome || p.tessera_code || '\u2014')}</b>\${stato}
-      </div>
-      <div class="muted" style="font-size:.82rem">\${esc(String(p.persone || 0))} persone \xB7 \${eur(p.importo)}</div>
-      <div class="row" style="gap:6px;margin-top:6px">
-        \${p.stato !== 'saldata' ? \`<button class="btn gold sm" data-sersald="\${p.id}">\u{1F4B6} Segna saldata</button>\` : ''}
-        \${p.stato !== 'annullata' ? \`<button class="btn ghost sm" data-serann="\${p.id}">Annulla</button>\` : ''}
-      </div></div>\`;
-  }).join('');
+
+  // La finestra la decide il SERVER e viaggia col dato: qui non si ricalcola niente, si legge.
+  // Due copie della stessa regola prima o poi dicono cose diverse.
+  const finestra = s.chiusa
+    ? \`<div class="riq chiama" style="min-height:0"><div class="cap"><span class="num">Chiuse</span><span class="st">niente piu' prenotazioni</span></div><div class="det">\${esc(s.motivo || '')}</div></div>\`
+    : s.solo_banco
+      ? \`<div class="riq attesa" style="min-height:0"><div class="cap"><span class="num">Solo banco</span><span class="st">ultimi 7 giorni</span></div><div class="det">\${esc(s.motivo || '')} Si salda sul momento.</div></div>\`
+      : \`<div class="riq libero" style="min-height:0"><div class="cap"><span class="num">Aperte</span><span class="st">dall'app</span></div><div class="det">Il socio prenota dall'app e salda. Al banco si passa negli ultimi 7 giorni.</div></div>\`;
+
+  // Ogni prenotazione e' un riquadro. Il tono dice a colpo d'occhio cosa manca:
+  //   chiama = non ha pagato \xB7 attesa = pagata, deve ancora entrare \xB7 fatto = entrata
+  const riquadri = pren.filter(p => p.stato !== 'annullata').map(p => {
+    const tono = p.ingresso_at ? 'fatto' : p.stato === 'saldata' ? 'attesa' : 'chiama';
+    const stato = p.ingresso_at ? 'entrata ' + String(p.ingresso_at).slice(11, 16) : p.stato === 'saldata' ? 'pagata' : 'da saldare';
+    return riquadro({
+      num: p.nome || p.tessera_code || '\u2014', stato, tono,
+      det: [
+        \`\${esc(String(p.persone || 0))} \${Number(p.persone) === 1 ? 'persona' : 'persone'} \xB7 \${eur(p.importo)}\`,
+        p.ticket ? \`<b>\${esc(p.ticket)}</b>\` : \`<span style="color:var(--coral)">nessun ticket finch\xE9 non paga</span>\`,
+        p.canale === 'banco' ? 'prenotata al banco' : ''
+      ],
+      azioni: [
+        p.stato !== 'saldata' ? \`<button class="btn gold sm" data-sersald="\${p.id}">Segna pagata</button>\` : '',
+        \`<button class="btn ghost sm" data-serann="\${p.id}">Annulla</button>\`
+      ].filter(Boolean)
+    });
+  });
+
   $('#view').innerHTML = \`
-    <div class="panel"><b style="color:var(--navy)">\u{1F37D}\uFE0F Serate & cena</b>
+    <div class="panel"><b style="color:var(--navy)">\u{1F37D}\uFE0F Serate a tema</b>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
+
     <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <div><b style="color:var(--navy)">\${esc(s.titolo)}</b><div class="muted" style="font-size:.82rem">\${esc(s.quando || s.data || '')}</div></div>
+        <div><b style="color:var(--navy)">\${esc(s.titolo)}</b>
+          <div class="muted" style="font-size:.82rem">\${esc(s.quando || s.data || '')}\${/turno/i.test(s.quando || '') ? '' : ' \xB7 turno unico ' + esc(s.turno || '20:00')}</div></div>
         <div style="text-align:right">
           <div><b>\${coperti}</b><span class="muted">/\${esc(String(s.capienza || 0))} coperti</span></div>
-          <div class="muted" style="font-size:.82rem">da incassare <b>\${eur(daIncassare)}</b></div>
-        </div></div></div>
+          <div class="muted" style="font-size:.82rem">entrati <b>\${entrati}</b> \xB7 da incassare <b>\${eur(daIncassare)}</b></div>
+        </div></div>
+      <div class="griglia" style="margin-top:10px">\${finestra}</div></div>
+
+    <div class="panel"><b style="color:var(--navy)">\u{1F39F}\uFE0F Ingresso</b>
+      <div class="muted" style="font-size:.82rem;margin-top:4px">Il ticket si valida una volta sola. Chi non ha pagato non ce l'ha.</div>
+      <div class="row" style="gap:6px;margin-top:8px">
+        <input id="ser_tk" placeholder="SER-01-0042-7" style="flex:1;min-width:180px;text-transform:uppercase">
+        <button class="btn gold" id="ser_tkgo">Valida</button></div>
+      <div id="ser_tkmsg" style="margin-top:8px"></div></div>
+
+    \${!s.chiusa ? \`<div class="panel"><b style="color:var(--navy)">\u2795 Prenota al banco</b>
+      <div class="muted" style="font-size:.82rem;margin-top:4px">Si salda sul momento: la prenotazione nasce pagata e il ticket viene emesso subito.</div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <input id="ser_nome" placeholder="Cognome" style="flex:1;min-width:160px">
+        <input id="ser_tess" placeholder="Tessera (se socio)" style="flex:1;min-width:150px">
+        <label>Persone <input id="ser_pers" type="number" min="1" value="2" inputmode="numeric" style="width:80px"></label>
+        <button class="btn gold" id="ser_go">Prenota e incassa \${eur(s.quota)} a testa</button></div>
+      <div id="ser_msg" style="margin-top:8px"></div></div>\` : ''}
+
     <div class="panel"><b style="color:var(--navy)">Prenotati</b>
-      <div style="margin-top:8px">\${righe || '<p class="muted">Nessuna prenotazione.</p>'}</div></div>\`;
+      \${legenda([['chiama', 'da saldare'], ['attesa', 'pagata, non entrata'], ['fatto', 'entrata']])}
+      \${griglia(riquadri, 'Nessuna prenotazione.')}</div>\`;
+
   document.querySelectorAll('[data-sersel]').forEach(b => b.onclick = () => { SERATA_SEL = Number(b.dataset.sersel); show('serate'); });
-  document.querySelectorAll('[data-sersald]').forEach(b => b.onclick = async () => { await api('/serate-prenotazioni/' + b.dataset.sersald, { method: 'PUT', body: JSON.stringify({ stato: 'saldata' }) }); show('serate'); });
-  document.querySelectorAll('[data-serann]').forEach(b => b.onclick = async () => { if (!confirm('Annullare la prenotazione?')) return; await api('/serate-prenotazioni/' + b.dataset.serann, { method: 'PUT', body: JSON.stringify({ stato: 'annullata' }) }); show('serate'); });
+  document.querySelectorAll('[data-sersald]').forEach(b => b.onclick = async () => {
+    try { const r = await api('/serate-prenotazioni/' + b.dataset.sersald, { method: 'PUT', body: JSON.stringify({ stato: 'saldata' }) });
+      if (r.ticket) alert('Pagata. Ticket ' + r.ticket + ' \u2014 inviato sull\\u2019app del socio.');
+    } catch (e) { alert(e.message); }
+    show('serate');
+  });
+  document.querySelectorAll('[data-serann]').forEach(b => b.onclick = async () => {
+    if (!confirm('Annullare la prenotazione?')) return;
+    await api('/serate-prenotazioni/' + b.dataset.serann, { method: 'PUT', body: JSON.stringify({ stato: 'annullata' }) }); show('serate');
+  });
+
+  const valida = async () => {
+    const t = ($('#ser_tk').value || '').trim();
+    if (!t) return;
+    try {
+      const r = await api('/serate/ingresso', { method: 'POST', body: JSON.stringify({ ticket: t }) });
+      $('#ser_tkmsg').innerHTML = \`<div class="riq fatto" style="min-height:0"><div class="cap"><span class="num">\${esc(r.nome)}</span><span class="st">avanti</span></div><div class="det">\${esc(String(r.persone))} \${r.persone === 1 ? 'persona' : 'persone'}</div></div>\`;
+      $('#ser_tk').value = '';
+      setTimeout(() => show('serate'), 1500);
+    } catch (e) {
+      $('#ser_tkmsg').innerHTML = \`<div class="riq chiama" style="min-height:0"><div class="cap"><span class="num">Non passa</span><span class="st">controlla</span></div><div class="det">\${esc(e.message)}</div></div>\`;
+    }
+  };
+  $('#ser_tkgo').onclick = valida;
+  $('#ser_tk').onkeydown = (e) => { if (e.key === 'Enter') valida(); };
+
+  if ($('#ser_go')) $('#ser_go').onclick = async () => {
+    const persone = Math.max(1, Number($('#ser_pers').value) || 1);
+    try {
+      const r = await api(\`/serate/\${s.id}/prenota-banco\`, { method: 'POST', body: JSON.stringify({ nome: $('#ser_nome').value || null, tessera_code: $('#ser_tess').value || null, persone }) });
+      alert(\`Incassati \${eur(r.importo)} da \${r.nome}.\\nTicket \${r.ticket}\` + ($('#ser_tess').value ? ' \u2014 inviato sull\\u2019app.' : ' \u2014 da consegnare stampato o scritto.'));
+      show('serate');
+    } catch (e) { $('#ser_msg').innerHTML = \`<div class="riq chiama" style="min-height:0"><div class="cap"><span class="num">Non si pu\xF2</span><span class="st">regola</span></div><div class="det">\${esc(e.message)}</div></div>\`; }
+  };
 };
 
 // ===== MODULO CASA DI CARTA (cap 'cdc') \u2014 caff\xE8, giochi, prestiti ===========================
@@ -12407,17 +12654,20 @@ VIEWS.cdc = async () => {
   // Le capsule sono un articolo di magazzino come gli altri: la conta si fa con la rettifica
   // nel modulo Magazzino, dove ci sono carico, scarico e rettifica per ogni articolo. Tenerne
   // una copia qui significava due contabilita' che divergono, ed e' quello che e' successo.
-  const [giochi, prestiti] = await Promise.all([
+  const [giochi, prestiti, cowo] = await Promise.all([
     api('/cdc/giochi').catch(() => []),
-    api('/cdc/prestiti').catch(() => [])
+    api('/cdc/prestiti').catch(() => []),
+    api('/cdc/coworking').catch(() => null)
   ]);
   const fuori = prestiti.filter(p => !p.ora_fine);
   const gopts = giochi.map(g => \`<option value="\${g.id}">\${esc(g.nome)}</option>\`).join('');
   $('#view').innerHTML = \`
-    <div class="panel"><b style="color:var(--navy)">\u{1F3B2} Prestiti in corso (\${fuori.length})</b>
-      <div style="margin-top:8px">\${fuori.map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
-        <span><b>\${esc(p.gioco_nome)}</b> <span class="muted">\xB7 \${esc(p.giocatore || '\u2014')}\${p.tavolo ? ' \xB7 tavolo ' + esc(String(p.tavolo)) : ''} \xB7 dalle \${esc(p.ora_inizio || '')}</span></span>
-        <button class="btn gold sm" data-cdcret="\${p.id}">\u21A9\uFE0E Riconsegna</button></div>\`).join('') || '<p class="muted">Nessun gioco fuori.</p>'}</div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F3B2} Giochi fuori (\${fuori.length})</b>
+      \${griglia(fuori.map(p => riquadro({
+        num: p.gioco_nome, stato: p.tavolo ? 'tavolo ' + p.tavolo : 'in sala', tono: 'attesa',
+        det: [esc(p.giocatore || '\u2014'), p.ora_inizio ? 'dalle ' + esc(p.ora_inizio) : ''],
+        azioni: [\`<button class="btn gold sm" data-cdcret="\${p.id}">\u21A9\uFE0E Riconsegna</button>\`]
+      })), 'Nessun gioco fuori.')}
       <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
         <select id="cdc_gioco">\${gopts}</select>
         <input id="cdc_chi" placeholder="Chi lo prende" style="min-width:130px">
@@ -12425,6 +12675,18 @@ VIEWS.cdc = async () => {
         <button class="btn gold sm" id="cdc_presta">+ Presta</button>
       </div>
       <p class="muted" style="font-size:.76rem;margin-top:6px">Il <b>tavolo</b> dice dove il gioco viene usato: serve a ritrovarlo e a sapere chi ha lasciato il tavolo in disordine.</p></div>
+    <div class="panel"><b style="color:var(--navy)">\u{1F4BB} Coworking</b>
+      <div class="muted" style="font-size:.82rem;margin-top:4px">Postazioni occupate per turno\${cowo ? ', su ' + esc(String(cowo.max)) : ''}. Il coworking vive nella Casa di Carta: il dato c'era, la schermata no.</div>
+      \${cowo && cowo.giorni && cowo.giorni.length
+        ? griglia(cowo.giorni.flatMap(g => ['mattina', 'pomeriggio'].map(t => {
+            const n = Number(g[t] || 0), max = Number(cowo.max || 8);
+            return riquadro({
+              num: n + '/' + max, stato: t, tono: n === 0 ? 'libero' : n >= max ? 'chiama' : 'attesa',
+              det: [esc(g.giorno), n >= max ? 'al completo' : \`\${max - n} \${max - n === 1 ? 'posto libero' : 'posti liberi'}\`]
+            });
+          })), 'Nessuna prenotazione coworking.')
+        : '<div class="panel"><p class="muted">Nessuna prenotazione coworking.</p></div>'}
+      \${legenda([['libero', 'vuoto'], ['attesa', 'occupato in parte'], ['chiama', 'al completo']])}</div>
     <div class="panel"><b style="color:var(--navy)">\u{1FA91} Tavoli della sala</b>
       <div id="cdc_sala" class="muted" style="margin-top:8px">caricamento\u2026</div></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F4DA} Inventario giochi</b>
@@ -13316,7 +13578,7 @@ async function apriComandaTavolo(numero, chi, zona) {
   // organizzazione, non il desiderio di chi ordina. Le comande sanno gia' andare alla stazione
   // giusta: il cocktail al banco, il panino in cucina.
   const menu = await api('/menu?ordinabile=1').catch(() => []);
-  if (!menu.length) { alert('Men\xF9 vuoto: caricalo dalla tab Men\xF9.'); return; }
+  if (!menu.length) { alert('Men\xF9 vuoto. Lo carica il gestore dal back office, sezione \xABMen\xF9 & listino\xBB.'); return; }
   openModal(\`<h3>\u{1F9FE} Comanda \xB7 tavolo \${numero}</h3>
     \${chi ? \`<p class="muted" style="margin-top:-4px">per <b>\${esc(chi)}</b></p>\` : ''}
     <div id="ct_menu" style="max-height:46vh;overflow:auto"></div>
@@ -13812,7 +14074,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "5.94.0" : "dev";
+var VERSION = true ? "5.98.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14033,6 +14295,13 @@ var CAPS_DELEGABILI = [
   // Chiosco: comande + KDS (cassa/cameriere/stazioni)
   "campi",
   // Prenotazione campi (config campi + regole + prospetto prenotazioni)
+  "cucina",
+  // Chi prepara. NON tocca tavoli, NON tocca pagamenti, e per lo stesso motivo il resto non
+  // deve stargli fra i piedi: la cucina vede le sue code e basta. Prima stava dentro "comande"
+  // insieme a Garden e Bar, cioe' chi serve ai tavoli e chi cucina erano la stessa persona.
+  // Garden e Bar restano insieme sotto "comande" di proposito: la crew si ridistribuisce fra i
+  // due durante la serata, e separarli col permesso vorrebbe dire dire "non puoi aiutare il
+  // tuo collega".
   "menu",
   // Il LISTINO: creare, modificare, importare, cancellare i prodotti e i prezzi.
   // Non e' il permesso per PRENDERE una comanda, e' quello per DECIDERE cosa si vende. Chi
@@ -14090,6 +14359,7 @@ var MANAGER_CAPS = /* @__PURE__ */ new Set([
   "eventi",
   "magazzino",
   "comande",
+  "cucina",
   "campi",
   "menu"
 ]);
@@ -14130,6 +14400,46 @@ function capsInfo(user) {
 
 // server/routes/admin.js
 init_push();
+
+// server/serate.js
+var SERATA_ORA = "20:00";
+var GIORNI_APP = 7;
+var ORE_BANCO = 48;
+function inizioSerata(s) {
+  if (!s || !s.data) return null;
+  const d = /* @__PURE__ */ new Date(String(s.data).slice(0, 10) + "T" + SERATA_ORA + ":00");
+  return isNaN(d) ? null : d;
+}
+function finestraSerata(s, adesso = /* @__PURE__ */ new Date()) {
+  const inizio = inizioSerata(s);
+  if (!inizio) return { aperta: true, canale: "entrambi", motivo: null, ore: null };
+  const ore = (inizio.getTime() - adesso.getTime()) / 36e5;
+  if (ore < 0) return { aperta: false, canale: null, ore, motivo: "La serata \xE8 gi\xE0 iniziata." };
+  if (ore < ORE_BANCO) return {
+    aperta: false,
+    canale: null,
+    ore,
+    motivo: `Le prenotazioni chiudono ${ORE_BANCO} ore prima: la cucina fa la spesa sui numeri veri. Chi resta fuori pu\xF2 presentarsi la sera stessa: se qualcuno rinuncia, il posto si libera.`
+  };
+  if (ore > GIORNI_APP * 24) return { aperta: true, canale: "app", ore, motivo: null };
+  return { aperta: true, canale: "banco", ore, motivo: `Negli ultimi ${GIORNI_APP} giorni si prenota solo al banco.` };
+}
+function ticketSerata(serataId, prenId) {
+  const n = String(serataId).padStart(2, "0") + "-" + String(prenId).padStart(4, "0");
+  let somma = 0, alt = false;
+  for (let i = n.length - 1; i >= 0; i--) {
+    const c = n.charCodeAt(i);
+    if (c < 48 || c > 57) continue;
+    let d = c - 48;
+    if (alt) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    somma += d;
+    alt = !alt;
+  }
+  return "SER-" + n + "-" + (10 - somma % 10) % 10;
+}
 
 // server/vendor/qrcode-generator.mjs
 var qrcode = function(typeNumber, errorCorrectionLevel) {
@@ -20087,7 +20397,17 @@ adminRouter.get("/serate", async (req, res) => {
   const out = [];
   for (const s of rows) {
     const p = await db.prepare("SELECT COALESCE(SUM(CASE WHEN stato!='annullata' THEN persone ELSE 0 END),0) coperti, COALESCE(SUM(CASE WHEN stato='da_saldare' THEN importo ELSE 0 END),0) da_incassare FROM serate_prenotazioni WHERE serata_id=?").get(s.id);
-    out.push({ ...s, coperti_prenotati: p.coperti, da_incassare: p.da_incassare });
+    const f = finestraSerata(s);
+    out.push({
+      ...s,
+      coperti_prenotati: p.coperti,
+      da_incassare: p.da_incassare,
+      prenotabile_app: f.aperta && f.canale === "app",
+      solo_banco: f.aperta && f.canale === "banco",
+      chiusa: !f.aperta,
+      motivo: f.motivo,
+      turno: SERATA_ORA
+    });
   }
   res.json(out);
 });
@@ -20117,9 +20437,68 @@ adminRouter.get("/serate/:id/prenotazioni", async (req, res) => {
 });
 adminRouter.put("/serate-prenotazioni/:id", requireCap("serate"), async (req, res) => {
   const stato = ["da_saldare", "saldata", "annullata"].includes(req.body?.stato) ? req.body.stato : "da_saldare";
+  const pr = await db.prepare("SELECT * FROM serate_prenotazioni WHERE id=?").get(req.params.id);
+  if (!pr) return res.status(404).json({ error: "Prenotazione non trovata" });
   await db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
-  audit(req.adminUser.username, "stato_prenotazione_serata", "serate_prenotazioni", req.params.id, stato);
-  res.json({ ok: true });
+  let ticket = pr.ticket || null;
+  if (stato === "saldata" && !ticket) {
+    ticket = ticketSerata(pr.serata_id, pr.id);
+    await db.prepare("UPDATE serate_prenotazioni SET ticket=?, ticket_at=? WHERE id=?").run(ticket, (/* @__PURE__ */ new Date()).toISOString(), pr.id);
+    if (pr.socio_id) {
+      const s = await db.prepare("SELECT titolo,quando FROM serate WHERE id=?").get(pr.serata_id);
+      try {
+        await sendToSocio(pr.socio_id, { title: "Il tuo ticket \u2014 " + (s?.titolo || "serata"), body: `${ticket} \xB7 ${pr.persone} ${pr.persone === 1 ? "persona" : "persone"}. Mostralo all'ingresso.`, url: "/" });
+      } catch (_) {
+      }
+    }
+  }
+  audit(req.adminUser.username, "stato_prenotazione_serata", "serate_prenotazioni", req.params.id, stato + (ticket ? " \xB7 " + ticket : ""));
+  res.json({ ok: true, stato, ticket });
+});
+adminRouter.post("/serate/:id/prenota-banco", requireCap("serate"), async (req, res) => {
+  const s = await db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Serata non trovata" });
+  const f = finestraSerata(s);
+  if (!f.aperta) return res.status(409).json({ error: f.motivo });
+  const persone = Math.max(1, Number(req.body?.persone) || 1);
+  const usati = Number((await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").get(s.id)).n);
+  if (usati + persone > s.capienza)
+    return res.status(409).json({ error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.` });
+  const tessera = req.body?.tessera_code || null;
+  const socio = tessera ? await db.prepare("SELECT id,nome,cognome FROM soci WHERE tessera_code=?").get(tessera) : null;
+  const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
+  const importo = Math.round(s.quota * persone * 100) / 100;
+  const info = await db.prepare(
+    "INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato,canale) VALUES (?,?,?,?,?,?,?,?)"
+  ).run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "saldata", "banco");
+  const ticket = ticketSerata(s.id, info.lastInsertRowid);
+  await db.prepare("UPDATE serate_prenotazioni SET ticket=?, ticket_at=? WHERE id=?").run(ticket, (/* @__PURE__ */ new Date()).toISOString(), info.lastInsertRowid);
+  if (socio?.id) {
+    try {
+      await sendToSocio(socio.id, { title: "Il tuo ticket \u2014 " + s.titolo, body: `${ticket} \xB7 ${persone} ${persone === 1 ? "persona" : "persone"}. Mostralo all'ingresso.`, url: "/" });
+    } catch (_) {
+    }
+  }
+  audit(req.adminUser.username, "prenota_serata_banco", "serate", s.id, `${persone}p \xB7 \u20AC${importo} \xB7 ${ticket}`);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid, importo, persone, ticket, nome });
+});
+adminRouter.post("/serate/ingresso", requireCap("serate"), async (req, res) => {
+  const cod = String(req.body?.ticket || "").trim().toUpperCase();
+  if (!cod) return res.status(400).json({ error: "Nessun ticket" });
+  const pr = await db.prepare("SELECT * FROM serate_prenotazioni WHERE upper(ticket)=?").get(cod);
+  if (!pr) return res.status(404).json({ ok: false, error: "Ticket non riconosciuto." });
+  const s = await db.prepare("SELECT titolo FROM serate WHERE id=?").get(pr.serata_id);
+  if (pr.stato === "annullata") return res.status(409).json({ ok: false, error: "Prenotazione annullata.", nome: pr.nome });
+  if (pr.ingresso_at) return res.status(409).json({
+    ok: false,
+    gia_entrato: true,
+    nome: pr.nome,
+    persone: pr.persone,
+    error: `Gi\xE0 validato alle ${String(pr.ingresso_at).slice(11, 16)}.`
+  });
+  await db.prepare("UPDATE serate_prenotazioni SET ingresso_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), pr.id);
+  audit(req.adminUser.username, "ingresso_serata", "serate_prenotazioni", pr.id, cod);
+  res.json({ ok: true, nome: pr.nome, persone: pr.persone, serata: s?.titolo || "" });
 });
 var oggi = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 async function fetchCoworking() {
@@ -21423,13 +21802,29 @@ publicRouter.get("/serate", async (req, res) => {
   const out = [];
   for (const s of rows) {
     const usati = await seratePostiUsati(s.id);
-    out.push({ ...s, posti_liberi: Math.max(0, s.capienza - usati) });
+    const f = finestraSerata(s);
+    out.push({
+      ...s,
+      posti_liberi: Math.max(0, s.capienza - usati),
+      prenotabile_app: f.aperta && f.canale === "app",
+      solo_banco: f.aperta && f.canale === "banco",
+      chiusa: !f.aperta,
+      motivo: f.motivo,
+      turno: SERATA_ORA
+    });
   }
   res.json(out);
 });
 publicRouter.post("/serate/:id/prenota", async (req, res) => {
   const s = await db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
   if (!s) return res.status(404).json({ error: "Serata non trovata" });
+  const f = finestraSerata(s);
+  if (!f.aperta) return res.status(409).json({ ok: false, chiusa: true, error: f.motivo });
+  if (f.canale === "banco") return res.status(409).json({
+    ok: false,
+    solo_banco: true,
+    error: "Da qui non si prenota pi\xF9: negli ultimi 7 giorni la prenotazione si fa al banco, di persona, saldando la quota."
+  });
   const persone = Math.max(1, Number(req.body?.persone) || 1);
   const usati = await seratePostiUsati(s.id);
   if (usati + persone > s.capienza) return res.status(409).json({ ok: false, error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.`, posti_liberi: Math.max(0, s.capienza - usati) });
@@ -23093,7 +23488,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-31 11:34" : "online";
+var BUILD = true ? "2026-08-31 13:02" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
