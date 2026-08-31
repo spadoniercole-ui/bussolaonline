@@ -7925,6 +7925,23 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+// PERCHE' UN PULSANTE SEMBRAVA ROTTO.
+// Sedici comandi del back office chiamano api() dentro un gestore \`async\` senza try/catch.
+// Quando il server RIFIUTA \u2014 e rifiuta per ragioni buone: "il campo ha prenotazioni attive",
+// "questo campo e' dell'area tennis" \u2014 l'eccezione finisce in una promise che nessuno ascolta.
+// Risultato: si preme il cestino, non succede niente, e sembra che il pulsante non funzioni.
+// La protezione c'era, il motivo non arrivava mai a schermo.
+//
+// Invece di mettere un try/catch in sedici punti (dove basta dimenticarne uno), si ascolta il
+// rifiuto non gestito: e' esattamente e solo il caso che sfugge. I comandi che gestiscono gia'
+// il proprio errore non passano di qui.
+window.addEventListener('unhandledrejection', (ev) => {
+  const m = ev.reason && (ev.reason.message || ev.reason);
+  if (!m || m === 'non autorizzato') return;
+  ev.preventDefault();
+  alert(String(m));
+});
+
 // ---- Login ----
 async function login() {
   $('#loginErr').textContent = '';
@@ -10825,7 +10842,11 @@ function applyZona() {
   tog('campi', ZONA === 'campi');
   tog('tennis', ZONA === 'tennis');
   tog('beach', ZONA === 'beach');
-  tog('tornei', ZONA === 'tennis' || ZONA === 'campi');            // tabelloni a eliminazione diretta                                // campi a pagamento: listino e incassi
+  // I TORNEI NON STANNO NEI CAMPI. Un tabellone a eliminazione diretta e' una gara della Coppa,
+  // non un modo di prenotare un campo: chi apre "Campi liberi" vuole dare una fascia a un socio,
+  // e trovarsi il tabellone accanto confonde due lavori che non si somigliano.
+  // Stanno dove sta la competizione: Coppa e Tabellone.
+  tog('tornei', ZONA === 'coppa' || ZONA === 'sport');
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
   tog('fitness', ZONA === 'fitness');
@@ -14291,7 +14312,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.03.0" : "dev";
+var VERSION = true ? "6.04.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -21507,6 +21528,50 @@ adminRouter.get("/adesso", async (req, res) => {
       });
     }
   }
+  if (puo("cdc")) {
+    const fuori = await db.prepare(
+      "SELECT p.id, p.giocatore, p.tavolo, p.ora_inizio, g.nome FROM cdc_prestiti p JOIN cdc_giochi g ON g.id=p.gioco_id WHERE p.ora_fine IS NULL OR p.ora_fine=''"
+    ).all().catch(() => []);
+    for (const g of fuori)
+      v({
+        fonte: "casa di carta",
+        modulo: "cdc",
+        chiave: "prestito:" + g.id,
+        entro: g.ora_inizio,
+        titolo: `${g.nome} \xE8 fuori dalle ${g.ora_inizio || "?"}`,
+        corpo: `${g.giocatore || "un socio"}${g.tavolo ? " \xB7 tavolo " + g.tavolo : ""}. Va riconsegnato prima di chiudere.`
+      });
+  }
+  if (puo("serate")) {
+    const ds = await db.prepare(
+      `SELECT s.id, s.titolo, COUNT(*) n, COALESCE(SUM(p.importo),0) tot
+       FROM serate_prenotazioni p JOIN serate s ON s.id=p.serata_id
+       WHERE p.stato='da_saldare' GROUP BY s.id`
+    ).all().catch(() => []);
+    for (const r of ds)
+      v({
+        fonte: "serate",
+        modulo: "serate",
+        chiave: "dasaldare:" + r.id,
+        attesa: 1,
+        titolo: `${r.titolo}: ${r.n} ${r.n === 1 ? "prenotazione" : "prenotazioni"} da saldare`,
+        corpo: "Senza saldo non c\u2019\xE8 il ticket, e senza ticket non si entra."
+      });
+  }
+  if (puo("cinema")) {
+    const pr = await db.prepare(
+      "SELECT id, ora, titolo FROM proiezioni WHERE data=? AND stato<>'annullata' ORDER BY ora"
+    ).all(oggi2).catch(() => []);
+    for (const p of pr)
+      v({
+        fonte: "stage",
+        modulo: "cinema",
+        chiave: "proiezione:" + p.id,
+        entro: p.ora,
+        titolo: `${p.titolo || "Spettacolo"} alle ${p.ora}`,
+        corpo: "La platea si assegna al banco fino all\u2019inizio."
+      });
+  }
   if (puo("magazzino")) {
     const neg = await db.prepare("SELECT COUNT(*) n FROM magazzino_articoli WHERE giacenza < 0").get().catch(() => ({ n: 0 }));
     if (Number(neg?.n)) v({
@@ -23705,7 +23770,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-31 17:22" : "online";
+var BUILD = true ? "2026-08-31 18:09" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
