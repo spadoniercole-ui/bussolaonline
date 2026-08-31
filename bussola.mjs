@@ -13118,7 +13118,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = "5.85";
+var VERSION = "5.86";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -18109,8 +18109,16 @@ async function chiudiComandeAbbandonate() {
     "SELECT id,numero,riferimento FROM comande WHERE stato IN ('aperta','in_preparazione','pronta') AND created_at < ?"
   ).all(limite);
   for (const c of vecchie) {
-    await db.prepare("UPDATE comande SET stato='chiusa',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), c.id);
-    audit("sistema", "chiusura_abbandono", "comande", c.id, `#${c.numero} \xB7 tavolo ${c.riferimento || "-"} \xB7 oltre ${ore}h`);
+    await db.prepare("UPDATE comande SET stato='annullata',updated_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), c.id);
+    audit("sistema", "annullata_per_abbandono", "comande", c.id, `#${c.numero} \xB7 tavolo ${c.riferimento || "-"} \xB7 oltre ${ore}h senza essere lavorata`);
+    await registra({
+      fatto: "comanda_annullata",
+      servizio: "comande",
+      riferimento: c.numero,
+      autore: "il sistema",
+      canale: "sistema",
+      dettaglio: { motivo: `mai lavorata: abbandonata dopo ${ore} ore`, automatica: true }
+    });
   }
   return vecchie.length;
 }
@@ -20180,12 +20188,15 @@ adminRouter.get("/riepilogo", async (req, res) => {
   const a = String(req.query.a || "2999-12-31").slice(0, 10);
   const uno = async (sql, ...p) => await db.prepare(sql).get(...p) || {};
   const com = await uno(
-    "SELECT COUNT(*) n, COALESCE(SUM(totale),0) tot FROM comande WHERE stato NOT IN ('annullata') AND date(created_at) BETWEEN ? AND ?",
+    // L'INCASSO E' QUELLO PAGATO. "Non annullata" includeva le comande chiuse per abbandono —
+    // mai lavorate, mai pagate — e le gonfiava dentro il fatturato del periodo. Un riepilogo
+    // che conta soldi mai entrati e' peggio di nessun riepilogo.
+    "SELECT COUNT(*) n, COALESCE(SUM(totale),0) tot FROM comande WHERE stato='chiusa' AND (pagata_at IS NOT NULL OR metodo_pagamento IS NOT NULL) AND date(created_at) BETWEEN ? AND ?",
     da,
     a
   );
   const perZona = await db.prepare(
-    "SELECT zona, COUNT(*) n, COALESCE(SUM(totale),0) tot FROM comande WHERE stato<>'annullata' AND date(created_at) BETWEEN ? AND ? GROUP BY zona"
+    "SELECT zona, COUNT(*) n, COALESCE(SUM(totale),0) tot FROM comande WHERE stato='chiusa' AND (pagata_at IS NOT NULL OR metodo_pagamento IS NOT NULL) AND date(created_at) BETWEEN ? AND ? GROUP BY zona"
   ).all(da, a);
   const pezzi = await uno(
     "SELECT COALESCE(SUM(r.qta),0) n FROM comanda_righe r JOIN comande c ON c.id=r.comanda_id WHERE c.stato<>'annullata' AND date(c.created_at) BETWEEN ? AND ?",
@@ -21194,8 +21205,12 @@ publicRouter.get("/estratto-conto", async (req, res) => {
   const al = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.al || "")) ? String(req.query.al) : "2999-12-31";
   const voci = [];
   for (const c of await db.prepare(
+    // Solo cio' che e' stato PAGATO: "chiusa" non basta come prova che il socio abbia speso
+    // qualcosa. Una comanda chiusa senza metodo di pagamento e senza l'ora dell'incasso non e'
+    // una spesa — e finiva nell'estratto conto come tale.
     `SELECT numero, zona, punto, totale, metodo_pagamento, date(created_at) g FROM comande
-     WHERE socio_id=? AND stato='chiusa' AND date(created_at) BETWEEN ? AND ? ORDER BY id DESC`
+     WHERE socio_id=? AND stato='chiusa' AND (pagata_at IS NOT NULL OR metodo_pagamento IS NOT NULL)
+       AND date(created_at) BETWEEN ? AND ? ORDER BY id DESC`
   ).all(socio.id, dal, al)) {
     voci.push({ data: c.g, servizio: c.zona === "garden" ? "Garden" : "Bar", cosa: `Comanda #${c.numero}`, importo: Number(c.totale), pagato: c.metodo_pagamento || null });
   }
@@ -22235,7 +22250,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-30 20:09" : "online";
+var BUILD = true ? "2026-08-31 06:15" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
