@@ -10720,7 +10720,14 @@ function abilitaFold() {
     $('#fold_apri').onclick = () => { pannelli.forEach((x) => x.classList.remove('chiuso')); salva(); };
   }
 }
+// Ogni apertura prende un numero. Se una vista lenta finisce DOPO che ne hai aperta un'altra,
+// il suo disegno arriva su una schermata che non e' piu' la sua: si preme un tasto che non
+// appartiene a quello che si sta guardando. Con la barra laterale cambiare modulo e' un clic
+// solo, quindi la corsa e' facile da innescare \u2014 basta la rete lenta del banco.
+// Chi arriva in ritardo se ne accorge e rimette la schermata giusta.
+let VISTA_N = 0;
 async function show(v) {
+  const mio = ++VISTA_N;
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   // La barra laterale segue la vista: se sei in Adesso e' Adesso a essere acceso, altrimenti
@@ -10729,7 +10736,13 @@ async function show(v) {
   document.querySelectorAll('#tabs').forEach(t => t.classList.toggle('hide', v === 'adesso'));
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   window.__tab = v;
-  try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
+  let rotta = null;
+  try { await VIEWS[v](); } catch (e) { rotta = e; }
+  // Arrivato in ritardo: mentre caricavo ne hanno aperta un'altra, e la mia vista ha appena
+  // disegnato sopra quella giusta. Non basta smettere \u2014 il danno e' gia' sullo schermo: si
+  // rimette quella corrente. Costa un disegno in piu' solo quando la corsa c'e' stata davvero.
+  if (mio !== VISTA_N) { await show(window.__tab); return; }
+  if (rotta) $('#view').innerHTML = \`<p class="muted">Errore: \${esc(rotta.message)}</p>\`;
   try { abilitaFold(); } catch (e) { }
 }
 
@@ -14074,7 +14087,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "5.98.0" : "dev";
+var VERSION = true ? "5.99.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23488,7 +23501,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-31 13:02" : "online";
+var BUILD = true ? "2026-08-31 13:32" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
