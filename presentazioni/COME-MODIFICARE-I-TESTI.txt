@@ -1,0 +1,63 @@
+COME MODIFICARE I TESTI (E LA VOCE) DELLE PRESENTAZIONI
+
+PREMESSA IMPORTANTE
+La voce delle presentazioni e' AUDIO REGISTRATO, incorporato nel file. E' la scelta che le
+rende funzionanti su tutti i telefoni e senza internet — ma significa che modificando il
+testo la voce NON cambia da sola: va rigenerata.
+
+Ci sono due strade.
+
+────────────────────────────────────────────────────────────────────────────
+STRADA 1 — LA PIU' SEMPLICE: modifichi il testo e me lo rimandi
+────────────────────────────────────────────────────────────────────────────
+Nella cartella trovi tre file di testo, apribili con il Blocco note:
+
+    TESTI-soci.txt
+    TESTI-crew.txt
+    TESTI-investitori.txt
+
+Ogni slide e' un blocco cosi':
+
+    ### SLIDE 4
+    OCCHIELLO: La cena
+    TITOLO: Il tavolo lo assegniamo noi
+    PUNTO: Giorno, quante persone, turno: tre tocchi
+    PUNTO: La sala si riempie dal centro verso l'esterno
+    VOCE: Per cenare al Garden indichi il giorno, quante persone siete e il turno...
+
+Modifica quello che vuoi dopo i due punti. La riga VOCE e' quella che viene letta e che
+compare come sottotitolo: cambiando quella cambiano entrambe.
+
+Regole minime:
+  · non cancellare le righe "### SLIDE n"
+  · PUNTO: una riga per voce dell'elenco — puoi aggiungerne o togliere
+  · per il grassetto scrivi <b>testo</b>
+  · le righe che iniziano con # sono note e vengono ignorate
+
+Salva e rimandami i file: ti restituisco le presentazioni con la voce aggiornata.
+Serve poco: rigenero solo le frasi cambiate.
+
+────────────────────────────────────────────────────────────────────────────
+STRADA 2 — FARLO DA TE (serve Python e una connessione)
+────────────────────────────────────────────────────────────────────────────
+Nella cartella "presentazioni" dei sorgenti:
+
+    python3 testi.py esporta      crea i tre TESTI-*.txt dai contenuti attuali
+    ... modifichi i .txt ...
+    python3 testi.py importa      rilegge i testi
+    python3 costruisci.py         registra la voce SOLO delle frasi cambiate
+                                  e ricostruisce i tre file da inviare
+
+Tempi reali misurati: senza modifiche 1 secondo, con una frase cambiata 5 secondi,
+rifacendo tutto da zero circa 100 secondi.
+
+I file pronti finiscono in  presentazioni/dist/
+
+Se non hai connessione, `python3 costruisci.py --senza-voce` ricostruisce i file usando
+l'audio gia' presente: i testi scritti sono aggiornati, la voce resta quella vecchia sulle
+frasi modificate.
+
+────────────────────────────────────────────────────────────────────────────
+SE VUOI CAMBIARE ANCHE LE IMMAGINI
+Le schermate stanno in presentazioni/img/. Si rigenerano tutte, dalla versione corrente
+dell'applicativo, con:  node scripts/scatti-presentazioni.mjs

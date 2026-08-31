@@ -1,0 +1,156 @@
+# ============================================================================
+# INVESTITORI, SPONSOR ED ENTI
+# ----------------------------------------------------------------------------
+# Modifica liberamente il testo dopo i due punti. Regole semplici:
+#   · non cancellare le righe "### SLIDE n"
+#   · VOCE:  e' cio' che la voce legge e che si vede come sottotitolo
+#   · PUNTO: una riga per ogni elenco; puoi aggiungerne o togliere
+#   · per il grassetto usa <b>cosi</b>
+#   · le righe che iniziano con # sono note e vengono ignorate
+# Quando hai finito, salva e rimanda il file.
+# ============================================================================
+
+
+### SLIDE 1
+OCCHIELLO: KOINÈ · Bussola Residence
+TITOLO: Una piattaforma per la comunità di un residence
+PUNTO: Sviluppata, in esercizio, misurata
+PUNTO: Dieci minuti, dati alla mano
+VOCE: Bussola Residence è una piattaforma gestionale e di comunità per residence turistici. Non è un prototipo: è un sistema in esercizio, con quattro interfacce distinte, oltre centosessanta prove automatiche e una simulazione completa di stagione alle spalle. Nei prossimi dieci minuti vediamo cosa fa, come è costruita, quanto costa mantenerla e dove può andare. I numeri che sentirete sono misurati, non stimati.
+
+### SLIDE 2
+OCCHIELLO: Il problema
+TITOLO: Quattrocento persone, sessanta giorni, nessun sistema
+PUNTO: Un residence estivo è una comunità che nasce e si scioglie in due mesi
+PUNTO: Prenotazioni su quaderni, programma su fogli affissi, magazzino a memoria
+PUNTO: Chi arriva primo prende tutto; chi non chiede, non sa
+VOCE: Un residence estivo è una comunità che nasce e si scioglie in due mesi. Quattrocento persone che si conoscono poco, condividono campi, tavoli e serate, e non hanno un modo per sapere cosa succede. La gestione tradizionale è fatta di quaderni al chiosco, fogli affissi e memoria del personale. Il risultato lo conoscono tutti: chi arriva primo prende tutto, chi non chiede non sa, e il gestore scopre che manca qualcosa quando è finito.
+
+### SLIDE 3
+OCCHIELLO: La soluzione
+TITOLO: Quattro interfacce, un solo sistema
+PUNTO: <b>App soci</b> — prenotazioni, programma, Coppa delle Casate
+PUNTO: <b>Bussola Crew</b> — servizio, tavoli, incassi, magazzino
+PUNTO: <b>Back office</b> — configurazione, anagrafiche, regole
+PUNTO: <b>Self-order</b> — ordinazione al tavolo via QR
+VOCE: La risposta sono quattro interfacce servite da un unico sistema. L'app dei soci, per prenotare e sapere. Bussola Crew, per chi lavora in piedi durante il servizio. Il back office, dove il gestore configura tutto. E l'ordinazione al tavolo tramite codice QR. Un solo processo, un solo database: quello che il socio prenota il cameriere lo vede nello stesso istante, e il gestore lo ritrova nei conti.
+
+### SLIDE 4
+OCCHIELLO: Lo stato dell'opera
+TITOLO: Numeri verificabili
+NUMERO: 61 | tabelle a database
+NUMERO: 261 | rotte API
+NUMERO: 165 | prove automatiche, tutte verdi
+NUMERO: 4 | dipendenze esterne
+NUMERO: ~12.400 | righe di codice
+NUMERO: 1,1 MB | l'intero applicativo
+VOCE: Ecco lo stato dell'opera, in numeri controllabili. Sessantuno tabelle, duecentosessantuno rotte, centosessantacinque prove automatiche che girano a ogni rilascio e sono tutte verdi. Quattro sole dipendenze esterne, il che significa poca superficie di rischio e pochi aggiornamenti obbligati. Dodicimilaquattrocento righe di codice, e un applicativo che pesa un megabyte e un decimo: si distribuisce come un file solo.
+
+### SLIDE 5
+OCCHIELLO: Governo
+TITOLO: Il cruscotto risponde a due domande
+PUNTO: Come sta andando: coperti, campi, comande in ritardo
+PUNTO: Cosa devo fare: richieste di aiuto, scorte, proposte in attesa
+PUNTO: Chi è atteso stasera, nome per nome, con il tavolo
+# immagine: img/bo-cruscotto.jpg  (non modificare)
+VOCE: Questo è il cruscotto del gestore, e risponde a due domande sole: come sta andando, e cosa devo fare adesso. In alto i numeri della giornata. Sotto, la sezione "richiede una mano": comande in ritardo, articoli sotto scorta, richieste di assistenza, ciascuna con la scorciatoia al posto giusto. E l'elenco di chi è atteso stasera, nome per nome, con il tavolo assegnato.
+
+### SLIDE 6
+OCCHIELLO: L'elemento distintivo
+TITOLO: Le regole sono dati, non codice
+PUNTO: Oltre trenta regole di funzionamento, accese e spente dal gestore
+PUNTO: Limiti d'uso, capienze, soglie, prezzi, comportamenti
+PUNTO: Adattare la piattaforma a un altro residence non richiede uno sviluppatore
+# immagine: img/bo-parametri.jpg  (non modificare)
+VOCE: Questa schermata è l'elemento più importante dal punto di vista industriale. Oltre trenta regole di funzionamento — limiti d'uso dei campi, capienze, soglie, comportamenti automatici — non sono scritte nel codice ma sono dati, che il gestore accende, spegne e taratura da qui. La conseguenza è che adattare la piattaforma a un residence diverso, con altre abitudini e altri spazi, non richiede uno sviluppatore. È la differenza fra un software su misura e un prodotto.
+
+### SLIDE 7
+OCCHIELLO: Sotto il cofano
+TITOLO: Tre motori riusati, non tre programmi
+PUNTO: <b>Motore delle sedute</b> — un solo codice per ristorante, sala giochi e platea
+PUNTO: <b>Regole parametriche</b> — un registro dichiarativo, nessuna migrazione
+PUNTO: <b>Integrità referenziale</b> — le cancellazioni si fermano e spiegano perché
+VOCE: Sotto il cofano ci sono tre pezzi di ingegneria che spiegano perché il sistema è cresciuto in fretta senza sfaldarsi. Il motore delle sedute è uno solo e serve tre ambienti diversi: i tavoli del ristorante, la sala dei giochi e la platea dello spettacolo, con regole di assegnazione diverse ma un unico codice da mantenere. Le regole sono un registro dichiarativo: aggiungerne una non richiede di toccare il database. E l'integrità referenziale impedisce le cancellazioni distruttive, spiegando cosa le blocca invece di lasciare macerie.
+
+### SLIDE 8
+OCCHIELLO: La prova sul campo
+TITOLO: Una stagione intera, simulata
+PUNTO: Poi una prova di picco su un Ferragosto pieno, per misurare le saturazioni
+NUMERO: 400 | persone generate
+NUMERO: 60 | giorni movimentati
+NUMERO: ~4.000 | chiamate al sistema
+NUMERO: 0 | errori imprevisti
+VOCE: Prima di dire che un sistema regge, conviene provarlo. Abbiamo generato quattrocento persone con un'anagrafica coerente per età e professione, e mosso sessanta giorni di stagione attraverso le stesse interfacce che usano soci e personale: quasi quattromila operazioni, zero errori imprevisti. Poi una prova di picco su un Ferragosto pieno, non per vedere se il sistema risponde, ma per misurare dove il residence si satura.
+
+### SLIDE 9
+OCCHIELLO: Cosa ha rivelato
+TITOLO: Il limite non è il software: è lo spazio
+PUNTO: Garden: 96 coperti a sera contro una domanda tripla
+PUNTO: Campi: 59 fasce al giorno, tutte occupate
+PUNTO: Coppa: con dieci discipline la stagione non si chiude — ridotte a sei
+PUNTO: Ogni saturazione è ora <b>misurabile</b>, e le regole la governano
+VOCE: Il risultato più utile è stato scoprire che il collo di bottiglia non è tecnologico. Il Garden serve novantasei coperti a sera contro una domanda tripla; le cinquantanove fasce dei campi si esauriscono tutte; e con dieci discipline la Coppa non si chiudeva entro la stagione, così sono state ridotte a sei. Sono limiti fisici, che nessun software elimina. La differenza è che ora sono misurabili, e le regole li distribuiscono in modo equo invece di lasciarli al caso.
+
+### SLIDE 10
+OCCHIELLO: Inclusione
+TITOLO: Un'app che si adatta a chi la usa
+PUNTO: Versione essenziale per gli anziani, attivata dall'età in anagrafica
+PUNTO: Versione ragazzi, centrata su sport e comunità
+PUNTO: Numeri rapidi: 112, un familiare, il chiosco — e la posizione da leggere all’operatore
+# immagine: img/soci-semplice.jpg  (non modificare)
+VOCE: Un punto che riteniamo qualificante, e che raramente si trova in prodotti analoghi. La stessa app cambia forma in base a chi la apre: chi ha una certa età trova una versione essenziale, con quattro voci grandi e la prenotazione in un tocco; i ragazzi ne trovano una centrata sulla comunità sportiva. Non sono app diverse da mantenere: è la stessa, con meno decisioni. E per gli anziani c'è una schermata di numeri rapidi — centododici, chiosco, un familiare — con un tasto che mostra le coordinate da leggere all'operatore. Una precisazione che facciamo volentieri: abbiamo valutato e poi scartato una segnalazione automatica al personale. Un servizio legato alla salute o si presta sempre, con reperibilità e tracciabilità, o non si presta: non può dipendere dai turni né essere scaricato con un avviso. Abbiamo preferito uno strumento che non promette ciò che non può garantire.
+
+### SLIDE 11
+OCCHIELLO: Conformità
+TITOLO: Tutela dei minori e dei dati, per costruzione
+PUNTO: Fino ai 18 anni nessun impegno di spesa: vincolo di legge, non parametro
+PUNTO: Il divieto è applicato dal server, non nascondendo un tasto
+PUNTO: Consensi separati (privacy, marketing, immagini), cancellazione GDPR, registro attività
+PUNTO: Dati sensibili cifrati; nessun servizio esterno di profilazione
+VOCE: Sul piano della conformità abbiamo fatto scelte precise. Fino ai diciotto anni nessun utente può assumere un impegno di spesa: non è un'impostazione che il gestore può cambiare, è un vincolo applicato dal server, perché nascondere un tasto non è un divieto. I consensi sono separati fra privacy, comunicazioni e immagini; esiste la cancellazione completa su richiesta e un registro delle attività. I dati sensibili sono cifrati e non c'è alcun servizio esterno di profilazione: nessun dato dei soci esce dal sistema.
+
+### SLIDE 12
+OCCHIELLO: Economia
+TITOLO: Costo di esercizio prossimo allo zero
+PUNTO: Gira su infrastruttura minima; il database remoto ha un piano gratuito adeguato alla scala
+NUMERO: 1 | processo, un solo file
+NUMERO: 4 | dipendenze da aggiornare
+NUMERO: 0 | licenze software
+NUMERO: 0 | servizi a consumo
+VOCE: Dal lato dei costi la scelta è stata la sobrietà. L'intero applicativo è un processo solo, distribuito come file unico, con quattro dipendenze. Nessuna licenza, nessun servizio a consumo, nessuna intelligenza artificiale da pagare a chiamata. Gira su infrastruttura minima e il database remoto rientra in un piano gratuito alla scala di un residence. Il costo marginale di una struttura in più tende a zero: è la premessa perché il modello sia replicabile.
+
+### SLIDE 13
+OCCHIELLO: Il fattore comunità
+TITOLO: La Coppa delle Casate non è un gioco: è il motore
+PUNTO: Otto casate, sei discipline, una graduatoria calcolata
+PUNTO: Chiusura di stagione, Albo d'Oro, campione in carica
+PUNTO: Trasforma quattrocento estranei in una comunità che si riconosce
+# immagine: img/bo-casate.jpg  (non modificare)
+VOCE: C'è infine un elemento che distingue questa piattaforma da un gestionale alberghiero, ed è quello a cui attribuiamo il valore maggiore. La Coppa delle Casate divide i residenti in otto squadre che si sfidano per tutta l'estate, con una graduatoria che si calcola da sola e un Albo d'Oro che passa di stagione in stagione. Non è intrattenimento accessorio: è il meccanismo che trasforma quattrocento estranei in una comunità che si riconosce e che torna. Per una struttura ricettiva, il tasso di ritorno è il numero che conta.
+
+### SLIDE 14
+OCCHIELLO: Onestà
+TITOLO: Cosa non c'è, e lo diciamo
+PUNTO: Nessun pagamento digitale: gli incassi sono in contanti al banco
+PUNTO: Mono-struttura: servire più residence richiede un lavoro strutturale
+PUNTO: Nessuna app negli store: è un'applicazione web installabile
+PUNTO: Lo scarico di magazzino è manuale, non dedotto dalle comande
+VOCE: Riteniamo corretto dire anche cosa non c'è. Non ci sono pagamenti digitali: gli importi si gestiscono ma l'incasso è in contanti al banco. Il sistema è oggi mono-struttura: servire più residence contemporaneamente richiede un intervento strutturale, che è previsto ma non fatto. Non ci sono app negli store: è un'applicazione web che si installa dalla schermata del telefono, scelta voluta per i costi e i tempi di pubblicazione. E lo scarico di magazzino è ancora manuale, non ricavato dalle comande. Sono le tre direzioni su cui un investimento produce il ritorno più immediato.
+
+### SLIDE 15
+OCCHIELLO: Dove può andare
+TITOLO: Tre direzioni, in ordine di ritorno
+PUNTO: <b>1. Incasso digitale</b> — pagamenti e prepagato: chiude il ciclo economico
+PUNTO: <b>2. Multi-struttura</b> — la stessa piattaforma per più residence, in licenza
+PUNTO: <b>3. Magazzino automatico</b> — scarico dedotto dalle comande, previsione dei consumi
+PUNTO: Più avanti: check-in host, chat di casata, indicatori di stagione
+VOCE: Le direzioni di sviluppo sono tre, in ordine di ritorno. La prima è l'incasso digitale: pagamenti e credito prepagato chiudono il ciclo economico e rendono misurabile ogni consumo. La seconda è il multi-struttura, che trasforma un applicativo su misura in un prodotto in licenza per altri residence: è l'intervento più invasivo, ed è anche quello che moltiplica il valore. La terza è il magazzino automatico, con lo scarico dedotto dalle comande e la previsione dei consumi. Più avanti, il check-in per gli host e la chat di casata.
+
+### SLIDE 16
+OCCHIELLO: In sintesi
+TITOLO: Perché è difendibile
+PUNTO: Funziona oggi, con dati misurati e prove automatiche a ogni rilascio
+PUNTO: Costa quasi nulla da tenere in esercizio
+PUNTO: Si configura senza sviluppatori: è un prodotto, non una commessa
+PUNTO: Ha dentro il fattore comunità, che nessun gestionale replica per caso
+VOCE: In sintesi. Bussola Residence funziona oggi, con numeri misurati e centosessantacinque prove automatiche che girano a ogni rilascio. Costa quasi nulla da mantenere. Si configura senza sviluppatori, e questo la rende un prodotto e non una commessa. E contiene il fattore comunità, che è la parte più difficile da copiare, perché non nasce da una funzione ma da un modo di pensare il soggiorno. Grazie per l'attenzione: siamo a disposizione per una dimostrazione dal vivo, sui vostri dati.

@@ -1,0 +1,15 @@
+import { chromium } from 'playwright-core';
+import { readdirSync } from 'node:fs';
+const base = process.env.BASE || 'http://127.0.0.1:8200';
+const dir = readdirSync('/opt/pw-browsers').find((d) => d.startsWith('chromium-'));
+const b = await chromium.launch({ executablePath: `/opt/pw-browsers/${dir}/chrome-linux/chrome`, args: ['--no-sandbox'] });
+const p = await b.newPage({ viewport: { width: 1280, height: 780 }, deviceScaleFactor: 2 });
+await p.goto(base + '/chiosco/', { waitUntil: 'networkidle' });
+await p.fill('#u', 'gestore'); await p.fill('#p', 'sim'); await p.click('#loginBtn');
+await p.waitForTimeout(2400);
+await p.screenshot({ path: '/tmp/sala.png' });
+await p.evaluate(() => { const t = document.querySelector('#tabs [data-v="menu"]'); if (t) t.click(); });
+await p.waitForTimeout(2400);
+await p.screenshot({ path: '/tmp/menu_salva.png' });
+await b.close();
+console.log('ok');

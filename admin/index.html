@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bussola Residence — Back office</title>
+<style>
+  :root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--mute:#5a6b75;--line:#e3e1d6;--bg:#f4f2ea;--card:#fff;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;}
+  a{color:var(--navy);}
+  /* Login */
+  #login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(900px 600px at 50% -10%,#1c3e5c,#0a1a2b);}
+  #login .box{background:#fff;border-radius:18px;padding:30px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.4);}
+  #login h1{font-family:Georgia,serif;color:var(--navy);font-size:22px;margin-bottom:4px;}
+  #login p{color:var(--mute);font-size:13px;margin-bottom:18px;}
+  label{display:block;font-size:13px;font-weight:700;color:var(--navy);margin:12px 0 5px;}
+  input,select,textarea{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;font-size:14px;font-family:inherit;}
+  button{cursor:pointer;font-family:inherit;}
+  .btn{background:var(--navy);color:#fff;border:none;border-radius:10px;padding:11px 16px;font-weight:700;font-size:14px;}
+  .btn.gold{background:var(--gold);} .btn.sm{padding:7px 11px;font-size:13px;border-radius:8px;}
+  .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--line);}
+  .btn.danger{background:var(--coral);}
+  .err{color:var(--coral);font-size:13px;margin-top:10px;min-height:18px;}
+  /* App shell */
+  #app{display:none;grid-template-columns:220px 1fr;min-height:100vh;}
+  aside{background:var(--navy);color:#fff;padding:20px 12px;}
+  aside .brand{font-family:Georgia,serif;font-weight:700;letter-spacing:2px;font-size:16px;padding:0 8px 16px;border-bottom:1px solid rgba(255,255,255,.15);}
+  aside .brand small{display:block;letter-spacing:4px;font-size:9px;color:#e2b45a;margin-top:2px;}
+  nav.menu{margin-top:14px;display:flex;flex-direction:column;gap:2px;}
+  nav.menu button{background:none;border:none;color:#cdd8e3;text-align:left;padding:11px 12px;border-radius:9px;font-size:14px;display:flex;gap:9px;align-items:center;}
+  nav.menu button.on,nav.menu button:hover{background:rgba(255,255,255,.12);color:#fff;}
+  nav.menu .grp{color:#7f93a6;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.9px;padding:12px 12px 4px;margin-top:6px;border-top:1px solid rgba(255,255,255,.10);}
+  nav.menu .grp:first-of-type{margin-top:4px;}
+  main{padding:26px 30px;overflow:auto;}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
+  .top h2{font-family:Georgia,serif;color:var(--navy);font-size:24px;}
+  .who{font-size:13px;color:var(--mute);}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px;}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;}
+  .stat .n{font-family:Georgia,serif;font-size:30px;color:var(--navy);font-weight:700;}
+  .stat .l{font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:18px;}
+  .panel h3{font-family:Georgia,serif;color:var(--navy);font-size:17px;margin-bottom:12px;}
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);padding:8px 8px;border-bottom:2px solid var(--line);}
+  td{padding:9px 8px;border-bottom:1px solid var(--line);font-size:14px;}
+  tr:hover td{background:#faf8f1;}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;}
+  .tag.ok{background:#e2f0e0;color:#3f6b3d;} .tag.no{background:#f7e0da;color:#9c3f2c;} .tag.mid{background:#f3ead6;color:#6b5a33;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  /* ===== Schede affiancate SENZA gradini =====
+     Il difetto nasce dal flex-wrap: schede con testi di lunghezza diversa finiscono a
+     altezze diverse e i contenuti interni si disallineano. Qui la griglia impone la stessa
+     altezza a tutta la riga, e dentro ogni scheda le parti stanno su righe fisse: titolo in
+     alto, corpo elastico, azioni ancorate in fondo. Cosi' le celle adiacenti si allineano. */
+  .cardgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--cardmin,240px),1fr));gap:14px;align-items:stretch;margin-bottom:18px;}
+  .cardgrid>.panel{margin-bottom:0;display:flex;flex-direction:column;min-width:0;}
+  .cardgrid>.panel>.grow{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;min-width:0;}
+  .cardgrid>.panel>.foot{margin-top:auto;padding-top:10px;}
+  .cardgrid .row:last-child{margin-bottom:0;}
+  /* Testi lunghi (URL, nomi file) non allargano la colonna e non sfondano la scheda */
+  .brk{overflow-wrap:anywhere;word-break:break-word;}
+  /* Sezioni comprimibili: le pagine di gestione sono lunghe, e su un portatile o un tablet
+     si perde il filo. Il titolo diventa un interruttore e lo stato viene ricordato. */
+  .panel[data-fold] > h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;}
+  .panel[data-fold] > h3::before{content:'▾';font-size:.8em;color:var(--muted);transition:transform .15s;}
+  .panel[data-fold].chiuso > h3::before, .panel[data-fold].chiuso > .fold-testa > h3::before{transform:rotate(-90deg);}
+  /* !important perche' molte righe hanno display:flex scritto INLINE: senza, il pannello
+     risultava chiuso ma il contenuto restava visibile, e "Comprimi tutto" sembrava rotto. */
+  .panel[data-fold].chiuso > *:not(h3):not(.fold-testa){display:none !important;}
+  .panel[data-fold].chiuso{padding-bottom:12px;}
+  .foldbar{display:flex;gap:8px;justify-content:flex-end;margin:-4px 0 10px;}
+  /* Il QR arriva come SVG senza dimensioni proprie: dentro un contenitore flex collasserebbe */
+  .qrbox{width:100%;}
+  .qrbox svg{width:100%;height:auto;display:block;}
+  .modal{position:fixed;inset:0;background:rgba(9,20,33,.5);display:none;align-items:center;justify-content:center;padding:20px;z-index:50;}
+  .modal.show{display:flex;}
+  .modal .box{background:#fff;border-radius:16px;padding:24px;width:520px;max-width:100%;max-height:90vh;overflow:auto;}
+  .modal h3{font-family:Georgia,serif;color:var(--navy);font-size:20px;margin-bottom:14px;}
+  .check{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:14px;}
+  .check input{width:auto;}
+  .muted{color:var(--mute);font-size:13px;}
+  .barwrap{background:#eee;border-radius:6px;height:10px;overflow:hidden;width:120px;display:inline-block;vertical-align:middle;}
+  .barwrap span{display:block;height:100%;}
+  /* Hamburger + drawer (solo mobile) */
+  .navToggle{display:none;background:var(--navy);color:#fff;border:none;border-radius:9px;padding:7px 12px;font-size:18px;line-height:1;}
+  .scrim{display:none;position:fixed;inset:0;background:rgba(9,20,33,.45);z-index:40;}
+  /* ===== Responsive: back office usabile da cellulare ===== */
+  /* Schermi molto stretti: si guadagna spazio togliendo i margini, non rimpicciolendo i tocchi */
+  @media (max-width:420px){
+    main{padding:10px 8px;}
+    .panel{padding:12px 10px;border-radius:12px;margin-bottom:12px;}
+    .stat{padding:12px;}
+    .stat .n{font-size:26px;}
+    .top h2{font-size:18px;}
+  }
+  @media (max-width:820px){
+    #app{grid-template-columns:1fr;}
+    aside{position:fixed;top:0;left:0;bottom:0;width:240px;z-index:45;transform:translateX(-100%);transition:transform .22s ease;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+    #app.nav-open aside{transform:translateX(0);box-shadow:0 0 40px rgba(0,0,0,.4);}
+    #app.nav-open .scrim{display:block;}
+    main{padding:14px 12px;}
+    .top{flex-wrap:wrap;gap:10px;align-items:center;}
+    .top h2{font-size:20px;order:2;}
+    .navToggle{display:inline-block;order:1;}
+    .who{order:3;width:100%;}
+    .grid2{grid-template-columns:1fr;}
+    .panel{overflow-x:auto;padding:14px 12px;}
+    .panel h3{font-size:16px;margin-bottom:9px;}
+    /* Le tabelle larghe scorrono, ma quelle marcate .fit stanno nello schermo */
+    .panel table{min-width:520px;}
+    .panel table.fit{min-width:0;}
+    .panel table.fit th,.panel table.fit td{padding:7px 5px;font-size:13px;}
+    .cardgrid{--cardmin:100%;gap:12px;}
+    .muted{font-size:12.5px;}
+    .modal{padding:10px;}
+    .modal .box{width:100%;padding:18px;max-height:94vh;}
+    .cards{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));}
+    .row{gap:8px;}
+    /* iOS: font >=16px sui campi evita lo zoom automatico che scombina il layout */
+    input,select,textarea{font-size:16px;}
+    .btn.sm{padding:9px 12px;}
+  }
+
+/* ---- FORMA E COLORE, come nell'app dei soci ------------------------------------------------
+   Stessi criteri: squadrato, bordi spessi, niente ombre, contrasto alto. Il Crew si usa al
+   banco con la luce che entra dal Garden e il back office su schermi qualsiasi: quello che
+   regge in spiaggia regge anche qui, e avere due estetiche diverse fra le app dello stesso
+   residence non aiuta nessuno.
+   Il ROSSO resta agli avvisi (tavolo oltre i dieci minuti, ombrellone non reso): le azioni
+   sono blocchi pieni scuri con testo bianco, misurati a 14.6 di contrasto contro il 5.9 del
+   pulsante oro di prima. */
+:root{--navy:#102A43;--gold:#8a5a12;--coral:#9E2B20;--ink:#101418;--line:#101418;--r:4px;--bordo:2px;}
+.card,.panel,.btn,.tag,input,select,textarea,.box{border-radius:var(--r) !important;box-shadow:none !important;}
+.card,.panel{border:var(--bordo) solid var(--line) !important;}
+.btn{border:var(--bordo) solid var(--line);font-weight:800;min-height:44px;}
+.btn.gold,.btn.navy{background:var(--navy);color:#fff;border-color:var(--navy);}
+.btn.ghost{background:#fff;color:var(--ink);border-color:var(--line);}
+.btn.danger{background:var(--coral);color:#fff;border-color:var(--coral);}
+.btn.sm{min-height:34px;}
+input,select,textarea{border:var(--bordo) solid var(--line) !important;}
+</style>
+</head>
+<body>
+  <div id="login">
+    <div class="box">
+      <h1>Bussola Residence</h1>
+      <p>Back office · gestione soci e progetto</p>
+      <p class="muted" id="verline" style="margin:2px 0 6px; font-weight:700">versione online: …</p>
+      <label for="u">Utente</label><input id="u" value="gestore" autocomplete="username">
+      <label for="p">Password</label><input id="p" type="password" value="" placeholder="password del gestore" autocomplete="current-password">
+      <div class="err" id="loginErr"></div>
+      <button class="btn gold" style="width:100%;margin-top:14px" id="loginBtn">Entra</button>
+      <p class="muted" style="margin-top:12px">La password del gestore si imposta su Render con la variabile <b>ADMIN_PASSWORD</b>.</p>
+    </div>
+  </div>
+
+  <div id="app">
+    <aside>
+      <div class="brand">BUSSOLA<small>RESIDENCE · ADMIN</small></div>
+      <nav class="menu" id="menu">
+        <button data-v="dashboard" class="on">📊 Cruscotto</button>
+
+        <div class="grp">Persone &amp; accessi</div>
+        <button data-v="soci" data-cap="utenti">👤 Utenti</button>
+        <button data-v="operatori" data-cap="operatori">🔑 Operatori &amp; permessi</button>
+
+        <div class="grp">Sport &amp; Coppa</div>
+        <button data-v="casate" data-cap="casate">🛡️ Casate &amp; punti</button>
+        <button data-v="discipline" data-cap="discipline">🏅 Discipline</button>
+        <button data-v="tabellone" data-cap="tabellone">🏆 Tornei</button>
+        <button data-v="fitness" data-cap="fitness">🧘 Area fitness</button>
+        <button data-v="campi" data-cap="campi">🎾 Campi &amp; prenotazioni</button>
+
+        <div class="grp">Serate &amp; Eventi</div>
+        <button data-v="eventi" data-cap="eventi">🎭 Eventi</button>
+        <button data-v="cinema" data-cap="cinema">🎬 Cinema</button>
+        <button data-v="serate" data-cap="serate">🍽️ Serate &amp; cena</button>
+        <button data-v="contest" data-cap="contest">🎬 Contest Serata Clan</button>
+        <button data-v="proposte" data-cap="proposte">🎵 Proposte</button>
+        <button data-v="avvisi" data-cap="eventi">🔔 Avvisi push</button>
+
+        <div class="grp">Operatività</div>
+        <button data-v="sala" data-cap="cdc">💻 Coworking & sala</button>
+        <button data-v="cdc" data-cap="cdc">🃏 Casa di Carta</button>
+        <button data-v="confronto" data-cap="magazzino">⚖️ Consumi</button>
+
+        <div class="grp">Guida &amp; luoghi</div>
+        <button data-v="bussola" data-cap="guida">🧭 Guida</button>
+        <button data-v="luoghi" data-cap="luoghi">📍 Luoghi (Siamo qui)</button>
+
+        <div class="grp">Sistema</div>
+        <button data-v="installa" data-cap="guida">📲 Installa app (QR)</button>
+        <button data-v="parametri" data-cap="parametri">⚙️ Regole & parametri</button>
+        <button data-v="database" data-cap="db">🗄️ Database</button>
+        <button data-v="audit" data-cap="registro">🗂️ Registro</button>
+      </nav>
+    </aside>
+    <main>
+      <div class="top"><button class="navToggle" id="navToggle" aria-label="Menu">☰</button><h2 id="viewTitle">Cruscotto</h2><div class="who">Accesso: <b id="whoName"></b> · <a href="#" id="logout">esci</a></div></div>
+      <div id="view"></div>
+    </main>
+    <div class="scrim" id="navScrim"></div>
+  </div>
+
+  <div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
+
+<script>
+<!--#include admin/admin.js-->
+</script>
+</body>
+</html>

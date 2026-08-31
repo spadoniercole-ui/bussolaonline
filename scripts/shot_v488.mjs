@@ -1,0 +1,23 @@
+import { chromium } from 'playwright-core';
+import { readdirSync } from 'node:fs';
+const base='http://127.0.0.1:5991';
+const dir = readdirSync('/opt/pw-browsers').find(d=>d.startsWith('chromium-'));
+const b = await chromium.launch({ executablePath:`/opt/pw-browsers/${dir}/chrome-linux/chrome`, args:['--no-sandbox'] });
+const call = async (p,o={}) => (await fetch(base+p,{method:o.method||'GET',headers:{'Content-Type':'application/json',...(o.token?{Authorization:'Bearer '+o.token}:{})},body:o.body?JSON.stringify(o.body):undefined})).json();
+const tk = (await call('/api/admin/login',{method:'POST',body:{username:'gestore',password:'shot-admin'}})).token;
+const oggi = new Date().toISOString().slice(0,10);
+// simula un database "vecchio": sala carta con 8 tavoli e senza arredo
+const lay = (await call('/api/admin/tavoli/layout?ambiente=carta',{token:tk})).layout.find(l=>l.predefinito);
+await call('/api/admin/tavoli/layout/'+lay.id,{method:'PUT',token:tk,body:{tavoli:Array.from({length:8},(_,i)=>({numero:i+1,posti:4,forma:'quadrato',x:20+(i%3)*30,y:20+Math.floor(i/3)*25}))}});
+const p = await b.newPage({ viewport:{width:1000,height:1000} });
+await p.goto(base+'/chiosco/',{waitUntil:'networkidle'});
+await p.fill('#u','gestore'); await p.fill('#p','shot-admin'); await p.click('#loginBtn'); await p.waitForTimeout(1800);
+await p.selectOption('#zonaSwitch','cdc'); await p.waitForTimeout(1200);
+await p.click('#tabs [data-v="pianta"]'); await p.waitForTimeout(1800);
+await p.screenshot({path:'/tmp/prima.png', fullPage:true});
+p.on('dialog', d => d.accept());
+await p.click('#p_reset'); await p.waitForTimeout(2200);
+await p.screenshot({path:'/tmp/dopo.png', fullPage:true});
+await p.click('#tabs [data-v="cdc"]'); await p.waitForTimeout(1500);
+await p.screenshot({path:'/tmp/cdc_pulita.png', fullPage:true});
+await b.close(); console.log('ok');

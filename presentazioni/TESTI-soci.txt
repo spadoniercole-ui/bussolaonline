@@ -1,0 +1,124 @@
+# ============================================================================
+# PER I SOCI E GLI OSPITI
+# ----------------------------------------------------------------------------
+# Modifica liberamente il testo dopo i due punti. Regole semplici:
+#   · non cancellare le righe "### SLIDE n"
+#   · VOCE:  e' cio' che la voce legge e che si vede come sottotitolo
+#   · PUNTO: una riga per ogni elenco; puoi aggiungerne o togliere
+#   · per il grassetto usa <b>cosi</b>
+#   · le righe che iniziano con # sono note e vengono ignorate
+# Quando hai finito, salva e rimanda il file.
+# ============================================================================
+
+
+### SLIDE 1
+OCCHIELLO: Bussola Residence
+TITOLO: Il residence in tasca
+PUNTO: Sei minuti per scoprire cosa cambia
+PUNTO: Nessuna app da scaricare, nessun account da creare
+VOCE: Benvenuto alla Bussola. Nei prossimi minuti ti mostro come il residence entra nel tuo telefono: cosa succede oggi, come prenotare un campo o un tavolo, e come tenere il conto della tua casata. Non devi scaricare niente da uno store, e non devi creare nessun account: basta il link che ti è stato inviato. Dopo la prima registrazione, se fatta come socio, potrai salvare la tessera utilizzabile ad ogni nuovo accesso dalla login.
+
+### SLIDE 2
+OCCHIELLO: La schermata iniziale
+TITOLO: Tutto quello che si prenota, in una schermata
+PUNTO: La serata di stasera, in cima
+PUNTO: Otto cose prenotabili, senza scorrere
+PUNTO: In basso: Eventi, Sport, Giochi, Guida
+# immagine: img/soci-home.jpg  (non modificare)
+VOCE: Questa è la schermata che trovi aprendo l'app. In alto c'è la serata di stasera, con il tasto per prenotare il tavolo. Sotto, tutto quello che puoi prenotare al residence: i campi, le partite aperte, la cena al Garden, il bar, le lezioni di fitness, il tavolo da gioco, il posto allo spettacolo e la postazione di coworking. Otto cose, in una schermata sola, senza dover cercare.
+
+### SLIDE 3
+OCCHIELLO: Sport
+TITOLO: Un campo, due modi di prenotarlo
+PUNTO: <b>Solo io</b> — la fascia resta tua
+PUNTO: <b>Apri ai soci</b> — altri si uniscono a te
+PUNTO: I campi sono gratuiti
+# immagine: img/soci-campi.jpg  (non modificare)
+VOCE: Scegli il campo, il giorno e l'ora. Poi decidi: con "Solo io" la fascia resta tua e nessun altro si aggiunge. Con "Apri ai soci" la tua partita compare fra le partite aperte, e chi cerca compagni di gioco può unirsi. È il modo più semplice per giocare anche quando gli amici non ci sono. I campi, ricordiamolo, sono gratuiti.
+
+### SLIDE 4
+OCCHIELLO: Una regola che ci riguarda tutti
+TITOLO: Il campo è di chi gioca, non di chi arriva primo
+PUNTO: Chi gioca va dichiarato: il tetto conta le persone, non le firme
+PUNTO: Le fasce attaccate contano insieme: nessun gruppo tiene il campo tutto il pomeriggio
+PUNTO: Se poco prima nessuno si è dichiarato, la fascia torna libera
+VOCE: C'è una cosa che vale la pena spiegare, perché riguarda tutti. In un residence il rischio è che sempre le stesse persone occupino i campi, prenotando una fascia dietro l'altra. Le regole della Bussola lo impediscono in modo semplice: chi gioca va dichiarato, e le fasce vicine occupate dalle stesse persone contano come una sola prenotazione lunga. Se poco prima dell'orario non c'è nessuno, la fascia torna libera per chi aspetta. Non è burocrazia: è il motivo per cui, quando cerchi un campo, lo trovi.
+
+### SLIDE 5
+OCCHIELLO: La cena
+TITOLO: Il tavolo lo assegniamo noi
+PUNTO: Giorno, quante persone, turno: tre tocchi
+PUNTO: La sala si riempie dal centro verso l'esterno
+PUNTO: Le tue prenotazioni restano lì, e si disdicono
+# immagine: img/soci-garden.jpg  (non modificare)
+VOCE: Per cenare al Garden indichi il giorno, quante persone siete e il turno: sotto ciascun turno vedi quanti posti restano. Il tavolo non lo scegli tu, lo assegniamo noi partendo da quelli più al centro, così la sala si riempie in modo ordinato e i gruppi grandi trovano posto insieme. Il numero del tuo tavolo compare subito, e da lì puoi anche disdire.
+
+### SLIDE 6
+OCCHIELLO: Le sere di spettacolo
+TITOLO: Chi cena ha già il posto davanti al palco
+PUNTO: Una prenotazione sola: cena e platea
+PUNTO: Chi viene solo per lo spettacolo versa un contributo
+PUNTO: Gli over 70 hanno la prima fila
+# immagine: img/soci-stage.jpg  (non modificare)
+VOCE: Nelle sere in cui c'è musica o cinema, prenotando la cena hai già i tuoi posti davanti al palco: è una prenotazione sola, non due. Chi viene solo per l'esibizione trova la sua parte di platea riservata, e versa un piccolo contributo all'ingresso. E c'è un dettaglio a cui teniamo: la prima fila è riservata a chi ha più di settant'anni.
+
+### SLIDE 7
+OCCHIELLO: Le serate speciali
+TITOLO: Quattro appuntamenti da non perdere
+PUNTO: Apertura di stagione, serata a tema, Ferragosto, chiusura
+PUNTO: Posti contati: si prenota e si paga in loco
+# immagine: img/soci-serate.jpg  (non modificare)
+VOCE: Quattro volte a stagione il residence si ferma e cena tutto insieme: l'apertura, la serata a tema di fine luglio, la cena di Ferragosto e la chiusura, quando si premiano le casate. Sono serate con posti contati: le trovi qui, con la quota e i posti rimasti, e si prenotano dall'app.
+
+### SLIDE 8
+OCCHIELLO: La Coppa delle Casate
+TITOLO: Un'estate che si gioca insieme
+PUNTO: Otto casate, sei discipline, una stagione
+PUNTO: I punti si calcolano da soli dai risultati
+PUNTO: Le prime tre entrano nell'Albo d'Oro
+# immagine: img/soci-coppa.jpg  (non modificare)
+VOCE: Ogni socio appartiene a una casata, e per tutta l'estate le otto casate si sfidano: calcetto, basket, soft tennis, pickleball, burraco e scala quaranta. I punti non li scrive nessuno a mano, si calcolano dai risultati delle partite. Toccando una riga della classifica scopri chi fa parte della tua casata e chi ne è il capitano. A fine stagione le prime tre entrano nell'Albo d'Oro, e la vincitrice porta il simbolo del residence per tutta l'estate successiva.
+
+### SLIDE 9
+OCCHIELLO: La guida
+TITOLO: Le cose pratiche, quando servono
+PUNTO: Raccolta rifiuti: solo il calendario in corso
+PUNTO: Numeri utili, spiaggia, farmacia
+PUNTO: Le voci con la freccia aprono la mappa
+# immagine: img/soci-guida.jpg  (non modificare)
+VOCE: La sezione Guida raccoglie quello che serve davvero: gli orari del silenzio, il calendario della raccolta rifiuti con i colori dei conferimenti, i numeri utili e i posti da vedere in zona. Le voci con la freccia si toccano e aprono la mappa, con il tasto per farsi accompagnare: niente più indirizzi da copiare a mano.
+
+### SLIDE 10
+OCCHIELLO: Per i nonni
+TITOLO: La stessa app, con meno passaggi
+PUNTO: Si accende da sola in base all'età
+PUNTO: Prenotare la cena è un tocco solo
+PUNTO: I numeri rapidi: 112, un familiare, il chiosco
+# immagine: img/soci-semplice.jpg  (non modificare)
+VOCE: Chi ha una certa età trova l'app già in versione essenziale: quattro voci grandi, l'appuntamento di oggi in evidenza, e la cena che si prenota con un tocco solo, per stasera, tavolo da quattro. C'è poi una schermata di numeri rapidi: il centododici, il chiosco, e un familiare indicato in anagrafica, ciascuno con un tasto grande. C'è anche un tasto che mostra le coordinate del punto in cui ti trovi, da leggere all'operatore del centododici: nel residence le ville si somigliano tutte, e saper dire dove si è fa guadagnare minuti. Un chiarimento onesto: il residence non è un servizio di soccorso, e l'app non lo diventa. Sono i numeri giusti, a portata di dito.
+
+### SLIDE 11
+OCCHIELLO: Per i ragazzi
+TITOLO: La casata, prima di tutto
+PUNTO: Punti e posizione in cima
+PUNTO: Partite aperte, Coppa, giochi da tavolo
+PUNTO: Le cose a pagamento le prenota un adulto
+# immagine: img/soci-ragazzi.jpg  (non modificare)
+VOCE: I ragazzi hanno la loro versione, che parte da quello che a loro interessa davvero: la casata, con i punti e la posizione in classifica, le partite a cui unirsi, i giochi da tavolo. Le prenotazioni che comportano una spesa — il bar, la cena, le serate — restano agli adulti: fino ai diciotto anni non si prendono impegni economici da soli, e l'app lo rispetta senza bisogno che glielo dica nessuno.
+
+### SLIDE 12
+OCCHIELLO: In sostanza
+TITOLO: Perché conviene usarla
+PUNTO: Trovi posto: le regole tengono i campi e i tavoli disponibili per tutti
+PUNTO: Non perdi le occasioni: il programma è sempre aggiornato, le serate hanno posti contati
+PUNTO: Fai prima: una prenotazione al posto di una telefonata o di una fila al chiosco
+PUNTO: Sei riconosciuto: al tavolo ti chiamano per nome, in platea hai il posto che ti spetta
+VOCE: Chiudiamo con il motivo per cui vale la pena usarla. Primo: trovi posto, perché le regole impediscono che pochi occupino tutto. Secondo: non perdi le occasioni, perché il programma è sempre aggiornato e le serate con posti contati si prenotano prima che finiscano. Terzo: fai prima, perché una prenotazione dal telefono sostituisce una telefonata o una fila al chiosco. E quarto, quello a cui teniamo di più: sei riconosciuto. Quando arrivi al tavolo sanno chi sei e ti chiamano per nome, e in platea trovi il posto che ti spetta. La Bussola non serve a digitalizzare il residence: serve a farti sentire atteso.
+
+### SLIDE 13
+OCCHIELLO: Come si comincia
+TITOLO: Tre passi, una volta sola
+PUNTO: 1. Apri l'indirizzo del residence dal telefono
+PUNTO: 2. Inserisci il codice della tessera (BR-2026-….)
+PUNTO: 3. Aggiungi l'app alla schermata principale
+VOCE: Per cominciare bastano tre passi, e si fanno una volta sola. Apri l'indirizzo del residence dal telefono, inserisci il codice della tua tessera, e scegli "Aggiungi a schermata Home" dal menù del browser. Da quel momento la Bussola si apre come una qualsiasi app, e ti riconosce ogni volta. Ci vediamo al residence.

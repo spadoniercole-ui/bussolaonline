@@ -1,0 +1,133 @@
+# ============================================================================
+# PER LA CREW
+# ----------------------------------------------------------------------------
+# Modifica liberamente il testo dopo i due punti. Regole semplici:
+#   · non cancellare le righe "### SLIDE n"
+#   · VOCE:  e' cio' che la voce legge e che si vede come sottotitolo
+#   · PUNTO: una riga per ogni elenco; puoi aggiungerne o togliere
+#   · per il grassetto usa <b>cosi</b>
+#   · le righe che iniziano con # sono note e vengono ignorate
+# Quando hai finito, salva e rimanda il file.
+# ============================================================================
+
+
+### SLIDE 1
+OCCHIELLO: Bussola Crew
+TITOLO: Il servizio si comanda dal tavolo
+PUNTO: Otto minuti
+PUNTO: Quello che serve per lavorare il primo giorno
+VOCE: Questa è l'app che userai durante il servizio. Si chiama Bussola Crew ed è pensata per essere usata in piedi, con una mano, mentre cammini. In otto minuti vediamo tutto quello che ti serve per lavorare già dal primo giorno. La regola da tenere a mente è una sola: il tavolo è il punto di partenza di tutto.
+
+### SLIDE 2
+OCCHIELLO: Prima cosa
+TITOLO: Due applicazioni, due momenti
+PUNTO: <b>Bussola Crew</b> — in piedi, durante il servizio: comande, tavoli, incassi
+PUNTO: <b>Back office</b> — seduti, prima o dopo: prezzi, calendari, anagrafiche
+PUNTO: Il back office <i>imposta</i>, il Crew <i>opera</i>
+VOCE: Il sistema ha due facce. Bussola Crew è quella che usi durante il servizio: comande, tavoli, incassi, prenotazioni al banco. Il back office è l'altra, quella dove il gestore imposta prezzi, calendari e anagrafiche. La regola che spiega tutto il resto è questa: il back office imposta, il Crew opera. Se cerchi una cosa da fare mentre lavori e non la trovi nel back office, è perché sta qui.
+
+### SLIDE 3
+OCCHIELLO: Accesso
+TITOLO: Vedi solo i moduli che ti servono
+PUNTO: Ogni permesso apre un modulo
+PUNTO: Si cambia dalla tendina in alto
+PUNTO: Se non vedi un modulo, chiedilo al gestore
+# immagine: img/crew-comande.jpg  (non modificare)
+VOCE: Entri con il tuo utente e la tua password. Quello che vedi dipende dai permessi che ti ha dato il gestore: ogni permesso apre un modulo. Garden, Bar, Cucina, Campi, Fitness, Casa di Carta, Stage, Magazzino, Sport. Se ne hai più di uno, si cambia dalla tendina in alto. Se un modulo non compare, non è un guasto: è un permesso che non hai, e si chiede al gestore.
+
+### SLIDE 4
+OCCHIELLO: La schermata più usata
+TITOLO: La pianta dice tutto a colpo d'occhio
+PUNTO: 🟩 libero · 🟪 prenotato · 🟧 comanda in corso · 🟥 oltre 10 minuti
+PUNTO: I minuti trascorsi sono scritti sul tavolo
+PUNTO: La disposizione è quella vera della sala
+# immagine: img/crew-pianta.jpg  (non modificare)
+VOCE: Questa è la schermata che guarderai più di ogni altra. La posizione dei tavoli è quella vera della sala, e il colore dice cosa sta succedendo: verde libero, viola prenotato, ocra con una comanda in corso, rosso quando quella comanda ha superato i dieci minuti. Sui tavoli occupati sono scritti i minuti trascorsi. Un'occhiata e sai dove intervenire.
+
+### SLIDE 5
+OCCHIELLO: Il tocco
+TITOLO: Chi c'è, e cosa puoi fare
+PUNTO: Il nome di chi ha prenotato: <b>chiamali per nome</b>
+PUNTO: Ordina · Libera · le comande in corso
+PUNTO: Posti, forma e unione dei tavoli, subito qui
+# immagine: img/crew-tavolo.jpg  (non modificare)
+VOCE: Tocca un tavolo e si apre tutto quello che ti serve. Se è prenotato, in cima c'è il nome di chi lo aspetta: usalo. Arrivare al tavolo e dire "buonasera signora Rizzo" cambia la serata di chi si è appena seduto, e non costa niente. Da qui prendi la comanda, chiudi quelle in corso, liberi il tavolo, e se serve cambi i posti, la forma o unisci due tavoli per una tavolata.
+
+### SLIDE 6
+OCCHIELLO: La comanda
+TITOLO: Il numero del tavolo non si digita mai
+PUNTO: Si apre già intestata: “tavolo 6 · per Giulia R.”
+PUNTO: Icona, nome e prezzo: si tocca la riga, non solo il +
+PUNTO: Invia in cucina, e il tavolo diventa ocra
+# immagine: img/crew-ordina.jpg  (non modificare)
+VOCE: Premendo Ordina il compositore si apre già intestato al tavolo e alla persona. Questo è importante: il numero del tavolo non lo scrivi mai a mano, ed è il motivo per cui non arriveranno più piatti al tavolo sbagliato. Scegli i prodotti toccando la riga — non serve centrare il più — e invii in cucina. Il tavolo diventa ocra e il tempo comincia a scorrere.
+
+### SLIDE 7
+OCCHIELLO: Attenzione
+TITOLO: Chiudere la comanda non è un dettaglio
+PUNTO: Una comanda aperta tiene il tavolo occupato
+PUNTO: Il tavolo resta colorato anche per il turno dopo
+PUNTO: Il sistema chiude da solo dopo sei ore, ma è una rete, non un metodo
+VOCE: Ecco la cosa che più spesso va storta, e che ti chiedo di ricordare. Quando il tavolo ha finito e ha pagato, la comanda va chiusa. Una comanda lasciata aperta tiene il tavolo occupato: resta colorato, e chi arriva dopo trova un tavolo che risulta pieno mentre è libero. Il sistema chiude da solo quello che resta aperto oltre sei ore, ma è una rete di sicurezza, non il modo di lavorare.
+
+### SLIDE 8
+OCCHIELLO: Campi
+TITOLO: Prenoti al banco, e blocchi quando serve
+PUNTO: Serve sempre la tessera del socio: resta lui il titolare
+PUNTO: Blocco del campo per tornei, manutenzione, eventi
+PUNTO: Se il sistema rifiuta, il messaggio dice quale regola è scattata
+# immagine: img/crew-campi.jpg  (non modificare)
+VOCE: I campi sono gratuiti, quindi qui non si incassa: si governa chi usa. Per prenotare al banco serve sempre la tessera del socio, perché è lui il titolare e su di lui si contano i limiti. Quando il campo serve per un torneo o una manutenzione lo blocchi da qui. E se una prenotazione viene rifiutata, il messaggio dice sempre quale regola è scattata: leggilo e spiegalo, invece di riprovare.
+
+### SLIDE 9
+OCCHIELLO: Fitness
+TITOLO: Si paga la singola lezione, in contanti
+PUNTO: <b>Incassa</b> — segna chi ha pagato, il totale scende
+PUNTO: <b>Iscrivi al banco</b> — per chi si presenta senza app
+PUNTO: Sotto il minimo iscritti la lezione non parte: avvisa
+# immagine: img/crew-fitness.jpg  (non modificare)
+VOCE: Le lezioni si pagano una alla volta, in contanti a fine lezione. Per ciascuna vedi gli iscritti e il totale da incassare: premi Incassa su chi ha pagato e il totale scende. Chi si presenta senza app lo iscrivi tu al banco. Attenzione allo stato: se una lezione resta sotto il minimo di iscritti non parte, e sta a te avvisare chi si era iscritto.
+
+### SLIDE 10
+OCCHIELLO: Casa di Carta
+TITOLO: Il gioco prestato ha un tavolo
+PUNTO: Quattro turni: due di coworking, due di gioco
+PUNTO: Prestando un gioco indichi <b>dove</b> verrà usato
+PUNTO: Serve a ritrovarlo e a sapere chi ha lasciato disordine
+# immagine: img/crew-carta.jpg  (non modificare)
+VOCE: La sala lavora su quattro turni: la mattina e il primo pomeriggio è coworking, dalle sedici si gioca. Quando presti un gioco indichi anche il tavolo dove verrà usato: serve a ritrovarlo a fine serata e a sapere chi ha lasciato il tavolo in disordine. Al rientro premi Riconsegna.
+
+### SLIDE 11
+OCCHIELLO: Stage
+TITOLO: La platea ha delle regole, rispettale
+PUNTO: 🟫 prima fila: <b>over 70</b> · 🟩 chi ha cenato · 🟦 solo spettacolo
+PUNTO: Chi ha prenotato la cena ha già il posto: non riassegnarlo
+PUNTO: Tocca una seduta per metterci qualcuno
+# immagine: img/crew-stage.jpg  (non modificare)
+VOCE: La platea non è un insieme di sedie uguali. La prima fila è degli over settanta, il verde è di chi ha cenato al primo turno e ha già il posto assegnato, l'azzurro è di chi viene solo per lo spettacolo. Le due parti si alternano per fila, così chi non cena non finisce sempre in fondo. Chi arriva al banco lo metti a sedere toccando una seduta libera. E ricordati: chi ha prenotato la cena il posto ce l'ha già, non serve ridarglielo.
+
+### SLIDE 12
+OCCHIELLO: Magazzino
+TITOLO: La merce è una sola
+PUNTO: + Carico · − Scarico · = Rettifica · 📌 Impegna
+PUNTO: Bar, Garden e Casa di Carta sono <b>zone</b>, non magazzini
+PUNTO: Scaricare più di quanto c'è si può, ma il sistema lo segnala
+# immagine: img/crew-magazzino.jpg  (non modificare)
+VOCE: Il principio è semplice: la merce è una sola, al Centrale. Bar, Garden e Casa di Carta non hanno un magazzino proprio, sono zone che attingono da lì. Carico quando entra merce, scarico quando si consuma, rettifica quando conto e trovo un numero diverso. Se scarichi più di quanto risultava il sistema accetta ma te lo dice: significa che qualcosa non era stato registrato, e conviene guardarci.
+
+### SLIDE 13
+OCCHIELLO: Se succede qualcosa
+TITOLO: Le richieste di aiuto arrivano qui
+PUNTO: Compaiono in cima al modulo Comande, in rosso
+PUNTO: Nome della persona e <b>“Dov'è”</b> sulla mappa
+PUNTO: “Ci penso io” — così gli altri sanno che è presa in carico
+VOCE: Un socio, di solito anziano, può premere un tasto nella sua app e chiedere aiuto. La richiesta arriva qui, in cima al modulo Comande, in rosso: c'è il nome e, se ha concesso la posizione, il tasto per vederla sulla mappa. Premi "Ci penso io" così gli altri sanno che te ne stai occupando. Il centododici lo chiama il telefono del socio; tu sei quello che può arrivare in due minuti.
+
+### SLIDE 14
+OCCHIELLO: Da ricordare
+TITOLO: Le quattro regole d'oro
+PUNTO: 1. Parti sempre dal tavolo: comanda, prenotazione, tutto nasce lì
+PUNTO: 2. Chiama gli ospiti per nome: il nome è sulla scheda del tavolo
+PUNTO: 3. Chiudi la comanda quando il tavolo ha finito
+PUNTO: 4. Registra lo scarico a fine servizio: il riordino dipende da quello
+VOCE: Chiudiamo con quattro regole che valgono più di tutto il resto. Uno: parti sempre dal tavolo, perché la comanda e la prenotazione nascono da lì e così non si sbaglia numero. Due: chiama gli ospiti per nome, il nome è sulla scheda del tavolo. Tre: chiudi la comanda quando il tavolo ha finito, altrimenti resta occupato per tutti. Quattro: registra lo scarico a fine servizio, perché è da quello che nasce il riordino, e un magazzino non aggiornato si scopre solo quando manca qualcosa. Buon lavoro.

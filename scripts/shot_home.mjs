@@ -1,0 +1,30 @@
+import { chromium } from 'playwright-core';
+import { readdirSync } from 'node:fs';
+const base = process.env.BASE || 'http://127.0.0.1:9982';
+const dir = readdirSync('/opt/pw-browsers').find((d) => d.startsWith('chromium-'));
+const call = async (p, o = {}) => (await fetch(base + p, { method: o.method || 'GET', headers: { 'Content-Type': 'application/json', ...(o.token ? { Authorization: 'Bearer ' + o.token } : {}) }, body: o.body ? JSON.stringify(o.body) : undefined })).json();
+const { token } = await call('/api/admin/login', { method: 'POST', body: { username: 'gestore', password: 'sim' } });
+const T = 'RB-000001-4';
+// due prenotazioni vere, per far vedere la scheda in cima
+const campi = await call('/api/campi');
+const c = campi.find((x) => !x.ora_min) || campi[0];
+const dom = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+const libere = (await call(`/api/campi/${c.id}/disponibilita?data=${dom}`)).slots.filter((s) => s.stato === 'libero');
+await call(`/api/campi/${c.id}/prenota`, { method: 'POST', body: { data: dom, slot: libere[0].slot, tessera_code: T } });
+const sedute = await call('/api/admin/fitness/sedute?tutte=1', { token });
+const futura = sedute.find((s) => new Date(s.data + 'T' + s.ora + ':00') > new Date());
+if (futura) await call(`/api/fitness/sedute/${futura.id}/prenota`, { method: 'POST', body: { tessera_code: T } });
+
+const b = await chromium.launch({ executablePath: `/opt/pw-browsers/${dir}/chrome-linux/chrome`, args: ['--no-sandbox'] });
+const p = await b.newPage({ viewport: { width: 430, height: 950 }, deviceScaleFactor: 2 });
+p.on('pageerror', (e) => console.log('  ECCEZIONE:', String(e.message).slice(0, 140)));
+await p.goto(base + '/', { waitUntil: 'networkidle' });
+await p.waitForTimeout(900);
+await p.fill('#gate_tess', T); await p.click('#gate_enter');
+await p.waitForTimeout(2600);
+await p.evaluate(() => { const x = [...document.querySelectorAll('button')].find((e) => /Ho capito/i.test(e.textContent || '')); if (x) x.click(); });
+await p.waitForTimeout(1600);
+console.log('scheda prenotazioni:', await p.evaluate(() => !!document.querySelector('.mie')));
+console.log('griglia servizi   :', await p.evaluate(() => document.querySelectorAll('.srv-g > button').length));
+await p.screenshot({ path: '/tmp/home.png', fullPage: true });
+await b.close();

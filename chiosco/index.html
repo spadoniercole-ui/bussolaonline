@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#12324F">
+<title>Bussola Crew</title>
+<style>
+:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--line:#E3E1D6;--muted:#5a6670;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:16px}
+input,select,button{font-family:inherit;font-size:1rem}
+input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;background:#fff}
+.btn{border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;background:#e9e6dc;color:var(--ink)}
+.btn.gold{background:var(--gold);color:#fff}.btn.ghost{background:#fff;border:1.5px solid #cbd2d8}.btn.danger{background:var(--coral);color:#fff}
+.btn.sm{padding:6px 10px;font-size:.85rem;border-radius:8px}
+.tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.4px;background:#e9e6dc;color:var(--muted)}
+.tag.ok{background:#e6f2ea;color:var(--ok)}.tag.mid{background:#f6e9cf;color:var(--mid)}.tag.no{background:#f6e0da;color:var(--no)}
+.muted{color:var(--muted)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.panel[data-fold] > .fold-testa{display:flex;align-items:center;gap:8px;}
+.panel[data-fold] > .fold-testa > h3::before, .panel[data-fold] > b.fold-testa::before{content:'▾';font-size:.8em;opacity:.5;transition:transform .15s;display:inline-block;margin-right:6px;}
+.panel[data-fold].chiuso > .fold-testa > h3::before, .panel[data-fold].chiuso > b.fold-testa::before{transform:rotate(-90deg);}
+/* !important: le righe con display:flex inline vincerebbero sulla regola. */
+.panel[data-fold].chiuso > *:not(.fold-testa){display:none !important;}
+.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
+.panel h3{color:var(--accent);font-size:1rem;margin-bottom:10px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
+/* topbar */
+#top{background:linear-gradient(135deg,#12324F,#1c4a6e);color:#fff;padding:calc(12px + env(safe-area-inset-top)) 16px 0;position:sticky;top:0;z-index:5}
+#top .brand{font-weight:800;letter-spacing:.5px;font-size:1.05rem}
+#top .who{font-size:.75rem;opacity:.85}
+#tabs{display:flex;gap:4px;margin-top:10px;overflow-x:auto}
+#tabs button{background:transparent;border:none;color:#cfe0ee;font-weight:700;padding:10px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
+#tabs button.on{background:var(--paper);color:var(--navy)}
+#view{padding:16px;max-width:1360px;margin:0 auto}
+@media (max-width:560px){#view{padding:10px}#top{padding-left:10px;padding-right:10px}.panel{padding:12px}}
+/* login */
+#login{position:fixed;inset:0;background:radial-gradient(1200px 800px at 50% -10%,#1c3e5c,#0d2137);display:flex;align-items:center;justify-content:center;padding:20px;z-index:20}
+#login .card{background:#fff;border-radius:18px;padding:26px;max-width:360px;width:100%}
+#login h1{color:var(--navy);font-size:1.3rem;margin-bottom:2px}
+#login .sub{color:var(--muted);font-size:.85rem;margin-bottom:16px}
+#login label{display:block;font-weight:700;font-size:.8rem;margin:10px 0 4px;color:var(--navy)}
+#login input{width:100%}
+#loginErr{color:var(--coral);font-size:.85rem;margin-top:8px;min-height:1em}
+.hide{display:none!important}
+/* board tabelloni (Tavoli / Cucina): griglia che riempie tutto lo spazio + card accattivanti */
+.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.fitgrid{width:100%;border-collapse:collapse;table-layout:fixed}
+.fitgrid th{font-size:.72rem;color:var(--muted);font-weight:700;padding:2px 0;text-align:center}
+.fitgrid th span{display:block;font-weight:400;font-size:.66rem}
+.fitgrid th.ora{width:34px;color:var(--muted);font-size:.68rem;vertical-align:top;padding-top:6px}
+.fitgrid td.fitv{padding:1px;vertical-align:top;border-top:1px solid var(--line);height:40px}
+.fitq{display:block;width:100%;border:0;border-left:4px solid transparent;border-radius:6px;
+  color:#fff;padding:4px 4px;margin-bottom:2px;cursor:pointer;line-height:1.1;font:inherit;text-align:left}
+.fitq b{display:block;font-size:.68rem;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fitq span{display:block;font-size:.62rem;opacity:.92}
+.fitq.ok{border-left-color:#2e6b45} .fitq.attesa{border-left-color:#b08b3e}
+.fitq.pieno{border-left-color:#b14a35;opacity:.6}
+.tcard{border-radius:16px;padding:12px 14px;border:2px solid;position:relative;box-shadow:0 3px 10px rgba(18,50,79,.07);transition:transform .12s,box-shadow .12s;display:flex;flex-direction:column}
+.tcard:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(18,50,79,.13)}
+.tcard .thd{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.tcard .tnum{font-size:1.6rem;font-weight:800;line-height:1}
+.tcard .tst{font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+.tcard.libero{opacity:.7;box-shadow:none;border-style:dashed}
+.tchip{font-size:.8rem;font-weight:800;color:#fff;border-radius:20px;padding:2px 10px;white-space:nowrap}
+.split{display:flex;flex-direction:column;gap:12px;min-height:calc(100vh - 150px)}
+.split>section{flex:1;min-height:180px;display:flex;flex-direction:column}
+.split>section>.shd{display:flex;align-items:center;gap:8px;font-weight:800;color:var(--accent);margin-bottom:8px;position:sticky;top:0}
+.tcard .zacc{position:absolute;top:0;left:0;right:0;height:4px;border-radius:14px 14px 0 0}
+.tcard.clic{cursor:pointer}
+.tref{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:0 8px;border-radius:9px;font-weight:800;font-size:1.05rem;color:#fff}
+.tsub{font-size:.9rem;font-weight:800}
+/* modale dettaglio */
+.modal{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal.hide{display:none!important}
+.modal .mbg{position:absolute;inset:0;background:rgba(9,20,30,.55)}
+.mbox{position:relative;background:#fff;border-radius:18px;max-width:520px;width:100%;max-height:86vh;overflow:auto;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.mbox h3{color:var(--accent);margin-bottom:2px}
+.split>section>.board{overflow:auto;align-content:start;padding-bottom:4px}
+.split .divider{height:2px;background:repeating-linear-gradient(90deg,var(--line) 0 12px,transparent 12px 20px)}
+
+/* ---- FORMA E COLORE, come nell'app dei soci ------------------------------------------------
+   Stessi criteri: squadrato, bordi spessi, niente ombre, contrasto alto. Il Crew si usa al
+   banco con la luce che entra dal Garden e il back office su schermi qualsiasi: quello che
+   regge in spiaggia regge anche qui, e avere due estetiche diverse fra le app dello stesso
+   residence non aiuta nessuno.
+   Il ROSSO resta agli avvisi (tavolo oltre i dieci minuti, ombrellone non reso): le azioni
+   sono blocchi pieni scuri con testo bianco, misurati a 14.6 di contrasto contro il 5.9 del
+   pulsante oro di prima. */
+:root{--navy:#102A43;--gold:#8a5a12;--coral:#9E2B20;--ink:#101418;--line:#101418;--r:4px;--bordo:2px;}
+.card,.panel,.btn,.tag,input,select,textarea,.box{border-radius:var(--r) !important;box-shadow:none !important;}
+.card,.panel{border:var(--bordo) solid var(--line) !important;}
+.btn{border:var(--bordo) solid var(--line);font-weight:800;min-height:44px;}
+.btn.gold,.btn.navy{background:var(--navy);color:#fff;border-color:var(--navy);}
+.btn.ghost{background:#fff;color:var(--ink);border-color:var(--line);}
+.btn.danger{background:var(--coral);color:#fff;border-color:var(--coral);}
+.btn.sm{min-height:34px;}
+input,select,textarea{border:var(--bordo) solid var(--line) !important;}
+</style>
+</head>
+<body>
+<div id="login">
+  <div class="card">
+    <h1>Bussola Crew</h1>
+    <div class="sub">Back office operativo · accesso in base ai permessi</div>
+    <label for="u">Operatore</label><input id="u" value="staff" autocomplete="username">
+    <label for="p">Password</label><input id="p" type="password" placeholder="password" autocomplete="current-password">
+    <div class="sub" style="margin-top:8px">Entri direttamente nel tuo modulo. Se ne hai più d'uno, cambi al volo dalla barra in alto.</div>
+    <button class="btn gold" id="loginBtn" style="width:100%;margin-top:16px">Entra</button>
+    <div id="loginErr"></div>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <div id="top">
+    <div class="row" style="justify-content:space-between">
+      <span class="brand">🧭 Bussola Crew</span>
+      <span class="who" style="display:flex;align-items:center;gap:8px">
+        <label style="display:flex;align-items:center;gap:5px;color:#cfe0ee">Modulo
+          <select id="zonaSwitch" style="padding:4px 8px;border-radius:8px;border:none;font-weight:700"><option value="garden">🌿 Garden</option><option value="bar">🍸 Bar</option><option value="cucina">🍳 Cucina</option><option value="magazzino">📦 Magazzino</option><option value="sport">🏆 Sport</option><option value="campi">🎾 Campi</option><option value="tennis">🎾 Tennis &amp; Beach</option><option value="beach">⛱️ Spiaggia</option><option value="serate">🍽️ Serate</option><option value="cdc">📚 Casa di Carta</option><option value="fitness">🧘 Fitness</option><option value="cinema">🎭 Stage</option></select>
+        </label>
+        <span>· <span id="whoName"></span> · <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
+      </span>
+    </div>
+    <div id="tabs">
+      <button data-v="comande" class="on">🧾 Comande</button>
+      <button data-v="pianta">🗺️ Organizzazione sala</button>
+      <button data-v="tennis">🎾 Campi &amp; tariffe</button>
+      <button data-v="tornei">🏆 Tornei</button>
+      <button data-v="beach">⛱️ Piazzole</button>
+      <button data-v="bar">🍸 Bar</button>
+      <button data-v="kds">🍳 Cucina</button>
+      <button data-v="magazzino">📦 Magazzino</button>
+      <button data-v="sport">🏆 Sport</button>
+      <button data-v="campi">🎾 Campi</button>
+      <button data-v="serate">🍽️ Serate</button>
+      <button data-v="cdc">📚 Casa di Carta</button>
+      <button data-v="fitness">🧘 Fitness</button>
+      <button data-v="cinema">🎬 Cinema</button>
+      <button data-v="menu">🍔 Menù</button>
+      <button data-v="riepilogo">📊 Riepilogo</button>
+      <button data-v="registro">📚 Registro storico</button>
+    </div>
+  </div>
+  <div id="view"></div>
+</div>
+
+<div id="modal" class="modal hide"><div class="mbg" id="modalBg"></div><div class="mbox" id="mbox"></div></div>
+
+<script>
+<!--#include shared/comanda.js-->
+</script>
+<script>
+<!--#include chiosco/chiosco.js-->
+</script>
+</body>
+</html>

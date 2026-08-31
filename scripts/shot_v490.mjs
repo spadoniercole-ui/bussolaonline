@@ -1,0 +1,20 @@
+import { chromium } from 'playwright-core';
+import { readdirSync } from 'node:fs';
+const base='http://127.0.0.1:5997';
+const dir = readdirSync('/opt/pw-browsers').find(d=>d.startsWith('chromium-'));
+const b = await chromium.launch({ executablePath:`/opt/pw-browsers/${dir}/chrome-linux/chrome`, args:['--no-sandbox'] });
+const call = async (p,o={}) => (await fetch(base+p,{method:o.method||'GET',headers:{'Content-Type':'application/json',...(o.token?{Authorization:'Bearer '+o.token}:{})},body:o.body?JSON.stringify(o.body):undefined})).json();
+const oggi = new Date().toISOString().slice(0,10);
+const menu = await call('/api/menu?zona=garden');
+await call('/api/self-order',{method:'POST',body:{punto:'Bussola Garden',tavolo:'2',righe:[{menu_id:menu[0].id,qta:2},{menu_id:menu[1].id,qta:1}]}});
+await call('/api/self-order',{method:'POST',body:{punto:'Bussola Garden',tavolo:'7',righe:[{menu_id:menu[0].id,qta:1}]}});
+await call('/api/self-order',{method:'POST',body:{punto:'Bussola Bar',tavolo:'2',righe:[{menu_id:menu[0].id,qta:1}]}});
+await call('/api/garden/prenota',{method:'POST',body:{tessera_code:'BR-2026-0001',data:oggi,turno:'20:00',persone:4}});
+const p = await b.newPage({ viewport:{width:1000,height:1100} });
+await p.goto(base+'/chiosco/',{waitUntil:'networkidle'});
+await p.fill('#u','gestore'); await p.fill('#p','shot-admin'); await p.click('#loginBtn'); await p.waitForTimeout(1800);
+await p.click('#tabs [data-v="pianta"]'); await p.waitForTimeout(2000);
+await p.screenshot({path:'/tmp/pianta_unita.png', fullPage:true});
+const t2 = await p.$('[data-pren="2"]');
+if (t2) { await t2.click(); await p.waitForTimeout(900); await p.screenshot({path:'/tmp/pianta_comanda.png'}); }
+await b.close(); console.log('ok');

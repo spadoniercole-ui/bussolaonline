@@ -1,0 +1,17 @@
+import { chromium } from 'playwright-core';
+import { readdirSync } from 'node:fs';
+const base = process.env.BASE || 'http://127.0.0.1:9977';
+const dir = readdirSync('/opt/pw-browsers').find((d) => d.startsWith('chromium-'));
+const call = async (p, o = {}) => (await fetch(base + p, { method: o.method || 'GET', headers: { 'Content-Type': 'application/json', ...(o.token ? { Authorization: 'Bearer ' + o.token } : {}) }, body: o.body ? JSON.stringify(o.body) : undefined })).json();
+const { token } = await call('/api/admin/login', { method: 'POST', body: { username: 'gestore', password: 'sim' } });
+const forma = process.env.FORMA === 'stretta' ? { garden_larghezza_m: 8, garden_profondita_m: 20 } : { garden_larghezza_m: 24, garden_profondita_m: 9 };
+await call('/api/admin/parametri', { method: 'PUT', token, body: forma });
+const b = await chromium.launch({ executablePath: `/opt/pw-browsers/${dir}/chrome-linux/chrome`, args: ['--no-sandbox'] });
+const p = await b.newPage({ viewport: { width: 1150, height: 900 }, deviceScaleFactor: 2 });
+await p.goto(base + '/chiosco/', { waitUntil: 'networkidle' });
+await p.fill('#u', 'gestore'); await p.fill('#p', 'sim'); await p.click('#loginBtn');
+await p.waitForTimeout(2600);
+const r = await p.evaluate(() => { const c = document.querySelector('#p_canvas'); if (!c) return null; const b2 = c.getBoundingClientRect(); return { l: Math.round(b2.width), h: Math.round(b2.height) }; });
+console.log(process.env.FORMA || 'larga', '· sala', JSON.stringify(forma), '→ riquadro', r ? `${r.l}×${r.h}` : 'non trovato', r ? `(rapporto ${(r.l / r.h).toFixed(2)})` : '');
+await p.screenshot({ path: '/tmp/pianta_' + (process.env.FORMA || 'larga') + '.png' });
+await b.close();

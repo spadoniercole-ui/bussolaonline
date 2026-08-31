@@ -1,0 +1,16 @@
+import { chromium } from 'playwright-core';
+import { readdirSync } from 'node:fs';
+const base='http://127.0.0.1:5976';
+const dir = readdirSync('/opt/pw-browsers').find(d=>d.startsWith('chromium-'));
+const b = await chromium.launch({ executablePath:`/opt/pw-browsers/${dir}/chrome-linux/chrome`, args:['--no-sandbox'] });
+const call = async (p,o={}) => (await fetch(base+p,{method:o.method||'GET',headers:{'Content-Type':'application/json',...(o.token?{Authorization:'Bearer '+o.token}:{})},body:o.body?JSON.stringify(o.body):undefined})).json();
+const oggi = new Date().toISOString().slice(0,10);
+const turni = (await call('/api/carta/turni?data='+oggi)).turni;
+await call('/api/carta/prenota',{method:'POST',body:{tessera_code:'BR-2026-0001',data:oggi,turno:turni[2].turno,persone:3}});
+const m = await b.newPage({ viewport:{width:430,height:940}, isMobile:true, hasTouch:true });
+await m.goto(base+'/chiosco/',{waitUntil:'networkidle'});
+await m.fill('#u','gestore'); await m.fill('#p','shot-admin'); await m.click('#loginBtn'); await m.waitForTimeout(1800);
+await m.selectOption('#zonaSwitch','cdc'); await m.waitForTimeout(1500);
+await m.click('#tabs [data-v="pianta"]'); await m.waitForTimeout(2000);
+await m.screenshot({path:'/tmp/carta_pianta.png', fullPage:true});
+await b.close(); console.log('ok');
