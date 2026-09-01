@@ -7733,6 +7733,7 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
         <button data-v="menu" data-cap="menu">\u{1F354} Men\xF9 &amp; listino</button>
         <button data-v="sala" data-cap="cdc">\u{1F4BB} Coworking & sala</button>
         <button data-v="cdc" data-cap="cdc">\u{1F0CF} Casa di Carta</button>
+        <button data-v="spiaggia" data-cap="beach">\u26F1\uFE0F Spiaggia</button>
         <button data-v="confronto" data-cap="magazzino">\u2696\uFE0F Consumi</button>
 
         <div class="grp">Guida &amp; luoghi</div>
@@ -8696,6 +8697,66 @@ function pickPhoto(onReady) {
 }
 
 // ---- Casa di Carta: coworking + caff\xE8 (magazzino capsule) + inventario giochi + prelievi + check ----
+/* LA SPIAGGIA SI CONFIGURA QUI, come tutto il resto.
+   Le misure di una piazzola, quanti ombrelloni ci stanno e come sono disposti si decidono una
+   volta a stagione, col metro in mano: e' configurazione, e la configurazione sta nel back
+   office \u2014 come per campi, fitness, Stage, serate, Casa di Carta, sala e menu'.
+   Era l'unico modulo su otto che si configurava dal Crew: chi cercava le misure le cercava qui
+   e non le trovava, e chi le trovava nel Crew si portava dietro un pannello di impostazioni in
+   mezzo al servizio.
+   Nel Crew resta quello che serve la sera: guardare la situazione, sistemare un disallineamento,
+   chiudere una piazzola quando tira vento. */
+VIEWS.spiaggia = async () => {
+  const d = await api('/spiaggia');
+  // Tutti i campi che il server accetta, nessuno perso nel trasloco dal Crew: nome, misure,
+  // file e colonne. File e colonne servono a disegnare la piazzola come le altre piante.
+  const riga = (p) => \`<tr>
+    <td><input id="sp_nome_\${p.id}" value="\${esc(p.nome)}" style="width:130px"></td>
+    <td><input id="sp_l_\${p.id}" type="number" step="0.1" value="\${p.larghezza_m ?? ''}" style="width:80px" placeholder="larg."></td>
+    <td><input id="sp_p_\${p.id}" type="number" step="0.1" value="\${p.profondita_m ?? ''}" style="width:80px" placeholder="prof."></td>
+    <td><input id="sp_f_\${p.id}" type="number" min="1" value="\${p.file ?? ''}" style="width:60px" placeholder="file">
+        <input id="sp_c_\${p.id}" type="number" min="1" value="\${p.colonne ?? ''}" style="width:60px" placeholder="col."></td>
+    <td>\${p.totale} ombrelloni \xB7 \${p.occupati} in uso</td>
+    <td class="right">
+      <button class="btn ghost sm" data-spsave="\${p.id}">Salva misure</button>
+      <button class="btn ghost sm" data-spver="\${p.id}">Ci stanno?</button>
+      <input id="sp_n_\${p.id}" type="number" min="1" max="40" value="6" style="width:64px">
+      <button class="btn ghost sm" data-spadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled title="Prima le misure"'}>+ Ombrelloni</button>
+      \${p.totale ? \`<button class="btn danger sm" data-spsvuota="\${p.id}">Svuota</button>\` : ''}
+    </td></tr>\`;
+  $('#view').innerHTML = \`<div class="panel"><h3>\u26F1\uFE0F Spiaggia \xB7 piazzole e ombrelloni</h3>
+    <p class="muted" style="font-size:.82rem">Le misure servono a sapere quanti ombrelloni ci stanno davvero: senza, "Ci stanno?" non pu\\u00f2 rispondere e gli ombrelloni non si possono aggiungere. Si prendono una volta a stagione.</p>
+    <table><thead><tr><th>Piazzola</th><th>Larghezza (m)</th><th>Profondit\\u00e0 (m)</th><th>File \\u00d7 colonne</th><th>Ombrelloni</th><th class="right">Azioni</th></tr></thead>
+      <tbody>\${(d.piazzole || []).map(riga).join('') || '<tr><td colspan="6" class="muted">Nessuna piazzola.</td></tr>'}</tbody></table>
+    <p class="muted" style="font-size:.78rem;margin-top:10px">In servizio la spiaggia si guarda dal Crew: chi si libera e quando, e chi non ha rilasciato. Qui si configura e basta.</p></div>\`;
+
+  document.querySelectorAll('[data-spsave]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.spsave;
+    await api('/spiaggia/piazzole/' + id, { method: 'PUT', body: JSON.stringify({
+      nome: $('#sp_nome_' + id).value.trim(),
+      larghezza_m: Number($('#sp_l_' + id).value) || null,
+      profondita_m: Number($('#sp_p_' + id).value) || null,
+      file: Number($('#sp_f_' + id).value) || null,
+      colonne: Number($('#sp_c_' + id).value) || null
+    }) });
+    show('spiaggia');
+  });
+  document.querySelectorAll('[data-spver]').forEach(b => b.onclick = async () => {
+    const r = await api('/spiaggia/piazzole/' + b.dataset.spver + '/verifica');
+    alert(r.messaggio || JSON.stringify(r));
+  });
+  document.querySelectorAll('[data-spadd]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.spadd;
+    await api('/spiaggia/piazzole/' + id + '/ombrelloni', { method: 'POST', body: JSON.stringify({ quanti: Number($('#sp_n_' + id).value) || 1 }) });
+    show('spiaggia');
+  });
+  document.querySelectorAll('[data-spsvuota]').forEach(b => b.onclick = async () => {
+    if (!confirm('Togliere tutti gli ombrelloni da questa piazzola?')) return;
+    await api('/spiaggia/piazzole/' + b.dataset.spsvuota + '/ombrelloni', { method: 'DELETE' });
+    show('spiaggia');
+  });
+};
+
 VIEWS.cdc = async () => {
   const [giochi, checks] = await Promise.all([api('/cdc/giochi'), api('/cdc/check')]);
   const catLabel = { carte: 'Carte', gioco_tavolo: 'Gioco da tavolo', scacchi: 'Scacchi/Dama', altro: 'Altro' };
@@ -13195,11 +13256,13 @@ VIEWS.beach = async () => {
         (p.ombrelloni || []).length ? \`<div class="ombg">\${p.ombrelloni.map(omb).join('')}</div>\` : 'nessun ombrellone disposto',
         fuori ? \`<b style="color:var(--coral)">\${fuori} non \${fuori === 1 ? 'reso' : 'resi'} a fine fascia</b>\` : ''
       ],
+      // I gestori di misure, disposizione, verifica e svuotamento sono usciti INSIEME ai loro
+  // tasti: restare agganciati a elementi che non ci sono e' codice morto che confonde chi
+  // legge, e a volte rompe la vista.
+  // Misure, disposizione e svuotamento sono CONFIGURAZIONE e stanno nel back office, con
+      // quella di tutti gli altri moduli. Qui resta l'unica decisione che si prende sul posto e
+      // sulla giornata: chiudere una piazzola perche' tira vento.
       azioni: !supervisore() ? [] : [
-        \`<button class="btn ghost sm" data-beverifica="\${p.id}">Ci stanno?</button>\`,
-        \`<button class="btn ghost sm" data-beconf="\${p.id}">Misure</button>\`,
-        \`<button class="btn ghost sm" data-beadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled'}>+ Ombrelloni</button>\`,
-        ...((p.ombrelloni || []).length ? [\`<button class="btn ghost sm" data-besvuota="\${p.id}">Svuota</button>\`] : []),
         \`<button class="btn ghost sm" data-beblocca="\${p.id}">Chiudi oggi</button>\`
       ]
     });
@@ -13216,8 +13279,6 @@ VIEWS.beach = async () => {
       \${supervisore() ? \`<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
         <!-- Quanti ombrelloni aggiungere e con che motivo chiudere: una volta sola per tutte
              le piazzole, invece di ripetere gli stessi due campi in ogni riquadro. -->
-        <label class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Ombrelloni da aggiungere
-          <input id="be_n" type="number" min="1" max="40" value="6" style="width:70px;margin-left:6px"></label>
         <label class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Motivo della chiusura
           <select id="be_m" style="width:auto;margin-left:6px"><option value="vento">vento</option><option value="marea">marea</option><option value="manutenzione">manutenzione</option></select></label>
       </div>\` : ''}
@@ -13264,61 +13325,11 @@ VIEWS.beach = async () => {
     };
   });
 
-  document.querySelectorAll('[data-beadd]').forEach(b => b.onclick = async () => {
-    const q = Number(($('#be_n') || {}).value) || 1;
-    try { await api('/spiaggia/piazzole/' + b.dataset.beadd + '/ombrelloni', { method: 'POST', body: JSON.stringify({ quanti: q }) }); }
-    catch (e) { alert(e.message); return; }
-    show('beach');
-  });
-  document.querySelectorAll('[data-besvuota]').forEach(b => b.onclick = async () => {
-    if (!confirm('Togliere tutti gli ombrelloni di questa piazzola?')) return;
-    try { await api('/spiaggia/piazzole/' + b.dataset.besvuota + '/ombrelloni', { method: 'DELETE' }); }
-    catch (e) { alert(e.message); return; }
-    show('beach');
-  });
   document.querySelectorAll('[data-beblocca]').forEach(b => b.onclick = async () => {
     const motivo = ($('#be_m') || {}).value || 'vento';
     if (!confirm('Chiudere la piazzola per ' + motivo + '? Nessuno potr\xE0 prendere un ombrellone.')) return;
     await api('/spiaggia/blocchi', { method: 'POST', body: JSON.stringify({ piazzola_id: Number(b.dataset.beblocca), data, motivo }) });
     show('beach');
-  });
-  document.querySelectorAll('[data-beconf]').forEach(b => b.onclick = () => {
-    const p = d.piazzole.find(x => String(x.id) === String(b.dataset.beconf));
-    openModal(\`<h3 style="margin-top:0">\u2699\uFE0E \${esc(p.nome)}</h3>
-      <p class="muted" style="font-size:.82rem">Misure, file e colonne: servono a disegnare la piazzola come le altre piante. Il numero di ombrelloni per\xF2 lo decidi tu guardando la spiaggia \u2014 alberi, docce e passaggi non li conosce nessuna formula.</p>
-      <div class="grid2" style="gap:8px">
-        <label>Nome<input id="bp_nome" value="\${esc(p.nome)}"></label>
-        <label>Larghezza (m)<input id="bp_l" type="number" step="0.5" value="\${p.larghezza_m ?? ''}"></label>
-        <label>Profondit\xE0 (m)<input id="bp_p" type="number" step="0.5" value="\${p.profondita_m ?? ''}"></label>
-        <label>File<input id="bp_f" type="number" min="1" value="\${p.file ?? ''}" placeholder="dalle misure"></label>
-        <label>Colonne<input id="bp_c" type="number" min="1" value="\${p.colonne ?? ''}" placeholder="dalle misure"></label>
-      </div>
-      <div class="row" style="gap:8px;margin-top:12px">
-        <button class="btn gold sm" id="bp_salva">Salva</button>
-        <button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
-    $('#bp_salva').onclick = async () => {
-      await api('/spiaggia/piazzole/' + p.id, { method: 'PUT', body: JSON.stringify({
-        nome: $('#bp_nome').value,
-        larghezza_m: Number($('#bp_l').value) || null, profondita_m: Number($('#bp_p').value) || null,
-        file: Number($('#bp_f').value) || null, colonne: Number($('#bp_c').value) || null
-      }) });
-      closeModal(); show('beach');
-    };
-  });
-  document.querySelectorAll('[data-beverifica]').forEach(b => b.onclick = async () => {
-    const v = await api('/spiaggia/piazzole/' + b.dataset.beverifica + '/verifica').catch(() => null);
-    if (!v) return;
-    if (v.misure_mancanti) { alert(v.nota); return; }
-    const ok = !v.problemi.length;
-    openModal(\`<h3 style="margin-top:0">\u{1F4D0} \${esc(v.piazzola)}</h3>
-      <div style="background:\${ok ? '#eaf3ec' : '#fdecea'};border-left:5px solid \${ok ? '#2e6b45' : '#b14a35'};border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:10px">
-        <b style="color:\${ok ? '#2e6b45' : '#8a2a20'}">\${esc(v.verdetto)}</b>
-        \${v.problemi.map(x => \`<div style="margin-top:4px">\xB7 \${esc(x)}</div>\`).join('')}</div>
-      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Piazzola</span><b>\${v.misure.larghezza_m} \xD7 \${v.misure.profondita_m} m \xB7 \${v.misure.mq} m\xB2</b></div>
-      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ombrelloni disposti</span><b>\${v.disposti}</b></div>
-      <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ce ne stanno (indicativo)</span><b>\${v.capienza_indicativa} \xB7 \${v.persone} persone</b></div>
-      <p class="muted aiuto" style="font-size:.78rem;margin-top:8px">\${esc(v.nota)} Il conto usa \${v.regole.ingombro_m} m di ingombro e \${v.regole.passaggio_m} m di passaggio.</p>
-      <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
   });
 };
 
@@ -15609,7 +15620,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.26.0" : "dev";
+var VERSION = true ? "6.27.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25330,7 +25341,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 16:58" : "online";
+var BUILD = true ? "2026-09-01 17:29" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
