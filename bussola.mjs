@@ -4066,8 +4066,8 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .bigtile .bt-ico{font-size:2rem; flex:0 0 auto;}
 .bigtile .bt-txt{flex:1; display:flex; flex-direction:column; gap:2px;}
 .bigtile .bt-txt b{font-size:1.18rem;}
-.bigtile .bt-txt span{font-size:.92rem; color:var(--muted);}
-.bigtile .bt-go{font-size:1.6rem; color:var(--muted);}
+.bigtile .bt-txt span{font-size:.92rem; color:var(--mute);}
+.bigtile .bt-go{font-size:1.6rem; color:var(--mute);}
 .bigtile.aiuto{background:#fdecea; border-color:#b14a35;}
 .bigtile.aiuto .bt-txt b{color:#8e2f1e;}
 .btn.sos{background:#b14a35; color:#fff; font-size:1.15rem; padding:16px;}
@@ -4158,16 +4158,19 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
   cursor:pointer; overflow:hidden;}
 .evrow .stripe{position:absolute; left:0; top:0; bottom:0; width:6px;}
 .evrow .gg{flex:0 0 34px; font-size:.7rem; font-weight:800; letter-spacing:.06em;
-  text-transform:uppercase; color:var(--muted);}
+  text-transform:uppercase; color:var(--mute);}
 .evrow .tx{flex:1; min-width:0; display:block;}
 /* Il titolo ha la riga tutta per se': non deve piu' cedere spazio a nessuno. */
 .evrow .tx b{display:block; font-size:1rem; line-height:1.25; color:var(--navy);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .evrow .tx .sub{display:block; margin-top:2px; font-size:.82rem; line-height:1.3;
-  color:var(--muted); overflow:hidden; text-overflow:ellipsis;
+  color:var(--mute); overflow:hidden; text-overflow:ellipsis;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
-.evrow .ora{font-size:.72rem; font-weight:700; color:var(--gold-dark,#8a5f18); flex:0 0 auto;}
-.evrow .chev{flex:0 0 auto; color:var(--muted);}
+/* Aveva un ripiego con un colore scritto a mano, quindi funzionava, ma quel colore stava solo li':
+   fuori dalla palette, invisibile al controllo dei contrasti, e diverso dall'oro di tutto il
+   resto per un soffio. Usa l'oro vero. */
+.evrow .ora{font-size:.72rem; font-weight:700; color:var(--gold); flex:0 0 auto;}
+.evrow .chev{flex:0 0 auto; color:var(--mute);}
 .evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
 .evcard .stripe{width:6px; flex:0 0 6px;}
 .evcard .body{flex:1; padding:12px 4px 12px 13px; min-width:0;}
@@ -4237,9 +4240,9 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 /* Griglia settimanale delle lezioni: sette colonne strette su schermo di telefono, quindi
    caselle compatte e testo minuscolo ma leggibile. Il colore fa il lavoro dell'etichetta. */
 .fitgrid{width:100%; border-collapse:collapse; table-layout:fixed;}
-.fitgrid th{font-size:.66rem; color:var(--muted); font-weight:700; padding:2px 0; text-align:center;}
+.fitgrid th{font-size:.66rem; color:var(--mute); font-weight:700; padding:2px 0; text-align:center;}
 .fitgrid th span{display:block; font-weight:400; font-size:.6rem;}
-.fitgrid th.ora{width:26px; color:var(--muted); font-size:.62rem; vertical-align:top; padding-top:6px;}
+.fitgrid th.ora{width:26px; color:var(--mute); font-size:.62rem; vertical-align:top; padding-top:6px;}
 .fitgrid td.fitv{padding:1px; vertical-align:top; border-top:1px solid var(--line); height:34px;}
 .fitq{display:block; width:100%; border:0; border-left:4px solid transparent; border-radius:6px;
   color:#fff; padding:3px 2px; margin-bottom:2px; cursor:pointer; line-height:1.05; font:inherit;}
@@ -4254,8 +4257,8 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .msg.mio{background:#eaf3ec; border-color:#cfe3d6; margin-left:22px;}
 .msg b{display:block; font-size:.76rem; color:var(--navy); margin-bottom:2px;}
 .msg p{margin:0; font-size:.9rem; line-height:1.4; overflow-wrap:anywhere;}
-.msg .ora{display:block; font-size:.68rem; color:var(--muted); margin-top:3px;}
-.msg .segn{position:absolute; top:6px; right:6px; background:none; border:0; color:var(--muted);
+.msg .ora{display:block; font-size:.68rem; color:var(--mute); margin-top:3px;}
+.msg .segn{position:absolute; top:6px; right:6px; background:none; border:0; color:var(--mute);
   font-size:.9rem; cursor:pointer; padding:2px 4px;}
 .chatinvio{display:flex; gap:8px; margin-top:10px;}
 .chatinvio input{flex:1; min-width:0;}
@@ -4363,7 +4366,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   .tabbar{border-top:var(--bordo) solid var(--line);}
   .srv{border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--card); margin-top:10px;}
   .srv-h{font-size:.72rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase;
-    color:var(--muted); padding:10px 14px 6px;}
+    color:var(--mute); padding:10px 14px 6px;}
   .srv-g{display:grid; grid-template-columns:1fr 1fr;}
   .srv-g > button{appearance:none; background:var(--card); border:0; border-top:1px solid var(--line);
     border-right:1px solid var(--line); padding:14px 14px; text-align:left; cursor:pointer; min-height:64px;
@@ -4377,7 +4380,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   .srv-g > .ptile b{display:block; text-align:left;}
   .srv-g > .ptile span{display:block; text-align:left;}
   .srv-g b{font-size:1rem; color:var(--navy); line-height:1.2;}
-  .srv-g span{font-size:.82rem; color:var(--muted); line-height:1.25;}
+  .srv-g span{font-size:.82rem; color:var(--mute); line-height:1.25;}
 
   /* La scheda "quello che hai prenotato": la prima domanda di chi apre l'app. */
   .mie{border:1px solid var(--line); border-left:4px solid var(--gold); border-radius:12px;
@@ -4387,7 +4390,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
     border-bottom:1px solid var(--line);}
   .mie .riga:last-child{border-bottom:0;}
   .mie .riga b{font-size:.98rem; color:var(--navy);}
-  .mie .riga .q{font-size:.82rem; color:var(--muted);}
+  .mie .riga .q{font-size:.82rem; color:var(--mute);}
 
 </style>
 </head>
@@ -7607,7 +7610,7 @@ var admin_default = `<!DOCTYPE html>
   /* Sezioni comprimibili: le pagine di gestione sono lunghe, e su un portatile o un tablet
      si perde il filo. Il titolo diventa un interruttore e lo stato viene ricordato. */
   .panel[data-fold] > h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;}
-  .panel[data-fold] > h3::before{content:'\u25BE';font-size:.8em;color:var(--muted);transition:transform .15s;}
+  .panel[data-fold] > h3::before{content:'\u25BE';font-size:.8em;color:var(--mute);transition:transform .15s;}
   .panel[data-fold].chiuso > h3::before, .panel[data-fold].chiuso > .fold-testa > h3::before{transform:rotate(-90deg);}
   /* !important perche' molte righe hanno display:flex scritto INLINE: senza, il pannello
      risultava chiuso ma il contenuto restava visibile, e "Comprimi tutto" sembrava rotto. */
@@ -10399,7 +10402,17 @@ var chiosco_default = `<!DOCTYPE html>
      separazione. Stessa distinzione dell'app soci (--tratto / --riga). */
   /* Lo stesso valore dell'app soci: un nome deve valere un colore solo, altrimenti fra le due
      schermate lo stesso bordo si vede diverso e nessuno sa quale sia quello giusto. */
-  --tratto:#101418;--muted:#49525A;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
+  --tratto:#101418;
+  /* L'AREA MINIMA DI TOCCO. Non era dichiarata nel Crew, e ogni \`min-height:var(--tap)\` che ho
+     scritto \u2014 la barra dei moduli, la tastiera del PIN, le righe della cucina \u2014 era una regola
+     senza effetto: i tasti restavano dell'altezza del loro contenuto. Nell'app dei soci c'era
+     da sempre, qui no. 56 px e' la misura di un polpastrello, ed e' la stessa. */
+  --tap:56px;
+  /* Il fondo dei blocchi. Era usato in sei regole \u2014 la barra dei moduli, le schede della
+     cucina, le griglie \u2014 e non era dichiarato da nessuna parte: quei fondi restavano
+     trasparenti, sopra la carta. Si vede solo guardando, non da' nessun errore.
+     Bianco, come le schede dell'app dei soci: sulla carta stacca, e i bordi si leggono. */
+  --card:#FFFFFF;--muted:#49525A;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:16px}
 input,select,button{font-family:inherit;font-size:1rem}
@@ -10437,19 +10450,25 @@ body.hc .panel{border-color:#8F8B7C}
    una riga che scorre, perche' una colonna da tredici voci su un telefono mangia meta' schermo
    e chi serve ai tavoli il telefono ce l'ha in mano, non al banco. */
 #corpo{display:flex;align-items:flex-start;gap:0}
-#moduli{flex:0 0 200px;position:sticky;top:0;align-self:stretch;background:var(--card);border-right:2px solid var(--riga);padding:8px 0;display:flex;flex-direction:column;gap:1px;min-height:60vh}
-#moduli .grp{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:12px 12px 4px;font-weight:800}
-#moduli button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;background:transparent;border:none;border-left:3px solid transparent;color:var(--ink);font-weight:700;text-align:left;padding:12px;min-height:44px;cursor:pointer;font-size:.9rem}
+/* LA BARRA DEI MODULI. Voci squadrate, grandi, con il testo leggibile: si toccano col pollice
+   e si leggono di sfuggita, spesso al sole. Prima erano righe da 44 px con il testo a .9rem e
+   nessun bordo: sembravano un elenco da leggere, non tasti da premere. */
+#moduli{flex:0 0 214px;position:sticky;top:0;align-self:stretch;background:var(--card);border-right:var(--bordo) solid var(--tratto);padding:8px;display:flex;flex-direction:column;gap:6px;min-height:60vh}
+#moduli .grp{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);padding:12px 4px 2px;font-weight:800}
+#moduli button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
+  background:var(--card);border:var(--bordo) solid var(--tratto);border-radius:var(--r);
+  color:var(--ink);font-weight:800;text-align:left;padding:12px 13px;min-height:var(--tap);
+  cursor:pointer;font-size:1rem;line-height:1.15;font-family:inherit}
 #moduli button:hover{background:var(--paper)}
-#moduli button.on{background:var(--ink);color:#fff}
+#moduli button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
 /* La pastiglia esiste solo se c'e' un numero. Con :empty disegnava comunque il suo bordo, e
    accanto a ogni modulo compariva un trattino che sembrava un valore: un contatore vuoto deve
    sparire, non mostrare una casella. */
-#moduli button .n{font-size:.72rem;font-weight:800;border:2px solid currentColor;border-radius:4px;padding:0 5px;min-width:20px;text-align:center}
+#moduli button .n{font-size:.78rem;font-weight:800;border:2px solid currentColor;border-radius:4px;padding:1px 6px;min-width:24px;text-align:center;flex:0 0 auto}
 #moduli button .n:empty{display:none}
 #moduli #chiSono{overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;line-height:1.35}
 #moduli button.urge .n{background:var(--coral);border-color:var(--coral);color:#fff}
-#moduli #chiSono{margin-top:auto;padding:10px 12px;border-top:2px solid var(--riga);font-size:.75rem;color:var(--muted)}
+#moduli #chiSono{margin-top:auto;padding:10px 4px 2px;border-top:var(--bordo) solid var(--riga);font-size:.78rem;color:var(--muted);line-height:1.4}
 #lavoro{flex:1;min-width:0}
 #capo{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;
   padding:10px 0 12px;border-bottom:var(--bordo) solid var(--ink);margin-bottom:12px}
@@ -10495,6 +10514,21 @@ body.hc .panel{border-color:#8F8B7C}
 .tastiera .tk{border:var(--bordo) solid var(--tratto);border-radius:var(--r);background:#fff;color:var(--ink);
   font-size:1.3rem;font-weight:700;font-family:inherit;min-height:var(--tap);cursor:pointer}
 .tastiera .tk:active{background:var(--ink);color:#fff}
+/* LA PLATEA. File, corridoio nel mezzo, il posto col suo nome vero. Sessantasei riquadri
+   grandi con dentro "1 posti" erano illeggibili: qui una fila sta in una riga e si legge
+   com'e' fatta la sala. Il colore e' la quota; il bordo pieno vuol dire occupato. */
+.palco{background:var(--muted);color:#fff;text-align:center;font-size:.66rem;letter-spacing:.24em;
+  text-transform:uppercase;font-weight:800;border-radius:var(--r);padding:7px;margin-bottom:12px}
+.fila{display:flex;align-items:center;gap:4px;margin-bottom:5px}
+.fila .etf{flex:0 0 52px;font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:var(--muted)}
+.fila .lato{display:flex;gap:4px;flex-wrap:wrap}
+.fila .corridoio{flex:0 0 22px}
+.sed{width:34px;height:34px;border-radius:var(--r);border:2px solid var(--q);background:transparent;color:var(--ink);
+  font-weight:800;font-size:.78rem;font-family:inherit;cursor:pointer;padding:0}
+.sed.occ{background:var(--q);color:#fff}
+.sed.extra{border-style:dashed}
+.sed:active{outline:3px solid var(--ink)}
+@media (max-width:560px){ .sed{width:29px;height:29px;font-size:.7rem} .fila .etf{flex:0 0 40px} .fila .corridoio{flex:0 0 12px} }
 .kboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px}
 .kcard{border:var(--bordo) solid var(--ink);border-radius:var(--r);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
 .kcard>header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:9px 11px;background:var(--ink);color:#fff;cursor:pointer}
@@ -10563,8 +10597,7 @@ body.hc .panel{border-color:#8F8B7C}
   #moduli.aperto{display:flex}
   #moduli .grp{display:block; padding:14px 16px 6px}
   #moduli #chiSono{display:block}
-  #moduli button{width:100%; border-left:6px solid transparent; border-bottom:1px solid var(--riga); min-height:56px; padding:14px 16px; font-size:1rem}
-  #moduli button.on{border-left-color:var(--rosso)}
+  #moduli button{width:100%; min-height:62px; padding:16px; font-size:1.08rem}
   #modBtn{display:inline-flex}
   /* Comprimi/Espandi costavano una riga intera per una comodita' da scrivania. */
   .foldbar{display:none !important}
@@ -11345,7 +11378,7 @@ function abilitaFold() {
 const CAPO = {
   adesso:    ['Il turno', 'Adesso'],
   comande:   ['Prendere l\\u2019ordine', 'Comande'],
-  pianta:    ['Organizzazione sala', 'Sala'],
+  pianta:    ['Organizzazione sala', 'Sala'],   // il titolo vero lo mette disegnaCapo: nello Stage e' la platea, nella Casa di Carta la sala giochi
   bar:       ['Comande in corso', 'Bar'],
   kds:       ['Code di lavoro', 'Cucina'],
   menu:      ['Listino', 'Men\\u00f9'],
@@ -11368,7 +11401,13 @@ const CAPO = {
 function disegnaCapo(v) {
   const el = document.querySelector('#capo');
   if (!el) return;
-  const [occh, tit] = CAPO[v] || ['', (v || '').charAt(0).toUpperCase() + (v || '').slice(1)];
+  let [occh, tit] = CAPO[v] || ['', (v || '').charAt(0).toUpperCase() + (v || '').slice(1)];
+  // La Pianta serve tre ambienti: dire "Sala" mentre si guarda la platea dello Stage e' dire
+  // il posto sbagliato, e chi apre la scheda si chiede se ha sbagliato modulo.
+  if (v === 'pianta') {
+    if (ZONA === 'cinema') [occh, tit] = ['Disposizione della platea', 'Platea'];
+    else if (ZONA === 'cdc') [occh, tit] = ['Sala della Casa di Carta', 'Sala giochi'];
+  }
   const ora = new Date().toTimeString().slice(0, 5);
   el.innerHTML = \`<div><div class="occh">\${esc(occh)}</div><h1>\${esc(tit)}</h1></div>
     <div class="dx" id="capo_dx"><span class="et">Ora</span><b>\${esc(ora)}</b></div>
@@ -13746,13 +13785,29 @@ VIEWS.pianta = async () => {
   // schermata che mostra le stesse cose.
   // La legenda dei colori si calcola una volta: la usano sia il pannello del supervisore sia la
   // riga compatta della crew. Due copie divergerebbero, e i colori direbbero cose diverse.
-  const legendaSala = legendaColori(PIANTA.ambiente === 'stage'
-    ? [['#7a5c2e', 'prima fila over 70'], ['#2e6b45', 'chi cena'], ['#2f5d8a', 'solo spettacolo'], ['#b08b3e', 'extra'], ['#b14a35', 'occupato']]
-    : [['#2e6b45', 'libero'], ['#6b4ea0', 'prenotato'], ['#c8622f', 'comanda in corso'], ['#b14a35', \`oltre \${rossoMin}\\u2032\`], ['#b08b3e', 'extra'], ['#cfcbbf', 'arredo']]);
   // Turno, coperti e posti liberi non hanno un pannello: stanno nell'intestazione, a destra,
   // dove si guardano senza doverli cercare.
   capoStato(\`<span class="et">Servizio</span><b>Turno \${esc(PIANTA.turno)} \xB7 \${turnoDati.coperti_prenotati} \${PIANTA.ambiente === 'stage' ? 'in sala' : 'coperti'}</b>\`
     + \`<span>\${turnoDati.posti_liberi} liberi su \${turnoDati.posti_totali}\${turnoDati.serata ? ' \\u00b7 serata ' + esc(turnoDati.serata.etichetta) + ' ' + turnoDati.serata.pieno + '%' : ''}</span>\`);
+
+  // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
+  const sorgente = (PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli).filter(t => PIANTA.modo === 'disposizione' || t.attivo !== 0);
+  // Solo le quote che esistono davvero in questa disposizione: i posti extra sono a zero nei
+  // parametri, e annunciarli in legenda fa cercare qualcosa che non c'e'.
+  const quotePresenti = new Set(sorgente.filter(t => (t.tipo || 'standard') !== 'arredo').map(t => t.quota));
+  const cExtra = sorgente.some(t => t.tipo === 'extra');
+  const legendaSala = legendaColori(PIANTA.ambiente === 'stage'
+    ? [
+        quotePresenti.has('over70') ? ['#7a5c2e', 'prima fila over 70'] : null,
+        quotePresenti.has('garden') ? ['#2e6b45', 'chi cena'] : null,
+        quotePresenti.has('spettacolo') ? ['#2f5d8a', 'solo spettacolo'] : null,
+        cExtra ? ['#b08b3e', 'extra'] : null,
+        ['#b14a35', 'occupato']
+      ].filter(Boolean)
+    : [['#2e6b45', 'libero'], ['#6b4ea0', 'prenotato'], ['#c8622f', 'comanda in corso'], ['#b14a35', \`oltre \${rossoMin}\\u2032\`], ['#b08b3e', 'extra'], ['#cfcbbf', 'arredo']]);
+  // Il pannello di testa si costruisce QUI e non piu' sopra: usa la legenda, che a sua volta
+  // ha bisogno di sapere quali tavoli ci sono. Costruito prima, leggeva variabili che non
+  // esistevano ancora e la schermata si apriva con "Cannot access before initialization".
   const stato = \`<div class="panel" style="padding:8px 10px">
       <div class="row" style="gap:6px;flex-wrap:wrap">
         \${PIANTA.modo === 'disposizione' ? \`
@@ -13772,9 +13827,6 @@ VIEWS.pianta = async () => {
         ? \`<p class="muted aiuto" style="font-size:.76rem;margin-top:6px">Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. Il riempimento va sempre <b>dal centro verso l'esterno</b>.</p>\`
         : legendaSala}
       <div id="p_msg" class="muted" style="font-size:.8rem;margin-top:4px"></div></div>\`;
-
-  // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
-  const sorgente = (PIANTA.modo === 'disposizione' ? PIANTA.tavoli : turnoDati.tavoli).filter(t => PIANTA.modo === 'disposizione' || t.attivo !== 0);
   // Quanto e' largo il disegno rispetto a una sala "normale": sotto i 700 px i tavoli si
   // rimpiccioliscono, ma non oltre la meta' \u2014 sotto quella soglia il numero non si legge piu' e
   // una pianta illeggibile non serve a nessuno.
@@ -13871,6 +13923,48 @@ VIEWS.pianta = async () => {
      ci si aspetta che sia. E la griglia sta in qualunque schermo senza rimpicciolire niente,
      mentre la mappa in un telefono diventa un francobollo.
      Gli stati sono gli STESSI di sopra: si legge lo stesso calcolo, non se ne fa un secondo. */
+  /* LA PLATEA NON E' UNA GRIGLIA DI RIQUADRI.
+     La Sala ha diciotto tavoli e ogni riquadro porta persone, importo, avvisi: il riquadro
+     grande e' giusto. La platea ha sessantasei SEDUTE da un posto, e sessantasei riquadri con
+     dentro "1 posti" e un tasto "Apri" sono inutili e faticosi da leggere \u2014 e' un difetto che
+     ho introdotto io applicando la stessa forma a due cose diverse.
+     Una platea si legge come una platea: file, un corridoio nel mezzo, e il posto che si chiama
+     col suo nome vero \u2014 fila 3, posto 7. Il colore dice la quota, e la quota decide chi ci si
+     puo' sedere. */
+  const plateaHTML = () => {
+    const sedute = sorgente.filter(t => (t.tipo || 'standard') !== 'arredo')
+      .slice().sort((a, b) => Number(a.numero) - Number(b.numero));
+    if (!sedute.length) return '<div class="panel"><p class="muted">Nessuna seduta in questa disposizione.</p></div>';
+    // Le file si ricavano dalla posizione: la platea nasce a dieci per fila, ma se qualcuno la
+    // ridisegna il raggruppamento deve seguire il disegno, non un numero fisso.
+    const perY = new Map();
+    for (const t of sedute) {
+      const k = Math.round(Number(t.y));
+      if (!perY.has(k)) perY.set(k, []);
+      perY.get(k).push(t);
+    }
+    const file = [...perY.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v.sort((a, b) => Number(a.x) - Number(b.x)));
+    const COL = { over70: '#7a5c2e', garden: '#2e6b45', spettacolo: '#2f5d8a' };
+    return \`<div class="panel" style="padding:10px">
+      <div class="palco">palco</div>
+      \${file.map((riga, i) => {
+        const meta = Math.ceil(riga.length / 2);
+        const seduta = (t, posto) => {
+          const col = COL[t.quota] || 'var(--muted)';
+          const occupata = !t.libero;
+          return \`<button class="sed\${occupata ? ' occ' : ''}\${t.tipo === 'extra' ? ' extra' : ''}"
+            style="--q:\${col}" data-sed="\${t.numero}"
+            title="Fila \${i + 1} posto \${posto} \\u00b7 \${esc(t.quota || 'posto')}\${occupata ? ' \\u00b7 occupato' : ''}">\${posto}</button>\`;
+        };
+        return \`<div class="fila">
+          <span class="etf">fila \${i + 1}</span>
+          <span class="lato">\${riga.slice(0, meta).map((t, k) => seduta(t, k + 1)).join('')}</span>
+          <span class="corridoio"></span>
+          <span class="lato">\${riga.slice(meta).map((t, k) => seduta(t, meta + k + 1)).join('')}</span>
+        </div>\`;
+      }).join('')}
+    </div>\`;
+  };
   const griglieSala = () => {
     // ORDINATI PER NUMERO. Nella mappa l'ordine e' quello dello spazio: il tavolo 12 sta dove
     // sta nella sala. In una griglia l'ordine dello spazio non vuol dire piu' niente, e uscivano
@@ -13898,7 +13992,9 @@ VIEWS.pianta = async () => {
       });
     }), 'Nessun tavolo in questa disposizione.');
   };
-  const salaHTML = PIANTA.modo === 'disposizione'
+  const salaHTML = PIANTA.ambiente === 'stage' && PIANTA.modo !== 'disposizione'
+    ? plateaHTML()
+    : PIANTA.modo === 'disposizione'
     ? \`<div class="panel"><div id="p_canvas" style="position:relative;\${propAula}min-height:300px;border-radius:var(--r);
       background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:var(--bordo) solid var(--line);overflow:hidden">
       <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
@@ -14248,6 +14344,7 @@ VIEWS.pianta = async () => {
     // una copia della finestra del tavolo divergerebbe dall'altra al primo cambiamento.
     document.querySelectorAll('#p_canvas [data-pren]').forEach(el => el.onclick = () => apriDettaglioTavolo(Number(el.dataset.pren)));
     document.querySelectorAll('[data-tdetail2]').forEach(b => b.onclick = () => apriDettaglioTavolo(Number(b.dataset.tdetail2)));
+    document.querySelectorAll('[data-sed]').forEach(b => b.onclick = () => apriDettaglioTavolo(Number(b.dataset.sed)));
     return;
   }
 
@@ -15155,7 +15252,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.14.0" : "dev";
+var VERSION = true ? "6.15.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -24815,7 +24912,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 09:12" : "online";
+var BUILD = true ? "2026-09-01 10:16" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
