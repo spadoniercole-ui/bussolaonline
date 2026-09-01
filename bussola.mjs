@@ -13488,6 +13488,11 @@ VIEWS.pianta = async () => {
   // Una sola videata. Lo stato del turno c'e' sempre; gli strumenti di disegno compaiono
   // quando si sta modificando, ma la pagina e la mappa restano quelle: non serve una seconda
   // schermata che mostra le stesse cose.
+  // La legenda dei colori si calcola una volta: la usano sia il pannello del supervisore sia la
+  // riga compatta della crew. Due copie divergerebbero, e i colori direbbero cose diverse.
+  const legendaSala = legendaColori(PIANTA.ambiente === 'stage'
+    ? [['#7a5c2e', 'prima fila over 70'], ['#2e6b45', 'chi cena'], ['#2f5d8a', 'solo spettacolo'], ['#b08b3e', 'extra'], ['#b14a35', 'occupato']]
+    : [['#2e6b45', 'libero'], ['#6b4ea0', 'prenotato'], ['#c8622f', 'comanda in corso'], ['#b14a35', \`oltre \${rossoMin}\\u2032\`], ['#b08b3e', 'extra'], ['#cfcbbf', 'arredo']]);
   // Turno, coperti e posti liberi non hanno un pannello: stanno nell'intestazione, a destra,
   // dove si guardano senza doverli cercare.
   capoStato(\`<span class="et">Servizio</span><b>Turno \${esc(PIANTA.turno)} \xB7 \${turnoDati.coperti_prenotati} \${PIANTA.ambiente === 'stage' ? 'in sala' : 'coperti'}</b>\`
@@ -13509,9 +13514,7 @@ VIEWS.pianta = async () => {
            meno a schermo. Il quadratino di colore col nome accanto si legge a colpo d'occhio. -->
       \${PIANTA.modo === 'disposizione'
         ? \`<p class="muted aiuto" style="font-size:.76rem;margin-top:6px">Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. Il riempimento va sempre <b>dal centro verso l'esterno</b>.</p>\`
-        : legendaColori(PIANTA.ambiente === 'stage'
-            ? [['#7a5c2e', 'prima fila over 70'], ['#2e6b45', 'chi cena'], ['#2f5d8a', 'solo spettacolo'], ['#b08b3e', 'extra'], ['#b14a35', 'occupato']]
-            : [['#2e6b45', 'libero'], ['#6b4ea0', 'prenotato'], ['#c8622f', 'comanda in corso'], ['#b14a35', \`oltre \${rossoMin}\\u2032\`], ['#b08b3e', 'extra'], ['#cfcbbf', 'arredo']])}
+        : legendaSala}
       <div id="p_msg" class="muted" style="font-size:.8rem;margin-top:4px"></div></div>\`;
 
   // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
@@ -13604,12 +13607,63 @@ VIEWS.pianta = async () => {
         \`width:min(100%, calc(78vh * \${rap.toFixed(3)}));margin:0 auto;\`;
     }
   } catch (e) { }
-  $('#view').innerHTML = testa + (soG ? pannelloSelfOrder(soG) : '') + stato + \`
-    <div class="panel"><div id="p_canvas" style="position:relative;\${propAula}min-height:300px;border-radius:var(--r);
+  /* DUE FORME PER DUE LAVORI.
+     La MAPPA e' spaziale: serve a disegnare la sala, a spostare i tavoli, a sapere se ci stanno
+     davvero. E' il lavoro del manager, e si fa una volta.
+     In SERVIZIO serve un'altra cosa: sapere a colpo d'occhio quale tavolo chiede qualcosa. In
+     una planimetria il tavolo 12 bisogna cercarlo; in una griglia ordinata per numero e' dove
+     ci si aspetta che sia. E la griglia sta in qualunque schermo senza rimpicciolire niente,
+     mentre la mappa in un telefono diventa un francobollo.
+     Gli stati sono gli STESSI di sopra: si legge lo stesso calcolo, non se ne fa un secondo. */
+  const griglieSala = () => {
+    // ORDINATI PER NUMERO. Nella mappa l'ordine e' quello dello spazio: il tavolo 12 sta dove
+    // sta nella sala. In una griglia l'ordine dello spazio non vuol dire piu' niente, e uscivano
+    // 3, 4, 9, 10... \u2014 per trovare il 12 bisognava leggerli tutti. In griglia il numero E' il
+    // modo di cercare.
+    const tv = sorgente.filter(t => (t.tipo || 'standard') !== 'arredo')
+      .slice().sort((a, b) => Number(a.numero) - Number(b.numero));
+    return griglia(tv.map(t => {
+      const cs = perTavolo[t.numero] || [];
+      const st = cs.length ? statoGruppo(cs, rossoMin, Date.now()) : null;
+      const avv = avvisoDi(t.numero);
+      const occupato = !t.libero;
+      const tono = avv ? 'chiama' : st ? (st.key === 'rosso' ? 'chiama' : 'attesa') : occupato ? 'attesa' : 'libero';
+      const stato = avv ? 'avviso' : st ? (st.mins != null ? 'in corso ' + st.mins + '\\u2032' : 'in corso')
+        : occupato ? 'occupato' : (t.uniti && t.uniti.length) ? 'unito' : 'libero';
+      const tot = cs.reduce((n, c) => n + Number(c.totale || 0), 0);
+      return riquadro({
+        num: t.numero, stato, tono,
+        det: [
+          occupato || st ? \`\${t.nome ? esc(t.nome) : (t.posti + ' posti')}\${tot ? ' \\u00b7 ' + eur(tot) : ''}\` : \`\${t.posti} posti\`,
+          (t.uniti && t.uniti.length) ? 'unito al ' + t.uniti.join(', ') : '',
+          avv ? \`<b style="color:var(--coral)">\${esc(avv)}</b>\` : ''
+        ],
+        azioni: [\`<button class="btn ghost sm" data-tdetail2="\${t.numero}">Apri</button>\`]
+      });
+    }), 'Nessun tavolo in questa disposizione.');
+  };
+  const salaHTML = PIANTA.modo === 'disposizione'
+    ? \`<div class="panel"><div id="p_canvas" style="position:relative;\${propAula}min-height:300px;border-radius:var(--r);
       background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:var(--bordo) solid var(--line);overflow:hidden">
       <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
       \${box}
-    </div></div>\` + prenBox;
+    </div></div>\`
+    : griglieSala();
+  // Per chi non e' supervisore i tre pannelli di testa contengono pochissimo: il giorno e il
+  // turno, lo stato del self-order (che non puo' toccare) e la legenda. Tre cornici per tre
+  // righe. Si fondono in una, e i 395 px prima del primo tavolo diventano meno della meta'.
+  $('#view').innerHTML = (supervisore()
+      ? testa + (soG ? pannelloSelfOrder(soG) : '') + stato
+      : \`<div class="panel" style="padding:8px 10px">
+          <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+            <input type="date" id="p_data" value="\${PIANTA.data}" style="width:auto">
+            \${turniBtn}
+            \${soG ? \`<span style="flex:1"></span><span class="muted" style="font-size:.78rem">\u{1F4F1} self-order \${soG.aperto ? 'aperti' : 'sospesi'}</span>\` : ''}
+          </div>
+          \${legendaSala}
+        </div>\`)
+    + salaHTML + prenBox;
+
 
   // --- interazioni
   $('#p_data').onchange = () => { PIANTA.data = $('#p_data').value; PIANTA.sporco = false; show('pianta'); };
@@ -13675,8 +13729,7 @@ VIEWS.pianta = async () => {
     // Il tavolo e' il punto di partenza di tutto. Toccandolo si vede chi lo occupa (e lo si
     // chiama per nome), si prende la comanda senza digitare il numero del tavolo, si prenota,
     // si cambia forma e si accorpa. Prima queste cose stavano in tre posti diversi.
-    document.querySelectorAll('#p_canvas [data-pren]').forEach(el => el.onclick = () => {
-      const n = Number(el.dataset.pren);
+    const apriDettaglioTavolo = (n) => {
       const t = (turnoDati.tavoli || []).find(x => x.numero === n);
       if (!t) return;
       const cs = perTavolo[n] || [];
@@ -13922,7 +13975,11 @@ VIEWS.pianta = async () => {
         if (a.posti_base != null) a.posti = Number(a.posti_base);
         a.forma = 'tondo';
       });
-    });
+    };
+    // La MAPPA (solo in disposizione) e la GRIGLIA (in servizio) chiamano la stessa funzione:
+    // una copia della finestra del tavolo divergerebbe dall'altra al primo cambiamento.
+    document.querySelectorAll('#p_canvas [data-pren]').forEach(el => el.onclick = () => apriDettaglioTavolo(Number(el.dataset.pren)));
+    document.querySelectorAll('[data-tdetail2]').forEach(b => b.onclick = () => apriDettaglioTavolo(Number(b.dataset.tdetail2)));
     return;
   }
 
@@ -14794,7 +14851,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.09.0" : "dev";
+var VERSION = true ? "6.10.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -24386,7 +24443,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 06:35" : "online";
+var BUILD = true ? "2026-09-01 07:00" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
