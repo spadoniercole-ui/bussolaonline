@@ -10523,6 +10523,28 @@ body.hc .panel{border-color:#8F8B7C}
 .tastiera .tk{border:var(--bordo) solid var(--tratto);border-radius:var(--r);background:#fff;color:var(--ink);
   font-size:1.3rem;font-weight:700;font-family:inherit;min-height:var(--tap);cursor:pointer}
 .tastiera .tk:active{background:var(--ink);color:#fff}
+/* LE CLASSI CHE IL CREW USAVA SENZA DICHIARARLE.
+   Dodici, trovate dal controllo che ora ricava l'elenco dal codice invece di avercelo scritto
+   dentro. Nessuna dava errore: ereditavano lo stile del browser e si vedevano solo guardando.
+   La piu' visibile era \`.grid2\` \u2014 dichiarata solo nel back office \u2014 che nelle finestre del
+   tennis lasciava etichette e campi a scaletta, uno sotto l'altro sfalsati. */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid2 label{display:flex;flex-direction:column;gap:4px;font-size:.66rem;letter-spacing:.12em;
+  text-transform:uppercase;font-weight:800;color:var(--muted)}
+.grid2 label input,.grid2 label select{font-size:.95rem;text-transform:none;letter-spacing:0;color:var(--ink);font-weight:600}
+@media (max-width:560px){ .grid2{grid-template-columns:1fr} }
+.block{display:block;width:100%}
+.wrap{display:flex;flex-wrap:wrap;gap:8px}
+.sep{height:1px;background:var(--riga);margin:10px 0}
+.err{color:var(--coral);font-size:.8rem;min-height:16px}
+.meta{font-size:.78rem;color:var(--muted)}
+.data{font-weight:800}
+.capobar{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.mrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--riga)}
+.gir{border:var(--bordo) solid var(--tratto);border-radius:var(--r);padding:10px;background:var(--card)}
+.giohd{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:6px}
+.gio{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--riga)}
+
 /* CHIP, CAMPI E TITOLETTI. Esistevano solo nell'app dei soci: usandoli nel Crew i chip
    uscivano schiacciati uno contro l'altro, senza spaziatura e senza il selezionato pieno. */
 .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -11835,7 +11857,21 @@ function cucinaCard(g) {
   </div>\`;
 }
 // ---- Modale dettaglio (clic su una card) ----
-function openModal(html, opt) { $('#modal').dataset.protetta = (opt && opt.protetta) ? '1' : '';  $('#mbox').innerHTML = html; $('#modal').classList.remove('hide'); const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal; }
+/* LA PROTEZIONE SE LA DICHIARA LA FINESTRA DA SOLA.
+   Prima bisognava passare \`{protetta:true}\` a mano a ogni chiamata, e naturalmente ci si
+   dimenticava: la finestra di configurazione di un campo \u2014 dieci caselle da compilare piu' il
+   listino \u2014 si chiudeva per un tocco fuori bersaglio, e si ricominciava.
+   Ora si guarda il contenuto: se ci sono campi da riempire, un clic a vuoto non li butta via.
+   Una scheda di sola lettura continua a chiudersi al primo tocco, che li' e' comodo. */
+function openModal(html, opt) {
+  const box = $('#mbox');
+  box.innerHTML = html;
+  const daCompilare = box.querySelectorAll('input:not([type=hidden]), select, textarea').length;
+  $('#modal').dataset.protetta = (opt && opt.protetta) || daCompilare > 0 ? '1' : '';
+  $('#modal').classList.remove('hide');
+  const cb = box.querySelector('[data-mclose]');
+  if (cb) cb.onclick = closeModal;
+}
 function closeModal() { $('#modal').classList.add('hide'); }
 // UN CLIC A VUOTO NON DEVE COSTARE L'ORDINE. Su una finestra dove si e' composto qualcosa \u2014
 // una comanda con sei righe scelte una a una \u2014 chiudere per un tocco fuori bersaglio significa
@@ -12870,7 +12906,8 @@ VIEWS.tennis = async () => {
     \${griglia(riquadriTennis, 'Nessun campo nell\\u2019area tennis.')}
 
     \${bloccoPrenotaCampi({ campi, data, campoSel: TEN_CAMPO, giorni: settegiorni(),
-      nota: 'Il prezzo lo calcola il listino del campo. La <b>lezione privata</b> ha la sua tariffa: se non c\\u2019\\u00e8 in listino, la fascia resta gratuita.' })}
+      campo_obbl: 'Nome, oppure tessera se \\u00e8 un socio',
+      nota: 'La tessera non serve: questi campi si affittano anche a chi non \\u00e8 socio. Con la tessera la spesa finisce nel suo storico. Il prezzo lo calcola il listino; la <b>lezione privata</b> ha la sua tariffa.' })}
 
     <div class="panel"><h3>\u{1F6A7} Campo indisponibile</h3>
       <p class="muted" style="font-size:.82rem">Manutenzione, torneo, lezioni tutto il pomeriggio, o semplicemente oggi non lo affitti.</p>
@@ -13004,9 +13041,16 @@ VIEWS.tennis = async () => {
     \`<button class="btn gold sm" data-tencampo="\${esc(x.slot)}">Campo</button>
      <button class="btn ghost sm" data-tenlez="\${esc(x.slot)}">Lezione</button>\` });
   const prenotaTennis = async (slot, uso) => {
-    const tess = tesseraTitolare(); if (!tess) return;
+    // Qui la tessera e' FACOLTATIVA: se quello che c'e' scritto ha la forma di una tessera la
+    // si manda come tale, altrimenti e' un nome e basta. Un cliente di passaggio non ha una
+    // tessera, e rifiutarlo vorrebbe dire rifiutare un affitto.
+    const chi = (($('#cw_tess') || {}).value || '').trim();
+    if (!chi) { const m = $('#cw_msg'); if (m) m.textContent = 'Scrivi chi prende il campo.'; return; }
+    const corpo = RE_TESSERA.test(chi)
+      ? { campo_id: TEN_CAMPO, data, slot, tessera_code: chi.toUpperCase(), tipo_uso: uso }
+      : { campo_id: TEN_CAMPO, data, slot, nome: chi, tipo_uso: uso };
     try {
-      const r = await api('/tennis/prenota', { method: 'POST', body: JSON.stringify({ campo_id: TEN_CAMPO, data, slot, tessera_code: tess, tipo_uso: uso }) });
+      const r = await api('/tennis/prenota', { method: 'POST', body: JSON.stringify(corpo) });
       // Il prezzo si dice SUBITO: chi sta al banco deve poterlo chiedere prima che il socio se
       // ne vada, non scoprirlo dopo guardando il riquadro.
       const m = $('#cw_msg');
@@ -13444,14 +13488,14 @@ let TEN_CAMPO = null;  // lo stesso, per l'area tennis
  *
  * \`azioni(fascia)\` e' l'unica parte che cambia: restituisce i bottoni della singola fascia.
  */
-function bloccoPrenotaCampi({ campi, data, campoSel, giorni, nota }) {
+function bloccoPrenotaCampi({ campi, data, campoSel, giorni, nota, campo_obbl }) {
   return \`<div class="panel" style="margin-top:10px">
     <div class="field"><label>Campo</label><div class="chips">\${campi.map(c =>
       \`<button class="chip\${String(c.id) === String(campoSel) ? ' sel' : ''}" data-cwcampo="\${c.id}">\${esc(c.nome)}</button>\`).join('')}</div></div>
     <div class="field"><label>Giorno</label><div class="chips">\${giorni.map(g =>
       \`<button class="chip\${g.v === data ? ' sel' : ''}" data-cwgiorno="\${g.v}">\${esc(g.lab)}</button>\`).join('')}</div></div>
     <div class="field"><label>Chi prenota</label>
-      <input id="cw_tess" placeholder="Tessera del socio \\u2014 resta lui il titolare"></div>
+      <input id="cw_tess" placeholder="\${esc(campo_obbl || 'Tessera del socio \\u2014 resta lui il titolare')}"></div>
     <div class="sect-title" style="margin-top:10px">Fasce orarie</div>
     <div id="cw_fasce"><p class="muted" style="padding:10px 0">Carico\\u2026</p></div>
     <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>
@@ -15439,7 +15483,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.22.0" : "dev";
+var VERSION = true ? "6.23.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -21449,20 +21493,23 @@ adminRouter.delete("/tennis/blocchi/:id", requireTennisOperativo, async (req, re
 adminRouter.post("/tennis/prenota", requireTennisOperativo, async (req, res) => {
   const c = await campoDelTennis(req.body?.campo_id);
   if (!c) return res.status(404).json({ error: "Questo campo non e' fra i tuoi" });
-  const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(String(req.body?.tessera_code || "").toUpperCase());
-  if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const tess = String(req.body?.tessera_code || "").trim().toUpperCase();
+  const socio = tess ? await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=? AND attivo=1").get(tess) : null;
+  if (tess && !socio) return res.status(404).json({ error: "Tessera non trovata" });
+  const nome = socio ? `${socio.nome} ${socio.cognome}` : String(req.body?.nome || "").trim();
+  if (!nome) return res.status(400).json({ error: "Scrivi chi prende il campo: un nome basta, la tessera non serve." });
   const slot = String(req.body?.slot || "");
   const occupato = await db.prepare("SELECT 1 x FROM prenotazioni_campo WHERE campo_id=? AND data=? AND slot=? AND stato='prenotato'").get(c.id, req.body?.data, slot);
   if (occupato) return res.status(409).json({ error: "Fascia gia' occupata" });
   const conto = await prezzoPrenotazione(c, slot, 1, req.body?.tipo_uso === "lezione" ? "lezione" : "campo");
   const pa = await db.prepare(
     "INSERT INTO partite_aperte (campo_id,data,slot,slot_fine,n_slot,posti_totali,aperta_ai_soci,stato,creatore_tessera,creatore_nome,titolare_socio_id) VALUES (?,?,?,?,1,?,0,'completa',?,?,?)"
-  ).run(c.id, req.body?.data, slot, slot, c.posti_default, socio.tessera_code, `${socio.nome} ${socio.cognome}`, socio.id);
+  ).run(c.id, req.body?.data, slot, slot, c.posti_default, socio ? socio.tessera_code : null, nome, socio ? socio.id : null);
   const pid = Number(pa.lastInsertRowid);
   await db.prepare(
     "INSERT INTO prenotazioni_campo (campo_id,data,slot,tipo,socio_id,tessera_code,nome,stato,partita_id,titolare_socio_id,prezzo,tipo_uso) VALUES (?,?,?,'privata',?,?,?,'prenotato',?,?,?,?)"
-  ).run(c.id, req.body?.data, slot, socio.id, socio.tessera_code, `${socio.nome} ${socio.cognome}`, pid, socio.id, conto.prezzo, req.body?.tipo_uso === "lezione" ? "lezione" : "campo");
-  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(pid, socio.id, socio.tessera_code, `${socio.nome} ${socio.cognome}`);
+  ).run(c.id, req.body?.data, slot, socio ? socio.id : null, socio ? socio.tessera_code : null, nome, pid, socio ? socio.id : null, conto.prezzo, req.body?.tipo_uso === "lezione" ? "lezione" : "campo");
+  await db.prepare("INSERT INTO partita_iscritti (partita_id,socio_id,tessera_code,nome) VALUES (?,?,?,?)").run(pid, socio ? socio.id : null, socio ? socio.tessera_code : null, nome);
   audit(req.adminUser.username, "prenota_campo_banco", "campi", c.id, `${req.body?.data} ${slot} \xB7 ${conto.prezzo} \u20AC`);
   res.status(201).json({ ok: true, prezzo: conto.prezzo });
 });
@@ -25111,7 +25158,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 13:46" : "online";
+var BUILD = true ? "2026-09-01 14:03" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
