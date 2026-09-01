@@ -10445,7 +10445,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;
    sole, con le mani occupate e senza poter cambiare posto. La scelta si ricorda sul dispositivo. */
 body.hc{--muted:#31383E; --riga:#B9B6A8; --paper:#FBF9F2}
 body.hc .panel{border-color:#8F8B7C}
-#tabs{display:flex;gap:4px;margin-top:10px;overflow-x:auto}
+#tabs{display:flex;gap:6px;margin:0 0 12px;overflow-x:auto;padding-bottom:2px}
 /* La barra dei moduli. Su schermo largo sta a sinistra e non si muove; sotto i 900 px diventa
    una riga che scorre, perche' una colonna da tredici voci su un telefono mangia meta' schermo
    e chi serve ai tavoli il telefono ce l'ha in mano, non al banco. */
@@ -10453,7 +10453,14 @@ body.hc .panel{border-color:#8F8B7C}
 /* LA BARRA DEI MODULI. Voci squadrate, grandi, con il testo leggibile: si toccano col pollice
    e si leggono di sfuggita, spesso al sole. Prima erano righe da 44 px con il testo a .9rem e
    nessun bordo: sembravano un elenco da leggere, non tasti da premere. */
-#moduli{flex:0 0 214px;position:sticky;top:0;align-self:stretch;background:var(--card);border-right:var(--bordo) solid var(--tratto);padding:8px;display:flex;flex-direction:column;gap:6px;min-height:60vh}
+/* Appiccicata SOTTO la testata, non sopra. Con \`top:0\` scivolava dietro la barra colorata, che
+   e' anche lei appiccicata e sta piu' in alto: il suo angolo finiva addosso all'intestazione
+   della schermata. E \`align-self:stretch\` la faceva alta quanto il contenuto, quindi scorrendo
+   spariva del tutto e per cambiare modulo bisognava risalire.
+   \`top:56px\` la ferma sotto la testata; l'altezza e' quella della finestra meno la testata. */
+#moduli{flex:0 0 214px;position:sticky;top:56px;align-self:flex-start;
+  max-height:calc(100vh - 56px);overflow:auto;
+  background:var(--card);border-right:var(--bordo) solid var(--tratto);padding:8px;display:flex;flex-direction:column;gap:6px}
 #moduli .grp{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);padding:12px 4px 2px;font-weight:800}
 #moduli button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
   background:var(--card);border:var(--bordo) solid var(--tratto);border-radius:var(--r);
@@ -10529,6 +10536,18 @@ body.hc .panel{border-color:#8F8B7C}
 .sed.extra{border-style:dashed}
 .sed:active{outline:3px solid var(--ink)}
 @media (max-width:560px){ .sed{width:29px;height:29px;font-size:.7rem} .fila .etf{flex:0 0 40px} .fila .corridoio{flex:0 0 12px} }
+/* CHIP, CAMPI E TITOLETTI. Esistevano solo nell'app dei soci: usandoli nel Crew i chip
+   uscivano schiacciati uno contro l'altro, senza spaziatura e senza il selezionato pieno.
+   Stesse misure dell'app, perche' la stessa cosa deve avere lo stesso aspetto nelle due
+   schermate \u2014 e chi sta al banco e chi sta sul divano stanno guardando la stessa scelta. */
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:var(--bordo) solid var(--tratto);background:var(--card);border-radius:var(--r);
+  padding:10px 14px;font-size:.88rem;font-weight:800;color:var(--ink);cursor:pointer;
+  min-height:var(--tap);display:inline-flex;align-items:center;font-family:inherit}
+.chip.sel{background:var(--ink);color:#fff;border-color:var(--ink)}
+.field{margin-top:12px}
+.field label{display:block;font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:6px}
+.sect-title{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin:16px 0 6px}
 .kboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px}
 .kcard{border:var(--bordo) solid var(--ink);border-radius:var(--r);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
 .kcard>header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:9px 11px;background:var(--ink);color:#fff;cursor:pointer}
@@ -10611,8 +10630,12 @@ body.hc .panel{border-color:#8F8B7C}
   body:not(.aiuti) .aiuto{display:none}
 }
 
-#tabs button{background:transparent;border:none;color:#cfe0ee;font-weight:700;padding:10px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
-#tabs button.on{background:var(--paper);color:var(--navy)}
+/* Le sotto-schede, ora su fondo chiaro: squadrate come tutto il resto, con la selezionata
+   piena. Prima erano linguette su fondo scuro dentro la testata colorata. */
+#tabs button{background:var(--card);border:var(--bordo) solid var(--tratto);border-radius:var(--r);
+  color:var(--ink);font-weight:800;font-size:.88rem;padding:9px 13px;min-height:44px;cursor:pointer;
+  white-space:nowrap;font-family:inherit}
+#tabs button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
 #view{padding:16px;max-width:1360px;margin:0 auto}
 @media (max-width:560px){#view{padding:10px}#top{padding-left:10px;padding-right:10px}.panel{padding:12px}}
 /* login */
@@ -10703,7 +10726,24 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
     </div>
-    <div id="tabs">
+
+  </div>
+  <div id="corpo">
+    <!-- I moduli scendono da navigazione a deposito: durante il servizio non si naviga, si
+         guarda "Adesso" e si torna al tavolo. La barra e' sempre visibile, non e' un menu' che
+         si apre: cercare dove sono le cose e' il tempo che al picco non si ha. -->
+    <nav id="moduli" aria-label="Moduli"></nav>
+    <div id="lavoro">
+      <!-- L'INTESTAZIONE DELLA SCHERMATA. Una riga sola: cosa stai guardando a sinistra, come
+           va il servizio a destra. Prima ogni modulo apriva con tre o quattro pannelli di
+           preamboli \u2014 data, pulsanti secondari, legenda in prosa \u2014 e nel Magazzino il lavoro
+           cominciava a 680 px su 1024: due terzi di schermo prima di poter fare qualcosa. -->
+      <header id="capo"></header>
+      <!-- LE SOTTO-SCHEDE stanno nell'area di lavoro, non dentro la testata colorata.
+           Li' erano una seconda riga sopra tutto, e la barra laterale ci passava sotto: il suo
+           angolo finiva addosso all'intestazione della schermata. E una riga di schede colorate
+           sopra la testata non e' bella e non aiuta a capire dove si e'. -->
+      <div id="tabs">
       <button data-v="comande" class="on">\u{1F9FE} Comande</button>
       <button data-v="pianta">\u{1F5FA}\uFE0F Organizzazione sala</button>
       <button data-v="tennis">\u{1F3BE} Campi &amp; tariffe</button>
@@ -10722,18 +10762,6 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
       <button data-v="riepilogo">\u{1F4CA} Riepilogo</button>
       <button data-v="registro">\u{1F5C4}\uFE0F Registro storico</button>
     </div>
-  </div>
-  <div id="corpo">
-    <!-- I moduli scendono da navigazione a deposito: durante il servizio non si naviga, si
-         guarda "Adesso" e si torna al tavolo. La barra e' sempre visibile, non e' un menu' che
-         si apre: cercare dove sono le cose e' il tempo che al picco non si ha. -->
-    <nav id="moduli" aria-label="Moduli"></nav>
-    <div id="lavoro">
-      <!-- L'INTESTAZIONE DELLA SCHERMATA. Una riga sola: cosa stai guardando a sinistra, come
-           va il servizio a destra. Prima ogni modulo apriva con tre o quattro pannelli di
-           preamboli \u2014 data, pulsanti secondari, legenda in prosa \u2014 e nel Magazzino il lavoro
-           cominciava a 680 px su 1024: due terzi di schermo prima di poter fare qualcosa. -->
-      <header id="capo"></header>
       <div id="view"></div>
     </div>
   </div>
@@ -13347,6 +13375,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.
 // ===== MODULO CAMPI (cap 'campi') \u2014 prenotazioni del giorno e prenotazione al banco =========
 const oggiISO = () => new Date().toISOString().slice(0, 10);
 let CAMPI_DATA = '';
+let CW_CAMPO = null;   // il campo scelto nella riga di prenotazione, come nell'app del socio
 VIEWS.campi = async () => {
   const data = CAMPI_DATA || (CAMPI_DATA = oggiISO());
   const [campi, pren, blocchi] = await Promise.all([
@@ -13354,35 +13383,56 @@ VIEWS.campi = async () => {
     api('/campi/prenotazioni?data=' + data).catch(() => []),
     api('/campi/blocchi?data=' + data).catch(() => [])
   ]);
-  // I RIQUADRI DEI CAMPI, come quelli dei tavoli. Dentro il quadrato c'e' tutto quello che
-  // serve a rispondere a un socio che arriva al banco: che campo, a che ora, chi lo tiene,
-  // quanti sono e quanti ne mancano. Il tono dice a colpo d'occhio se manca qualcuno per il
-  // numero legale, perche' e' l'unica cosa che chiede un intervento.
-  const riquadriPren = pren.map(p => {
-    const ora = p.slot_da === p.slot_a ? esc(p.slot_da) : \`\${esc(p.slot_da)}\\u2013\${esc(p.slot_a)}\`;
-    const dentro = (p.partecipanti || []).length;
-    const tot = Number(p.posti_totali) || 0;
-    const mancano = tot ? Math.max(0, tot - dentro) : 0;
-    const aperta = !!p.aperta_ai_soci;
-    const tono = aperta && mancano ? 'chiama' : 'attesa';
-    const nomi = (p.partecipanti || []).map(x => esc(x.nome)).join(', ');
+  /* UN RIQUADRO PER CAMPO, non per prenotazione.
+     Prima erano le prenotazioni: con zero prenotazioni la schermata era vuota e i quattro campi
+     non si vedevano affatto. Ma la domanda al banco e' "il campo da basket e' libero alle
+     sei?", non "quante prenotazioni ci sono oggi": si guarda il CAMPO e dentro si legge la sua
+     giornata. Un campo senza prenotazioni non sparisce: dice che e' libero tutto il giorno.
+     Il rosso solo dove chiede un intervento \u2014 una partita aperta a cui manca il numero legale,
+     che e' l'unica cosa ancora sistemabile prima che la fascia si liberi da sola. */
+  const perCampo = new Map(campi.map(c => [c.id, []]));
+  for (const p of pren) if (perCampo.has(p.campo_id)) perCampo.get(p.campo_id).push(p);
+  const blocchiDi = (id) => blocchi.filter(b => b.campo_id === id);
+  const riquadriPren = campi.map(c => {
+    const righe = (perCampo.get(c.id) || []).slice().sort((a, b) => String(a.slot_da).localeCompare(String(b.slot_da)));
+    const bl = blocchiDi(c.id);
+    const mancanti = righe.filter(p => p.aperta_ai_soci && Number(p.posti_totali) > (p.partecipanti || []).length);
+    const tono = mancanti.length ? 'chiama' : righe.length ? 'attesa' : 'libero';
+    const stato = bl.length ? 'impegnato' : righe.length ? righe.length + (righe.length === 1 ? ' fascia' : ' fasce') : 'libero';
+    const riga = (p) => {
+      const ora = p.slot_da === p.slot_a ? esc(p.slot_da) : \`\${esc(p.slot_da)}\\u2013\${esc(p.slot_a)}\`;
+      const dentro = (p.partecipanti || []).length, tot = Number(p.posti_totali) || 0;
+      const manca = p.aperta_ai_soci && tot > dentro;
+      return \`<div style="display:flex;justify-content:space-between;gap:6px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--riga)">
+        <span><b>\${ora}</b> \\u00b7 \${esc(p.titolare || '\\u2014')}\${tot ? \` <span class="muted">\${dentro}/\${tot}</span>\` : ''}</span>
+        \${manca ? \`<span style="color:var(--coral);font-weight:700;font-size:.78rem">\\u2212\${tot - dentro}</span>\` : ''}
+      </div>\`;
+    };
     return riquadro({
-      num: esc(p.campo_nome), stato: ora, tono,
+      num: c.nome, stato, tono,
       det: [
-        \`\${aperta ? 'aperta ai soci' : 'riservata'}\${tot ? ' \\u00b7 ' + dentro + '/' + tot : ''}\`,
-        \`titolare <b>\${esc(p.titolare || '\\u2014')}</b>\`,
-        nomi ? 'con ' + nomi : '',
-        aperta && mancano ? \`<b style="color:var(--coral)">mancano \${mancano} \${mancano === 1 ? 'giocatore' : 'giocatori'}</b>\` : ''
+        righe.length ? righe.map(riga).join('') : 'nessuna prenotazione oggi',
+        bl.map(b => \`<span style="color:var(--coral)">\\ud83d\\udea7 \${esc(b.slot_da)}\\u2013\${esc(b.slot_a)} \${esc(b.motivo)}</span>\`).join(''),
+        mancanti.length ? \`<b style="color:var(--coral)">\${mancanti.length} \${mancanti.length === 1 ? 'partita' : 'partite'} senza il numero legale</b>\` : ''
       ],
-      azioni: p.partita_id ? [
-        \`<button class="btn ghost sm" data-gioc="\${p.partita_id}">+ Chi gioca</button>\`,
-        \`<button class="btn ghost sm" data-discampo="\${p.partita_id}">Disdici</button>\`
-      ] : []
+      azioni: righe.filter(p => p.partita_id).flatMap(p => [
+        \`<button class="btn ghost sm" data-gioc="\${p.partita_id}">+ \${esc(p.slot_da)}</button>\`,
+        \`<button class="btn ghost sm" data-discampo="\${p.partita_id}">\\u2715 \${esc(p.slot_da)}</button>\`
+      ])
     });
   });
   const bl = blocchi.map(b => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
       <span>\u{1F6A7} <b>\${esc(b.campo_nome)}</b> \${esc(b.slot_da)}\u2013\${esc(b.slot_a)} <span class="muted">\${esc(b.motivo)}</span></span>
       <button class="btn danger sm" data-cbldel="\${b.id}">\u{1F5D1}</button></div>\`).join('');
+  // Sette giorni come nell'app del socio: oggi, domani, poi giorno e mese. Non una tendina:
+  // scegliere "giovedi'" e' un tocco, scorrere una tendina di date no.
+  if (!CW_CAMPO || !campi.some(c => String(c.id) === String(CW_CAMPO))) CW_CAMPO = campi[0] ? campi[0].id : null;
+  const GG = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+  const giorni = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() + i);
+    const v = d.toISOString().slice(0, 10);
+    return { v, lab: i === 0 ? 'Oggi' : i === 1 ? 'Domani' : \`\${GG[d.getDay()]} \${d.getDate()}\` };
+  });
   const opts = campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('');
   capoStato(\`<span class="et">Giornata</span><b>\${pren.length} \${pren.length === 1 ? 'prenotazione' : 'prenotazioni'}</b>\`
     + \`<span>\${campi.length} campi \\u00b7 \${blocchi.length} \${blocchi.length === 1 ? 'blocco' : 'blocchi'}</span>\`);
@@ -13394,19 +13444,21 @@ VIEWS.campi = async () => {
         \${legendaColori([['#101418', 'in campo'], ['#b14a35', 'manca il numero legale']])}
       </div></div>
     \${griglia(riquadriPren, 'Nessuna prenotazione per questa data.')}
-    <!-- LE DUE RIGHE COMUNI, sotto la griglia: valgono per tutti i campi e stanno sempre nello
-         stesso posto, cosi' non si cercano. La prima prenota, la seconda impegna il campo e la
-         vede solo il manager. -->
-    <div class="panel" style="padding:8px 10px;margin-top:10px">
-      <div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">
-        <select id="cw_campo" style="width:auto">\${opts}</select>
-        <select id="cw_slot" style="width:auto"><option>\u2014</option></select>
-        <input id="cw_tess" placeholder="Tessera socio" style="min-width:140px">
-        <select id="cw_tipo" style="width:auto"><option value="1">\u{1F465} Aperta ai soci</option><option value="0">\u{1F512} Riservata</option></select>
-        <button class="btn gold sm" id="cw_book">Prenota</button>
-      </div>
+    <!-- PRENOTARE COME LO VEDE IL SOCIO. Il banco e l'app devono mostrare la stessa cosa:
+         quando un socio chiede "e alle 17:30?", l'operatore deve vedere quello che vede lui,
+         non una tendina di orari senza contesto. Campo, giorno, e le fasce una sotto l'altra
+         con i due modi di prenotare su ognuna. -->
+    <div class="panel" style="margin-top:10px">
+      <div class="field"><label>Campo</label><div class="chips">\${campi.map(c =>
+        \`<button class="chip\${String(c.id) === String(CW_CAMPO) ? ' sel' : ''}" data-cwcampo="\${c.id}">\${esc(c.nome)}</button>\`).join('')}</div></div>
+      <div class="field"><label>Giorno</label><div class="chips">\${giorni.map(g =>
+        \`<button class="chip\${g.v === data ? ' sel' : ''}" data-cwgiorno="\${g.v}">\${esc(g.lab)}</button>\`).join('')}</div></div>
+      <div class="field"><label>Chi prenota</label>
+        <input id="cw_tess" placeholder="Tessera del socio \\u2014 resta lui il titolare"></div>
+      <div class="sect-title" style="margin-top:10px">Fasce orarie</div>
+      <div id="cw_fasce"><p class="muted" style="padding:10px 0">Carico\\u2026</p></div>
       <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>
-      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">Serve la tessera del socio che prenota: resta lui il titolare.</p></div>
+      <p class="muted aiuto" style="font-size:.78rem;margin:8px 0 0">Con <b>Apri ai soci</b> gli altri si uniscono fino al numero di giocatori del campo; con <b>Solo io</b> la fascia resta riservata al titolare. I campi sono gratuiti.</p></div>
     <div class="panel" style="padding:8px 10px">
       \${supervisore() ? \`<div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">
         <span class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Impegna</span>
@@ -13417,14 +13469,45 @@ VIEWS.campi = async () => {
       </div>\` : '<div class="muted" style="font-size:.78rem;margin:6px 0">Bloccare un campo toglie una risorsa a tutti i soci: lo decide il manager.</div>'}
       <div>\${bl || '<p class="muted">Nessun blocco per questa data.</p>'}</div></div>\`;
 
+  // Le fasce del campo scelto, nello stesso ordine e con le stesse parole dell'app del socio.
   const caricaSlot = async () => {
-    const id = $('#cw_campo').value;
-    const d = await api(\`/../campi/\${id}/disponibilita?data=\${$('#cw_data').value}\`).catch(() => ({ slots: [] }));
-    const liberi = (d.slots || []).filter(s => s.stato === 'libero');
-    $('#cw_slot').innerHTML = liberi.length ? liberi.map(s => \`<option value="\${s.slot}">\${s.slot}</option>\`).join('') : '<option value="">nessuna fascia libera</option>';
+    const box = $('#cw_fasce'); if (!box) return;
+    const d = await api(\`/../campi/\${CW_CAMPO}/disponibilita?data=\${data}\`).catch(() => ({ slots: [] }));
+    const righe = (d.slots || []).map(x => {
+      const libero = x.stato === 'libero';
+      const passato = x.stato === 'passato';
+      const azioni = libero
+        ? \`<button class="btn ghost sm" data-cwsolo="\${esc(x.slot)}">Solo io</button>
+           <button class="btn gold sm" data-cwapri="\${esc(x.slot)}">Apri ai soci</button>\`
+        : '';
+      const sotto = passato ? 'gi\\u00e0 passata'
+        : libero ? 'Libera'
+        : x.aperta_ai_soci ? \`partita aperta \\u00b7 \${x.iscritti || 0}/\${x.posti_totali || '?'}\${x.titolare ? ' \\u00b7 ' + esc(x.titolare) : ''}\`
+        : \`occupata\${x.titolare ? ' \\u00b7 ' + esc(x.titolare) : ''}\`;
+      return \`<div class="row" style="justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--riga)\${passato ? ';opacity:.5' : ''}">
+        <span><b style="font-size:1rem">\${esc(x.slot)}</b><br><span class="muted" style="font-size:.8rem">\${sotto}</span></span>
+        <span class="row" style="gap:6px">\${azioni}</span></div>\`;
+    }).join('');
+    box.innerHTML = righe || '<p class="muted" style="padding:10px 0">Nessuna fascia per questa data.</p>';
+    const prenota = async (slot, aperta) => {
+      const tess = ($('#cw_tess').value || '').trim().toUpperCase();
+      if (!tess) { $('#cw_msg').textContent = 'Serve la tessera del socio che prenota.'; return; }
+      try {
+        const r = await fetch(API_BASE + '/api/campi/' + CW_CAMPO + (aperta ? '/partita' : '/prenota'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tessera_code: tess, data, slot, n_slot: 1 })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { $('#cw_msg').textContent = j.error || 'Prenotazione non riuscita.'; return; }
+      } catch (e) { $('#cw_msg').textContent = 'Errore di rete.'; return; }
+      show('campi');
+    };
+    document.querySelectorAll('[data-cwsolo]').forEach(b => b.onclick = () => prenota(b.dataset.cwsolo, false));
+    document.querySelectorAll('[data-cwapri]').forEach(b => b.onclick = () => prenota(b.dataset.cwapri, true));
   };
   await caricaSlot();
-  $('#cw_campo').onchange = caricaSlot;
+  document.querySelectorAll('[data-cwcampo]').forEach(b => b.onclick = () => { CW_CAMPO = Number(b.dataset.cwcampo); show('campi'); });
+  document.querySelectorAll('[data-cwgiorno]').forEach(b => b.onclick = () => { CAMPI_DATA = b.dataset.cwgiorno; show('campi'); });
   $('#cw_data').onchange = () => { CAMPI_DATA = $('#cw_data').value; show('campi'); };
   // Chi gioca con il titolare: quasi sempre lo dicono arrivando al banco. Un socio si scrive
   // con la tessera (cosi' vale per la Coppa), un ospite col solo nome: chi non e' tesserato
@@ -13461,22 +13544,9 @@ VIEWS.campi = async () => {
       </div>\`);
     $('#gj_go').onclick = () => manda($('#gj_txt').value);
   });
-  $('#cw_book').onclick = async () => {
-    const tess = $('#cw_tess').value.trim().toUpperCase();
-    const slot = $('#cw_slot').value;
-    if (!tess) { $('#cw_msg').textContent = 'Serve la tessera del socio.'; return; }
-    if (!slot) { $('#cw_msg').textContent = 'Nessuna fascia libera selezionata.'; return; }
-    const aperta = $('#cw_tipo').value === '1';
-    try {
-      const r = await fetch(API_BASE + '/api/campi/' + $('#cw_campo').value + (aperta ? '/partita' : '/prenota'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tessera_code: tess, data: $('#cw_data').value, slot, n_slot: 1 })
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) { $('#cw_msg').textContent = j.error || 'Prenotazione non riuscita.'; return; }
-      show('campi');
-    } catch (e) { $('#cw_msg').textContent = 'Errore di rete.'; }
-  };
+  // Il vecchio "Prenota" con la tendina degli orari non c'e' piu': si prenota toccando la
+  // fascia, come fa il socio. Il gestore e' stato tolto insieme al tasto \u2014 restare agganciati a
+  // un elemento che non c'e' rompe la vista prima di collegare tutto il resto.
   if ($('#cw_bloc')) $('#cw_bloc').onclick = async () => {
     await api('/campi/blocchi', { method: 'POST', body: JSON.stringify({ campo_id: Number($('#cw_bcampo').value), data: $('#cw_data').value, slot_da: $('#cw_bda').value, slot_a: $('#cw_ba').value, motivo: $('#cw_bmot').value }) });
     show('campi');
@@ -13500,7 +13570,16 @@ VIEWS.serate = async () => {
   const coperti = attive.reduce((n, p) => n + Number(p.persone || 0), 0);
   const entrati = pren.filter(p => p.ingresso_at).reduce((n, p) => n + Number(p.persone || 0), 0);
   const daIncassare = pren.filter(p => p.stato === 'da_saldare').reduce((n, p) => n + Number(p.importo || 0), 0);
-  const chips = serate.map(x => \`<button class="btn \${x.id === SERATA_SEL ? 'gold' : 'ghost'} sm" data-sersel="\${x.id}">\${esc(x.titolo)}</button>\`).join('');
+  // UNA TENDINA, non quattro pulsanti: le serate sono poche ma fisse per tutta la stagione, e
+  // quattro tasti sempre a schermo per una scelta che si fa una volta a sera sono quattro tasti
+  // di troppo. Chiuse e passate restano scegliibili \u2014 servono a leggere chi era entrato \u2014 ma
+  // stanno in fondo e lo dicono.
+  const vive = serate.filter(x => !x.chiusa), passate = serate.filter(x => x.chiusa);
+  const opt = (x) => \`<option value="\${x.id}"\${x.id === SERATA_SEL ? ' selected' : ''}>\${esc(x.titolo)}\${x.chiusa ? ' \\u00b7 chiusa' : ''}</option>\`;
+  const chips = \`<select id="ser_sel" style="width:auto;font-weight:800">
+      \${vive.map(opt).join('')}
+      \${passate.length ? \`<optgroup label="gi\\u00e0 passate">\${passate.map(opt).join('')}</optgroup>\` : ''}
+    </select>\`;
 
   // La finestra la decide il SERVER e viaggia col dato: qui non si ricalcola niente, si legge.
   // Due copie della stessa regola prima o poi dicono cose diverse.
@@ -13529,18 +13608,17 @@ VIEWS.serate = async () => {
     });
   });
 
+  capoStato(\`<span class="et">Serata</span><b>\${coperti}/\${esc(String(s.capienza || 0))} coperti</b>\`
+    + \`<span>entrati \${entrati}\${daIncassare ? ' \\u00b7 da incassare ' + eur(daIncassare) : ''}</span>\`);
   $('#view').innerHTML = \`
-    <div class="panel"><b style="color:var(--navy)">\u{1F37D}\uFE0F Serate a tema</b>
-      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
-
-    <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <div><b style="color:var(--navy)">\${esc(s.titolo)}</b>
-          <div class="muted" style="font-size:.82rem">\${esc(s.quando || s.data || '')}\${/turno/i.test(s.quando || '') ? '' : ' \xB7 turno unico ' + esc(s.turno || '20:00')}</div></div>
-        <div style="text-align:right">
-          <div><b>\${coperti}</b><span class="muted">/\${esc(String(s.capienza || 0))} coperti</span></div>
-          <div class="muted" style="font-size:.82rem">entrati <b>\${entrati}</b> \xB7 da incassare <b>\${eur(daIncassare)}</b></div>
-        </div></div>
-      <div class="griglia" style="margin-top:10px">\${finestra}</div></div>
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+        \${chips}
+        <span class="muted" style="font-size:.82rem">\${esc(s.quando || s.data || '')}\${/turno/i.test(s.quando || '') ? '' : ' \\u00b7 turno unico ' + esc(s.turno || '20:00')}</span>
+        <span style="flex:1"></span>
+        \${s.chiusa ? '<span class="tag no">chiuse</span>' : s.solo_banco ? '<span class="tag mid">solo banco</span>' : '<span class="tag ok">aperte dall\\u2019app</span>'}
+      </div>
+      \${s.motivo ? \`<div class="muted aiuto" style="font-size:.78rem;margin-top:4px">\${esc(s.motivo)}</div>\` : ''}</div>
 
     <div class="panel"><b style="color:var(--navy)">\u{1F39F}\uFE0F Ingresso</b>
       <div class="muted" style="font-size:.82rem;margin-top:4px">Il ticket si valida una volta sola. Chi non ha pagato non ce l'ha.</div>
@@ -13562,7 +13640,7 @@ VIEWS.serate = async () => {
       \${legenda([['chiama', 'da saldare'], ['attesa', 'pagata, non entrata'], ['fatto', 'entrata']])}
       \${griglia(riquadri, 'Nessuna prenotazione.')}</div>\`;
 
-  document.querySelectorAll('[data-sersel]').forEach(b => b.onclick = () => { SERATA_SEL = Number(b.dataset.sersel); show('serate'); });
+  $('#ser_sel').onchange = () => { SERATA_SEL = Number($('#ser_sel').value); show('serate'); };
   document.querySelectorAll('[data-sersald]').forEach(b => b.onclick = async () => {
     try { const r = await api('/serate-prenotazioni/' + b.dataset.sersald, { method: 'PUT', body: JSON.stringify({ stato: 'saldata' }) });
       if (r.ticket) alert('Pagata. Ticket ' + r.ticket + ' \u2014 inviato sull\\u2019app del socio.');
@@ -13639,10 +13717,13 @@ VIEWS.cdc = async () => {
       \${legenda([['libero', 'vuoto'], ['attesa', 'occupato in parte'], ['chiama', 'al completo']])}</div>
     <div class="panel"><b style="color:var(--navy)">\u{1FA91} Tavoli della sala</b>
       <div id="cdc_sala" class="muted" style="margin-top:8px">caricamento\u2026</div></div>
-    <div class="panel"><b style="color:var(--navy)">\u{1F4DA} Inventario giochi</b>
-      <div style="margin-top:8px">\${giochi.map(g => \`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)">
+    \${!supervisore() ? '' : \`<div class="panel"><b style="color:var(--navy)">\u{1F4DA} Inventario giochi</b>
+      <!-- L'inventario e' del MANAGER. Alla crew serve sapere cosa c'e' per prestarlo \u2014 e
+           quello sta nella tendina qui sopra \u2014 non lo stato di ogni scatola: contare e'
+           lavoro, decidere se un gioco e' rovinato o chi deve rispondere non lo e'. -->
+      <div style="margin-top:8px">\${giochi.map(g => \`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--riga)">
         <span>\${esc(g.nome)} <span class="muted">\xB7 \${esc(g.categoria || '')}</span></span>
-        <span class="tag \${g.stato === 'ok' ? 'ok' : 'no'}">\${esc(g.stato)} \xB7 \${esc(String(g.quantita))}</span></div>\`).join('') || '<p class="muted">Inventario vuoto.</p>'}</div></div>\`;
+        <span class="tag \${g.stato === 'ok' ? 'ok' : 'no'}">\${esc(g.stato)} \xB7 \${esc(String(g.quantita))}</span></div>\`).join('') || '<p class="muted">Inventario vuoto.</p>'}</div></div>\`}\`;
   $('#cdc_presta').onclick = async () => {
     const sel = $('#cdc_gioco'); if (!sel || !sel.value) { alert('Nessun gioco in inventario.'); return; }
     const nome = sel.options[sel.selectedIndex].textContent;
@@ -13668,18 +13749,22 @@ async function renderSalaCarta() {
   if (sel) sel.innerHTML = '<option value="">\u2014 tavolo \u2014</option>' + d.tavoli.map(t => \`<option value="\${t.numero}">Tavolo \${t.numero}</option>\`).join('');
   // Nei turni di coworking si contano le SEDIE: un tavolo con una persona non e' "occupato".
   const cowo = (d.turni || []).find(x => (typeof x === 'string' ? x : x.turno) === d.turno)?.scopo === 'coworking';
+  // LO STESSO SCHEMA DI TUTTO IL RESTO: un riquadro per tavolo, con dentro chi c'e' e cosa sta
+  // giocando. Qui non era arrivato \u2014 erano righe con un filetto colorato a sinistra \u2014 e la Casa
+  // di Carta finiva per essere l'unico modulo che si legge in un modo diverso da tutti gli
+  // altri, che e' esattamente il motivo per cui uno schema comune serve.
   const chip = (t) => {
     const liberi = t.posti_liberi != null ? t.posti_liberi : (t.libero ? t.posti : 0);
     const occupato = cowo ? liberi <= 0 : !t.libero;
-    return \`<div style="border:1px solid var(--line);border-left:4px solid \${occupato ? '#b14a35' : liberi < t.posti ? '#c88a2e' : '#2e6b45'};border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
-      <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
-        <b>Tavolo \${t.numero}</b>
-        <span class="muted aiuto" style="font-size:.78rem">\${cowo
-          ? \`\${liberi}/\${t.posti} postazioni libere\`
-          : occupato ? esc(t.nome || 'occupato') + ' \xB7 ' + (t.persone || '?') + 'p' : t.posti + ' posti liberi'}</span>
-      </div>
-      \${(t.prestiti || []).length ? \`<div class="muted aiuto" style="font-size:.78rem;margin-top:4px">\u{1F3B2} \${t.prestiti.map(p => esc(p.gioco_nome) + ' (' + esc(p.giocatore || '\u2014') + ')').join(' \xB7 ')}</div>\` : ''}
-    </div>\`;
+    return riquadro({
+      num: t.numero,
+      stato: cowo ? \`\${liberi}/\${t.posti} libere\` : occupato ? 'occupato' : 'libero',
+      tono: occupato ? 'fatto' : liberi < t.posti ? 'attesa' : 'libero',
+      det: [
+        cowo ? 'postazioni singole' : occupato ? \`\${esc(t.nome || '\\u2014')} \\u00b7 \${t.persone || '?'} \${Number(t.persone) === 1 ? 'persona' : 'persone'}\` : \`\${t.posti} posti\`,
+        (t.prestiti || []).length ? '\\ud83c\\udfb2 ' + t.prestiti.map(p => esc(p.gioco_nome) + ' (' + esc(p.giocatore || '\\u2014') + ')').join(' \\u00b7 ') : ''
+      ]
+    });
   };
   box.innerHTML = \`<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
       \${d.turni.map(t => { const v = typeof t === 'string' ? t : t.turno; const lab = typeof t === 'string' ? t : (t.etichetta || t.turno); const ico = (typeof t === 'object' && t.scopo === 'coworking') ? '\u{1F4BB}' : '\u{1F557}';
@@ -13688,7 +13773,7 @@ async function renderSalaCarta() {
         ? '<span class="muted aiuto" style="font-size:.76rem;align-self:center">postazioni singole \xB7 si lavora anche da soli</span>'
         : (d.minimo ? \`<span class="muted aiuto" style="font-size:.76rem;align-self:center">minimo \${d.minimo} giocatori</span>\` : '')}
     </div>
-    \${d.tavoli.map(chip).join('')}
+    \${griglia(d.tavoli.map(chip), 'Nessun tavolo in questo turno.')}
     \${d.prestiti_senza_tavolo.length ? \`<p class="muted aiuto" style="font-size:.78rem">Senza tavolo: \${d.prestiti_senza_tavolo.map(p => esc(p.gioco_nome)).join(', ')}</p>\` : ''}
     <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
       <input id="carta_chi" placeholder="Tessera o nome" style="min-width:140px">
@@ -15261,7 +15346,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.16.0" : "dev";
+var VERSION = true ? "6.18.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -24921,7 +25006,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 10:48" : "online";
+var BUILD = true ? "2026-09-01 12:20" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
