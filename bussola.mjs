@@ -11238,7 +11238,18 @@ function allowedZones() {
   // SPIAGGIA: non e' un modulo della crew. Sulle piazzole non c'e' nessuno del personale, e
   // l'autogestione obbligata e' il problema, non la soluzione: mettere qui un modulo operativo
   // prometteva un presidio che non esiste. Resta al gestore, che deve poterla configurare.
-  if (ME.gestore) z.push('beach');
+  /* SPIAGGIA. Avevo deciso che restasse al gestore: sulle piazzole non c'e' personale, e un
+     modulo operativo prometteva un presidio che non esiste. Ma il presidio non e' sulla
+     sabbia: e' AL BANCO. Il socio arriva e chiede "c'e' un ombrellone libero?" oppure "quello
+     lo lascia qualcuno fra poco?", e la risposta e' esattamente quello che questa schermata sa
+     gia' dire: quale piazzola si libera e quando, e chi non ha rilasciato.
+     Negarla alla crew voleva dire farle rispondere "non lo so" a una domanda a cui il sistema
+     sapeva rispondere. Configurare la spiaggia e chiudere una piazzola restano del manager.
+
+     E c'era un difetto: alla 6.09 avevo messo \`beach\` fra i permessi del manager, ma qui il
+     modulo si accendeva solo per \`ME.gestore\`. Il manager aveva il permesso e non vedeva il
+     modulo: un permesso che non apre niente. */
+  if (ME.gestore || caps.includes('beach')) z.push('beach');
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
   // IL FITNESS STA IN MANO AL GESTORE. Una lezione con istruttore non e' servizio ordinario:
@@ -13152,23 +13163,27 @@ VIEWS.beach = async () => {
     \${d.piazzole.map(p => \`<div class="panel">
       <div class="row" style="justify-content:space-between;align-items:center">
         <h3 style="margin:0">\${esc(p.nome)} <span class="muted" style="font-weight:400;font-size:.82rem">\xB7 \${p.occupati}/\${p.totale} occupati\${p.larghezza_m ? \` \xB7 \${p.larghezza_m}\xD7\${p.profondita_m} m\` : ' \xB7 <b style="color:#b14a35">misure mancanti</b>'}</span></h3>
-        <div class="row" style="gap:6px">
+        <!-- Le misure della piazzola e la verifica degli ingombri si fanno una volta a
+             stagione, col metro in mano: non sono lavoro di banco. -->
+        \${!supervisore() ? '' : \`<div class="row" style="gap:6px">
           <button class="btn ghost sm" data-beverifica="\${p.id}">\u{1F4D0} Ci stanno?</button>
           <button class="btn ghost sm" data-beconf="\${p.id}">\u2699\uFE0E Misure</button>
-        </div>
+        </div>\`}
       </div>
       \${p.bloccata ? \`<div style="background:#fdecea;border-left:4px solid #b14a35;border-radius:0 8px 8px 0;padding:8px 10px;margin:8px 0">
         <b style="color:#8a2a20">Chiusa \xB7 \${esc(p.bloccata.motivo)}</b>\${p.bloccata.nota ? ' \u2014 ' + esc(p.bloccata.nota) : ''}</div>\` : ''}
       \${p.ombrelloni.length
         ? \`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\${p.ombrelloni.map(omb).join('')}</div>\`
         : \`<p class="muted" style="font-size:.82rem;margin-top:6px">\${p.larghezza_m ? 'Nessun ombrellone: aggiungili qui sotto.' : 'Prima le misure: senza, non si sa se gli ombrelloni ci stanno.'}</p>\`}
-      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
+      <!-- Disporre gli ombrelloni e chiudere una piazzola per vento o marea sono decisioni
+           sulla giornata, non lavoro di banco: stesso confine di tutti gli altri moduli. -->
+      \${!supervisore() ? '' : \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
         <input id="be_n_\${p.id}" type="number" min="1" max="40" value="6" style="width:70px">
         <button class="btn ghost sm" data-beadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled title="Prima le misure"'}>+ Ombrelloni</button>
         \${p.ombrelloni.length ? \`<button class="btn ghost sm" data-besvuota="\${p.id}">\u{1F5D1} Svuota</button>\` : ''}
         <select id="be_m_\${p.id}"><option value="vento">vento</option><option value="marea">marea</option><option value="manutenzione">manutenzione</option></select>
         <button class="btn danger sm" data-beblocca="\${p.id}">Chiudi la piazzola oggi</button>
-      </div></div>\`).join('')}\`;
+      </div>\`}</div>\`).join('')}\`;
 
   $('#be_data').onchange = () => { window.__beachData = $('#be_data').value; show('beach'); };
   document.querySelectorAll('[data-befascia]').forEach(b => b.onclick = () => { window.__beachFascia = b.dataset.befascia; show('beach'); });
@@ -15555,7 +15570,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.24.0" : "dev";
+var VERSION = true ? "6.25.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25276,7 +25291,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 16:01" : "online";
+var BUILD = true ? "2026-09-01 16:18" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
