@@ -10389,7 +10389,12 @@ var chiosco_default = `<!DOCTYPE html>
 <title>Bussola Crew</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
-:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--riga:#E3E1D6; --line:var(--riga);--muted:#49525A;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
+:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--riga:#E3E1D6; --line:var(--riga);
+  /* Il tratto strutturale del Crew: il bordo netto dei blocchi, che non e' la riga di
+     separazione. Stessa distinzione dell'app soci (--tratto / --riga). */
+  /* Lo stesso valore dell'app soci: un nome deve valere un colore solo, altrimenti fra le due
+     schermate lo stesso bordo si vede diverso e nessuno sa quale sia quello giusto. */
+  --tratto:#101418;--muted:#49525A;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:16px}
 input,select,button{font-family:inherit;font-size:1rem}
@@ -10406,8 +10411,13 @@ input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;backgro
 .panel[data-fold].chiuso > .fold-testa > h3::before, .panel[data-fold].chiuso > b.fold-testa::before{transform:rotate(-90deg);}
 /* !important: le righe con display:flex inline vincerebbero sulla regola. */
 .panel[data-fold].chiuso > *:not(.fold-testa){display:none !important;}
-.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
-.panel h3{color:var(--accent);font-size:1rem;margin-bottom:10px}
+/* Il pannello, stretto. Prima: 14px di riempimento sopra e sotto, 14px di margine, angoli
+   tondi. Con nove pannelli in una schermata sono quasi 300 px di aria prima del lavoro, su uno
+   schermo che ne ha 1024. Squadrato e compatto, come nei disegni. */
+.panel{background:#fff;border:var(--bordo) solid var(--tratto);border-radius:var(--r);padding:10px 12px;margin-bottom:10px}
+/* Il titolo del pannello non compete piu' con quello della schermata: e' un'etichetta in
+   maiuscoletto, non un secondo titolo. */
+.panel h3{color:var(--muted);font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;margin:0 0 8px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
 /* topbar */
 #top{background:linear-gradient(135deg,#12324F,#1c4a6e);color:#fff;padding:calc(12px + env(safe-area-inset-top)) 16px 0;position:sticky;top:0;z-index:5}
@@ -10435,7 +10445,15 @@ body.hc .panel{border-color:#8F8B7C}
 #moduli #chiSono{overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;line-height:1.35}
 #moduli button.urge .n{background:var(--coral);border-color:var(--coral);color:#fff}
 #moduli #chiSono{margin-top:auto;padding:10px 12px;border-top:2px solid var(--riga);font-size:.75rem;color:var(--muted)}
-#corpo #view{flex:1;min-width:0}
+#lavoro{flex:1;min-width:0}
+#capo{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:10px 0 12px;border-bottom:var(--bordo) solid var(--ink);margin-bottom:12px}
+#capo .occh{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;font-weight:800;color:var(--muted)}
+#capo h1{margin:2px 0 0;font-size:1.55rem;line-height:1.05;font-weight:800;color:var(--ink)}
+#capo .dx{text-align:right;font-size:.72rem;line-height:1.3;color:var(--muted)}
+#capo .dx b{display:block;color:var(--ink);font-size:.86rem}
+#capo .et{font-size:.6rem;letter-spacing:.16em;text-transform:uppercase;font-weight:800}
+@media (max-width:560px){ #capo h1{font-size:1.25rem} #capo .dx{font-size:.68rem} }
 /* IL CONTO IN CORSO resta sotto gli occhi. Prima era una colonna accanto al menu': su schermo
    stretto andava a capo SOTTO tutto il listino, e per vedere cosa si era battuto bisognava
    scorrere l'intera pagina \u2014 proprio nel momento in cui si deve confermare davanti al cliente.
@@ -10458,6 +10476,10 @@ body.hc .panel{border-color:#8F8B7C}
    e sale. L'operatore la impara una volta e la riconosce in ogni modulo: numero grande in alto
    a sinistra, stato in alto a destra, due righe di dettaglio sotto, azioni in fondo.
    Il colore dice lo stato e NON e' mai un bottone: rosso vuol dire "questo chiede te". */
+/* Legenda a pastiglie: quadratino di colore + nome. Sostituisce i paragrafi in prosa. */
+.rifleg{display:flex;flex-wrap:wrap;gap:6px}
+.rifleg span{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--riga);border-radius:var(--r);padding:4px 8px;font-size:.72rem;font-weight:700;color:var(--ink)}
+.rifleg i{width:11px;height:11px;border-radius:2px;display:inline-block;flex:0 0 auto}
 .griglia{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-top:10px}
 .riq{border:2px solid var(--ink);border-radius:4px;background:var(--card);padding:10px 12px;min-height:96px;display:flex;flex-direction:column;gap:4px}
 .riq .cap{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
@@ -10630,7 +10652,14 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
          guarda "Adesso" e si torna al tavolo. La barra e' sempre visibile, non e' un menu' che
          si apre: cercare dove sono le cose e' il tempo che al picco non si ha. -->
     <nav id="moduli" aria-label="Moduli"></nav>
-    <div id="view"></div>
+    <div id="lavoro">
+      <!-- L'INTESTAZIONE DELLA SCHERMATA. Una riga sola: cosa stai guardando a sinistra, come
+           va il servizio a destra. Prima ogni modulo apriva con tre o quattro pannelli di
+           preamboli \u2014 data, pulsanti secondari, legenda in prosa \u2014 e nel Magazzino il lavoro
+           cominciava a 680 px su 1024: due terzi di schermo prima di poter fare qualcosa. -->
+      <header id="capo"></header>
+      <div id="view"></div>
+    </div>
   </div>
 </div>
 
@@ -10949,7 +10978,26 @@ window.Comanda = (function () {
 /* Bussola Chiosco \u2014 app operativa separata: comande + KDS + magazzino + men\xF9.
    Stesso server/API del back office, ma ambiente e login dedicati agli operatori. */
 'use strict';
-let TOKEN = null, ME = { gestore: false, caps: [] }, PAR = {};
+let TOKEN = null, ME = { gestore: false, ruolo: '', caps: [] }, PAR = {};
+
+/* IL CONFINE FRA ORDINARIO E STRAORDINARIO.
+ *
+ * La crew lavora: prende comande, assegna tavoli, iscrive, incassa, riconsegna. Sono le cose
+ * che si fanno cento volte a sera e che devono stare a portata di pollice.
+ *
+ * Quando cambiano le REGOLE della serata \u2014 si sposta la disposizione della sala, si chiudono
+ * gli ordini dal telefono, si blocca un campo, si rifa' il listino \u2014 non e' piu' lavoro: e' una
+ * decisione, e la prende chi ha la responsabilita' della serata. Il manager di staff, o il
+ * gestore.
+ *
+ * Non e' una questione di fiducia: e' che una decisione presa da chi ha le mani occupate, in
+ * mezzo al servizio, la si prende male. E soprattutto: se la sala si sposta durante il turno,
+ * i numeri dei tavoli e i QR gia' stampati non seguono, e alle 21:00 nessuno sa piu' dove
+ * mandare i piatti.
+ *
+ * Un comando straordinario si NASCONDE, non si disabilita: un tasto grigio in mezzo al lavoro
+ * e' solo un ostacolo, e chi lo vede si chiede perche' non funziona. */
+const supervisore = () => ME.gestore || ME.ruolo === 'manager';
 // Zona della postazione (dichiarata al login): 'garden' = comande a tavolo \xB7 'bar' = comande a nome.
 let ZONA = (typeof localStorage !== 'undefined' && localStorage.getItem('bussola_zona')) || 'garden';
 const $ = (s) => document.querySelector(s);
@@ -10975,7 +11023,7 @@ async function login() {
     const res = await fetch(API_BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
     if (!res.ok) throw new Error('Credenziali non valide');
     const j = await res.json(); TOKEN = j.token;
-    ME = await api('/me').catch(() => ({ gestore: false, caps: [] }));
+    ME = await api('/me').catch(() => ({ gestore: false, ruolo: '', caps: [] }));
     // Regole di funzionamento decise dal gestore: qui servono per mostrare o meno certi comandi.
     try { PAR = Object.fromEntries((await api('/parametri')).map(p => [p.chiave, p.valore])); } catch (_) { PAR = {}; }
     // Accesso a Bussola Crew: basta UN permesso operativo (comande o magazzino); si vedono solo le zone consentite.
@@ -11231,27 +11279,62 @@ function abilitaFold() {
     const ora = pannelli.filter((x) => x.classList.contains('chiuso')).map((x) => x.dataset.fold);
     try { localStorage.setItem(chiave, JSON.stringify(ora)); } catch (e) { }
   };
-  // "Comprimi tutto" c'era solo nel back office: in sala, dove si lavora su un telefono, serve
-  // di piu'.
-  if (pannelli.length > 1 && !document.querySelector('.foldbar')) {
-    const bar = document.createElement('div');
-    bar.className = 'foldbar';
-    bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin:0 0 8px';
-    bar.innerHTML = '<button class="btn ghost sm" id="fold_tutti">Comprimi tutto</button><button class="btn ghost sm" id="fold_apri">Espandi tutto</button>';
-    $('#view').prepend(bar);
-    $('#fold_tutti').onclick = () => { pannelli.forEach((x) => x.classList.add('chiuso')); salva(); };
-    $('#fold_apri').onclick = () => { pannelli.forEach((x) => x.classList.remove('chiuso')); salva(); };
-  }
+  // "Comprimi tutto / Espandi tutto" non c'e' piu': costava una riga intera su OGNI schermata
+  // per una comodita' da scrivania. I pannelli si aprono e chiudono uno per uno toccando il
+  // titolo, che e' quello che si fa davvero durante il servizio.
+
 }
 // Ogni apertura prende un numero. Se una vista lenta finisce DOPO che ne hai aperta un'altra,
 // il suo disegno arriva su una schermata che non e' piu' la sua: si preme un tasto che non
 // appartiene a quello che si sta guardando. Con la barra laterale cambiare modulo e' un clic
 // solo, quindi la corsa e' facile da innescare \u2014 basta la rete lenta del banco.
 // Chi arriva in ritardo se ne accorge e rimette la schermata giusta.
+// Come si chiama ogni schermata, in due righe: cosa stai guardando e come si chiama.
+// L'occhiello non e' decorazione: dice il MESTIERE, e il titolo dice il posto. Insieme fanno
+// quello che prima facevano tre pannelli di preamboli.
+const CAPO = {
+  adesso:    ['Il turno', 'Adesso'],
+  comande:   ['Prendere l\\u2019ordine', 'Comande'],
+  pianta:    ['Organizzazione sala', 'Sala'],
+  bar:       ['Comande in corso', 'Bar'],
+  kds:       ['Code di lavoro', 'Cucina'],
+  menu:      ['Listino', 'Men\\u00f9'],
+  riepilogo: ['Cassa', 'Riepilogo'],
+  registro:  ['Memoria lunga', 'Registro storico'],
+  magazzino: ['Scorte e movimenti', 'Magazzino'],
+  sport:     ['Risultati e gironi', 'Tabellone'],
+  coppa:     ['Classifica generale', 'Coppa delle Casate'],
+  tornei:    ['Eliminazione diretta', 'Tornei'],
+  campi:     ['Prenotazioni del giorno', 'Campi liberi'],
+  tennis:    ['Listino e incassi', 'Area tennis'],
+  beach:     ['Piazzole e ombrelloni', 'Spiaggia'],
+  fitness:   ['Lezioni e iscritti', 'Fitness'],
+  serate:    ['Serate a tema', 'Serate'],
+  cinema:    ['Programma e ingressi', 'Stage'],
+  cdc:       ['Giochi e tavoli', 'Casa di Carta'],
+};
+// Come va il servizio, a destra. Sono i due numeri che servono sempre e che prima stavano
+// sparsi dentro i pannelli: che turno e' e che ora e'.
+function disegnaCapo(v) {
+  const el = document.querySelector('#capo');
+  if (!el) return;
+  const [occh, tit] = CAPO[v] || ['', (v || '').charAt(0).toUpperCase() + (v || '').slice(1)];
+  const ora = new Date().toTimeString().slice(0, 5);
+  el.innerHTML = \`<div><div class="occh">\${esc(occh)}</div><h1>\${esc(tit)}</h1></div>
+    <div class="dx" id="capo_dx"><span class="et">Ora</span><b>\${esc(ora)}</b></div>
+    <div id="capo_bar" class="capobar"></div>\`;
+}
+// Lo stato del servizio e i comandi secondari SALGONO nell'intestazione, invece di occupare un
+// pannello per conto loro. Prima l'intestazione si limitava ad aggiungersi ai preamboli e il
+// lavoro cominciava piu' in basso di prima: un'intestazione che non toglie niente e' solo
+// un'altra riga.
+function capoStato(html) { const e = document.querySelector('#capo_dx'); if (e) e.innerHTML = html; }
+function capoComandi(html) { const e = document.querySelector('#capo_bar'); if (e) e.innerHTML = html || ''; }
 let VISTA_N = 0;
 async function show(v) {
   const mio = ++VISTA_N;
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
+  disegnaCapo(v);
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   // La barra laterale segue la vista: se sei in Adesso e' Adesso a essere acceso, altrimenti
   // il modulo in cui ti trovi. Senza, si resta con due cose accese e non si sa dove si e'.
@@ -11330,15 +11413,17 @@ function pannelloSelfOrder(so) {
       : (so.sospeso_pressione ? '\u{1F7E0} <b>sospesi in automatico</b> \u2014 cucina sotto pressione' : (so.pressione ? '\u{1F7E0} <b>aperti</b> \xB7 \u26A0\uFE0F cucina sotto pressione' : '\u{1F7E2} <b>aperti</b> \xB7 cucina regolare'));
     const pressSpieg = cfg.press_modo === 'tempo' ? \`oltre \${cfg.press_max_minuti} min di attesa stimata\` : \`oltre \${cfg.press_max_comande} comande da smaltire\`;
   return \`
-    <div class="panel" style="border-left:5px solid \${bordo}">
+    <div class="panel" style="border-left:5px solid \${bordo};padding:8px 10px">
+      <!-- Una riga, non un blocco: lo stato del self-order si legge di sfuggita, e il dettaglio
+           su pressione e coda e' spiegazione, quindi sta con le altre spiegazioni. -->
       <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div><b style="color:var(--navy)">\u{1F4F1} Ordini dal telefono (self-order): \${statoRiga}</b>
-          <div class="muted" style="font-size:.82rem">\${etaTxt} \xB7 \${so.attive || 0} comande in coda \xB7 pressione: \${pressSpieg}\${cfg.press_auto ? ' \u2192 sospensione automatica' : ' \u2192 solo avviso'}.</div></div>
-        <div class="row">
+        <b style="color:var(--navy);font-size:.9rem">\u{1F4F1} Self-order: \${statoRiga} \xB7 <span class="muted" style="font-weight:600">\${etaTxt} \xB7 \${so.attive || 0} in coda</span></b>
+        \${supervisore() ? \`<div class="row" style="gap:6px">
           <button class="btn ghost sm" id="so_cfg">\u2699\uFE0F Regole</button>
           <button class="btn \${so.aperto ? 'danger' : 'gold'} sm" id="so_toggle">\${so.aperto ? '\u23F8\uFE0F Sospendi' : '\u25B6\uFE0F Riapri'}</button>
-        </div>
+        </div>\` : '<span class="muted" style="font-size:.76rem">La sospensione la decide il manager.</span>'}
       </div>
+      <div class="muted aiuto" style="font-size:.78rem;margin-top:4px">Pressione: \${pressSpieg}\${cfg.press_auto ? ' \u2192 sospensione automatica' : ' \u2192 solo avviso'}.</div>
       <div id="so_cfgbox" class="hide" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
         <div class="row" style="gap:16px;align-items:flex-start;flex-wrap:wrap">
           <div style="min-width:230px">
@@ -11455,8 +11540,10 @@ VIEWS.comande = async () => {
     show('comande');   // pronto per la comanda successiva; la fotografia \xE8 nella tab Tavoli/Bar
   };
   if (garden) {
-    $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
-    $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
+    // I comandi straordinari esistono solo per il supervisore: agganciarsi a un tasto che non
+    // c'e' rompe la vista a meta', e la meta' rotta e' quella dove si lavora.
+    if ($('#so_toggle')) $('#so_toggle').onclick = async () => { await api('/self-order/pausa', { method: 'POST', body: JSON.stringify({ aperto: !so.aperto }) }); show('comande'); };
+    if ($('#so_cfg')) $('#so_cfg').onclick = () => $('#so_cfgbox').classList.toggle('hide');
     $('#cf_save').onclick = async () => {
       await api('/self-order/config', { method: 'POST', body: JSON.stringify({
         press_modo: $('#cf_pmodo').value, press_max_comande: Number($('#cf_pcom').value || 6), press_max_minuti: Number($('#cf_pmin').value || 10),
@@ -11607,6 +11694,11 @@ const griglia = (riquadri, vuoto) => riquadri.length
   : \`<div class="panel"><p class="muted">\${esc(vuoto || 'Niente da mostrare.')}</p></div>\`;
 // La legenda si scrive una volta e vale per tutte le griglie: se ogni modulo se ne inventa una,
 // i colori smettono di voler dire la stessa cosa.
+// La legenda a pastiglie, quando i colori sono quelli veri di un modulo e non i quattro toni
+// della griglia. Stessa forma: quadratino, nome, e basta.
+const legendaColori = (voci) => \`<div class="rifleg" style="margin-top:8px">\`
+  + voci.map(([c, l]) => \`<span><i style="background:\${c}"></i>\${esc(l)}</span>\`).join('')
+  + \`</div>\`;
 const legenda = (voci) => \`<div class="row" style="gap:14px;flex-wrap:wrap;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-top:8px">\`
   + voci.map(([t, l]) => \`<span><span style="display:inline-block;width:11px;height:11px;border:2px solid \${t === 'chiama' ? 'var(--coral)' : t === 'libero' ? 'var(--riga)' : 'var(--ink)'};background:\${t === 'fatto' ? 'var(--ink)' : 'transparent'};vertical-align:-1px;margin-right:5px;border-radius:2px"></span>\${esc(l)}</span>\`).join('')
   + \`</div>\`;
@@ -12457,7 +12549,7 @@ VIEWS.tennis = async () => {
         <select id="tb_campo">\${campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('')}</select>
         <input id="tb_da" value="09:00" style="width:70px"> \u2013 <input id="tb_a" value="22:00" style="width:70px">
         <select id="tb_m"><option value="manutenzione">manutenzione</option><option value="torneo">torneo</option><option value="lezioni">lezioni</option><option value="chiuso">chiuso</option></select>
-        <button class="btn gold sm" id="ten_blocca">+ Blocca</button>
+        \${supervisore() ? '<button class="btn gold sm" id="ten_blocca">+ Blocca</button>' : ''}
       </div>
       \${(blocchi || []).length ? (blocchi || []).map(b => \`<div class="row" style="justify-content:space-between;font-size:.85rem;padding:4px 0;border-bottom:1px solid var(--line)">
         <span>\${esc(b.campo)} \xB7 \${esc(b.dalle)}\u2013\${esc(b.alle)} \xB7 \${esc(b.motivo || '')}</span>
@@ -12547,7 +12639,7 @@ VIEWS.tennis = async () => {
     catch (e) { alert(e.message); return; }
     show('tennis');
   };
-  $('#ten_blocca').onclick = async () => {
+  if ($('#ten_blocca')) $('#ten_blocca').onclick = async () => {
     try {
       await api('/tennis/blocchi', { method: 'POST', body: JSON.stringify({
         campo_id: Number($('#tb_campo').value), data,
@@ -12790,13 +12882,13 @@ VIEWS.tornei = async () => {
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F3C6} Tornei a eliminazione diretta</h3>
       <p class="muted" style="font-size:.82rem">Si gioca una sera: iscrizioni, sorteggio cieco, e avanti fino alla finale. Il tabellone \xE8 da <b>4, 8, 16 o 32</b>: a eliminazione diretta ogni turno dimezza, e con un numero diverso qualcuno passerebbe il turno senza giocare.</p>
-      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+      \${supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
         <input id="nt_disc" placeholder="Disciplina" style="width:130px">
         <select id="nt_posti"><option>4</option><option>8</option><option>16</option><option>32</option></select>
         <input id="nt_data" type="date">
         <button class="btn gold sm" id="nt_crea">+ Crea torneo</button>
-      </div>
+      </div>\` : ''}
       \${lista.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">\${lista.map(t => \`<button class="btn \${String(t.id) === String(apertoId) ? 'gold' : 'ghost'} sm" data-tsel="\${t.id}">\${esc(t.nome)} <span class="muted">\${t.posti}</span></button>\`).join('')}</div>\` : ''}
     </div>
 
@@ -12819,7 +12911,7 @@ VIEWS.tornei = async () => {
         \${t.partite.map(partita).join('')}</div>\`).join('') : ''}
     </div>\` : ''}\`;
 
-  $('#nt_crea').onclick = async () => {
+  if ($('#nt_crea')) $('#nt_crea').onclick = async () => {
     const nome = ($('#nt_nome').value || '').trim();
     if (!nome) { alert('Dai un nome al torneo.'); return; }
     try {
@@ -13026,12 +13118,12 @@ VIEWS.campi = async () => {
       </div>
       <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F6A7} Campo impegnato</b>
-      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0">
+      \${supervisore() ? \`<div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0">
         <select id="cw_bcampo">\${opts}</select>
         <input id="cw_bda" value="09:00" style="width:70px"><span class="muted">\u2013</span><input id="cw_ba" value="22:00" style="width:70px">
         <select id="cw_bmot"><option value="torneo">torneo</option><option value="manutenzione">manutenzione</option><option value="evento">evento</option></select>
         <button class="btn gold sm" id="cw_bloc">+ Blocca</button>
-      </div>
+      </div>\` : '<div class="muted" style="font-size:.78rem;margin:6px 0">Bloccare un campo toglie una risorsa a tutti i soci: lo decide il manager.</div>'}
       <div>\${bl || '<p class="muted">Nessun blocco per questa data.</p>'}</div></div>\`;
 
   const caricaSlot = async () => {
@@ -13081,7 +13173,7 @@ VIEWS.campi = async () => {
       show('campi');
     } catch (e) { $('#cw_msg').textContent = 'Errore di rete.'; }
   };
-  $('#cw_bloc').onclick = async () => {
+  if ($('#cw_bloc')) $('#cw_bloc').onclick = async () => {
     await api('/campi/blocchi', { method: 'POST', body: JSON.stringify({ campo_id: Number($('#cw_bcampo').value), data: $('#cw_data').value, slot_da: $('#cw_bda').value, slot_a: $('#cw_ba').value, motivo: $('#cw_bmot').value }) });
     show('campi');
   };
@@ -13361,17 +13453,17 @@ VIEWS.pianta = async () => {
   }).join('');
   const layoutOpts = (conf.layout || []).map(l => \`<option value="\${l.id}" \${l.id === PIANTA.layoutId ? 'selected' : ''}>\${esc(l.nome)}\${l.predefinito ? ' \u2605' : ''}</option>\`).join('');
 
-  const testa = \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <b style="color:var(--navy)">\u{1F5FA}\uFE0F \${PIANTA.ambiente === 'carta' ? 'Sala della Casa di Carta' : PIANTA.ambiente === 'stage' ? 'Platea dello Stage' : 'Pianta del Garden'}</b>
-      <div class="row" style="gap:6px;align-items:center">
-    <span class="tag" style="background:rgba(0,0,0,.06)">\${PIANTA.ambiente === 'garden' ? '\u{1F33F} Garden' : PIANTA.ambiente === 'carta' ? '\u{1F4DA} Casa di Carta' : '\u{1F3AD} Stage'}</span>
-        <input type="date" id="p_data" value="\${PIANTA.data}">
-        <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" id="p_edit" title="Sposta e modifica i tavoli">\${PIANTA.modo === 'disposizione' ? '\u2713 Sto modificando' : '\u270B Modifica pianta'}</button>
-      </div></div>
-    <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+  // UNA RIGA SOLA invece di tre pannelli. Il titolo del posto lo dice gia' l'intestazione della
+  // schermata; qui restano solo le cose che si toccano: il giorno, il turno, e i comandi che si
+  // usano di rado. Prima erano un pannello per il titolo e la data, uno per i turni e la
+  // disposizione, uno per i pulsanti e la legenda: tre cornici e tre volte l'aria intorno.
+  const testa = \`<div class="panel" style="padding:8px 10px">
+    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+      <input type="date" id="p_data" value="\${PIANTA.data}" style="width:auto">
       \${turniBtn}
       <span style="flex:1"></span>
-      <label class="muted aiuto" style="font-size:.78rem">Disposizione <select id="p_layout">\${layoutOpts}</select></label>
+      \${supervisore() ? \`<select id="p_layout" title="Disposizione" style="width:auto">\${layoutOpts}</select>
+      <button class="btn \${PIANTA.modo === 'disposizione' ? 'gold' : 'ghost'} sm" id="p_edit" title="Sposta e modifica i tavoli">\${PIANTA.modo === 'disposizione' ? '\u2713 Sto modificando' : '\u270B Modifica'}</button>\` : ''}
     </div></div>\`;
 
   // Comande aperte su questo punto, indicizzate per tavolo.
@@ -13396,26 +13488,30 @@ VIEWS.pianta = async () => {
   // Una sola videata. Lo stato del turno c'e' sempre; gli strumenti di disegno compaiono
   // quando si sta modificando, ma la pagina e la mappa restano quelle: non serve una seconda
   // schermata che mostra le stesse cose.
-  const stato = \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <span>Turno <b>\${esc(PIANTA.turno)}</b> \xB7 <b>\${turnoDati.coperti_prenotati}</b> \${PIANTA.ambiente === 'stage' ? 'in sala' : 'coperti prenotati'}</span>
-        <span class="muted">\${turnoDati.posti_liberi} posti liberi su \${turnoDati.posti_totali}</span>
-        \${turnoDati.serata ? \`<span class="tag" style="background:\${turnoDati.serata.livello === 'difficile' ? '#C0553F' : turnoDati.serata.livello === 'buona' ? '#B7791F' : '#2e6b45'};color:#fff" title="\${esc(turnoDati.serata.consiglio)}">Serata \${esc(turnoDati.serata.etichetta)} \xB7 \${turnoDati.serata.pieno}%</span>\` : ''}
-      </div>
-      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+  // Turno, coperti e posti liberi non hanno un pannello: stanno nell'intestazione, a destra,
+  // dove si guardano senza doverli cercare.
+  capoStato(\`<span class="et">Servizio</span><b>Turno \${esc(PIANTA.turno)} \xB7 \${turnoDati.coperti_prenotati} \${PIANTA.ambiente === 'stage' ? 'in sala' : 'coperti'}</b>\`
+    + \`<span>\${turnoDati.posti_liberi} liberi su \${turnoDati.posti_totali}\${turnoDati.serata ? ' \\u00b7 serata ' + esc(turnoDati.serata.etichetta) + ' ' + turnoDati.serata.pieno + '%' : ''}</span>\`);
+  const stato = \`<div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;flex-wrap:wrap">
         \${PIANTA.modo === 'disposizione' ? \`
           <button class="btn gold sm" id="p_salva">\u{1F4BE} Salva</button>
           <button class="btn ghost sm" id="p_addt">+ \${PIANTA.ambiente === 'stage' ? 'Seduta' : 'Tavolo'}</button>
           <button class="btn ghost sm" id="p_nuovo">\u271A Nuova disposizione</button>
           <button class="btn ghost sm" id="p_giorno">\u{1F4CC} Usa in questo giorno</button>\` : ''}
+        \${!supervisore() ? '' : \`
         \${PIANTA.ambiente === 'stage' ? '' : '<button class="btn ghost sm" id="p_qr" title="QR self-order dei tavoli disegnati">\u{1F533} QR tavoli</button>'}
         <button class="btn ghost sm" id="p_reset">\u21BA Ripristina predefinita</button>
-        <button class="btn ghost sm" id="p_spazio" title="Riporta la pianta alle misure vere della sala">\\ud83d\\udcd0 Ci sta davvero?</button>
+        <button class="btn ghost sm" id="p_spazio" title="Riporta la pianta alle misure vere della sala">\\ud83d\\udcd0 Ci sta davvero?</button>\`}
       </div>
-      <p class="muted aiuto" style="font-size:.76rem;margin-top:6px">\${PIANTA.modo === 'disposizione'
-        ? \`Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La disposizione decide anche l'ordine di riempimento, che va sempre <b>dal centro verso l'esterno</b>.\`
-        : PIANTA.ambiente === 'stage'
-          ? \`\u{1F7EB} prima fila <b>over 70</b> \xB7 \u{1F7E9} <b>chi cena</b> al primo turno \xB7 \u{1F7E6} <b>solo spettacolo</b> \xB7 \u{1F7E8} extra \xB7 \u{1F7E5} occupato \u2014 le due quote si alternano per fila, cos\xEC chi non cena non finisce in fondo. <b>Tocca una seduta per assegnarla al banco.</b>\`
-          : \`\u{1F7E9} libero \xB7 \u{1F7EA} prenotato \xB7 \u{1F7E7} comanda in corso \xB7 \u{1F7E5} oltre \${rossoMin}\u2032 \xB7 \u{1F7E8} extra \xB7 \u2B1C arredo \u2014 <b>tocca un tavolo</b>: se e' servito chiudi la comanda, se e' libero lo prenoti\`}</p>
+      <!-- La legenda: pastiglie, non un paragrafo. La stessa informazione stava in tre righe di
+           prosa che nessuno legge due volte, e su un tablet quelle tre righe sono un tavolo in
+           meno a schermo. Il quadratino di colore col nome accanto si legge a colpo d'occhio. -->
+      \${PIANTA.modo === 'disposizione'
+        ? \`<p class="muted aiuto" style="font-size:.76rem;margin-top:6px">Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. Il riempimento va sempre <b>dal centro verso l'esterno</b>.</p>\`
+        : legendaColori(PIANTA.ambiente === 'stage'
+            ? [['#7a5c2e', 'prima fila over 70'], ['#2e6b45', 'chi cena'], ['#2f5d8a', 'solo spettacolo'], ['#b08b3e', 'extra'], ['#b14a35', 'occupato']]
+            : [['#2e6b45', 'libero'], ['#6b4ea0', 'prenotato'], ['#c8622f', 'comanda in corso'], ['#b14a35', \`oltre \${rossoMin}\\u2032\`], ['#b08b3e', 'extra'], ['#cfcbbf', 'arredo']])}
       <div id="p_msg" class="muted" style="font-size:.8rem;margin-top:4px"></div></div>\`;
 
   // In disposizione si vedono anche i tavoli fuori servizio (per rimetterli); in servizio no.
@@ -13520,8 +13616,8 @@ VIEWS.pianta = async () => {
   // I QR si generano DAI TAVOLI DISEGNATI: se sono sei, sono sei. Nessun numero fisso.
   if ($('#p_qr')) $('#p_qr').onclick = () => stampaQrTavoli(sorgente.filter(t => (t.tipo || 'standard') !== 'arredo' && t.attivo !== 0), PIANTA.ambiente);
   document.querySelectorAll('[data-ptur]').forEach(b => b.onclick = () => { PIANTA.turno = b.dataset.ptur; show('pianta'); });
-  $('#p_edit').onclick = () => { PIANTA.modo = PIANTA.modo === 'disposizione' ? 'servizio' : 'disposizione'; PIANTA.sporco = false; show('pianta'); };
-  $('#p_layout').onchange = async () => {
+  if ($('#p_edit')) $('#p_edit').onclick = () => { PIANTA.modo = PIANTA.modo === 'disposizione' ? 'servizio' : 'disposizione'; PIANTA.sporco = false; show('pianta'); };
+  if ($('#p_layout')) $('#p_layout').onchange = async () => {
     await api('/tavoli/giorno', { method: 'PUT', body: JSON.stringify({ data: PIANTA.data, layout_id: Number($('#p_layout').value) }) });
     PIANTA.sporco = false; show('pianta');
   };
@@ -13559,7 +13655,7 @@ VIEWS.pianta = async () => {
       <p class="muted aiuto" style="font-size:.78rem;margin-top:8px">Il conto usa \${v.regole.ingombro_tavolo_m} m di ingombro \${v.cosa === 'sedute' ? 'per seduta' : 'per tavolo <b>con le sedie occupate</b>'} e \${v.regole.corridoio_m} m di \${v.cosa === 'sedute' ? 'distanza fra le file' : 'passaggio'}. Si cambiano nei parametri, se la tua sala \\u00e8 fatta diversamente.</p>
       <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
   };
-  $('#p_reset').onclick = async () => {
+  if ($('#p_reset')) $('#p_reset').onclick = async () => {
     if (!confirm('Ridisegnare la pianta predefinita di questo ambiente dai parametri correnti? Le disposizioni personalizzate di questo ambiente vengono perse.')) return;
     try {
       await api('/tavoli/layout/rigenera', { method: 'POST', body: JSON.stringify({ ambiente: PIANTA.ambiente }) });
@@ -14698,7 +14794,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.07.0" : "dev";
+var VERSION = true ? "6.09.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -14985,6 +15081,9 @@ var MANAGER_CAPS = /* @__PURE__ */ new Set([
   "comande",
   "cucina",
   "campi",
+  "fitness",
+  "cinema",
+  "beach",
   "menu"
 ]);
 function parsePermessi(p) {
@@ -24287,7 +24386,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-31 20:09" : "online";
+var BUILD = true ? "2026-09-01 06:35" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
