@@ -1992,6 +1992,8 @@ async function migrate() {
   `).catch(() => {
   });
   await addIfMissing("menu_articoli", "combo", "combo INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("proiezioni", "titolo", "titolo TEXT");
+  await addIfMissing("proiezioni", "evento_id", "evento_id INTEGER");
   await addIfMissing("comande", "non_prima", "non_prima TEXT");
   await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
     articolo_id    INTEGER NOT NULL,
@@ -10521,25 +10523,8 @@ body.hc .panel{border-color:#8F8B7C}
 .tastiera .tk{border:var(--bordo) solid var(--tratto);border-radius:var(--r);background:#fff;color:var(--ink);
   font-size:1.3rem;font-weight:700;font-family:inherit;min-height:var(--tap);cursor:pointer}
 .tastiera .tk:active{background:var(--ink);color:#fff}
-/* LA PLATEA. File, corridoio nel mezzo, il posto col suo nome vero. Sessantasei riquadri
-   grandi con dentro "1 posti" erano illeggibili: qui una fila sta in una riga e si legge
-   com'e' fatta la sala. Il colore e' la quota; il bordo pieno vuol dire occupato. */
-.palco{background:var(--muted);color:#fff;text-align:center;font-size:.66rem;letter-spacing:.24em;
-  text-transform:uppercase;font-weight:800;border-radius:var(--r);padding:7px;margin-bottom:12px}
-.fila{display:flex;align-items:center;gap:4px;margin-bottom:5px}
-.fila .etf{flex:0 0 52px;font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:var(--muted)}
-.fila .lato{display:flex;gap:4px;flex-wrap:wrap}
-.fila .corridoio{flex:0 0 22px}
-.sed{width:34px;height:34px;border-radius:var(--r);border:2px solid var(--q);background:transparent;color:var(--ink);
-  font-weight:800;font-size:.78rem;font-family:inherit;cursor:pointer;padding:0}
-.sed.occ{background:var(--q);color:#fff}
-.sed.extra{border-style:dashed}
-.sed:active{outline:3px solid var(--ink)}
-@media (max-width:560px){ .sed{width:29px;height:29px;font-size:.7rem} .fila .etf{flex:0 0 40px} .fila .corridoio{flex:0 0 12px} }
 /* CHIP, CAMPI E TITOLETTI. Esistevano solo nell'app dei soci: usandoli nel Crew i chip
-   uscivano schiacciati uno contro l'altro, senza spaziatura e senza il selezionato pieno.
-   Stesse misure dell'app, perche' la stessa cosa deve avere lo stesso aspetto nelle due
-   schermate \u2014 e chi sta al banco e chi sta sul divano stanno guardando la stessa scelta. */
+   uscivano schiacciati uno contro l'altro, senza spaziatura e senza il selezionato pieno. */
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{border:var(--bordo) solid var(--tratto);background:var(--card);border-radius:var(--r);
   padding:10px 14px;font-size:.88rem;font-weight:800;color:var(--ink);cursor:pointer;
@@ -10548,6 +10533,38 @@ body.hc .panel{border-color:#8F8B7C}
 .field{margin-top:12px}
 .field label{display:block;font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:6px}
 .sect-title{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin:16px 0 6px}
+
+/* LA PLATEA.
+   Il palco in alto, le file allineate su una griglia unica, il corridoio nel mezzo. Il colore
+   sta DENTRO la seduta e non sul bordo: e' l'unica cosa che dice a chi spetta quel posto, e su
+   un filetto da due pixel non si legge. Chiaro = libero, saturo = occupato. */
+.platea{background:var(--card);border:var(--bordo) solid var(--tratto);border-radius:var(--r);padding:14px 12px 16px}
+/* Il palco: una fascia che si stringe verso il basso, come lo si vede dalla platea. */
+.palco{background:var(--ink);color:#fff;text-align:center;font-size:.64rem;letter-spacing:.3em;
+  text-transform:uppercase;font-weight:800;padding:9px;margin:0 auto 16px;width:62%;
+  clip-path:polygon(0 0,100% 0,94% 100%,6% 100%)}
+/* Colonne a larghezza FISSA, non 1fr: su uno schermo largo le sedute diventavano quadrati da
+   cento pixel e la sala non si vedeva piu' tutta insieme. Una platea si guarda per intero \u2014 e'
+   il suo unico vantaggio sull'elenco. La griglia si centra e resta della sua misura. */
+.fila{display:grid;grid-template-columns:26px repeat(var(--meta),40px) 18px repeat(var(--resto),40px);
+  gap:5px;align-items:center;margin-bottom:5px;justify-content:center}
+.fila .etf{font-size:.7rem;font-weight:800;color:var(--muted);text-align:right;padding-right:4px}
+.fila .corridoio{}
+.sed{height:40px;border-radius:var(--r);border:1.5px solid transparent;
+  font-weight:800;font-size:.76rem;font-family:inherit;cursor:pointer;padding:0;color:var(--ink)}
+.sed.vuota{background:transparent;border-color:transparent;cursor:default}
+/* Le tre quote. Il fondo chiaro dice "libero, e spetta a questi"; il pieno dice "occupato". */
+.sed.q-over70{background:#EFE2CE;border-color:#C9A96A}
+.sed.q-garden{background:#DCEBE0;border-color:#7FAE8C}
+.sed.q-spettacolo{background:#DCE6F2;border-color:#7E9EC4}
+.sed.q-altro{background:var(--paper);border-color:var(--riga)}
+.sed.occ{background:var(--ink);border-color:var(--ink);color:#fff}
+/* Gli extra: stessa quota, ma si aprono solo se serve. Un tratteggio leggero, non un buco. */
+.sed.extra{border-style:dashed;opacity:.72}
+.sed:not(.vuota):hover{outline:2px solid var(--ink)}
+@media (max-width:560px){ .sed{height:30px;font-size:.68rem}
+  .fila{gap:3px;grid-template-columns:18px repeat(var(--meta),30px) 10px repeat(var(--resto),30px)}
+  .palco{width:86%} }
 .kboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px}
 .kcard{border:var(--bordo) solid var(--ink);border-radius:var(--r);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
 .kcard>header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:9px 11px;background:var(--ink);color:#fff;cursor:pointer}
@@ -11197,7 +11214,11 @@ function allowedZones() {
   if (ME.gestore) z.push('beach');
   if (ME.gestore || caps.includes('serate')) z.push('serate');     // serate & cena: incassi e presenze
   if (ME.gestore || caps.includes('cdc')) z.push('cdc');           // Casa di Carta
-  if (ME.gestore || caps.includes('fitness')) z.push('fitness');   // lezioni con istruttore
+  // IL FITNESS STA IN MANO AL GESTORE. Una lezione con istruttore non e' servizio ordinario:
+  // c'e' un minimo sotto il quale non parte, una disdetta a tutti se non si raggiunge, e un
+  // professionista da avvisare. Sono decisioni, non registrazioni \u2014 e chi ha le mani occupate
+  // in mezzo al turno non e' nella posizione di prenderle.
+  if (supervisore() && (ME.gestore || caps.includes('fitness'))) z.push('fitness');
   if (ME.gestore || caps.includes('cinema')) z.push('cinema');     // platea e ingressi
   return z;
 }
@@ -12788,65 +12809,68 @@ VIEWS.tennis = async () => {
   // saperlo e' peggio del silenzio: sembra un dato, ed e' un buco.
   const vedeSoldi = giornata && Object.prototype.hasOwnProperty.call(giornata, 'incassato');
 
-  // ---- la giornata: chi gioca, quanto deve, chi ha pagato ----
-  const riga = (r) => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
-      <div style="flex:1">
-        <b>\${esc(r.slot)} \xB7 \${esc(r.campo)}</b>\${r.tipo_uso === 'lezione' ? ' <span class="tag" style="background:#1d4e79;color:#fff">lezione</span>' : ''}
-        <div class="muted" style="font-size:.82rem">\${esc(r.nome || r.tessera_code || '\u2014')}</div>
-      </div>
-      <div style="text-align:right;min-width:150px">
-        \${!vedeSoldi ? ''
-          : Number(r.prezzo) > 0
-            ? \`<b>\${eur(r.prezzo)}</b> <button class="btn \${r.pagato ? 'ghost' : 'gold'} sm" data-tenpag="\${r.id}|\${r.pagato ? 0 : 1}">\${r.pagato ? '\u2713 incassato' : '\u{1F4B6} incassa'}</button>\`
-            : '<span class="muted">gratuito</span>'}
-        <button class="btn danger sm" data-tendisd="\${r.partita_id || ''}">Disdici</button>
-      </div></div>\`;
-
-  // ---- la scheda di un campo: la stessa configurazione del back office, qui dentro ----
-  const scheda = (c) => \`<div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
-      <h3 style="margin:0">\${esc(c.nome)} \${c.attivo ? '' : '<span class="tag" style="background:#999;color:#fff">spento</span>'}</h3>
-      \${vedeSoldi ? \`<button class="btn ghost sm" data-tenedit="\${c.id}">\u2699\uFE0E Configura</button>\` : ''}
-    </div>
-    <div class="muted" style="font-size:.82rem">\${esc(c.sport || '')} \xB7 \${esc(c.apertura)}\u2013\${esc(c.chiusura)} \xB7 fascia \${c.durata_slot}\u2032 \xB7 \${c.posti_default} posti \xB7 max \${c.max_slot_prenotazione} fasce di fila</div>
-    \${!vedeSoldi ? '' : \`<div style="margin-top:8px"><b style="font-size:.9rem">Listino</b>
-      \${(c.listino || []).length
-        ? (c.listino || []).map(t => \`<div class="row" style="justify-content:space-between;font-size:.85rem;padding:2px 0">
-            <span>\${esc(t.etichetta)}\${t.da_ora ? \` <span class="muted">(\${esc(t.da_ora)}\u2013\${esc(t.a_ora || '')})</span>\` : ''}\${t.tipo_uso === 'lezione' ? ' <span class="muted">\xB7 lezione</span>' : ''}</span>
-            <span><b>\${eur(t.prezzo_ora)}</b>/h <button class="btn ghost sm" data-tendel="\${t.id}">\u2715</button></span></div>\`).join('')
-        : '<p class="muted" style="font-size:.82rem">Nessuna tariffa: senza listino questo campo resta gratuito.</p>'}
-    </div>
-    <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
-      <input id="tt_e_\${c.id}" placeholder="Nome (es. sera)" style="min-width:120px">
-      <input id="tt_da_\${c.id}" placeholder="dalle" style="width:70px">
-      <input id="tt_a_\${c.id}" placeholder="alle" style="width:70px">
-      <select id="tt_t_\${c.id}"><option value="campo">campo</option><option value="lezione">lezione privata</option></select>
-      <input id="tt_p_\${c.id}" type="number" step="0.5" placeholder="\u20AC/ora" style="width:80px">
-      <button class="btn gold sm" data-tenadd="\${c.id}">+ Tariffa</button>
-    </div>\`}</div>\`;
+  /* UN RIQUADRO PER CAMPO, come nei campi liberi e nella sala.
+     Prima era un elenco unico di tutte le prenotazioni del giorno, di tutti i campi mescolati:
+     per sapere se il campo 2 era libero alle sei bisognava leggerlo tutto. Al banco la domanda
+     e' sempre sul CAMPO, non sulla giornata.
+     Dentro il quadrato: le fasce impegnate una sotto l'altra, chi gioca, quanto deve e se ha
+     pagato. Il rosso solo dove chiede un intervento \u2014 c'e' da incassare \u2014 perche' e' l'unica
+     cosa che si puo' ancora fare prima che il socio se ne vada.
+     Chi non vede i soldi non vede nemmeno il posto dove starebbero: un "Incassato \\u20ac 0,00" a chi
+     non ha diritto di saperlo e' peggio del silenzio, perche' sembra un dato ed e' un buco. */
+  if (!TEN_CAMPO || !campi.some(c => String(c.id) === String(TEN_CAMPO))) TEN_CAMPO = campi[0] ? campi[0].id : null;
+  const perCampoT = new Map(campi.map(c => [c.nome, []]));
+  for (const r of (giornata.righe || [])) {
+    if (!perCampoT.has(r.campo)) perCampoT.set(r.campo, []);
+    perCampoT.get(r.campo).push(r);
+  }
+  const rigaT = (r) => {
+    const daPagare = vedeSoldi && Number(r.prezzo) > 0 && !r.pagato;
+    return \`<div style="display:flex;justify-content:space-between;gap:6px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--riga)">
+      <span><b>\${esc(r.slot)}</b> \\u00b7 \${esc(r.nome || r.tessera_code || '\\u2014')}\${r.tipo_uso === 'lezione' ? ' <span class="muted">lezione</span>' : ''}</span>
+      \${!vedeSoldi ? '' : Number(r.prezzo) > 0
+        ? \`<span style="white-space:nowrap\${daPagare ? ';color:var(--coral);font-weight:700' : ''}">\${eur(r.prezzo)}\${r.pagato ? ' \\u2713' : ''}</span>\`
+        : '<span class="muted">gratuito</span>'}
+    </div>\`;
+  };
+  const riquadriTennis = campi.map(c => {
+    const righe = (perCampoT.get(c.nome) || []).slice().sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+    const bl = (blocchi || []).filter(b => b.campo === c.nome);
+    const daInc = vedeSoldi ? righe.filter(r => Number(r.prezzo) > 0 && !r.pagato) : [];
+    const tono = !c.attivo ? 'fatto' : daInc.length ? 'chiama' : righe.length ? 'attesa' : 'libero';
+    const stato = !c.attivo ? 'spento' : bl.length ? 'bloccato' : righe.length ? righe.length + (righe.length === 1 ? ' fascia' : ' fasce') : 'libero';
+    return riquadro({
+      num: c.nome, stato, tono,
+      det: [
+        \`\${esc(c.sport || '')} \\u00b7 \${esc(c.apertura)}\\u2013\${esc(c.chiusura)} \\u00b7 fasce da \${c.durata_slot}\\u2032\`,
+        righe.length ? righe.map(rigaT).join('') : 'nessuna prenotazione oggi',
+        bl.map(b => \`<span style="color:var(--coral)">\\ud83d\\udea7 \${esc(b.dalle)}\\u2013\${esc(b.alle)} \${esc(b.motivo || '')}</span>\`).join(''),
+        daInc.length ? \`<b style="color:var(--coral)">\${eur(daInc.reduce((n, r) => n + Number(r.prezzo), 0))} da incassare</b>\` : ''
+      ],
+      azioni: [
+        ...(vedeSoldi ? daInc.map(r => \`<button class="btn gold sm" data-tenpag="\${r.id}|1">Incassa \${esc(r.slot)}</button>\`) : []),
+        ...righe.filter(r => r.partita_id).map(r => \`<button class="btn ghost sm" data-tendisd="\${r.partita_id}">\\u2715 \${esc(r.slot)}</button>\`),
+        ...(vedeSoldi ? [\`<button class="btn ghost sm" data-tenedit="\${c.id}">Listino</button>\`] : [])
+      ]
+    });
+  });
 
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F3BE} La giornata</h3>
-      <p class="muted" style="font-size:.82rem">\${vedeSoldi
-        ? 'I tuoi campi: tennis, beach tennis, beach volley. Si affittano e si paga \u2014 il listino lo tieni tu.'
-        : 'I campi in gestione: tennis, beach tennis, beach volley. Qui prenoti, disdici e blocchi.'}</p>
-      <div class="row" style="gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap">
-        <input type="date" id="ten_data" value="\${data}">
-        \${vedeSoldi
-          ? \`<span class="muted">Incassato <b>\${eur(giornata.incassato || 0)}</b> \xB7 da incassare <b style="color:\${(giornata.da_incassare || 0) > 0 ? '#b14a35' : 'inherit'}">\${eur(giornata.da_incassare || 0)}</b>\${giornata.quanti_da_incassare ? \` (\${giornata.quanti_da_incassare})\` : ''}</span>\`
-          : \`<span class="muted" style="font-size:.82rem">\${esc(giornata.nota || 'Gli incassi li vede chi gestisce il servizio.')}</span>\`}
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <input type="date" id="ten_data" value="\${data}" style="width:auto">
+        <span style="flex:1"></span>
+        \${legendaColori(vedeSoldi
+          ? [['#101418', 'in campo'], ['#b14a35', 'da incassare']]
+          : [['#101418', 'in campo'], ['#b14a35', 'bloccato']])}
       </div>
-      \${(giornata.righe || []).length ? (giornata.righe || []).map(riga).join('') : '<p class="muted">Nessuna prenotazione per questa data.</p>'}
-    </div>
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">\${vedeSoldi
+        ? 'I tuoi campi: si affittano e si paga, il listino lo tieni tu.'
+        : esc(giornata.nota || 'Gli incassi li vede chi gestisce il servizio.')}</p></div>
+    \${griglia(riquadriTennis, 'Nessun campo nell\\u2019area tennis.')}
 
-    <div class="panel"><h3>\u{1F3AB} Prenota al banco</h3>
-      <p class="muted" style="font-size:.82rem">Serve la tessera del socio: resta lui il titolare. Il prezzo lo calcola il listino.</p>
-      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
-        <select id="tp_campo">\${campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('')}</select>
-        <input id="tp_slot" placeholder="18:00" style="width:80px">
-        <input id="tp_tess" placeholder="Tessera socio" style="min-width:150px">
-        <select id="tp_uso"><option value="campo">campo</option><option value="lezione">lezione privata</option></select>
-        <button class="btn gold sm" id="ten_pren">Prenota</button>
-      </div></div>
+    \${bloccoPrenotaCampi({ campi, data, campoSel: TEN_CAMPO, giorni: settegiorni(),
+      nota: 'Il prezzo lo calcola il listino del campo. La <b>lezione privata</b> ha la sua tariffa: se non c\\u2019\\u00e8 in listino, la fascia resta gratuita.' })}
 
     <div class="panel"><h3>\u{1F6A7} Campo indisponibile</h3>
       <p class="muted" style="font-size:.82rem">Manutenzione, torneo, lezioni tutto il pomeriggio, o semplicemente oggi non lo affitti.</p>
@@ -12862,7 +12886,9 @@ VIEWS.tennis = async () => {
         : '<p class="muted" style="font-size:.82rem;margin-top:6px">Nessun blocco per questa data.</p>'}
     </div>
 
-    \${campi.map(scheda).join('')}
+    <!-- Le schede di configurazione in pagina erano un DOPPIONE: "Configura" apre gia' una
+         finestra con tutto dentro, e tenere le stesse cose in due posti vuol dire che prima o
+         poi dicono due cose diverse. Il listino si apre dal riquadro del campo. -->
 
     \${!vedeSoldi ? '' : \`<div class="panel"><h3>\u2795 Nuovo campo</h3>
       <p class="muted" style="font-size:.82rem">I campi dell'area tennis si creano <b>qui</b>, non nel back office del residence: l\xE0 ci sono i campi gratuiti del chiosco, che hanno regole diverse. Appena creato, il socio lo vede nell'app.</p>
@@ -12911,7 +12937,45 @@ VIEWS.tennis = async () => {
         <button class="btn gold sm" id="cf_salva">Salva</button>
         <button class="btn danger sm" id="cf_del">\u{1F5D1} Elimina</button>
         <button class="btn ghost sm" data-mclose>Chiudi</button>
+      </div>
+      <!-- IL LISTINO STA QUI. Le tariffe erano nelle schede in pagina; togliendo le schede
+           sarebbero diventate irraggiungibili, e i gestori "+ Tariffa" avrebbero salvato una
+           riga vuota leggendo campi che non esistono piu'. Sono la stessa cosa della
+           configurazione del campo: stanno nello stesso posto. -->
+      <div class="sect-title" style="margin-top:14px">Listino</div>
+      \${(c.listino || []).length
+        ? (c.listino || []).map(t => \`<div class="row" style="justify-content:space-between;font-size:.86rem;padding:5px 0;border-bottom:1px solid var(--riga)">
+            <span>\${esc(t.etichetta)}\${t.da_ora ? \` <span class="muted">(\${esc(t.da_ora)}\\u2013\${esc(t.a_ora || '')})</span>\` : ''}\${t.tipo_uso === 'lezione' ? ' <span class="muted">\\u00b7 lezione</span>' : ''}</span>
+            <span><b>\${eur(t.prezzo_ora)}</b>/h <button class="btn ghost sm" data-tendel="\${t.id}">\\u2715</button></span></div>\`).join('')
+        : '<p class="muted" style="font-size:.82rem">Nessuna tariffa: senza listino questo campo resta gratuito.</p>'}
+      <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <input id="tt_e_\${c.id}" placeholder="Nome (es. sera)" style="min-width:110px">
+        <input id="tt_da_\${c.id}" placeholder="dalle" style="width:70px">
+        <input id="tt_a_\${c.id}" placeholder="alle" style="width:70px">
+        <select id="tt_t_\${c.id}" style="width:auto"><option value="campo">campo</option><option value="lezione">lezione privata</option></select>
+        <input id="tt_p_\${c.id}" type="number" step="0.5" placeholder="\\u20ac/ora" style="width:80px">
+        <button class="btn gold sm" data-tenadd="\${c.id}">+ Tariffa</button>
       </div>\`);
+    // I gestori del listino vanno agganciati QUI: prima stavano fuori, sugli elementi della
+    // pagina, e dentro una finestra aperta dopo non li avrebbe trovati nessuno.
+    document.querySelectorAll('[data-tenadd]').forEach(x => x.onclick = async () => {
+      const id = x.dataset.tenadd;
+      try {
+        await api('/tennis/campi/' + id + '/tariffe', { method: 'POST', body: JSON.stringify({
+          etichetta: ($('#tt_e_' + id) || {}).value || '',
+          da_ora: ($('#tt_da_' + id) || {}).value || '',
+          a_ora: ($('#tt_a_' + id) || {}).value || '',
+          tipo_uso: ($('#tt_t_' + id) || {}).value || 'campo',
+          prezzo_ora: Number(($('#tt_p_' + id) || {}).value || 0)
+        }) });
+      } catch (e) { alert(e.message); return; }
+      closeModal(); show('tennis');
+    });
+    document.querySelectorAll('[data-tendel]').forEach(x => x.onclick = async () => {
+      if (!confirm('Togliere questa tariffa?')) return;
+      await api('/tennis/tariffe/' + x.dataset.tendel, { method: 'DELETE' });
+      closeModal(); show('tennis');
+    });
     $('#cf_salva').onclick = async () => {
       try {
         await api('/tennis/campi/' + c.id, { method: 'PUT', body: JSON.stringify({
@@ -12933,17 +12997,27 @@ VIEWS.tennis = async () => {
     };
   });
 
-  $('#ten_pren').onclick = async () => {
-    const corpo = {
-      campo_id: Number($('#tp_campo').value), data,
-      slot: $('#tp_slot').value, tessera_code: ($('#tp_tess').value || '').trim(),
-      tipo_uso: $('#tp_uso').value
-    };
-    if (!corpo.tessera_code) { alert('Serve la tessera del socio: resta lui il titolare.'); return; }
-    try { const r = await api('/tennis/prenota', { method: 'POST', body: JSON.stringify(corpo) }); alert(r.prezzo > 0 ? \`Prenotato \xB7 \${eur(r.prezzo)} da incassare.\` : 'Prenotato.'); }
-    catch (e) { alert(e.message); return; }
+  // L'AREA TENNIS: stesso blocco dei campi liberi, ma i bottoni della fascia sono altri.
+  // Al chiosco si apre la fascia agli altri soci; qui si paga, e si sceglie fra campo e lezione
+  // privata perche' hanno due tariffe diverse.
+  await disegnaFasce({ campoId: TEN_CAMPO, data, azioni: (x) =>
+    \`<button class="btn gold sm" data-tencampo="\${esc(x.slot)}">Campo</button>
+     <button class="btn ghost sm" data-tenlez="\${esc(x.slot)}">Lezione</button>\` });
+  const prenotaTennis = async (slot, uso) => {
+    const tess = tesseraTitolare(); if (!tess) return;
+    try {
+      const r = await api('/tennis/prenota', { method: 'POST', body: JSON.stringify({ campo_id: TEN_CAMPO, data, slot, tessera_code: tess, tipo_uso: uso }) });
+      // Il prezzo si dice SUBITO: chi sta al banco deve poterlo chiedere prima che il socio se
+      // ne vada, non scoprirlo dopo guardando il riquadro.
+      const m = $('#cw_msg');
+      if (m) m.textContent = r.prezzo > 0 ? \`Prenotato \\u00b7 \${eur(r.prezzo)} da incassare.\` : 'Prenotato \\u00b7 gratuito.';
+    } catch (e) { const m = $('#cw_msg'); if (m) m.textContent = e.message; return; }
     show('tennis');
   };
+  document.querySelectorAll('[data-tencampo]').forEach(b => b.onclick = () => prenotaTennis(b.dataset.tencampo, 'campo'));
+  document.querySelectorAll('[data-tenlez]').forEach(b => b.onclick = () => prenotaTennis(b.dataset.tenlez, 'lezione'));
+  document.querySelectorAll('[data-cwcampo]').forEach(b => b.onclick = () => { TEN_CAMPO = Number(b.dataset.cwcampo); show('tennis'); });
+  document.querySelectorAll('[data-cwgiorno]').forEach(b => b.onclick = () => { window.__tennisData = b.dataset.cwgiorno; show('tennis'); });
   if ($('#ten_blocca')) $('#ten_blocca').onclick = async () => {
     try {
       await api('/tennis/blocchi', { method: 'POST', body: JSON.stringify({
@@ -12967,24 +13041,6 @@ VIEWS.tennis = async () => {
     if (!confirm('Disdire questa prenotazione? Il campo torna libero.')) return;
     try { await api('/campi/partite/' + b.dataset.tendisd + '/annulla', { method: 'POST', body: '{}' }); }
     catch (e) { alert(e.message); return; }
-    show('tennis');
-  });
-  document.querySelectorAll('[data-tenadd]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.tenadd;
-    try {
-      await api('/tennis/campi/' + id + '/tariffe', { method: 'POST', body: JSON.stringify({
-        etichetta: ($('#tt_e_' + id) || {}).value || '',
-        da_ora: ($('#tt_da_' + id) || {}).value || '',
-        a_ora: ($('#tt_a_' + id) || {}).value || '',
-        tipo_uso: ($('#tt_t_' + id) || {}).value || 'campo',
-        prezzo_ora: Number(($('#tt_p_' + id) || {}).value || 0)
-      }) });
-    } catch (e) { alert(e.message); return; }
-    show('tennis');
-  });
-  document.querySelectorAll('[data-tendel]').forEach(b => b.onclick = async () => {
-    if (!confirm('Togliere questa tariffa?')) return;
-    await api('/tennis/tariffe/' + b.dataset.tendel, { method: 'DELETE' });
     show('tennis');
   });
 };
@@ -13376,6 +13432,64 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.
 const oggiISO = () => new Date().toISOString().slice(0, 10);
 let CAMPI_DATA = '';
 let CW_CAMPO = null;   // il campo scelto nella riga di prenotazione, come nell'app del socio
+let TEN_CAMPO = null;  // lo stesso, per l'area tennis
+
+/* PRENOTARE UN CAMPO: UN BLOCCO SOLO, per i campi liberi e per l'area tennis.
+ *
+ * Le due gestioni differiscono in poco: al chiosco i campi sono gratuiti e la fascia si apre
+ * agli altri soci; all'area tennis si paga e si sceglie fra campo e lezione privata. Tutto il
+ * resto \u2014 scegliere il campo, scegliere il giorno, guardare le fasce e vedere chi c'e' gia' \u2014
+ * e' identico, e va scritto una volta sola: due copie divergono al primo cambiamento, e chi
+ * lavora si trova la stessa cosa fatta in due modi.
+ *
+ * \`azioni(fascia)\` e' l'unica parte che cambia: restituisce i bottoni della singola fascia.
+ */
+function bloccoPrenotaCampi({ campi, data, campoSel, giorni, nota }) {
+  return \`<div class="panel" style="margin-top:10px">
+    <div class="field"><label>Campo</label><div class="chips">\${campi.map(c =>
+      \`<button class="chip\${String(c.id) === String(campoSel) ? ' sel' : ''}" data-cwcampo="\${c.id}">\${esc(c.nome)}</button>\`).join('')}</div></div>
+    <div class="field"><label>Giorno</label><div class="chips">\${giorni.map(g =>
+      \`<button class="chip\${g.v === data ? ' sel' : ''}" data-cwgiorno="\${g.v}">\${esc(g.lab)}</button>\`).join('')}</div></div>
+    <div class="field"><label>Chi prenota</label>
+      <input id="cw_tess" placeholder="Tessera del socio \\u2014 resta lui il titolare"></div>
+    <div class="sect-title" style="margin-top:10px">Fasce orarie</div>
+    <div id="cw_fasce"><p class="muted" style="padding:10px 0">Carico\\u2026</p></div>
+    <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>
+    \${nota ? \`<p class="muted aiuto" style="font-size:.78rem;margin:8px 0 0">\${nota}</p>\` : ''}</div>\`;
+}
+// I sette giorni: oggi, domani, poi giorno e mese. Chip, non una tendina: scegliere "giovedi'"
+// e' un tocco, scorrere una tendina di date no.
+function settegiorni() {
+  const GG = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() + i);
+    return { v: d.toISOString().slice(0, 10), lab: i === 0 ? 'Oggi' : i === 1 ? 'Domani' : \`\${GG[d.getDay()]} \${d.getDate()}\` };
+  });
+}
+// Le fasce del campo scelto, con i bottoni che decide chi chiama. La riga dice sempre le stesse
+// cose: che ora e', se e' libera, e chi c'e' se non lo e'.
+async function disegnaFasce({ campoId, data, azioni }) {
+  const box = $('#cw_fasce'); if (!box) return;
+  const d = await api(\`/../campi/\${campoId}/disponibilita?data=\${data}\`).catch(() => ({ slots: [] }));
+  box.innerHTML = (d.slots || []).map(x => {
+    const libero = x.stato === 'libero';
+    const passato = x.stato === 'passato';
+    const sotto = passato ? 'gi\\u00e0 passata'
+      : x.stato === 'bloccato' ? \`bloccata \\u00b7 \${esc(x.motivo || '')}\`
+      : libero ? 'Libera'
+      : x.stato === 'partita' ? \`partita aperta \\u00b7 \${x.iscritti || 0}/\${x.posti_totali || '?'}\${x.titolare ? ' \\u00b7 ' + esc(x.titolare) : ''}\`
+      : \`occupata\${x.titolare ? ' \\u00b7 ' + esc(x.titolare) : ''}\`;
+    return \`<div class="row" style="justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--riga)\${passato ? ';opacity:.5' : ''}">
+      <span><b style="font-size:1rem">\${esc(x.slot)}</b><br><span class="muted" style="font-size:.8rem">\${sotto}</span></span>
+      <span class="row" style="gap:6px">\${libero ? azioni(x) : ''}</span></div>\`;
+  }).join('') || '<p class="muted" style="padding:10px 0">Nessuna fascia per questa data.</p>';
+}
+// La tessera del titolare: senza, non si prenota niente e va detto sul posto, non con un alert.
+function tesseraTitolare() {
+  const t = (($('#cw_tess') || {}).value || '').trim().toUpperCase();
+  if (!t) { const m = $('#cw_msg'); if (m) m.textContent = 'Serve la tessera del socio che prenota.'; return null; }
+  return t;
+}
 VIEWS.campi = async () => {
   const data = CAMPI_DATA || (CAMPI_DATA = oggiISO());
   const [campi, pren, blocchi] = await Promise.all([
@@ -13427,12 +13541,7 @@ VIEWS.campi = async () => {
   // Sette giorni come nell'app del socio: oggi, domani, poi giorno e mese. Non una tendina:
   // scegliere "giovedi'" e' un tocco, scorrere una tendina di date no.
   if (!CW_CAMPO || !campi.some(c => String(c.id) === String(CW_CAMPO))) CW_CAMPO = campi[0] ? campi[0].id : null;
-  const GG = ['dom', 'lun', 'mar', 'mer', 'gio', 'ven', 'sab'];
-  const giorni = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(); d.setDate(d.getDate() + i);
-    const v = d.toISOString().slice(0, 10);
-    return { v, lab: i === 0 ? 'Oggi' : i === 1 ? 'Domani' : \`\${GG[d.getDay()]} \${d.getDate()}\` };
-  });
+  const giorni = settegiorni();
   const opts = campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('');
   capoStato(\`<span class="et">Giornata</span><b>\${pren.length} \${pren.length === 1 ? 'prenotazione' : 'prenotazioni'}</b>\`
     + \`<span>\${campi.length} campi \\u00b7 \${blocchi.length} \${blocchi.length === 1 ? 'blocco' : 'blocchi'}</span>\`);
@@ -13444,21 +13553,8 @@ VIEWS.campi = async () => {
         \${legendaColori([['#101418', 'in campo'], ['#b14a35', 'manca il numero legale']])}
       </div></div>
     \${griglia(riquadriPren, 'Nessuna prenotazione per questa data.')}
-    <!-- PRENOTARE COME LO VEDE IL SOCIO. Il banco e l'app devono mostrare la stessa cosa:
-         quando un socio chiede "e alle 17:30?", l'operatore deve vedere quello che vede lui,
-         non una tendina di orari senza contesto. Campo, giorno, e le fasce una sotto l'altra
-         con i due modi di prenotare su ognuna. -->
-    <div class="panel" style="margin-top:10px">
-      <div class="field"><label>Campo</label><div class="chips">\${campi.map(c =>
-        \`<button class="chip\${String(c.id) === String(CW_CAMPO) ? ' sel' : ''}" data-cwcampo="\${c.id}">\${esc(c.nome)}</button>\`).join('')}</div></div>
-      <div class="field"><label>Giorno</label><div class="chips">\${giorni.map(g =>
-        \`<button class="chip\${g.v === data ? ' sel' : ''}" data-cwgiorno="\${g.v}">\${esc(g.lab)}</button>\`).join('')}</div></div>
-      <div class="field"><label>Chi prenota</label>
-        <input id="cw_tess" placeholder="Tessera del socio \\u2014 resta lui il titolare"></div>
-      <div class="sect-title" style="margin-top:10px">Fasce orarie</div>
-      <div id="cw_fasce"><p class="muted" style="padding:10px 0">Carico\\u2026</p></div>
-      <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>
-      <p class="muted aiuto" style="font-size:.78rem;margin:8px 0 0">Con <b>Apri ai soci</b> gli altri si uniscono fino al numero di giocatori del campo; con <b>Solo io</b> la fascia resta riservata al titolare. I campi sono gratuiti.</p></div>
+    \${bloccoPrenotaCampi({ campi, data, campoSel: CW_CAMPO, giorni,
+      nota: 'Con <b>Apri ai soci</b> gli altri si uniscono fino al numero di giocatori del campo; con <b>Solo io</b> la fascia resta riservata al titolare. I campi sono gratuiti.' })}
     <div class="panel" style="padding:8px 10px">
       \${supervisore() ? \`<div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">
         <span class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Impegna</span>
@@ -13469,43 +13565,27 @@ VIEWS.campi = async () => {
       </div>\` : '<div class="muted" style="font-size:.78rem;margin:6px 0">Bloccare un campo toglie una risorsa a tutti i soci: lo decide il manager.</div>'}
       <div>\${bl || '<p class="muted">Nessun blocco per questa data.</p>'}</div></div>\`;
 
-  // Le fasce del campo scelto, nello stesso ordine e con le stesse parole dell'app del socio.
-  const caricaSlot = async () => {
-    const box = $('#cw_fasce'); if (!box) return;
-    const d = await api(\`/../campi/\${CW_CAMPO}/disponibilita?data=\${data}\`).catch(() => ({ slots: [] }));
-    const righe = (d.slots || []).map(x => {
-      const libero = x.stato === 'libero';
-      const passato = x.stato === 'passato';
-      const azioni = libero
-        ? \`<button class="btn ghost sm" data-cwsolo="\${esc(x.slot)}">Solo io</button>
-           <button class="btn gold sm" data-cwapri="\${esc(x.slot)}">Apri ai soci</button>\`
-        : '';
-      const sotto = passato ? 'gi\\u00e0 passata'
-        : libero ? 'Libera'
-        : x.aperta_ai_soci ? \`partita aperta \\u00b7 \${x.iscritti || 0}/\${x.posti_totali || '?'}\${x.titolare ? ' \\u00b7 ' + esc(x.titolare) : ''}\`
-        : \`occupata\${x.titolare ? ' \\u00b7 ' + esc(x.titolare) : ''}\`;
-      return \`<div class="row" style="justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--riga)\${passato ? ';opacity:.5' : ''}">
-        <span><b style="font-size:1rem">\${esc(x.slot)}</b><br><span class="muted" style="font-size:.8rem">\${sotto}</span></span>
-        <span class="row" style="gap:6px">\${azioni}</span></div>\`;
-    }).join('');
-    box.innerHTML = righe || '<p class="muted" style="padding:10px 0">Nessuna fascia per questa data.</p>';
-    const prenota = async (slot, aperta) => {
-      const tess = ($('#cw_tess').value || '').trim().toUpperCase();
-      if (!tess) { $('#cw_msg').textContent = 'Serve la tessera del socio che prenota.'; return; }
-      try {
-        const r = await fetch(API_BASE + '/api/campi/' + CW_CAMPO + (aperta ? '/partita' : '/prenota'), {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tessera_code: tess, data, slot, n_slot: 1 })
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) { $('#cw_msg').textContent = j.error || 'Prenotazione non riuscita.'; return; }
-      } catch (e) { $('#cw_msg').textContent = 'Errore di rete.'; return; }
-      show('campi');
-    };
-    document.querySelectorAll('[data-cwsolo]').forEach(b => b.onclick = () => prenota(b.dataset.cwsolo, false));
-    document.querySelectorAll('[data-cwapri]').forEach(b => b.onclick = () => prenota(b.dataset.cwapri, true));
+  // I campi liberi: due modi di prenotare la fascia, e nessun prezzo.
+  await disegnaFasce({ campoId: CW_CAMPO, data, azioni: (x) =>
+    \`<button class="btn ghost sm" data-cwsolo="\${esc(x.slot)}">Solo io</button>
+     <button class="btn gold sm" data-cwapri="\${esc(x.slot)}">Apri ai soci</button>\` });
+  const prenotaCampo = async (slot, aperta) => {
+    const tess = tesseraTitolare(); if (!tess) return;
+    try {
+      const r = await fetch(API_BASE + '/api/campi/' + CW_CAMPO + (aperta ? '/partita' : '/prenota'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tessera_code: tess, data, slot, n_slot: 1 })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { $('#cw_msg').textContent = j.error || 'Prenotazione non riuscita.'; return; }
+    } catch (e) { $('#cw_msg').textContent = 'Errore di rete.'; return; }
+    show('campi');
   };
-  await caricaSlot();
+  // L'orario viaggia NEL bottone. Prima lo cercavo risalendo il DOM fino al <b> della riga:
+  // basta che la riga cambi forma e si prenota l'ora sbagliata \u2014 o nessuna, che e' quello che
+  // e' successo al tennis appena ho condiviso il blocco.
+  document.querySelectorAll('[data-cwsolo]').forEach(b => b.onclick = () => prenotaCampo(b.dataset.cwsolo, false));
+  document.querySelectorAll('[data-cwapri]').forEach(b => b.onclick = () => prenotaCampo(b.dataset.cwapri, true));
   document.querySelectorAll('[data-cwcampo]').forEach(b => b.onclick = () => { CW_CAMPO = Number(b.dataset.cwcampo); show('campi'); });
   document.querySelectorAll('[data-cwgiorno]').forEach(b => b.onclick = () => { CAMPI_DATA = b.dataset.cwgiorno; show('campi'); });
   $('#cw_data').onchange = () => { CAMPI_DATA = $('#cw_data').value; show('campi'); };
@@ -14038,23 +14118,36 @@ VIEWS.pianta = async () => {
       perY.get(k).push(t);
     }
     const file = [...perY.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v.sort((a, b) => Number(a.x) - Number(b.x)));
-    const COL = { over70: '#7a5c2e', garden: '#2e6b45', spettacolo: '#2f5d8a' };
-    return \`<div class="panel" style="padding:10px">
+    /* IL COLORE VA DENTRO, non sul bordo.
+       Prima ogni seduta era bianca con un filetto colorato da due pixel: la quota \u2014 che e'
+       l'unica cosa per cui quei colori esistono \u2014 non si leggeva a un metro di distanza, e
+       novantaquattro quadratini bianchi identici sembravano un foglio di calcolo.
+       Ora la seduta e' PIENA del colore della sua quota, chiara quando e' libera e satura
+       quando e' occupata: la sala si legge in un colpo d'occhio, che e' quello che serve
+       quando la gente entra tutta insieme.
+
+       E LE COLONNE SONO ALLINEATE. Le file non hanno tutte lo stesso numero di posti: l'ultima
+       ne ha sei. Dividendo ogni fila a meta' per conto suo, il posto 4 dell'ultima finiva sotto
+       il posto 6 delle altre e il corridoio si spostava a zig-zag. Qui la griglia e' unica,
+       calcolata sulla fila piu' lunga: dove un posto non c'e', resta il vuoto. */
+    const perFila = Math.max(...file.map(r => r.length));
+    const meta = Math.ceil(perFila / 2);
+    return \`<div class="platea">
       <div class="palco">palco</div>
       \${file.map((riga, i) => {
-        const meta = Math.ceil(riga.length / 2);
-        const seduta = (t, posto) => {
-          const col = COL[t.quota] || 'var(--muted)';
+        const cella = (k) => {
+          const t = riga[k];
+          if (!t) return '<span class="sed vuota"></span>';
           const occupata = !t.libero;
-          return \`<button class="sed\${occupata ? ' occ' : ''}\${t.tipo === 'extra' ? ' extra' : ''}"
-            style="--q:\${col}" data-sed="\${t.numero}"
-            title="Fila \${i + 1} posto \${posto} \\u00b7 \${esc(t.quota || 'posto')}\${occupata ? ' \\u00b7 occupato' : ''}">\${posto}</button>\`;
+          return \`<button class="sed q-\${esc(t.quota || 'altro')}\${occupata ? ' occ' : ''}\${t.tipo === 'extra' ? ' extra' : ''}"
+            data-sed="\${t.numero}"
+            title="Fila \${i + 1} posto \${k + 1} \\u00b7 \${esc(t.quota || 'posto')}\${occupata ? ' \\u00b7 occupato' : ' \\u00b7 libero'}">\${k + 1}</button>\`;
         };
-        return \`<div class="fila">
-          <span class="etf">fila \${i + 1}</span>
-          <span class="lato">\${riga.slice(0, meta).map((t, k) => seduta(t, k + 1)).join('')}</span>
+        return \`<div class="fila" style="--meta:\${meta};--resto:\${perFila - meta}">
+          <span class="etf">\${i + 1}</span>
+          \${Array.from({ length: meta }, (_, k) => cella(k)).join('')}
           <span class="corridoio"></span>
-          <span class="lato">\${riga.slice(meta).map((t, k) => seduta(t, meta + k + 1)).join('')}</span>
+          \${Array.from({ length: perFila - meta }, (_, k) => cella(meta + k)).join('')}
         </div>\`;
       }).join('')}
     </div>\`;
@@ -15346,7 +15439,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.18.0" : "dev";
+var VERSION = true ? "6.22.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -22358,7 +22451,7 @@ adminRouter.delete("/film/:id", requireCap("cinema"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.get("/proiezioni", requireCap("cinema"), async (req, res) => {
-  const rows = await db.prepare("SELECT p.*, f.titolo, f.regia, f.durata_min FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id ORDER BY p.data,p.ora").all();
+  const rows = await db.prepare("SELECT p.*, COALESCE(f.titolo,p.titolo) AS titolo, f.regia, f.durata_min FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id ORDER BY p.data,p.ora").all();
   const out = [];
   for (const p of rows) {
     const st = await statoTurno(p.data, p.ora, "stage", p.layout_id);
@@ -22369,15 +22462,24 @@ adminRouter.get("/proiezioni", requireCap("cinema"), async (req, res) => {
 adminRouter.post("/proiezioni", requireCap("cinema"), async (req, res) => {
   const b = req.body || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.data || ""))) return res.status(400).json({ error: "Data non valida" });
-  if (!b.film_id) return res.status(400).json({ error: "Scegli il film" });
+  const titolo = String(b.titolo || "").trim();
+  if (!b.film_id && !titolo) return res.status(400).json({ error: "Scegli il film, oppure scrivi che serata e\u2019" });
   const lay = b.layout_id ? Number(b.layout_id) : (await layoutPredefinito("stage")).id;
-  const info = await db.prepare("INSERT INTO proiezioni (film_id,data,ora,layout_id,note) VALUES (?,?,?,?,?)").run(Number(b.film_id), b.data, b.ora || "21:30", lay, b.note || null);
+  const info = await db.prepare("INSERT INTO proiezioni (film_id,titolo,evento_id,data,ora,layout_id,note) VALUES (?,?,?,?,?,?,?)").run(
+    b.film_id ? Number(b.film_id) : null,
+    titolo || null,
+    b.evento_id ? Number(b.evento_id) : null,
+    b.data,
+    b.ora || "21:30",
+    lay,
+    b.note || null
+  );
   audit(req.adminUser.username, "crea", "proiezioni", Number(info.lastInsertRowid), `${b.data} ${b.ora || "21:30"}`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
 adminRouter.put("/proiezioni/:id", requireCap("cinema"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE proiezioni SET film_id=?,data=?,ora=?,note=?,stato=? WHERE id=?").run(Number(b.film_id) || null, b.data, b.ora || "21:30", b.note || null, b.stato === "annullata" ? "annullata" : "programmata", req.params.id);
+  await db.prepare("UPDATE proiezioni SET film_id=?,titolo=?,data=?,ora=?,note=?,stato=? WHERE id=?").run(Number(b.film_id) || null, String(b.titolo || "").trim() || null, b.data, b.ora || "21:30", b.note || null, b.stato === "annullata" ? "annullata" : "programmata", req.params.id);
   res.json({ ok: true });
 });
 adminRouter.delete("/proiezioni/:id", requireCap("cinema"), async (req, res) => {
@@ -22387,7 +22489,7 @@ adminRouter.delete("/proiezioni/:id", requireCap("cinema"), async (req, res) => 
   res.json({ ok: true });
 });
 adminRouter.get("/proiezioni/:id/platea", requireCap("cinema"), async (req, res) => {
-  const p = await db.prepare("SELECT p.*, f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.id=?").get(req.params.id);
+  const p = await db.prepare("SELECT p.*, COALESCE(f.titolo,p.titolo) AS titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.id=?").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
   res.json({ proiezione: p, ...await statoTurno(p.data, p.ora, "stage", p.layout_id) });
 });
@@ -22848,7 +22950,7 @@ adminRouter.get("/cruscotto", async (req, res) => {
     const isc = await n("SELECT COUNT(*) n FROM fitness_prenotazioni WHERE seduta_id=? AND stato='prenotato'", l.id);
     lezioni.push({ ...l, iscritti: isc, confermata: isc >= l.min_iscritti });
   }
-  const proiezioniOggi = await db.prepare("SELECT p.ora,f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.data=? AND p.stato='programmata' ORDER BY p.ora").all(oggi2);
+  const proiezioniOggi = await db.prepare("SELECT p.ora,COALESCE(f.titolo,p.titolo) AS titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.data=? AND p.stato='programmata' ORDER BY p.ora").all(oggi2);
   const salaOggi = await db.prepare("SELECT ora_inizio,ora_fine,scopo,titolo FROM prenotazioni_sala WHERE data=? AND stato='confermata' ORDER BY ora_inizio").all(oggi2);
   const daRiordinare = await db.prepare(
     "SELECT id,nome,giacenza,punto_riordino FROM magazzino_articoli WHERE punto_riordino>0 AND giacenza<=punto_riordino ORDER BY giacenza LIMIT 8"
@@ -23224,7 +23326,10 @@ publicRouter.get("/push/pubkey", async (req, res) => {
 async function filmDellaSettimana(e) {
   if (e.tipo !== "cinema" && !/cinema/i.test(String(e.titolo || "") + String(e.chiave || ""))) return {};
   const p = await db.prepare(
-    "SELECT p.id,p.data,p.ora,f.titolo,f.regia,f.durata_min,f.vm FROM proiezioni p JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora LIMIT 1"
+    // \ud83d\udd34 Era una JOIN PIENA: un appuntamento senza film — cioe' ogni serata dal vivo —
+    // spariva da qui SENZA errore. Il socio non vedeva "il prossimo appuntamento" e non c'era
+    // niente che glielo dicesse: la riga semplicemente non c'era.
+    "SELECT p.id,p.data,p.ora,COALESCE(f.titolo,p.titolo) AS titolo,f.regia,f.durata_min,f.vm FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora LIMIT 1"
   ).get();
   return p ? { film: { proiezione_id: p.id, titolo: p.titolo, regia: p.regia, durata_min: p.durata_min, vm: p.vm, data: p.data, ora: p.ora } } : {};
 }
@@ -24211,7 +24316,7 @@ function etaDi(socio) {
 }
 async function spettacoloDelGiorno(data) {
   return await db.prepare(
-    "SELECT p.id,p.ora,f.titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.data=? AND p.stato='programmata' ORDER BY p.ora LIMIT 1"
+    "SELECT p.id,p.ora,COALESCE(f.titolo,p.titolo) AS titolo FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.data=? AND p.stato='programmata' ORDER BY p.ora LIMIT 1"
   ).get(data) || null;
 }
 publicRouter.post("/garden/prenota", async (req, res) => {
@@ -24347,7 +24452,7 @@ publicRouter.get("/casate/:id/appartenenti", async (req, res) => {
 publicRouter.get("/cinema", async (req, res) => {
   const film = await db.prepare("SELECT id,titolo,regia,anno,durata_min,genere,sinossi,vm FROM film WHERE attivo=1 ORDER BY ordine,id").all();
   const rows = await db.prepare(
-    "SELECT p.id,p.data,p.ora,p.film_id,p.note,f.titolo,f.regia,f.durata_min,f.genere,f.vm FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora"
+    "SELECT p.id,p.data,p.ora,p.film_id,p.note,COALESCE(f.titolo,p.titolo) AS titolo,f.regia,f.durata_min,f.genere,f.vm FROM proiezioni p LEFT JOIN film f ON f.id=p.film_id WHERE p.stato='programmata' AND p.data>=date('now','-1 day') ORDER BY p.data,p.ora"
   ).all();
   const prenotabile = await par("cinema_prenotazione");
   const contributo = Number(await par("stage_contributo")) || 0;
@@ -24397,7 +24502,7 @@ publicRouter.get("/cinema/mie-prenotazioni", async (req, res) => {
   const t = String(req.query.tessera_code || "");
   if (!t) return res.json([]);
   const rows = await db.prepare(
-    "SELECT pt.id,pt.data,pt.turno,pt.persone,pt.tavoli,f.titolo FROM prenotazioni_tavolo pt LEFT JOIN proiezioni p ON p.id=pt.proiezione_id LEFT JOIN film f ON f.id=p.film_id WHERE pt.tessera_code=? AND pt.ambiente='stage' AND pt.stato='prenotato' AND pt.data>=date('now','-1 day') ORDER BY pt.data"
+    "SELECT pt.id,pt.data,pt.turno,pt.persone,pt.tavoli,COALESCE(f.titolo,p.titolo) AS titolo FROM prenotazioni_tavolo pt LEFT JOIN proiezioni p ON p.id=pt.proiezione_id LEFT JOIN film f ON f.id=p.film_id WHERE pt.tessera_code=? AND pt.ambiente='stage' AND pt.stato='prenotato' AND pt.data>=date('now','-1 day') ORDER BY pt.data"
   ).all(t);
   res.json(rows.map((r) => ({ ...r, posti: JSON.parse(r.tavoli || "[]") })));
 });
@@ -25006,7 +25111,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 12:20" : "online";
+var BUILD = true ? "2026-09-01 13:46" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
