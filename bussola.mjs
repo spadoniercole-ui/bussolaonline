@@ -4809,9 +4809,14 @@ window.Comanda = (function () {
 // Da qualunque supporto arrivi, la tessera e' sempre lo stesso numero: qui si estrae, che sia
 // stato digitato a mano, letto da un QR o aperto da un tag NFC (che porta un indirizzo, non un
 // numero). Senza questo, ogni supporto avrebbe bisogno del suo pezzo di codice.
+// LE TESSERE HANNO DUE FORMATI. Il nuovo e' RB-000123-4 (sigla, progressivo, cifra di
+// controllo); il vecchio BR-2026-0101 resta valido perche' le tessere gia' stampate devono
+// continuare a funzionare. Il server accetta gia' tutti e due; qui si riconosceva SOLO il
+// vecchio, quindi una tessera nuova inquadrata da QR non veniva estratta dal testo del codice.
+const RE_TESSERA = /RB-\\d{6}-\\d|BR-\\d{4}-\\d{3,6}/i;
 function leggiTessera(testo) {
   const t = String(testo || "").trim().toUpperCase();
-  const m = t.match(/BR-\\d{4}-\\d{3,6}/);
+  const m = t.match(RE_TESSERA);
   return m ? m[0] : "";
 }
 
@@ -10480,6 +10485,44 @@ body.hc .panel{border-color:#8F8B7C}
 .rifleg{display:flex;flex-wrap:wrap;gap:6px}
 .rifleg span{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--riga);border-radius:var(--r);padding:4px 8px;font-size:.72rem;font-weight:700;color:var(--ink)}
 .rifleg i{width:11px;height:11px;border-radius:2px;display:inline-block;flex:0 0 auto}
+/* LA SCHEDA DELLA CUCINA. Stessa forma dei riquadri della Sala: intestazione, contenuto, e in
+   fondo due azioni larghe. Il colore dell'intestazione dice l'urgenza; le azioni non sono mai
+   rosse, perche' il rosso qui vuol dire "questo chiede te". */
+/* La tastiera del PIN. Disegnata a schermo e non quella di sistema: su alcuni telefoni la
+   tastiera nativa mostra l'ultimo carattere digitato e tiene il suggerimento in memoria, e un
+   PIN non deve comparire da nessuna parte. Tasti grandi: li preme il socio, in piedi al banco. */
+.tastiera{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tastiera .tk{border:var(--bordo) solid var(--tratto);border-radius:var(--r);background:#fff;color:var(--ink);
+  font-size:1.3rem;font-weight:700;font-family:inherit;min-height:var(--tap);cursor:pointer}
+.tastiera .tk:active{background:var(--ink);color:#fff}
+.kboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px}
+.kcard{border:var(--bordo) solid var(--ink);border-radius:var(--r);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.kcard>header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:9px 11px;background:var(--ink);color:#fff;cursor:pointer}
+.kcard>header b{font-size:1.05rem}
+.kcard>header span{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;opacity:.9}
+.kcard.rosso{border-color:var(--coral)} .kcard.rosso>header{background:var(--coral)}
+.kcard.giallo{border-color:#b08b3e} .kcard.giallo>header{background:#b08b3e}
+.kcard .kavv{padding:6px 11px;background:#FFF2EF;color:#7C1405;font-size:.78rem;font-weight:700}
+.kcard .krighe{flex:1}
+/* La riga E' il bersaglio: si tocca per segnarla pronta. Prima ogni riga aveva quattro tasti,
+   e con tre piatti erano dodici bersagli su una scheda \u2014 con le mani sporche se ne sbaglia uno. */
+.kcard .kr{display:flex;gap:9px;align-items:flex-start;width:100%;text-align:left;background:transparent;border:none;
+  border-bottom:1px solid var(--riga);padding:9px 11px;min-height:var(--tap);cursor:pointer;font-family:inherit;font-size:.92rem;color:var(--ink)}
+.kcard .kr:last-child{border-bottom:none}
+.kcard .kr:active{background:var(--paper)}
+.kcard .kr[data-fatta]{opacity:.5}
+.kcard .kr[data-fatta] .n{text-decoration:line-through}
+.kcard .kr .q{font-weight:800;min-width:16px}
+.kcard .kr .n{flex:1}
+.kcard .kr .n i{display:block;font-style:normal;font-size:.76rem;color:var(--muted);margin-top:1px}
+.kcard .kr .n i.nota{color:#8a5a12;font-weight:700}
+.kcard .kr .ok{font-weight:800}
+.kcard>footer{display:flex;border-top:var(--bordo) solid var(--ink)}
+.kcard .kact{flex:1;border:none;background:var(--card);color:var(--ink);font-family:inherit;font-weight:800;font-size:.86rem;
+  padding:11px 8px;min-height:var(--tap);cursor:pointer;border-right:1px solid var(--riga)}
+.kcard .kact:last-child{border-right:none}
+.kcard .kact.primaria{background:var(--ink);color:#fff}
+.kcard .kact[disabled]{opacity:.4;cursor:default}
 .griglia{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-top:10px}
 .riq{border:2px solid var(--ink);border-radius:4px;background:var(--card);padding:10px 12px;min-height:96px;display:flex;flex-direction:column;gap:4px}
 .riq .cap{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
@@ -10998,6 +11041,13 @@ let TOKEN = null, ME = { gestore: false, ruolo: '', caps: [] }, PAR = {};
  * Un comando straordinario si NASCONDE, non si disabilita: un tasto grigio in mezzo al lavoro
  * e' solo un ostacolo, e chi lo vede si chiede perche' non funziona. */
 const supervisore = () => ME.gestore || ME.ruolo === 'manager';
+
+// LE TESSERE HANNO DUE FORMATI. Il nuovo e' RB-000123-4 (sigla, progressivo, cifra di
+// controllo); il vecchio BR-2026-0101 resta valido perche' le tessere gia' stampate devono
+// continuare a funzionare. Il server accetta gia' tutti e due; qui si riconosceva SOLO il
+// vecchio, quindi una tessera nuova inquadrata da QR non veniva estratta dal testo del codice.
+const RE_TESSERA = /RB-\\d{6}-\\d|BR-\\d{4}-\\d{3,6}/i;
+
 // Zona della postazione (dichiarata al login): 'garden' = comande a tavolo \xB7 'bar' = comande a nome.
 let ZONA = (typeof localStorage !== 'undefined' && localStorage.getItem('bussola_zona')) || 'garden';
 const $ = (s) => document.querySelector(s);
@@ -11377,7 +11427,7 @@ function pickMetodo(onPick) {
     <p class="muted aiuto" style="font-size:.72rem;margin:6px 0 0">\xC8 una copia di cortesia: <b>lo scontrino fiscale va consegnato lo stesso</b>.</p>
     <button class="btn ghost" data-m="" style="width:100%;margin-top:10px">Annulla</button></div>\`;
   document.body.appendChild(ov);
-  ov.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
+  ov.querySelectorAll('[data-m]').forEach(b => b.onclick = async () => {
     const m = b.dataset.m;
     const mail = (ov.querySelector('#pm_mail') || {}).value || '';
     // Con la tessera serve sapere QUALE: si scala il saldo di qualcuno, non si incassa e basta.
@@ -11386,14 +11436,59 @@ function pickMetodo(onPick) {
       // Il campo accetta il numero digitato, il QR inquadrato o l'indirizzo che arriva dal tag
       // NFC: sono lo stesso identificatore su tre supporti diversi.
       const grezzo = prompt('Tessera di chi paga: digita il numero, inquadra il QR o appoggia la card') || '';
-      const m = grezzo.trim().toUpperCase().match(/BR-\\d{4}-\\d{3,6}/);
-      tess = m ? m[0] : grezzo.trim();
+      const mm = grezzo.trim().toUpperCase().match(RE_TESSERA);
+      tess = mm ? mm[0] : grezzo.trim();
       if (!tess) return;
-      // Il PIN lo digita il socio, non l'operatore: e' l'unica cosa che sta solo in testa a lui.
-      pin = (prompt('Fai digitare il PIN al socio (4-6 cifre)') || '').trim();
+      // IL PIN NON SI DIGITA IN UN prompt(). Il socio lo batteva in chiaro, in una finestrella
+      // di sistema, sul tablet dell'operatore \u2014 che lo leggeva. E' l'unica cosa che deve stare
+      // solo in testa al socio, e la mostravamo a un'altra persona.
+      // Qui il dispositivo si passa al socio, le cifre diventano pallini, e la tastiera e' a
+      // schermo: cosi' non compare nemmeno la tastiera di sistema con il suo suggerimento.
+      document.body.removeChild(ov);
+      pin = await chiediPin();
+      if (pin == null) return;
+      onPick(m, mail.trim(), tess, pin);
+      return;
     }
     document.body.removeChild(ov);
     if (m) onPick(m, mail.trim(), tess, pin);
+  });
+}
+
+/* IL PIN DELLA PREPAGATA, mascherato.
+   Si passa il dispositivo al socio: le cifre diventano pallini, la tastiera e' disegnata a
+   schermo \u2014 non quella di sistema, che su alcuni telefoni mostra l'ultimo carattere digitato e
+   tiene il suggerimento in memoria. L'operatore vede quante cifre, non quali.
+   Restituisce il PIN, oppure null se si annulla. */
+function chiediPin() {
+  return new Promise((risolvi) => {
+    let val = '';
+    const disegna = () => {
+      const p = document.querySelector('#pin_pall');
+      if (p) p.textContent = '\\u2022'.repeat(val.length) + '\\u00b7'.repeat(Math.max(0, 4 - val.length));
+      const ok = document.querySelector('#pin_ok');
+      if (ok) ok.disabled = val.length < 4;
+    };
+    openModal(\`<h3>Passa il dispositivo al socio</h3>
+      <p class="muted" style="font-size:.82rem">Il PIN lo digita lui: sono 4\\u20136 cifre e non le vede nessun altro.</p>
+      <div id="pin_pall" style="font-size:2rem;letter-spacing:.5rem;text-align:center;margin:14px 0;font-weight:800;color:var(--ink)"></div>
+      <div class="tastiera">
+        \${['1','2','3','4','5','6','7','8','9','','0','\\u2190'].map(k => k === ''
+          ? '<span></span>'
+          : \`<button class="tk" data-pk="\${esc(k)}">\${esc(k)}</button>\`).join('')}
+      </div>
+      <div class="row" style="gap:6px;margin-top:12px">
+        <button class="btn ghost" style="flex:1" id="pin_no">Annulla</button>
+        <button class="btn gold" style="flex:1" id="pin_ok" disabled>Conferma</button>
+      </div>\`, { protetta: true });
+    document.querySelectorAll('[data-pk]').forEach(b => b.onclick = () => {
+      if (b.dataset.pk === '\\u2190') val = val.slice(0, -1);
+      else if (val.length < 6) val += b.dataset.pk;
+      disegna();
+    });
+    $('#pin_no').onclick = () => { closeModal(); risolvi(null); };
+    $('#pin_ok').onclick = () => { const v = val; closeModal(); risolvi(v); };
+    disegna();
   });
 }
 
@@ -11599,37 +11694,48 @@ function tavoloCard(tb) {
     \${pay}</div>\`;
 }
 // Card CUCINA (per tavolo/nome): riferimento differenziato Bar (nome, oro) / Garden (n\xB0 tavolo, verde), clic per dettaglio.
+/* LA SCHEDA DELLA CUCINA, nella stessa forma dei riquadri della Sala.
+   Intestazione col riferimento e da quanto aspetta, le righe in mezzo, e in fondo DUE azioni
+   larghe: "Pronto" e "Avvisa la sala".
+
+   Prima ogni riga portava quattro tasti \u2014 pronta, consegna, storna, non servita \u2014 e con tre
+   piatti erano dodici bersagli su una scheda: chi ha le mani sporche ne sbaglia uno.
+   Ora la riga si tocca per segnarla pronta, e le due eccezioni (non si puo' fare / fatto ma non
+   servito) stanno nella finestra di dettaglio, che si apre toccando l'intestazione. Sono
+   eccezioni: devono essere raggiungibili, non davanti. */
 function cucinaCard(g) {
   const c = ZCOL[g.st.key];
   const isBar = g.zona === 'bar';
-  const acc = isBar ? ACC_BAR : ACC_GARDEN;
-  const ref = isBar
-    ? \`<span class="row" style="gap:6px"><span class="tsub" style="color:\${c.tx};font-size:1.02rem">\u{1F378} \${esc(g.rif)}</span></span>\`
-    : \`<span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${esc(g.rif)}</span><span class="tsub" style="color:\${c.tx}">Tavolo</span></span>\`;
-  // Un piatto, una riga. I condimenti si leggono DENTRO il piatto \u2014 \xE8 l\xEC che vanno \u2014 e non
-  // hanno un tasto loro: nessuno manda "in tavola" una maionese per conto suo. Prima erano
-  // quattro voci separate con quattro tasti, e in mezzo il supplemento, che \xE8 una riga di
-  // denaro e in cucina non c'entra niente.
   const tutte = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r })));
   const figlieDi = (id) => tutte.filter(x => Number(x.r.parent_riga_id) === Number(id)).map(x => x.r);
-  const righe = tutte.filter(({ r }) => !r.parent_riga_id).map(({ cm, r }) => {
+  const madri = tutte.filter(({ r }) => !r.parent_riga_id);
+  const righe = madri.map(({ cm, r }) => {
     const dentro = figlieDi(r.id);
-    return \`<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)">
-      <span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${dentro.length ? \`<div style="font-size:.78rem;color:#5a5346;margin-top:2px">\${dentro.map(f => '\\u21b3 ' + esc(f.nome)).join('<br>')}</div>\` : ''}\${r.note ? \`<div class="muted aiuto" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
-      \${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \\u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \\ud83d\\udece</button>\`}
-      <button class="btn ghost sm" data-kstorna="\${r.id}" title="Non si pu\\u00f2 fare: il piatto non parte, niente conto e niente scarico">\\u21a9\\ufe0e</button>
-      <button class="btn ghost sm" data-knons="\${r.id}" title="Gi\\u00e0 fatto ma non servito: esce dal conto, la merce resta scaricata">\\ud83d\\uddd1</button></div>\`;
+    const fatta = r.stato !== 'in_coda';
+    return \`<button class="kr" data-kr="\${cm.id}|\${r.id}|\${fatta ? 'consegnata' : 'pronta'}" \${fatta ? 'data-fatta="1"' : ''}>
+      <span class="q">\${r.qta}</span>
+      <span class="n">\${esc(r.nome)}
+        \${dentro.length ? \`<i>\${dentro.map(f => '\\u21b3 ' + esc(f.nome)).join(' \\u00b7 ')}</i>\` : ''}
+        \${r.note ? \`<i class="nota">\${esc(r.note)}</i>\` : ''}</span>
+      \${fatta ? '<span class="ok">\\u2714</span>' : ''}
+    </button>\`;
   }).join('');
-  // Se l'ordine e' arrivato prima che la piastra fosse calda, la cucina deve saperlo: non e'
-  // in ritardo, e' in attesa dell'ora di consegna concordata con chi ha ordinato.
   const attesa = g.comande.map(cm => cm.non_prima).filter(Boolean).sort().pop();
-  return \`<div class="tcard clic" data-kdetail="\${g.zona}|\${esc(g.rif)}" style="border-color:\${c.bd};background:\${c.bg}">
-    <div class="zacc" style="background:\${acc}"></div>
-    <div class="thd" style="margin-top:2px">\${ref}\${chipOf(g.st)}</div>
-    <div class="tst" style="color:\${c.tx}">\${c.lb}\${g.st.since ? ' \xB7 ' + hhmmOf(g.st.since) : ''}</div>
-    \${attesa ? \`<div class="tst" style="color:#B7791F;font-weight:800">\u{1F525} non prima delle \${esc(attesa)}</div>\` : ''}
-    \${g.comande.some(cm => Number(cm.verifica_eta) === 1) ? '<div class="tst" style="color:#C0553F;font-weight:800">\u{1F51E} alcolici \xB7 verificare la maggiore et\xE0</div>' : ''}
-    <div style="margin-top:6px">\${righe}</div></div>\`;
+  const eta = g.comande.some(cm => Number(cm.verifica_eta) === 1);
+  const daFare = madri.filter(({ r }) => r.stato === 'in_coda').map(({ cm, r }) => cm.id + '|' + r.id).join(',');
+  return \`<div class="kcard \${g.st.key}">
+    <header data-kdetail="\${g.zona}|\${esc(g.rif)}">
+      <b>\${isBar ? esc(g.rif) + ' \\u00b7 banco' : 'Tavolo ' + esc(g.rif)}</b>
+      <span>\${esc(c.lb)}\${g.st.mins != null ? ' \\u00b7 ' + g.st.mins + '\\u2032' : ''}</span>
+    </header>
+    \${attesa ? \`<div class="kavv">\\ud83d\\udd25 non prima delle \${esc(attesa)}</div>\` : ''}
+    \${eta ? '<div class="kavv">\\ud83d\\udd1e alcolici \\u00b7 verificare la maggiore et\\u00e0</div>' : ''}
+    <div class="krighe">\${righe}</div>
+    <footer>
+      <button class="kact primaria" data-ktutte="\${daFare}" \${daFare ? '' : 'disabled'}>Pronto</button>
+      <button class="kact" data-kavvisa="\${g.comande[0] ? g.comande[0].id : ''}">Avvisa la sala</button>
+    </footer>
+  </div>\`;
 }
 // ---- Modale dettaglio (clic su una card) ----
 function openModal(html, opt) { $('#modal').dataset.protetta = (opt && opt.protetta) ? '1' : '';  $('#mbox').innerHTML = html; $('#modal').classList.remove('hide'); const cb = $('#mbox').querySelector('[data-mclose]'); if (cb) cb.onclick = closeModal; }
@@ -11784,11 +11890,40 @@ function avviaAdesso() {
   }, 45000);
 }
 
+// IL MOTIVO SI TOCCA, non si batte. Entrambi i prompt elencavano loro stessi le risposte
+// possibili \u2014 "ingrediente finito, piatto sbagliato\u2026" \u2014 cioe' erano scelte chiuse travestite da
+// testo libero, e si scrivevano a mano davanti al passe. Resta il campo libero per il resto.
+// Il motivo e' OBBLIGATORIO e resta scritto: e' quello che permette di rispondere, a fine
+// stagione, alla domanda "perche' quel piatto non e' mai arrivato".
+function motivoATocco(rigaId, titolo, spiega, motivi, azione) {
+  const manda = async (motivo) => {
+    if (!motivo || !motivo.trim()) return;
+    try { await azione(rigaId, motivo.trim()); }
+    catch (err) { alert(err.message); return; }
+    closeModal(); show('kds');
+  };
+  openModal(\`<h3>\${esc(titolo)}</h3>
+    <p class="muted" style="font-size:.82rem">\${esc(spiega)}</p>
+    <div class="chips" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:8px">
+      \${motivi.map((m, i) => \`<button class="chip" style="justify-content:flex-start" data-mtv="\${i}">\${esc(m)}</button>\`).join('')}
+    </div>
+    <label style="margin-top:10px">Oppure scrivi</label>
+    <input id="mtv_txt" placeholder="Che cosa e\\u2019 successo?">
+    <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px">
+      <button class="btn ghost sm" data-mclose>Annulla</button>
+      <button class="btn gold sm" id="mtv_go">Conferma</button>
+    </div>\`);
+  document.querySelectorAll('[data-mtv]').forEach(x => x.onclick = () => manda(motivi[Number(x.dataset.mtv)]));
+  $('#mtv_go').onclick = () => manda($('#mtv_txt').value);
+}
+let KDS_ST = 'cucina';   // quale stazione sta guardando il passe: cucina o banco
 VIEWS.kds = async () => {
   const cfg = await api('/self-order/config').catch(() => ({}));
   const rMin = Number(cfg.map_rosso_min || 10);
   const render = async () => {
-    const q = await api('/kds?stazione=cucina').catch(() => []);   // il bar non ha cucina: qui solo i piatti
+    // La stazione si sceglie: chi sta al passe vede i piatti, chi sta al banco i cocktail. Il
+    // selettore c'era nel disegno e non nel codice, dove la cucina vedeva solo 'cucina'.
+    const q = await api('/kds?stazione=' + KDS_ST).catch(() => []);
     const groups = {};
     for (const c of q) {
       const zona = c.zona === 'bar' ? 'bar' : 'garden';
@@ -11800,19 +11935,63 @@ VIEWS.kds = async () => {
     const byUrg = (a, b) => (URG[a.st.key] - URG[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity));
     const bar = all.filter(g => g.zona === 'bar').sort(byUrg);
     const garden = all.filter(g => g.zona === 'garden').sort(byUrg);
-    // Board diviso a met\xE0: sopra il Bar (a nome), sotto i Tavoli Garden \u2014 stesso ciclo colore.
-    $('#view').innerHTML = \`<div class="split">
-      <section>
-        <div class="shd">\u{1F378} Bar <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 a nome \xB7 \${bar.length} in coda</span></div>
-        <div class="board">\${bar.map(cucinaCard).join('') || '<p class="muted">Nessuna comanda bar da cucinare. \u{1F389}</p>'}</div>
-      </section>
-      <div class="divider"></div>
-      <section>
-        <div class="shd">\u{1F37D}\uFE0F Tavoli \xB7 Garden <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 a tavolo \xB7 \u{1F7E8}\u2192\u{1F7E5} oltre \${rMin}\u2032 \xB7 \${garden.length} in coda</span></div>
-        <div class="board">\${garden.map(cucinaCard).join('') || '<p class="muted">Nessuna comanda tavolo da cucinare. \u{1F389}</p>'}</div>
-      </section>
-    </div>\`;
+    // UNA GRIGLIA SOLA, ordinata per urgenza. Prima erano due sezioni impilate \u2014 Bar sopra,
+    // Garden sotto \u2014 e su un tablet la seconda cominciava sotto il bordo: la comanda piu' in
+    // ritardo poteva stare fuori schermo mentre in alto c'era una scheda appena arrivata.
+    // Ora chi aspetta di piu' sta in alto, da qualunque parte venga, e la provenienza si legge
+    // nella scheda: "Tavolo 3" oppure "Marta R. \\u00b7 banco".
+    const tutte2 = [...bar, ...garden].sort(byUrg);
+    $('#view').innerHTML = \`
+      <div class="panel" style="padding:8px 10px">
+        <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+          \${['cucina', 'bar'].map(st => \`<button class="btn \${KDS_ST === st ? 'gold' : 'ghost'} sm" data-kst="\${st}">\${st === 'cucina' ? 'Cucina' : 'Banco'}</button>\`).join('')}
+          <span style="flex:1"></span>
+          <span class="muted aiuto" style="font-size:.78rem">Le code seguono chi prepara, non la zona: un cocktail ordinato al tavolo lo vede il banco.</span>
+        </div>
+      </div>
+      <div class="kboard">\${tutte2.map(cucinaCard).join('') || '<div class="panel"><p class="muted">Niente da preparare. \\ud83c\\udf89</p></div>'}</div>\`;
+    document.querySelectorAll('[data-kst]').forEach(b => b.onclick = () => { KDS_ST = b.dataset.kst; render(); });
     document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
+    // "Pronto" chiude la scheda intera: quando il piatto esce, escono tutti insieme. Segnarli
+    // uno per uno resta possibile toccando la riga, ma non e' il gesto normale.
+    document.querySelectorAll('[data-ktutte]').forEach(b => b.onclick = async () => {
+      const righe = (b.dataset.ktutte || '').split(',').filter(Boolean);
+      if (!righe.length) return;
+      b.disabled = true;
+      for (const x of righe) { const [cid, rid] = x.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: 'pronta' }) }); }
+      render();
+    });
+    // Le quattro frasi che la cucina dice davvero, piu' il testo libero per tutto il resto.
+    // Un prompt() del browser qui sarebbe il gesto peggiore possibile: tastiera di sistema, con
+    // le mani sporche, davanti al passe. Sono le stesse ragioni per cui l'ho tolto dall'app.
+    const FRASI = [
+      'Ingrediente finito: proponi un\\u2019alternativa.',
+      'Ritardo di circa 10 minuti.',
+      'Il piatto va rifatto: avvisa il cliente.',
+      'Pronto fra poco, tienilo caldo in sala.'
+    ];
+    document.querySelectorAll('[data-kavvisa]').forEach(b => b.onclick = () => {
+      const id = b.dataset.kavvisa; if (!id) return;
+      const manda = async (testo) => {
+        if (!testo || !testo.trim()) return;
+        try { await api('/comande/' + id + '/avvisa-sala', { method: 'POST', body: JSON.stringify({ testo }) }); }
+        catch (e) { alert(e.message); return; }
+        closeModal(); render();
+      };
+      openModal(\`<h3>Avvisa la sala</h3>
+        <p class="muted" style="font-size:.82rem">Lo legge chi apre il tavolo. Ne resta uno solo: l\\u2019ultimo.</p>
+        <div class="chips" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:8px">
+          \${FRASI.map((f, i) => \`<button class="chip" style="justify-content:flex-start" data-kfr="\${i}">\${esc(f)}</button>\`).join('')}
+        </div>
+        <label style="margin-top:10px">Oppure scrivi</label>
+        <textarea id="kav_txt" rows="2" placeholder="\\u00c8 finita la scottona: proponi l\\u2019hamburger di maiale."></textarea>
+        <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px">
+          <button class="btn ghost sm" data-mclose>Annulla</button>
+          <button class="btn gold sm" id="kav_go">Manda</button>
+        </div>\`);
+      document.querySelectorAll('[data-kfr]').forEach(x => x.onclick = () => manda(FRASI[Number(x.dataset.kfr)]));
+      $('#kav_go').onclick = () => manda($('#kav_txt').value);
+    });
     // La cucina pu\xF2 togliere una riga che non \xE8 in grado di fare: ingrediente finito, piatto
     // sbagliato. Prima poteva solo segnarla "pronta" e lasciare il problema alla sala, che se
     // ne accorgeva davanti al cliente. Il motivo \xE8 obbligatorio, e la riga resta scritta.
@@ -11821,21 +12000,19 @@ VIEWS.kds = async () => {
     // resta un ammanco che nessuno sa spiegare.
     document.querySelectorAll('[data-knons]').forEach(b => b.onclick = async (e) => {
       e.stopPropagation();
-      const motivo = prompt('Il piatto \\u00e8 stato fatto ma non servito. Cosa \\u00e8 successo?\\n(il cliente ha rinunciato, sbagliato tavolo, arrivato freddo\\u2026)');
-      if (motivo == null || !motivo.trim()) return;
-      try { await api('/comande/righe/' + b.dataset.knons + '/non-servita', { method: 'PUT', body: JSON.stringify({ motivo: motivo.trim() }) }); }
-      catch (err) { alert(err.message); return; }
-      alert('Tolto dal conto. La merce resta scaricata dal magazzino: il piatto \\u00e8 stato fatto.\\nLa sala vede il tavolo acceso in rosso.');
-      show('kds');
+      // Il prompt elencava lui stesso le tre risposte possibili: era una scelta chiusa
+      // travestita da testo libero, e la si batteva a mano davanti al passe.
+      motivoATocco(b.dataset.knons, 'Fatto ma non servito',
+        'Il piatto e\\u2019 stato cucinato: esce dal conto, ma la merce resta scaricata dal magazzino. Altrimenti all\\u2019inventario resta un ammanco che nessuno sa spiegare.',
+        ['Il cliente ha rinunciato', 'Portato al tavolo sbagliato', 'Arrivato freddo', 'Il cliente non c\\u2019era piu\\u2019'],
+        (id, motivo) => api('/comande/righe/' + id + '/non-servita', { method: 'PUT', body: JSON.stringify({ motivo }) }));
     });
     document.querySelectorAll('[data-kstorna]').forEach(b => b.onclick = async (e) => {
       e.stopPropagation();
-      const motivo = prompt('Perch\xE9 questa riga non si pu\xF2 fare?\\n(ingrediente finito, piatto sbagliato\u2026)');
-      if (motivo == null || !motivo.trim()) return;
-      try { await api('/comande/righe/' + b.dataset.kstorna + '/storna', { method: 'PUT', body: JSON.stringify({ motivo: motivo.trim() }) }); }
-      catch (err) { alert(err.message); return; }
-      alert('Riga tolta dalla comanda e dal conto. Avvisa la sala: il cliente va informato.');
-      show('kds');
+      motivoATocco(b.dataset.kstorna, 'Non si puo\\u2019 fare',
+        'Il piatto non parte: niente conto e niente scarico di magazzino. La sala viene avvisata.',
+        ['Ingrediente finito', 'Piatto sbagliato', 'Non lo facciamo piu\\u2019', 'Attrezzatura guasta'],
+        (id, motivo) => api('/comande/righe/' + id + '/storna', { method: 'PUT', body: JSON.stringify({ motivo }) }));
     });
     document.querySelectorAll('[data-kdetail]').forEach(card => card.onclick = (e) => {
       if (e.target.closest('button')) return;
@@ -13077,48 +13254,62 @@ VIEWS.campi = async () => {
     api('/campi/prenotazioni?data=' + data).catch(() => []),
     api('/campi/blocchi?data=' + data).catch(() => [])
   ]);
-  const righe = pren.map(p => {
-    const ora = p.slot_da === p.slot_a ? esc(p.slot_da) : \`\${esc(p.slot_da)}\u2013\${esc(p.slot_a)}\`;
+  // I RIQUADRI DEI CAMPI, come quelli dei tavoli. Dentro il quadrato c'e' tutto quello che
+  // serve a rispondere a un socio che arriva al banco: che campo, a che ora, chi lo tiene,
+  // quanti sono e quanti ne mancano. Il tono dice a colpo d'occhio se manca qualcuno per il
+  // numero legale, perche' e' l'unica cosa che chiede un intervento.
+  const riquadriPren = pren.map(p => {
+    const ora = p.slot_da === p.slot_a ? esc(p.slot_da) : \`\${esc(p.slot_da)}\\u2013\${esc(p.slot_a)}\`;
+    const dentro = (p.partecipanti || []).length;
+    const tot = Number(p.posti_totali) || 0;
+    const mancano = tot ? Math.max(0, tot - dentro) : 0;
+    const aperta = !!p.aperta_ai_soci;
+    const tono = aperta && mancano ? 'chiama' : 'attesa';
     const nomi = (p.partecipanti || []).map(x => esc(x.nome)).join(', ');
-    const cap = p.posti_totali ? \`\${(p.partecipanti || []).length}/\${p.posti_totali}\` : '';
-    return \`<div class="card" style="padding:10px 12px;margin-bottom:8px">
-      <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
-        <b style="color:var(--navy)">\${ora} \xB7 \${esc(p.campo_nome)}</b>
-        <span class="tag">\${p.aperta_ai_soci ? '\u{1F465} Aperta' : '\u{1F512} Riservata'} \${cap}</span>
-      </div>
-      <div style="font-size:.85rem;margin-top:4px">Titolare <b>\${esc(p.titolare || '\u2014')}</b></div>
-      \${nomi ? \`<div class="muted" style="font-size:.8rem">Con: \${nomi}</div>\` : '<div class="muted" style="font-size:.8rem">Nessun altro giocatore dichiarato</div>'}
-      \${p.partita_id ? \`<div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
-        <input id="gj_\${p.partita_id}" placeholder="Nome, oppure tessera" style="min-width:150px;font-size:.85rem">
-        <button class="btn ghost sm" data-gioc="\${p.partita_id}">+ Chi gioca</button>
-        <button class="btn danger sm" data-discampo="\${p.partita_id}">Disdici</button>
-      </div>\` : ''}
-    </div>\`;
-  }).join('');
+    return riquadro({
+      num: esc(p.campo_nome), stato: ora, tono,
+      det: [
+        \`\${aperta ? 'aperta ai soci' : 'riservata'}\${tot ? ' \\u00b7 ' + dentro + '/' + tot : ''}\`,
+        \`titolare <b>\${esc(p.titolare || '\\u2014')}</b>\`,
+        nomi ? 'con ' + nomi : '',
+        aperta && mancano ? \`<b style="color:var(--coral)">mancano \${mancano} \${mancano === 1 ? 'giocatore' : 'giocatori'}</b>\` : ''
+      ],
+      azioni: p.partita_id ? [
+        \`<button class="btn ghost sm" data-gioc="\${p.partita_id}">+ Chi gioca</button>\`,
+        \`<button class="btn ghost sm" data-discampo="\${p.partita_id}">Disdici</button>\`
+      ] : []
+    });
+  });
   const bl = blocchi.map(b => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
       <span>\u{1F6A7} <b>\${esc(b.campo_nome)}</b> \${esc(b.slot_da)}\u2013\${esc(b.slot_a)} <span class="muted">\${esc(b.motivo)}</span></span>
       <button class="btn danger sm" data-cbldel="\${b.id}">\u{1F5D1}</button></div>\`).join('');
   const opts = campi.map(c => \`<option value="\${c.id}">\${esc(c.nome)}</option>\`).join('');
+  capoStato(\`<span class="et">Giornata</span><b>\${pren.length} \${pren.length === 1 ? 'prenotazione' : 'prenotazioni'}</b>\`
+    + \`<span>\${campi.length} campi \\u00b7 \${blocchi.length} \${blocchi.length === 1 ? 'blocco' : 'blocchi'}</span>\`);
   $('#view').innerHTML = \`
-    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <b style="color:var(--navy)">\u{1F3BE} Campi</b>
-      <input type="date" id="cw_data" value="\${data}">
-    </div>
-    <p class="muted aiuto" style="font-size:.78rem;margin-top:6px">I campi sono gratuiti: qui si vede <b>chi usa</b> e a chi fare riferimento. Ogni prenotazione ha un titolare socio.</p></div>
-    <div class="panel"><b style="color:var(--navy)">Prenotazioni del giorno</b>
-      <div style="margin-top:8px">\${righe || '<p class="muted">Nessuna prenotazione per questa data.</p>'}</div></div>
-    <div class="panel"><b style="color:var(--navy)">\u{1F3AB} Prenota al banco</b>
-      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0">Serve la tessera del socio che prenota: resta lui il titolare.</p>
-      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
-        <select id="cw_campo">\${opts}</select>
-        <select id="cw_slot"><option>\u2014</option></select>
-        <input id="cw_tess" placeholder="Tessera socio" style="min-width:150px">
-        <select id="cw_tipo"><option value="1">\u{1F465} Aperta ai soci</option><option value="0">\u{1F512} Riservata</option></select>
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <input type="date" id="cw_data" value="\${data}" style="width:auto">
+        <span style="flex:1"></span>
+        \${legendaColori([['#101418', 'in campo'], ['#b14a35', 'manca il numero legale']])}
+      </div></div>
+    \${griglia(riquadriPren, 'Nessuna prenotazione per questa data.')}
+    <!-- LE DUE RIGHE COMUNI, sotto la griglia: valgono per tutti i campi e stanno sempre nello
+         stesso posto, cosi' non si cercano. La prima prenota, la seconda impegna il campo e la
+         vede solo il manager. -->
+    <div class="panel" style="padding:8px 10px;margin-top:10px">
+      <div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">
+        <select id="cw_campo" style="width:auto">\${opts}</select>
+        <select id="cw_slot" style="width:auto"><option>\u2014</option></select>
+        <input id="cw_tess" placeholder="Tessera socio" style="min-width:140px">
+        <select id="cw_tipo" style="width:auto"><option value="1">\u{1F465} Aperta ai soci</option><option value="0">\u{1F512} Riservata</option></select>
         <button class="btn gold sm" id="cw_book">Prenota</button>
       </div>
-      <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>
-    <div class="panel"><b style="color:var(--navy)">\u{1F6A7} Campo impegnato</b>
-      \${supervisore() ? \`<div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0">
+      <div id="cw_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div>
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">Serve la tessera del socio che prenota: resta lui il titolare.</p></div>
+    <div class="panel" style="padding:8px 10px">
+      \${supervisore() ? \`<div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">
+        <span class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Impegna</span>
         <select id="cw_bcampo">\${opts}</select>
         <input id="cw_bda" value="09:00" style="width:70px"><span class="muted">\u2013</span><input id="cw_ba" value="22:00" style="width:70px">
         <select id="cw_bmot"><option value="torneo">torneo</option><option value="manutenzione">manutenzione</option><option value="evento">evento</option></select>
@@ -13148,14 +13339,27 @@ VIEWS.campi = async () => {
     catch (e) { alert(e.message); return; }
     show('campi');
   });
-  document.querySelectorAll('[data-gioc]').forEach(b => b.onclick = async () => {
+  // Il campo di testo stava DENTRO la vecchia scheda; nel riquadro non c'e' piu', quindi
+  // questo tasto avrebbe sempre risposto "scrivi il nome" e non avrebbe iscritto nessuno.
+  // Ora apre una finestra: si scrive un nome oppure si inquadra la tessera.
+  document.querySelectorAll('[data-gioc]').forEach(b => b.onclick = () => {
     const id = b.dataset.gioc;
-    const v = (($('#gj_' + id) || {}).value || '').trim();
-    if (!v) { alert('Scrivi il nome di chi gioca, oppure la sua tessera.'); return; }
-    const corpo = /^(RB|BR)-/i.test(v) ? { giocatore_tessera: v.toUpperCase() } : { nome: v };
-    try { await api('/campi/partite/' + id + '/giocatori', { method: 'POST', body: JSON.stringify(corpo) }); }
-    catch (e) { alert(e.message); return; }
-    show('campi');
+    const manda = async (v) => {
+      if (!v || !v.trim()) return;
+      const corpo = RE_TESSERA.test(v) ? { giocatore_tessera: v.trim().toUpperCase() } : { nome: v.trim() };
+      try { await api('/campi/partite/' + id + '/giocatori', { method: 'POST', body: JSON.stringify(corpo) }); }
+      catch (e) { alert(e.message); return; }
+      closeModal(); show('campi');
+    };
+    openModal(\`<h3>Chi gioca</h3>
+      <p class="muted" style="font-size:.82rem">Un socio si aggiunge con la tessera, un ospite col nome. Servono i giocatori dichiarati: sotto il numero legale la fascia si libera da sola.</p>
+      <label>Nome oppure tessera</label>
+      <input id="gj_txt" placeholder="Marta R. \\u2014 oppure RB-000123-4">
+      <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px">
+        <button class="btn ghost sm" data-mclose>Annulla</button>
+        <button class="btn gold sm" id="gj_go">Aggiungi</button>
+      </div>\`);
+    $('#gj_go').onclick = () => manda($('#gj_txt').value);
   });
   $('#cw_book').onclick = async () => {
     const tess = $('#cw_tess').value.trim().toUpperCase();
@@ -13840,17 +14044,29 @@ VIEWS.pianta = async () => {
       // Il gruppo si sposta: al sole non si sta, si libera un tavolo piu' grande, due tavolate
       // si accorpano. La comanda deve seguirli, altrimenti a fine turno il conto si presenta a
       // chi non ha mangiato quella roba.
-      document.querySelectorAll('[data-cmuovi]').forEach(b => b.onclick = async () => {
-        const dove = prompt('Su quale tavolo si spostano?');
-        if (dove == null || !String(dove).trim()) return;
+      document.querySelectorAll('[data-cmuovi]').forEach(b => b.onclick = () => {
+        // I tavoli sono un elenco NOTO, quindi si toccano. Digitare "12" quando il dodici e'
+        // gia' occupato e' un errore che il sistema puo' impedire invece di lasciarlo fare e
+        // poi rifiutarlo. I liberi in cima, gli occupati sotto e segnati.
+        const liberi = (turnoDati.tavoli || []).filter(t => (t.tipo || 'standard') !== 'arredo')
+          .slice().sort((x, y) => (x.libero === y.libero ? Number(x.numero) - Number(y.numero) : x.libero ? -1 : 1));
+        openModal(\`<h3>Su quale tavolo si spostano?</h3>
+          <p class="muted" style="font-size:.82rem">La comanda li segue: altrimenti a fine turno il conto si presenta a chi non ha mangiato quella roba.</p>
+          <div class="chips" style="margin-top:8px">
+            \${liberi.map(t => \`<button class="chip" data-mvt="\${t.numero}"\${t.libero ? '' : ' style="opacity:.55"'}>\${t.numero}\${t.libero ? '' : ' \\u00b7 occupato'}</button>\`).join('')}
+          </div>
+          <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn ghost sm" data-mclose>Annulla</button></div>\`);
+        document.querySelectorAll('[data-mvt]').forEach(x => x.onclick = () => muoviSu(b.dataset.cmuovi, x.dataset.mvt));
+      });
+      const muoviSu = async (comandaId, dove) => {
         let r;
-        try { r = await api('/comande/' + b.dataset.cmuovi + '/tavolo', { method: 'PUT', body: JSON.stringify({ riferimento: String(dove).trim() }) }); }
+        try { r = await api('/comande/' + comandaId + '/tavolo', { method: 'PUT', body: JSON.stringify({ riferimento: String(dove).trim() }) }); }
         catch (e) { alert(e.message); return; }
         // Se il tavolo di arrivo e' gia' prenotato per un altro turno, lo spostamento si fa
         // lo stesso ma chi accoglie deve saperlo.
         if (r && r.avviso) alert(r.avviso);
         closeModal(); show('pianta');
-      });
+      };
       // Il conto diviso: la crew dice in quanti sono e legge la quota, senza fare i conti a
       // mente davanti al tavolo. Il totale resta uno: si divide solo per comodita' di chi paga.
       // Si divide per i POSTI OCCUPATI, non per i posti del tavolo: se sono in tre a un tavolo
@@ -14385,7 +14601,7 @@ async function scansionaTessera(quando) {
         const codici = await det.detect(v);
         if (codici && codici.length) {
           const testo = String(codici[0].rawValue || '').trim();
-          const m = testo.match(/BR-\\d{4}-\\d{4}/i);
+          const m = testo.match(RE_TESSERA);
           chiudi();
           quando((m ? m[0] : testo).toUpperCase());
           return;
@@ -14851,7 +15067,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.10.0" : "dev";
+var VERSION = true ? "6.12.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -20302,6 +20518,16 @@ adminRouter.put("/comande/righe/:rigaId/storna", requireCap("comande"), async (r
 async function avvisaLaSala(comandaId, testo) {
   await db.prepare("UPDATE comande SET avviso_cucina=?, avviso_cucina_at=? WHERE id=?").run(testo, (/* @__PURE__ */ new Date()).toISOString(), comandaId);
 }
+adminRouter.post("/comande/:id/avvisa-sala", requireAnyCap("comande", "cucina"), async (req, res) => {
+  const c = await db.prepare("SELECT id,stato FROM comande WHERE id=?").get(req.params.id);
+  if (!c) return res.status(404).json({ error: "Comanda non trovata" });
+  if (["chiusa", "annullata"].includes(c.stato)) return res.status(409).json({ error: "La comanda \xE8 gi\xE0 chiusa: alla sala non serve piu\u2019." });
+  const testo = String(req.body?.testo || "").trim().slice(0, 300);
+  if (!testo) return res.status(400).json({ error: "Scrivi cosa deve sapere la sala." });
+  await avvisaLaSala(c.id, testo);
+  audit(req.adminUser.username, "avvisa_sala", "comande", c.id, testo);
+  res.json({ ok: true });
+});
 adminRouter.put("/comande/:id/avviso-letto", requireCap("comande"), async (req, res) => {
   await db.prepare("UPDATE comande SET avviso_cucina=NULL, avviso_cucina_at=NULL WHERE id=?").run(req.params.id);
   res.json({ ok: true });
@@ -24443,7 +24669,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 07:00" : "online";
+var BUILD = true ? "2026-09-01 07:42" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
