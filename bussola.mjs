@@ -11433,10 +11433,19 @@ async function show(v) {
   window.__tab = v;
   let rotta = null;
   try { await VIEWS[v](); } catch (e) { rotta = e; }
-  // Arrivato in ritardo: mentre caricavo ne hanno aperta un'altra, e la mia vista ha appena
-  // disegnato sopra quella giusta. Non basta smettere \u2014 il danno e' gia' sullo schermo: si
-  // rimette quella corrente. Costa un disegno in piu' solo quando la corsa c'e' stata davvero.
-  if (mio !== VISTA_N) { await show(window.__tab); return; }
+  /* Arrivato in ritardo: mentre caricavo ne hanno aperta un'altra, e la mia vista ha appena
+     disegnato sopra quella giusta. Non basta smettere \u2014 il danno e' gia' sullo schermo: si
+     rimette quella corrente.
+     MA SOLO SE E' UN'ALTRA. Due aperture della STESSA vista si invalidavano a vicenda: ognuna
+     si vedeva in ritardo e richiamava l'altra, all'infinito, riscrivendo "Carico\u2026" a ogni giro.
+     Il Crew restava bloccato e non si poteva piu' andare da nessuna parte. Misurato: ventuno
+     render in due secondi e mezzo.
+     Se la vista corrente e' la stessa, chi e' arrivato dopo ha gia' disegnato o sta per farlo:
+     qui non c'e' niente da riparare, si smette e basta. */
+  if (mio !== VISTA_N) {
+    if (window.__tab !== v) await show(window.__tab);
+    return;
+  }
   if (rotta) $('#view').innerHTML = \`<p class="muted">Errore: \${esc(rotta.message)}</p>\`;
   try { abilitaFold(); } catch (e) { }
 }
@@ -15252,7 +15261,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.15.0" : "dev";
+var VERSION = true ? "6.16.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -24912,7 +24921,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 10:16" : "online";
+var BUILD = true ? "2026-09-01 10:48" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
