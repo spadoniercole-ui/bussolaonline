@@ -12474,42 +12474,94 @@ async function magCalendario() {
   document.querySelectorAll('[data-cann]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.cann + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
 }
 // ---- Sub-tab PREVISIONE (Fase 2): ritmo di consumo \u2192 data-riordino stimata + proposta d'ordine al fornitore ----
+/* LA PREVISIONE, come griglia di riquadri.
+   Era una tabella a otto colonne: su un tablet si leggeva di traverso e la colonna che conta \u2014
+   QUANDO si resta senza \u2014 era la sesta. Qui ogni articolo e' un riquadro, e il primo in alto e'
+   quello che crea il problema piu' vicino.
+
+   Il tono dice cosa fare, e ha un ordine preciso:
+     chiama  si resta senza PRIMA che arrivi la merce ordinata oggi \u2014 e' gia' tardi
+     attesa  c'e' da ordinare, ma si fa in tempo
+     libero  non serve niente
+
+   La riga che vale il modulo intero e' "finisce il ...": "sotto scorta" si puo' anche ignorare,
+   "sabato resti senza" no. */
 async function magPrevisione() {
   const data = await api('/magazzino/previsione').catch(() => ({ finestra_giorni: 14, articoli: [] }));
   const ordini = await api('/magazzino/ordini?stato=confermato').catch(() => []);
   const N = data.finestra_giorni || 14;
-  const arts = data.articoli || [];
-  const conStorico = arts.filter(a => !a.senza_storico);
-  const rows = conStorico.map(a => {
-    // \u{1F534} solo se c'\xE8 davvero da ordinare (urgente E suggerito > 0); \u{1F7E1} attenzione se urgente ma gi\xE0 coperto o in avvicinamento; \u{1F7E2} ok.
-    const badge = (a.urgente && a.suggerito > 0) ? '<span class="tag no">\u{1F534} riordina</span>'
-      : (a.urgente || (a.giorni_residui != null && a.giorni_residui <= N * 2)) ? '<span class="tag mid">\u{1F7E1} attenzione</span>'
-      : '<span class="tag ok">\u{1F7E2} ok</span>';
-    return \`<tr>
-      <td><b>\${esc(a.nome)}</b> \${magZonaBadge(a.zona)}</td>
-      <td style="text-align:center">\${esc(String(a.rate))}<span class="muted" style="font-size:.7rem">/gg</span></td>
-      <td style="text-align:center"><b>\${esc(String(a.giacenza_effettiva))}</b></td>
-      <td style="text-align:center;color:\${a.in_arrivo ? 'var(--teal)' : 'var(--muted)'}">\${esc(String(a.in_arrivo || 0))}</td>
-      <td style="text-align:center">\${a.giorni_residui != null ? esc(String(a.giorni_residui)) + ' gg' : '\u2014'}</td>
-      <td style="text-align:center">\${a.data_riordino ? esc(a.data_riordino) : '\u2014'}</td>
-      <td style="text-align:center">\${badge}</td>
-      <td class="row"><input id="oq_\${a.articolo_id}" type="number" value="\${a.suggerito || ''}" placeholder="q.t\xE0" style="width:70px"><button class="btn gold sm" data-ord="\${a.articolo_id}">\u2714 Ordina</button></td>
-    </tr>\`;
-  }).join('');
-  const senza = arts.filter(a => a.senza_storico).length;
-  const ordPanel = \`<div class="panel"><h3>\u{1F69A} Ordini al fornitore in corso</h3>\${ordini.length ? ordini.map(o => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(o.nome)}</b> \xB7 \${esc(String(o.quantita))} \${esc(o.unita)}\${o.data_prevista ? \` \xB7 <span class="muted">arrivo ~\${esc(o.data_prevista)}</span>\` : ''}</span><div class="row"><button class="btn gold sm" data-oric="\${o.id}">\u{1F4E5} Ricevi</button><button class="btn ghost sm" data-oann="\${o.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessun ordine in corso.</p>'}</div>\`;
-  $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\u{1F52E} Previsione riordino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 finestra \${N} giorni</span></h3>
-    <p class="muted aiuto" style="font-size:.78rem">Dal ritmo di consumo degli ultimi <b>\${N} giorni</b> stimo quando la giacenza effettiva raggiunge il punto di riordino e propongo una quantit\xE0 da ordinare al fornitore (gi\xE0 al netto di ci\xF2 che \xE8 in arrivo). <b>Valida</b> l'ordine con "Ordina": la merce risulter\xE0 <b>in arrivo</b> finch\xE9 non la ricevi (che equivale a un carico del Centrale).</p>
-    <div class="row" style="margin-top:8px;gap:8px;align-items:center"><label class="muted" style="font-size:.8rem">Finestra (giorni)</label><input id="mag_fin" type="number" value="\${N}" style="width:80px"><button class="btn ghost sm" id="mag_fin_save">Salva</button></div></div>
-    <div class="panel"><table><thead><tr><th>Articolo</th><th>Ritmo</th><th>Disp.eff</th><th>In arrivo</th><th>Residui</th><th>Data riordino</th><th></th><th>Ordine fornitore</th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo con storico di consumo. Registra qualche scarico per attivare la previsione.</td></tr>'}</tbody></table>
-    \${senza ? \`<p class="muted aiuto" style="font-size:.74rem;margin-top:8px">\${senza} articoli senza consumi nella finestra non compaiono (nessun ritmo da stimare).</p>\` : ''}</div>\` + ordPanel;
+  const LEAD = data.lead_time_giorni ?? 0;
+  const arts = (data.articoli || []).filter(a => !a.senza_storico);
+  const senza = (data.articoli || []).length - arts.length;
+  const tardi = arts.filter(a => a.tardi).length;
+  const daOrd = arts.filter(a => a.da_inviare_ora && a.suggerito > 0).length;
+
+  capoStato(\`<span class="et">Riordino</span><b>\${tardi ? tardi + ' in ritardo' : daOrd ? daOrd + ' da ordinare' : 'niente da ordinare'}</b>\`
+    + \`<span>finestra \${N} giorni \\u00b7 fornitore \${LEAD} gg</span>\`);
+
+  const giorniA = (d) => {
+    if (!d) return null;
+    return Math.round((new Date(d + 'T00:00:00Z') - new Date(data.oggi + 'T00:00:00Z')) / 864e5);
+  };
+  const riquadri = arts.map(a => {
+    const g = giorniA(a.data_zero);
+    const tono = a.tardi ? 'chiama' : (a.da_inviare_ora && a.suggerito > 0) ? 'attesa' : 'libero';
+    const stato = a.tardi ? 'gi\\u00e0 tardi' : (a.suggerito > 0 && a.da_inviare_ora) ? 'da ordinare' : g != null && g <= N ? 'in esaurimento' : 'ok';
+    return riquadro({
+      num: a.nome, stato, tono,
+      det: [
+        \`<b>\${esc(String(a.giacenza_effettiva))}</b> \${esc(a.unita)}\${a.in_arrivo ? \` \\u00b7 +\${esc(String(a.in_arrivo))} in arrivo\` : ''} \\u00b7 \${esc(String(a.rate))}/gg\`,
+        a.data_zero
+          ? \`finisce il <b>\${esc(a.data_zero)}</b>\${g != null ? \` \\u00b7 fra \${g} \${g === 1 ? 'giorno' : 'giorni'}\` : ''}\`
+          : 'oltre l\\u2019orizzonte: non e\\u2019 un problema di adesso',
+        a.tardi ? \`<b style="color:var(--coral)">il fornitore ci mette \${LEAD} giorni: ordinando oggi non si arriva</b>\` : '',
+        a.punta ? \`\\u26a0\\ufe0e il \${esc(a.punta.data)} ci sono <b>\${a.punta.coperti}</b> coperti prenotati\${a.punta.quante_volte_la_media ? \` \\u2014 \${a.punta.quante_volte_la_media}\\u00d7 la media\` : ''}\` : '',
+        a.suggerito > 0 ? \`da ordinare <b>\${esc(String(a.suggerito))}</b> \${esc(a.unita)}\` : ''
+      ],
+      azioni: a.suggerito > 0
+        ? [\`<button class="btn gold sm" data-ord="\${a.articolo_id}">Ordina \${esc(String(a.suggerito))}</button>\`,
+           \`<button class="btn ghost sm" data-ordq="\${a.articolo_id}">Altra quantit\\u00e0</button>\`]
+        : [\`<button class="btn ghost sm" data-ordq="\${a.articolo_id}">Ordina</button>\`]
+    });
+  });
+
+  const ordPanel = ordini.length ? \`<div class="panel"><h3>In arrivo dal fornitore</h3>\${ordini.map(o =>
+    \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--riga)">
+      <span><b>\${esc(o.nome)}</b> \\u00b7 \${esc(String(o.quantita))} \${esc(o.unita)}\${o.data_prevista ? \` \\u00b7 <span class="muted">arrivo ~\${esc(o.data_prevista)}</span>\` : ''}</span>
+      <div class="row" style="gap:6px"><button class="btn gold sm" data-oric="\${o.id}">Ricevi</button><button class="btn ghost sm" data-oann="\${o.id}">Annulla</button></div></div>\`).join('')}</div>\` : '';
+
+  $('#view').innerHTML = magSubbar()
+    + \`<div class="panel" style="padding:8px 10px"><div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <label class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Finestra</label>
+        <input id="mag_fin" type="number" value="\${N}" style="width:70px"><button class="btn ghost sm" id="mag_fin_save">Salva</button>
+        <span style="flex:1"></span>
+        \${legendaColori([['#b14a35', 'gi\\u00e0 tardi'], ['#101418', 'da ordinare'], ['#DBD8D0', 'ok']])}
+      </div>
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">Il ritmo viene dagli ultimi \${N} giorni; ai giorni con coperti gi\\u00e0 prenotati si aggiunge il consumo di quei coperti. "Gi\\u00e0 tardi" vuol dire che si resta senza prima che arrivi la merce ordinata oggi.</p></div>\`
+    + griglia(riquadri, 'Nessun articolo con storico di consumo: registra qualche scarico e la previsione si accende.')
+    + (senza ? \`<p class="muted aiuto" style="font-size:.74rem;margin-top:8px">\${senza} articoli senza consumi nella finestra non compaiono: non c\\u2019\\u00e8 un ritmo da misurare.</p>\` : '')
+    + ordPanel;
+
   $('#mag_fin_save').onclick = async () => { await api('/magazzino/config', { method: 'POST', body: JSON.stringify({ finestra_giorni: Number($('#mag_fin').value) || 14 }) }); show('magazzino'); };
-  document.querySelectorAll('[data-ord]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.ord; const q = Number(($('#oq_' + id) || {}).value);
-    if (!q) { alert('Indica la quantit\xE0 da ordinare.'); return; }
-    const a = conStorico.find(x => String(x.articolo_id) === String(id));
+  const ordina = async (id, q) => {
+    const a = arts.find(x => String(x.articolo_id) === String(id));
     await api('/magazzino/ordini', { method: 'POST', body: JSON.stringify({ articolo_id: Number(id), quantita: q, data_prevista: a ? a.data_riordino : null }) });
     show('magazzino');
+  };
+  // Il tasto porta gia' la quantita' suggerita: un tocco solo nel caso normale, che e' il 90%.
+  document.querySelectorAll('[data-ord]').forEach(b => b.onclick = () => {
+    const a = arts.find(x => String(x.articolo_id) === String(b.dataset.ord));
+    if (a && a.suggerito > 0) ordina(b.dataset.ord, a.suggerito);
+  });
+  document.querySelectorAll('[data-ordq]').forEach(b => b.onclick = () => {
+    const a = arts.find(x => String(x.articolo_id) === String(b.dataset.ordq));
+    openModal(\`<h3>\${esc(a ? a.nome : 'Ordine')}</h3>
+      <p class="muted" style="font-size:.82rem">\${a && a.suggerito > 0 ? \`Il calcolo dice <b>\${esc(String(a.suggerito))} \${esc(a.unita)}</b>, coperti prenotati compresi.\` : 'Nessuna quantit\\u00e0 suggerita: decidi tu.'}</p>
+      <label>Quanto ordinare</label><input id="oq_txt" type="number" min="0" value="\${a && a.suggerito > 0 ? a.suggerito : ''}">
+      <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px">
+        <button class="btn ghost sm" data-mclose>Annulla</button>
+        <button class="btn gold sm" id="oq_go">Ordina</button></div>\`);
+    $('#oq_go').onclick = () => { const q = Number($('#oq_txt').value); if (!q) return; closeModal(); ordina(b.dataset.ordq, q); };
   });
   document.querySelectorAll('[data-oric]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.oric + '/ricevi', { method: 'POST', body: '{}' }); show('magazzino'); });
   document.querySelectorAll('[data-oann]').forEach(b => b.onclick = async () => { await api('/magazzino/ordini/' + b.dataset.oann + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
@@ -15067,7 +15119,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.12.0" : "dev";
+var VERSION = true ? "6.13.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -19400,11 +19452,32 @@ adminRouter.post("/magazzino/config", requireCap("magazzino"), async (req, res) 
   audit(req.adminUser.username, "magazzino_config", "impostazioni", "magazzino", JSON.stringify(b));
   res.json({ ok: true, finestra_giorni: await magFinestra(), lead_time_giorni: await magLead() });
 });
+async function copertiAttesi(daOggi, giorni) {
+  const fine = addGiorni(daOggi, giorni);
+  const tav = await db.prepare(
+    "SELECT data, COALESCE(SUM(persone),0) n FROM prenotazioni_tavolo WHERE stato='prenotato' AND data >= ? AND data < ? GROUP BY data"
+  ).all(daOggi, fine).catch(() => []);
+  const ser = await db.prepare(
+    `SELECT s.data, COALESCE(SUM(p.persone),0) n FROM serate_prenotazioni p JOIN serate s ON s.id=p.serata_id
+     WHERE p.stato<>'annullata' AND s.data >= ? AND s.data < ? GROUP BY s.data`
+  ).all(daOggi, fine).catch(() => []);
+  const per = {};
+  for (const r of [...tav, ...ser]) per[String(r.data).slice(0, 10)] = (per[String(r.data).slice(0, 10)] || 0) + Number(r.n || 0);
+  return per;
+}
+async function copertiServiti(giorni) {
+  const r = await db.prepare(
+    "SELECT COALESCE(SUM(persone),0) n FROM prenotazioni_tavolo WHERE stato='prenotato' AND data >= date('now', ?) AND data <= date('now')"
+  ).get("-" + giorni + " days").catch(() => ({ n: 0 }));
+  return Number(r?.n || 0);
+}
 adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, res) => {
   const N = await magFinestra();
   const LEAD = await magLead();
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const arts = await db.prepare("SELECT * FROM magazzino_articoli ORDER BY area,ordine,id").all();
+  const attesi = await copertiAttesi(oggi2, N);
+  const serviti = await copertiServiti(N);
   const consumi = await db.prepare(`SELECT articolo_id, COALESCE(SUM(quantita),0) q FROM magazzino_movimenti WHERE tipo='scarico' AND created_at >= datetime('now', ?) GROUP BY articolo_id`).all("-" + N + " days");
   const cMap = {};
   consumi.forEach((r) => {
@@ -19433,9 +19506,30 @@ adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, re
       d.setDate(d.getDate() + Math.max(0, Math.floor(giorni)));
       dataRiordino = d.toISOString().slice(0, 10);
     }
-    const fabbisogno = Math.ceil(rate * N);
+    const perCoperto = serviti > 0 ? consumo / serviti : null;
+    let dataZero = null, dataSottoScorta = null, copertiFinoAZero = 0;
+    if (perCoperto != null || rate > 0) {
+      let q = eff + inArrivo;
+      for (let g = 0; g < 90; g++) {
+        const giorno = addGiorni(oggi2, g);
+        const cop = attesi[giorno] || 0;
+        const extra = perCoperto != null ? Math.max(0, cop - serviti / N) * perCoperto : 0;
+        q -= rate + extra;
+        copertiFinoAZero += cop;
+        if (dataSottoScorta == null && q <= pr) dataSottoScorta = giorno;
+        if (q <= 0) {
+          dataZero = giorno;
+          break;
+        }
+      }
+    }
+    const extraAttesi = perCoperto != null ? Object.entries(attesi).reduce((n, [, c]) => n + Math.max(0, Number(c) - serviti / N) * perCoperto, 0) : 0;
+    const fabbisogno = Math.ceil(rate * N + extraAttesi);
     const suggerito = Math.max(0, fabbisogno - eff - inArrivo);
-    const urgente = eff <= pr || giorni != null && giorni <= N;
+    const tardi = dataZero != null && dataZero <= addGiorni(oggi2, LEAD);
+    const media = serviti / N;
+    const punta = Object.entries(attesi).map(([d, c]) => ({ data: d, coperti: Number(c) })).filter((x) => x.coperti >= Math.max(20, media * 2)).sort((x, y) => String(x.data).localeCompare(String(y.data)))[0] || null;
+    const urgente = eff <= pr || giorni != null && giorni <= N || tardi;
     let dataInvio = null;
     if (dataRiordino != null) dataInvio = addGiorni(dataRiordino, -LEAD);
     const daInviareOra = suggerito > 0 && (dataInvio == null ? urgente : dataInvio <= oggi2);
@@ -19454,14 +19548,30 @@ adminRouter.get("/magazzino/previsione", requireCap("magazzino"), async (req, re
       giorni_residui: giorni != null ? Math.max(0, Math.floor(giorni)) : null,
       data_riordino: dataRiordino,
       data_invio_consigliata: dataInvio,
-      da_inviare_ora: daInviareOra,
+      da_inviare_ora: daInviareOra || tardi,
       suggerito,
       urgente,
+      // Il giorno in cui si resta SENZA, tenendo conto dei coperti gia' prenotati. E' il numero
+      // che evita la malafigura: "sotto scorta" si puo' anche ignorare, "sabato resti senza" no.
+      data_zero: dataZero,
+      data_sotto_scorta: dataSottoScorta,
+      tardi,
+      per_coperto: perCoperto != null ? Math.round(perCoperto * 1e3) / 1e3 : null,
+      coperti_attesi: copertiFinoAZero,
+      // La prima giornata fuori scala, quando c'e'. Vale anche senza storico.
+      punta: punta ? { data: punta.data, coperti: punta.coperti, quante_volte_la_media: media > 0 ? Math.round(punta.coperti / media * 10) / 10 : null } : null,
       senza_storico: consumo === 0
     };
   });
-  out.sort((a, b) => Number(b.da_inviare_ora) - Number(a.da_inviare_ora) || Number(b.urgente && b.suggerito > 0) - Number(a.urgente && a.suggerito > 0) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
-  res.json({ finestra_giorni: N, lead_time_giorni: LEAD, oggi: oggi2, articoli: out });
+  out.sort((a, b) => Number(b.tardi) - Number(a.tardi) || Number(b.da_inviare_ora) - Number(a.da_inviare_ora) || String(a.data_zero || "9999").localeCompare(String(b.data_zero || "9999")) || (a.giorni_residui ?? 9999) - (b.giorni_residui ?? 9999));
+  res.json({
+    finestra_giorni: N,
+    lead_time_giorni: LEAD,
+    oggi: oggi2,
+    coperti_serviti: serviti,
+    coperti_attesi: attesi,
+    articoli: out
+  });
 });
 adminRouter.post("/magazzino/ordini", requireCap("magazzino"), async (req, res) => {
   const b = req.body || {};
@@ -24669,7 +24779,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 07:42" : "online";
+var BUILD = true ? "2026-09-01 07:57" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
