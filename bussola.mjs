@@ -10793,6 +10793,7 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
       <button data-v="magazzino">\u{1F4E6} Magazzino</button>
       <button data-v="sport">\u{1F3C5} Tabellone</button>
       <button data-v="coppa">\u{1F6E1}\uFE0F Coppa delle Casate</button>
+      <button data-v="settimana">\u{1F5D3}\uFE0F La settimana</button>
       <button data-v="campi">\u26BD Campi liberi</button>
       <button data-v="serate">\u{1F37D}\uFE0F Serate</button>
       <button data-v="cdc">\u{1F4DA} Casa di Carta</button>
@@ -11222,6 +11223,10 @@ function allowedZones() {
   // casate, che si somma su tutte le discipline piu' i contest. Chi segna i risultati in campo
   // e chi guarda come sta andando la Coppa sono due lavori diversi, e due permessi diversi.
   if (ME.gestore || caps.includes('casate')) z.push('coppa');
+  // LA SETTIMANA. Gli altri moduli sono per LUOGHI (Garden, Bar, Stage) o per SERVIZI (campi,
+  // magazzino): il programma non e' ne' l'uno ne' l'altro, e finora non aveva una casa. Il
+  // cartellone lo carica il manager su indicazione del CdA, ma la sera il lavoro e' della crew.
+  if (ME.gestore || caps.includes('proposte') || caps.includes('contest') || caps.includes('eventi')) z.push('settimana');
   if (ME.gestore || caps.includes('campi')) z.push('campi');       // prenotazioni campi al banco
   // Il modulo tennis vive col SUO permesso: chi affitta i campi a pagamento non ha bisogno di
   // avere anche quelli gratuiti del chiosco. Senza questa riga il modulo esisteva ma non
@@ -11250,7 +11255,7 @@ function allowedZones() {
 const MODULI = [
   ['Ristorazione',     [['garden','\u{1F33F}','Garden'], ['bar','\u{1F378}','Bar'], ['cucina','\u{1F373}','Cucina'], ['serate','\u{1F37D}\uFE0F','Serate']]],
   ['Sport',            [['campi','\u26BD','Campi liberi'], ['tennis','\u{1F3BE}','Area tennis'], ['fitness','\u{1F9D8}','Fitness'], ['sport','\u{1F3C5}','Tabellone'], ['coppa','\u{1F6E1}\uFE0F','Coppa delle Casate']]],
-  ['Cultura',          [['cinema','\u{1F3AD}','Stage'], ['cdc','\u{1F4DA}','Casa di Carta']]],
+  ['Cultura',          [['settimana','\u{1F5D3}\uFE0F','La settimana'], ['cinema','\u{1F3AD}','Stage'], ['cdc','\u{1F4DA}','Casa di Carta']]],
   ['Logistica',        [['magazzino','\u{1F4E6}','Magazzino'], ['beach','\u26F1\uFE0F','Spiaggia']]],
 ];
 const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Tabellone', campi: 'Campi liberi', tennis: 'Area tennis', casate: 'Coppa delle Casate', beach: 'Spiaggia', serate: 'Serate', cdc: 'Casa di Carta', fitness: 'Fitness', cinema: 'Stage' };
@@ -11319,7 +11324,7 @@ function setZona(z) {
   // Dove si atterra aprendo un modulo. Il Bar c'era solo come ripiego implicito
   // (\`PRIMA[ZONA] || 'comande'\`): funzionava, ma un ripiego non si puo' verificare, e un
   // modulo aggiunto domani senza la sua riga finirebbe zitto sulle comande del bar.
-  const PRIMA = { bar: 'comande', garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', coppa: 'coppa', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema' };
+  const PRIMA = { bar: 'comande', garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', coppa: 'coppa', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema', settimana: 'settimana' };
   show(PRIMA[ZONA] || 'comande');   // il ripiego resta per sicurezza, ma ora ogni zona ha la sua riga
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -11338,7 +11343,8 @@ function applyZona() {
   tog('scorte', false);        // il magazzino si legge nel suo modulo, non da ogni zona
   tog('magazzino', hasMag && ZONA === 'magazzino');                // hub logistica (Centrale/Bar/Garden)
   tog('sport', ZONA === 'sport');                                  // modulo Sport (risultati live)
-  tog('coppa', ZONA === 'coppa');                                  // classifica generale delle casate
+  tog('coppa', ZONA === 'coppa');
+  tog('settimana', ZONA === 'settimana');                                  // classifica generale delle casate
   tog('campi', ZONA === 'campi');
   tog('tennis', ZONA === 'tennis');
   tog('beach', ZONA === 'beach');
@@ -11387,6 +11393,9 @@ const ZONA_ACCENT = {
   // Oliva: e' il varco piu' largo rimasto nella ruota (71\xB0), 35\xB0 da Bar e da Casa di Carta.
   // Bianco su g1: 8,41 \u2014 dentro la fascia degli altri.
   coppa:     { a: '#5d6b1f', g1: '#485218', g2: '#76882a', nome: 'Coppa delle Casate' },
+  // Verde erba: il varco piu' largo rimasto (72\xB0, fra Coppa a 71 e Garden a 143), centro 107.
+  // Bianco su g1: 8,52 \u2014 in mezzo alla fascia degli altri tredici, che va da 7,30 a 13,17.
+  settimana: { a: '#396f20', g1: '#275719', g2: '#4c8c2d', nome: 'La settimana' },
 };
 function applyAccent() {
   const z = ZONA_ACCENT[ZONA] || ZONA_ACCENT.magazzino;
@@ -11458,6 +11467,7 @@ const CAPO = {
   magazzino: ['Scorte e movimenti', 'Magazzino'],
   sport:     ['Risultati e gironi', 'Tabellone'],
   coppa:     ['Classifica generale', 'Coppa delle Casate'],
+  settimana: ['Il programma', 'La settimana'],
   tornei:    ['Eliminazione diretta', 'Tornei'],
   campi:     ['Prenotazioni del giorno', 'Campi liberi'],
   tennis:    ['Listino e incassi', 'Area tennis'],
@@ -13802,6 +13812,68 @@ VIEWS.serate = async () => {
 };
 
 // ===== MODULO CASA DI CARTA (cap 'cdc') \u2014 caff\xE8, giochi, prestiti ===========================
+/* LA SETTIMANA \u2014 il programma dal lato di chi ci lavora.
+   Sette serate, una per riquadro, e dentro quello che la crew deve avere sotto mano QUELLA
+   sera: la scaletta dell'apericena, il contest delle casate. Il cartellone lo carica il
+   manager su indicazione del CdA; qui non si decide niente, si lavora.
+   La serata di oggi sta in cima e lo dice. */
+VIEWS.settimana = async () => {
+  const d = await api('/settimana').catch(() => ({ serate: [] }));
+  const oggi = (d.serate || []).find(s => s.oggi);
+  capoStato(\`<span class="et">Stasera</span><b>\${oggi ? esc(oggi.titolo) : 'niente in programma'}</b>\`
+    + \`<span>\${(d.serate || []).length} serate in cartellone</span>\`);
+
+  const GG = { lunedi: 'lun', martedi: 'mar', mercoledi: 'mer', giovedi: 'gio', venerdi: 'ven', sabato: 'sab', domenica: 'dom' };
+  const riquadri = (d.serate || [])
+    .slice().sort((a, b) => Number(b.oggi) - Number(a.oggi))
+    .map(s => {
+      const det = [s.sottotitolo ? esc(s.sottotitolo) : ''];
+      let azioni = [];
+      if (s.lavoro === 'scaletta' && s.scaletta) {
+        // I DUE NUMERI RESTANO DISTINTI. Se dodici persone chiedono la stessa canzone, i brani
+        // da suonare sono uno e le richieste sono dodici: il primo dice quanto dura la serata,
+        // il secondo quanta gente ci tiene.
+        det.push(\`<b>\${s.scaletta.n_brani}</b> \${s.scaletta.n_brani === 1 ? 'brano' : 'brani'} \\u00b7 <b>\${s.scaletta.n_richieste}</b> \${s.scaletta.n_richieste === 1 ? 'richiesta' : 'richieste'}\`);
+        azioni.push(\`<button class="btn \${s.oggi ? 'gold' : 'ghost'} sm" data-scal="\${esc(s.chiave || '')}">Scaletta</button>\`);
+      }
+      if (s.lavoro === 'contest') {
+        det.push(s.contest ? \`contest: <b>\${esc(s.contest.titolo)}</b> \\u00b7 \${esc(s.contest.stato)}\` : 'nessun contest aperto: lo apre il manager');
+        if (s.contest) azioni.push(\`<button class="btn \${s.oggi ? 'gold' : 'ghost'} sm" data-cont="\${s.contest.id}">Esito</button>\`);
+      }
+      if (!s.lavoro) det.push('<span class="muted">niente da preparare</span>');
+      return riquadro({
+        // \`riquadro()\` protegge gia' num e stato: proteggendoli anche qui, una "&" nel titolo
+        // diventava "&amp;" a schermo \u2014 "Vinile &amp; Vino". La protezione va messa una volta
+        // sola, e qui la mette il componente.
+        num: (GG[s.giorno] || s.giorno || '').toUpperCase(), stato: s.titolo,
+        tono: s.oggi ? 'chiama' : s.lavoro ? 'attesa' : 'libero',
+        det, azioni
+      });
+    });
+
+  $('#view').innerHTML = \`<div class="panel" style="padding:8px 10px">
+      <p class="muted aiuto" style="font-size:.78rem;margin:0">Il cartellone lo carica il gestore. Qui c\\u2019\\u00e8 quello che serve la sera: la scaletta di chi suona, l\\u2019esito del contest. La serata di stasera sta in cima.</p></div>
+    \${griglia(riquadri, 'Nessuna serata in cartellone.')}\`;
+
+  // LA SCALETTA. Si consegna a chi suona: un elenco di brani in ordine di quanti l'hanno
+  // chiesto, coi doppioni gia' accorpati e i nomi di chi ha chiesto cosa.
+  document.querySelectorAll('[data-scal]').forEach(b => b.onclick = () => {
+    const s = (d.serate || []).find(x => String(x.chiave) === b.dataset.scal);
+    if (!s || !s.scaletta) return;
+    openModal(\`<h3>\${esc(s.titolo)}</h3>
+      <p class="muted" style="font-size:.82rem"><b>\${s.scaletta.n_brani}</b> brani da suonare \\u00b7 <b>\${s.scaletta.n_richieste}</b> richieste arrivate. I doppioni sono gi\\u00e0 accorpati: pi\\u00f9 in alto vuol dire che l\\u2019hanno chiesto in tanti.</p>
+      \${s.scaletta.brani.length ? s.scaletta.brani.map((x, i) => \`<div class="mrow">
+        <span><b>\${i + 1}. \${esc(x.titolo)}</b>\${x.dettaglio ? \` <span class="muted">\${esc(x.dettaglio)}</span>\` : ''}
+          \${x.da.length ? \`<br><span class="meta">\${esc(x.da.join(', '))}</span>\` : ''}</span>
+        <span class="meta">\\u00d7\${x.richieste}</span></div>\`).join('')
+        : '<p class="muted">Nessuna richiesta arrivata.</p>'}
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
+  });
+  // L'esito del contest si registra dove sta la classifica: due posti per assegnare punti
+  // vorrebbe dire due modi di calcolarli. Qui si porta la crew dove si lavora.
+  document.querySelectorAll('[data-cont]').forEach(b => b.onclick = () => show('coppa'));
+};
+
 VIEWS.cdc = async () => {
   // Le capsule sono un articolo di magazzino come gli altri: la conta si fa con la rettifica
   // nel modulo Magazzino, dove ci sono carico, scarico e rettifica per ogni articolo. Tenerne
@@ -15483,7 +15555,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.23.0" : "dev";
+var VERSION = true ? "6.24.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -19467,6 +19539,52 @@ adminRouter.post("/convocazioni", requireCap("tabellone"), async (req, res) => {
   }
   audit(req.adminUser.username, "convoca", "convocazioni", casata_id, `${soci.length} soci \xB7 ${notificati} notificati`);
   res.status(201).json({ ok: true, convocati: soci.length, notificati });
+});
+adminRouter.get("/settimana", requireAnyCap("proposte", "contest", "serate", "eventi"), async (req, res) => {
+  const GIORNI2 = ["lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "domenica"];
+  const eventi = await db.prepare("SELECT * FROM eventi WHERE attivo=1 ORDER BY id").all().catch(() => []);
+  const proposte = await db.prepare(
+    "SELECT pr.*, s.nome, s.cognome FROM proposte pr LEFT JOIN soci s ON s.id=pr.socio_id WHERE pr.stato<>'scartata' ORDER BY pr.created_at"
+  ).all().catch(() => []);
+  const contest = await db.prepare("SELECT * FROM contest WHERE attivo=1 ORDER BY id DESC").all().catch(() => []);
+  const oggiG = GIORNI2[((/* @__PURE__ */ new Date()).getDay() + 6) % 7];
+  const scaletta = (tipo) => {
+    const per = /* @__PURE__ */ new Map();
+    for (const p of proposte.filter((x) => x.tipo === tipo)) {
+      const k = String(p.titolo || "").trim().toLowerCase().replace(/\s+/g, " ");
+      if (!k) continue;
+      if (!per.has(k)) per.set(k, { titolo: String(p.titolo).trim(), dettaglio: p.dettaglio || "", richieste: 0, da: [], ids: [], in_scaletta: false });
+      const v = per.get(k);
+      v.richieste++;
+      v.ids.push(p.id);
+      if (p.stato === "in_scaletta") v.in_scaletta = true;
+      const chi = [p.nome, p.cognome].filter(Boolean).join(" ").trim();
+      if (chi && !v.da.includes(chi)) v.da.push(chi);
+    }
+    const brani = [...per.values()].sort((a, b) => b.richieste - a.richieste || a.titolo.localeCompare(b.titolo));
+    return { brani, n_brani: brani.length, n_richieste: brani.reduce((n, b) => n + b.richieste, 0) };
+  };
+  res.json({
+    oggi: oggiG,
+    serate: eventi.map((e) => {
+      const g = String(e.giorno || "").toLowerCase();
+      const az = String(e.azione || "");
+      const lavoro = az.includes("vinile") ? "scaletta" : az.includes("openmic") ? "scaletta" : az.includes("coppa") ? "contest" : null;
+      const s = lavoro === "scaletta" ? scaletta(az.includes("openmic") ? "openmic" : "vinile") : null;
+      return {
+        id: e.id,
+        chiave: e.chiave,
+        giorno: g,
+        titolo: e.titolo,
+        sottotitolo: e.sottotitolo,
+        oggi: g === oggiG,
+        tipo: e.tipo,
+        lavoro,
+        scaletta: s,
+        contest: lavoro === "contest" ? contest[0] || null : null
+      };
+    })
+  });
 });
 adminRouter.get("/proposte", async (req, res) => {
   res.json(await db.prepare(`SELECT pr.*, s.nome, s.cognome FROM proposte pr
@@ -25158,7 +25276,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 14:03" : "online";
+var BUILD = true ? "2026-09-01 16:01" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
