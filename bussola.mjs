@@ -1978,6 +1978,20 @@ async function migrate() {
   await addIfMissing("otp", "creato_at", "creato_at TEXT");
   await addIfMissing("soci", "email_verificata", "email_verificata INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("comanda_righe", "parent_riga_id", "parent_riga_id INTEGER");
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS menu_combo_posti (
+      id INTEGER PRIMARY KEY,
+      combo_id INTEGER NOT NULL REFERENCES menu_articoli(id) ON DELETE CASCADE,
+      etichetta TEXT NOT NULL, categoria TEXT, prezzo_max REAL,
+      ordine INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS menu_combo_ammessi (
+      posto_id INTEGER NOT NULL REFERENCES menu_combo_posti(id) ON DELETE CASCADE,
+      menu_id INTEGER NOT NULL REFERENCES menu_articoli(id) ON DELETE CASCADE,
+      PRIMARY KEY (posto_id, menu_id));
+    CREATE INDEX IF NOT EXISTS ix_combo_posti ON menu_combo_posti(combo_id, ordine);
+  `).catch(() => {
+  });
+  await addIfMissing("menu_articoli", "combo", "combo INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("comande", "non_prima", "non_prima TEXT");
   await db.exec(`CREATE TABLE IF NOT EXISTS menu_complementi (
     articolo_id    INTEGER NOT NULL,
@@ -4482,11 +4496,14 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
  * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
  *
  * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
- *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ *       c.getRighe() -> [{menu_id, qta, complementi, combo}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
  */
 window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  // All'italiana: \u20AC 1,00 e non \u20AC 1.00. Questo e' il formattatore che disegna i prezzi MENTRE
+  // si batte la comanda \u2014 era rimasto all'inglese quando gli altri tre erano gia' a posto,
+  // quindi il socio vedeva la virgola nell'app e l'operatore il punto sullo stesso prodotto.
+  function eur(n) { return '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
 
   // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
@@ -4533,6 +4550,10 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+      .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
+      .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
+      .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
@@ -4586,7 +4607,10 @@ window.Comanda = (function () {
       return t;
     }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
-    function fire() { onChange(cart, total(), count()); }
+    // Le scelte viaggiano insieme al carrello: chi invia la comanda le passa al server, che le
+    // ricontrolla comunque. Il controllo a schermo serve a non far sbagliare; quello sul
+    // server serve a non farsi aggirare.
+    function fire() { onChange(cart, total(), count(), scelteCombo); }
 
     // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
     function iconaDi(m) {
@@ -4628,8 +4652,46 @@ window.Comanda = (function () {
       const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
       return nomi.length ? '+ ' + nomi.join(', ') : '';
     }
+    // LE SCELTE DI UNA COMBO. Chiave: id combo \u2192 { posto_id: menu_id }. Una combo con i posti
+    // vuoti non si puo' aggiungere: "un panino a scelta" e' una promessa, e il momento in cui
+    // si decide quale panino e' adesso, non al ritiro davanti a un cliente che ha gia' pagato.
+    const scelteCombo = {};
+    function comboPronta(m) {
+      const p = m.posti || [];
+      return p.length > 0 && p.every((x) => (scelteCombo[m.id] || {})[x.id]);
+    }
+    function comboRiassunto(m) {
+      const sc = scelteCombo[m.id] || {};
+      const nomi = (m.posti || []).map((p) => {
+        const id = sc[p.id];
+        const v = id && (p.scelte || []).find((x) => Number(x.id) === Number(id));
+        return v ? v.nome : null;
+      });
+      return nomi.every(Boolean) ? nomi.join(' + ') : '';
+    }
+    function comboHTML(m) {
+      if (!m.combo || !(m.posti || []).length) return '';
+      const sc = scelteCombo[m.id] || {};
+      return \`<div class="cmd-combo" data-cbox2="\${m.id}">\` + m.posti.map((p) => \`
+        <div class="cmd-posto"><span class="cmd-posto-t">\${esc(p.etichetta)}</span>
+          <select data-cpick="\${m.id}:\${p.id}">
+            <option value="">\u2014 scegli \u2014</option>
+            \${(p.scelte || []).map((x) => \`<option value="\${x.id}" \${Number(sc[p.id]) === Number(x.id) ? 'selected' : ''}>\${esc(x.nome)}</option>\`).join('')}
+          </select></div>\`).join('') + \`</div>\`;
+    }
+
     function itemHTML(m) {
       const q = cart[m.id] || 0;
+      if (m.combo && (m.posti || []).length) {
+        const pronta = comboPronta(m);
+        const riass = comboRiassunto(m);
+        return \`<div class="cmd-item\${q ? ' sel' : ''}">
+          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-pz">\${eur(m.prezzo)}</span>
+          <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
+          \${comboHTML(m)}</div>\`;
+      }
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
       // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
       // bordo campo allungano la riga senza servire a chi batte la comanda.
@@ -4669,8 +4731,20 @@ window.Comanda = (function () {
     }
 
     // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('change', (ev) => {
+      const sel = ev.target.closest('[data-cpick]'); if (!sel) return;
+      const [mid, pid] = sel.dataset.cpick.split(':');
+      scelteCombo[mid] = scelteCombo[mid] || {};
+      if (sel.value) scelteCombo[mid][pid] = Number(sel.value); else delete scelteCombo[mid][pid];
+      // Se la combo era gia' nel carrello e si cambia una scelta, resta: cambia solo cosa c'e'
+      // dentro. Ma se si svuota un posto, esce \u2014 altrimenti si spedirebbe una promessa a meta'.
+      const m = menu.find((x) => String(x.id) === String(mid));
+      if (m && cart[mid] && !comboPronta(m)) { delete cart[mid]; }
+      renderList(); fire();
+    });
     mount.addEventListener('click', (ev) => {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.disabled) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -4700,7 +4774,17 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
+      // Le scelte della combo escono da QUI, non da chi invia: Crew, app del socio e QR usano
+      // tutti getRighe(), quindi aggiungerle in un posto solo le fa arrivare a tutte e tre le
+      // porte senza toccarne nessuna. Se ognuna se le componesse da se', prima o poi una si
+      // dimenticherebbe e il server rifiuterebbe l'ordine senza che si capisca perche'.
+      getRighe() {
+        return Object.keys(cart).map(id => {
+          const r = { menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() };
+          if (scelteCombo[id] && Object.keys(scelteCombo[id]).length) r.combo = scelteCombo[id];
+          return r;
+        });
+      },
       total, count,
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
@@ -7669,11 +7753,14 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
  * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
  *
  * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
- *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ *       c.getRighe() -> [{menu_id, qta, complementi, combo}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
  */
 window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  // All'italiana: \u20AC 1,00 e non \u20AC 1.00. Questo e' il formattatore che disegna i prezzi MENTRE
+  // si batte la comanda \u2014 era rimasto all'inglese quando gli altri tre erano gia' a posto,
+  // quindi il socio vedeva la virgola nell'app e l'operatore il punto sullo stesso prodotto.
+  function eur(n) { return '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
 
   // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
@@ -7720,6 +7807,10 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+      .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
+      .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
+      .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
@@ -7773,7 +7864,10 @@ window.Comanda = (function () {
       return t;
     }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
-    function fire() { onChange(cart, total(), count()); }
+    // Le scelte viaggiano insieme al carrello: chi invia la comanda le passa al server, che le
+    // ricontrolla comunque. Il controllo a schermo serve a non far sbagliare; quello sul
+    // server serve a non farsi aggirare.
+    function fire() { onChange(cart, total(), count(), scelteCombo); }
 
     // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
     function iconaDi(m) {
@@ -7815,8 +7909,46 @@ window.Comanda = (function () {
       const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
       return nomi.length ? '+ ' + nomi.join(', ') : '';
     }
+    // LE SCELTE DI UNA COMBO. Chiave: id combo \u2192 { posto_id: menu_id }. Una combo con i posti
+    // vuoti non si puo' aggiungere: "un panino a scelta" e' una promessa, e il momento in cui
+    // si decide quale panino e' adesso, non al ritiro davanti a un cliente che ha gia' pagato.
+    const scelteCombo = {};
+    function comboPronta(m) {
+      const p = m.posti || [];
+      return p.length > 0 && p.every((x) => (scelteCombo[m.id] || {})[x.id]);
+    }
+    function comboRiassunto(m) {
+      const sc = scelteCombo[m.id] || {};
+      const nomi = (m.posti || []).map((p) => {
+        const id = sc[p.id];
+        const v = id && (p.scelte || []).find((x) => Number(x.id) === Number(id));
+        return v ? v.nome : null;
+      });
+      return nomi.every(Boolean) ? nomi.join(' + ') : '';
+    }
+    function comboHTML(m) {
+      if (!m.combo || !(m.posti || []).length) return '';
+      const sc = scelteCombo[m.id] || {};
+      return \`<div class="cmd-combo" data-cbox2="\${m.id}">\` + m.posti.map((p) => \`
+        <div class="cmd-posto"><span class="cmd-posto-t">\${esc(p.etichetta)}</span>
+          <select data-cpick="\${m.id}:\${p.id}">
+            <option value="">\u2014 scegli \u2014</option>
+            \${(p.scelte || []).map((x) => \`<option value="\${x.id}" \${Number(sc[p.id]) === Number(x.id) ? 'selected' : ''}>\${esc(x.nome)}</option>\`).join('')}
+          </select></div>\`).join('') + \`</div>\`;
+    }
+
     function itemHTML(m) {
       const q = cart[m.id] || 0;
+      if (m.combo && (m.posti || []).length) {
+        const pronta = comboPronta(m);
+        const riass = comboRiassunto(m);
+        return \`<div class="cmd-item\${q ? ' sel' : ''}">
+          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-pz">\${eur(m.prezzo)}</span>
+          <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
+          \${comboHTML(m)}</div>\`;
+      }
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
       // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
       // bordo campo allungano la riga senza servire a chi batte la comanda.
@@ -7856,8 +7988,20 @@ window.Comanda = (function () {
     }
 
     // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('change', (ev) => {
+      const sel = ev.target.closest('[data-cpick]'); if (!sel) return;
+      const [mid, pid] = sel.dataset.cpick.split(':');
+      scelteCombo[mid] = scelteCombo[mid] || {};
+      if (sel.value) scelteCombo[mid][pid] = Number(sel.value); else delete scelteCombo[mid][pid];
+      // Se la combo era gia' nel carrello e si cambia una scelta, resta: cambia solo cosa c'e'
+      // dentro. Ma se si svuota un posto, esce \u2014 altrimenti si spedirebbe una promessa a meta'.
+      const m = menu.find((x) => String(x.id) === String(mid));
+      if (m && cart[mid] && !comboPronta(m)) { delete cart[mid]; }
+      renderList(); fire();
+    });
     mount.addEventListener('click', (ev) => {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.disabled) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -7887,7 +8031,17 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
+      // Le scelte della combo escono da QUI, non da chi invia: Crew, app del socio e QR usano
+      // tutti getRighe(), quindi aggiungerle in un posto solo le fa arrivare a tutte e tre le
+      // porte senza toccarne nessuna. Se ognuna se le componesse da se', prima o poi una si
+      // dimenticherebbe e il server rifiuterebbe l'ordine senza che si capisca perche'.
+      getRighe() {
+        return Object.keys(cart).map(id => {
+          const r = { menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() };
+          if (scelteCombo[id] && Object.keys(scelteCombo[id]).length) r.combo = scelteCombo[id];
+          return r;
+        });
+      },
       total, count,
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
@@ -8569,7 +8723,10 @@ VIEWS.cdc = async () => {
   document.querySelectorAll('[data-gdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il gioco dall\\'inventario?')) return; await api('/cdc/giochi/' + b.dataset.gdel, { method: 'DELETE' }); show('cdc'); });
   $('#ng_add').onclick = async () => { if (!$('#ng_nome').value) return; await api('/cdc/giochi', { method: 'POST', body: JSON.stringify({ nome: $('#ng_nome').value, categoria: $('#ng_cat').value, quantita: $('#ng_qta').value }) }); show('cdc'); };
   $('#g_print').onclick = () => stampaModuloPrelievo(giochi);
-  $('#ck_new').onclick = () => openCheck(cfg);
+  // openCheck non usa nessun parametro: \`cfg\` era un residuo e non e' mai esistito. Il tasto
+  // "+ Nuovo check" lanciava un ReferenceError e la finestra non si apriva: la funzione era
+  // morta da sempre, e non se ne accorgeva nessuno perche' l'errore restava nella console.
+  $('#ck_new').onclick = () => openCheck();
   document.querySelectorAll('[data-cfoto]').forEach(b => b.onclick = async () => { const r = await api('/cdc/check/' + b.dataset.cfoto + '/foto'); modal(\`<h3>Scheda check</h3><img src="\${r.foto}" style="max-width:100%;border-radius:8px"><div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`); $('#mCancel').onclick = closeModal; });
 };
 function openPrestito(giochi) {
@@ -8586,7 +8743,7 @@ function openPrestito(giochi) {
   $('#mCancel').onclick = closeModal;
   $('#mSave').onclick = async () => { const [id, nome] = ($('#pk_g').value || '|').split('|'); await api('/cdc/prestiti', { method: 'POST', body: JSON.stringify({ gioco_id: Number(id) || null, gioco_nome: nome || '', giocatore: $('#pk_gioc').value, ora_inizio: $('#pk_in').value, ora_fine: $('#pk_out').value }) }); closeModal(); show('cdc'); };
 }
-function openCheck(cfg) {
+function openCheck() {
   let foto = null;
   modal(\`<h3>Nuovo check (datato)</h3>
     <div class="grid2">
@@ -10284,6 +10441,19 @@ body.hc .panel{border-color:#8F8B7C}
    scorrere l'intera pagina \u2014 proprio nel momento in cui si deve confermare davanti al cliente.
    Ora e' appiccicato in alto mentre il menu' scorre, e su schermo stretto sale sopra il menu'. */
 .co-conto{position:sticky;top:8px;align-self:flex-start;max-height:calc(100vh - 120px);overflow:auto}
+/* Il totale e l'invio della comanda. Su schermo largo stanno nel pannello di destra; sul
+   telefono si staccano e restano fissi in basso, sopra il pollice, mentre il menu' scorre. */
+.co-invio{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+.co-invio #co_tot{font-weight:800;line-height:1.2;min-width:0}
+.co-invio #co_tot .q{display:block;font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);font-weight:800}
+.co-invio #co_tot .e{display:block;font-size:1.2rem}
+.co-invio .btn{flex:0 0 auto}
+@media (max-width:900px){
+  .co-conto{position:static;max-height:none;overflow:visible}
+  .co-invio{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--card);
+    border-top:2px solid var(--ink);padding:10px 14px;margin:0;box-shadow:0 -3px 12px rgba(0,0,0,.12)}
+  #view{padding-bottom:84px}
+}
 /* LA GRIGLIA DI RIQUADRI \u2014 una forma sola, la stessa per tavoli, code di cucina, campi, casate
    e sale. L'operatore la impara una volta e la riconosce in ogni modulo: numero grande in alto
    a sinistra, stato in alto a destra, due righe di dettaglio sotto, azioni in fondo.
@@ -10300,13 +10470,49 @@ body.hc .panel{border-color:#8F8B7C}
 .riq.chiama{border-color:var(--coral)} .riq.chiama .st{color:var(--coral)}
 .riq.fatto{background:var(--ink);color:#fff;border-color:var(--ink)} .riq.fatto .det{color:#cfd6dc}
 @media (max-width:560px){.griglia{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
-@media (max-width:900px){ .co-conto{order:-1;width:100%;top:0;max-height:none} }
+/* SUL TELEFONO IL CONTO VA IN FONDO, NON IN CIMA.
+   Portarlo sopra il menu' lo rendeva visibile ma spingeva giu' il listino: per battere il primo
+   prodotto bisognava scorrere oltre il carrello. Qui resta appiccicato al BORDO INFERIORE, dove
+   sta il pollice, mentre il menu' scorre sopra. */
+@media (max-width:900px){
+  .co-conto{order:0; width:100%; position:sticky; bottom:0; top:auto; max-height:46vh; overflow:auto;
+    border-top:var(--bordo) solid var(--tratto); border-radius:0; z-index:6;}
+  .co-conto #co_cart{max-height:20vh; overflow:auto}
+}
+/* Il bottone che apre l'elenco dei moduli. Dichiarato PRIMA della media query: se sta dopo,
+   il suo display:none vince su quello del telefono e il bottone non compare \u2014 e senza quello,
+   sul telefono non si cambia piu' modulo. */
+#modBtn{display:none; align-items:center; gap:6px; background:rgba(255,255,255,.14); color:#fff;
+  border:1px solid rgba(255,255,255,.45); border-radius:4px; padding:6px 10px; font-weight:800; font-size:.86rem; cursor:pointer}
+/* SUL TELEFONO LA BARRA DEI MODULI NON STA IN RIGA.
+   Misurato su un S23 (360 px): la striscia dei moduli era larga 1083 px, cioe' tre schermate di
+   scorrimento ORIZZONTALE per trovare un modulo \u2014 e si scorre alla cieca, perche' i nomi fuori
+   campo non si leggono. Sommata alla testata e alle sotto-schede, la navigazione mangiava
+   184 px su 780: un quarto dello schermo prima di qualunque contenuto.
+   Qui i moduli diventano un elenco a tutto schermo che si apre da un bottone: si legge tutto in
+   una volta invece di scorrere, e in servizio la barra non occupa niente. */
 @media (max-width:900px){
   #corpo{display:block}
-  #moduli{position:static;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:2px solid var(--riga);min-height:0;padding:0}
-  #moduli .grp,#moduli #chiSono{display:none}
-  #moduli button{width:auto;white-space:nowrap;border-left:none;border-bottom:3px solid transparent;min-height:52px}
+  #moduli{position:fixed; inset:0; z-index:60; flex-direction:column; overflow:auto;
+    border:none; background:var(--paper); padding:8px 0 24px; display:none;}
+  #moduli.aperto{display:flex}
+  #moduli .grp{display:block; padding:14px 16px 6px}
+  #moduli #chiSono{display:block}
+  #moduli button{width:100%; border-left:6px solid transparent; border-bottom:1px solid var(--riga); min-height:56px; padding:14px 16px; font-size:1rem}
+  #moduli button.on{border-left-color:var(--rosso)}
+  #modBtn{display:inline-flex}
+  /* Comprimi/Espandi costavano una riga intera per una comodita' da scrivania. */
+  .foldbar{display:none !important}
+  /* Le descrizioni dei prodotti servono al socio, non a chi batte: l'operatore i prodotti li
+     conosce, e con la descrizione ogni riga di menu' passa da 56 a oltre 140 px. */
+  .cmd-desc{display:none}
+  /* I PARAGRAFI DI SPIEGAZIONE non sono lavoro: sono guida. Su un telefono in servizio
+     occupano lo spazio in cui dovrebbe esserci il tavolo da servire \u2014 e chi lavora quelle
+     righe le ha gia' lette la prima sera. Restano a un tocco: il bottone "?" in alto le
+     riaccende tutte. */
+  body:not(.aiuti) .aiuto{display:none}
 }
+
 #tabs button{background:transparent;border:none;color:#cfe0ee;font-weight:700;padding:10px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
 #tabs button.on{background:var(--paper);color:var(--navy)}
 #view{padding:16px;max-width:1360px;margin:0 auto}
@@ -10393,6 +10599,8 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
     <div class="row" style="justify-content:space-between">
       <span class="brand">\u{1F9ED} Bussola Crew</span>
       <span class="who" style="display:flex;align-items:center;gap:8px">
+        <button id="modBtn" aria-expanded="false"><span id="modBtnTxt">Moduli</span> \u25BE</button>
+        <button id="aiutoBtn" title="Mostra le spiegazioni" aria-pressed="false" style="background:transparent;border:1px solid #cfe0ee;color:#cfe0ee;border-radius:4px;padding:4px 9px;font-weight:700;cursor:pointer">?</button>
         <button id="hcBtn" title="Alza il contrasto" style="background:transparent;border:1px solid #cfe0ee;color:#cfe0ee;border-radius:4px;padding:4px 9px;font-weight:700;cursor:pointer">A\u25D0</button>
         <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
@@ -10436,11 +10644,14 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
  * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
  *
  * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
- *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ *       c.getRighe() -> [{menu_id, qta, complementi, combo}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
  */
 window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  // All'italiana: \u20AC 1,00 e non \u20AC 1.00. Questo e' il formattatore che disegna i prezzi MENTRE
+  // si batte la comanda \u2014 era rimasto all'inglese quando gli altri tre erano gia' a posto,
+  // quindi il socio vedeva la virgola nell'app e l'operatore il punto sullo stesso prodotto.
+  function eur(n) { return '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
 
   // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
@@ -10487,6 +10698,10 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+      .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
+      .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
+      .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
@@ -10540,7 +10755,10 @@ window.Comanda = (function () {
       return t;
     }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
-    function fire() { onChange(cart, total(), count()); }
+    // Le scelte viaggiano insieme al carrello: chi invia la comanda le passa al server, che le
+    // ricontrolla comunque. Il controllo a schermo serve a non far sbagliare; quello sul
+    // server serve a non farsi aggirare.
+    function fire() { onChange(cart, total(), count(), scelteCombo); }
 
     // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
     function iconaDi(m) {
@@ -10582,8 +10800,46 @@ window.Comanda = (function () {
       const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
       return nomi.length ? '+ ' + nomi.join(', ') : '';
     }
+    // LE SCELTE DI UNA COMBO. Chiave: id combo \u2192 { posto_id: menu_id }. Una combo con i posti
+    // vuoti non si puo' aggiungere: "un panino a scelta" e' una promessa, e il momento in cui
+    // si decide quale panino e' adesso, non al ritiro davanti a un cliente che ha gia' pagato.
+    const scelteCombo = {};
+    function comboPronta(m) {
+      const p = m.posti || [];
+      return p.length > 0 && p.every((x) => (scelteCombo[m.id] || {})[x.id]);
+    }
+    function comboRiassunto(m) {
+      const sc = scelteCombo[m.id] || {};
+      const nomi = (m.posti || []).map((p) => {
+        const id = sc[p.id];
+        const v = id && (p.scelte || []).find((x) => Number(x.id) === Number(id));
+        return v ? v.nome : null;
+      });
+      return nomi.every(Boolean) ? nomi.join(' + ') : '';
+    }
+    function comboHTML(m) {
+      if (!m.combo || !(m.posti || []).length) return '';
+      const sc = scelteCombo[m.id] || {};
+      return \`<div class="cmd-combo" data-cbox2="\${m.id}">\` + m.posti.map((p) => \`
+        <div class="cmd-posto"><span class="cmd-posto-t">\${esc(p.etichetta)}</span>
+          <select data-cpick="\${m.id}:\${p.id}">
+            <option value="">\u2014 scegli \u2014</option>
+            \${(p.scelte || []).map((x) => \`<option value="\${x.id}" \${Number(sc[p.id]) === Number(x.id) ? 'selected' : ''}>\${esc(x.nome)}</option>\`).join('')}
+          </select></div>\`).join('') + \`</div>\`;
+    }
+
     function itemHTML(m) {
       const q = cart[m.id] || 0;
+      if (m.combo && (m.posti || []).length) {
+        const pronta = comboPronta(m);
+        const riass = comboRiassunto(m);
+        return \`<div class="cmd-item\${q ? ' sel' : ''}">
+          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-pz">\${eur(m.prezzo)}</span>
+          <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
+          \${comboHTML(m)}</div>\`;
+      }
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
       // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
       // bordo campo allungano la riga senza servire a chi batte la comanda.
@@ -10623,8 +10879,20 @@ window.Comanda = (function () {
     }
 
     // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('change', (ev) => {
+      const sel = ev.target.closest('[data-cpick]'); if (!sel) return;
+      const [mid, pid] = sel.dataset.cpick.split(':');
+      scelteCombo[mid] = scelteCombo[mid] || {};
+      if (sel.value) scelteCombo[mid][pid] = Number(sel.value); else delete scelteCombo[mid][pid];
+      // Se la combo era gia' nel carrello e si cambia una scelta, resta: cambia solo cosa c'e'
+      // dentro. Ma se si svuota un posto, esce \u2014 altrimenti si spedirebbe una promessa a meta'.
+      const m = menu.find((x) => String(x.id) === String(mid));
+      if (m && cart[mid] && !comboPronta(m)) { delete cart[mid]; }
+      renderList(); fire();
+    });
     mount.addEventListener('click', (ev) => {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.disabled) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -10654,7 +10922,17 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
+      // Le scelte della combo escono da QUI, non da chi invia: Crew, app del socio e QR usano
+      // tutti getRighe(), quindi aggiungerle in un posto solo le fa arrivare a tutte e tre le
+      // porte senza toccarne nessuna. Se ognuna se le componesse da se', prima o poi una si
+      // dimenticherebbe e il server rifiuterebbe l'ordine senza che si capisca perche'.
+      getRighe() {
+        return Object.keys(cart).map(id => {
+          const r = { menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() };
+          if (scelteCombo[id] && Object.keys(scelteCombo[id]).length) r.combo = scelteCombo[id];
+          return r;
+        });
+      },
       total, count,
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
@@ -10705,6 +10983,7 @@ async function login() {
     if (!zone.length) throw new Error('Il tuo utente non ha ancora nessun permesso operativo. Chiedi al gestore di abilitarti ad almeno uno di questi moduli: ' + Object.values(CAP_MODULO).join(' \xB7 ') + '.');
     ME.username = j.user.username;
     try { applyContrasto(localStorage.getItem('bussola_hc') === '1'); } catch (_) {}
+    try { applyAiuti(localStorage.getItem('bussola_aiuti') === '1'); } catch (_) {}
     disegnaModuli(zone);
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
     $('#whoName').textContent = j.user.username;
@@ -10792,6 +11071,7 @@ function disegnaModuli(zone) {
   h += \`<div id="chiSono"></div>\`;
   nav.innerHTML = h;
   nav.querySelectorAll('button[data-z]').forEach(b => b.onclick = () => {
+    apriModuli(false);
     if (b.dataset.z === 'adesso') { ZONA_PRIMA = null; show('adesso'); segnaModulo('adesso'); }
     else setZona(b.dataset.z);
   });
@@ -10807,6 +11087,24 @@ function disegnaModuli(zone) {
 }
 function segnaModulo(z) {
   document.querySelectorAll('#moduli button[data-z]').forEach(b => b.classList.toggle('on', b.dataset.z === z));
+  // Sul telefono il nome del modulo sta nel bottone che apre l'elenco: e' l'unico posto dove
+  // si legge dove sei, visto che la barra non e' piu' sempre a schermo.
+  const t = document.querySelector('#modBtnTxt');
+  if (t) {
+    const b2 = document.querySelector(\`#moduli button[data-z="\${z}"] span\`);
+    t.textContent = b2 ? b2.textContent.trim() : 'Moduli';
+  }
+}
+// L'elenco dei moduli a tutto schermo. Su schermo largo la barra sta sempre a sinistra e questo
+// non serve; sul telefono e' l'unico modo di leggere tutti i nomi in una volta invece di
+// scorrere alla cieca una striscia larga il triplo dello schermo.
+function apriModuli(apri) {
+  const nav = document.querySelector('#moduli');
+  const b = document.querySelector('#modBtn');
+  if (!nav) return;
+  const on = apri === undefined ? !nav.classList.contains('aperto') : !!apri;
+  nav.classList.toggle('aperto', on);
+  if (b) b.setAttribute('aria-expanded', on ? 'true' : 'false');
 }
 let ZONA_PRIMA = null;
 
@@ -10993,7 +11291,7 @@ function pickMetodo(onPick) {
     </div>
     <label class="muted" style="display:block;font-size:.8rem;margin-top:12px">Copia del conto per e-mail <span style="opacity:.7">(facoltativa)</span>
       <input id="pm_mail" type="email" placeholder="indirizzo del cliente" style="width:100%;margin-top:4px"></label>
-    <p class="muted" style="font-size:.72rem;margin:6px 0 0">\xC8 una copia di cortesia: <b>lo scontrino fiscale va consegnato lo stesso</b>.</p>
+    <p class="muted aiuto" style="font-size:.72rem;margin:6px 0 0">\xC8 una copia di cortesia: <b>lo scontrino fiscale va consegnato lo stesso</b>.</p>
     <button class="btn ghost" data-m="" style="width:100%;margin-top:10px">Annulla</button></div>\`;
   document.body.appendChild(ov);
   ov.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
@@ -11058,7 +11356,7 @@ function pannelloSelfOrder(so) {
           </div>
           <div style="min-width:230px">
             <b style="color:var(--navy);font-size:.9rem">\u{1F5FA}\uFE0F Mappa tavoli (Garden)</b>
-            <p class="muted" style="font-size:.74rem;margin-top:6px">I tavoli del Garden non si contano piu' qui: si disegnano nella <b>Pianta</b>, dove si aggiungono, si spostano e si accorpano.</p>
+            <p class="muted aiuto" style="font-size:.74rem;margin-top:6px">I tavoli del Garden non si contano piu' qui: si disegnano nella <b>Pianta</b>, dove si aggiungono, si spostano e si accorpano.</p>
             <label style="display:block;font-size:.8rem;margin-top:6px">Rosso dopo (min) <input id="cf_mrosso" type="number" min="1" value="\${cfg.map_rosso_min || 10}" style="width:70px"></label>
           </div>
         </div>
@@ -11110,9 +11408,14 @@ VIEWS.comande = async () => {
         </div>
         <div style="flex:1;min-width:260px" class="panel co-conto">
           <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
-          <div id="co_tot" style="text-align:right;font-weight:800;margin-top:8px"></div>
-          <button class="btn gold" id="co_send" style="width:100%;margin-top:8px">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
-          <p class="muted" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'}; i piatti li lavora la postazione \u{1F373} <b>Cucina</b>.</p>
+          <!-- Totale e invio in una barra che sul telefono resta INCOLLATA IN BASSO. Prima
+               stavano in cima al pannello: appena si comincia a scorrere il menu' escono da
+               sopra, e per sapere quanto e per inviare bisogna risalire tutta la pagina. -->
+          <div class="co-invio">
+            <div id="co_tot"></div>
+            <button class="btn gold" id="co_send">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
+          </div>
+          <p class="muted aiuto" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'}; i piatti li lavora la postazione \u{1F373} <b>Cucina</b>.</p>
         </div>
       </div></div>\`;
 
@@ -11124,7 +11427,11 @@ VIEWS.comande = async () => {
   };
   let CO = null;
   if (menu.length) {
-    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, onChange: (cart, tot) => { $('#co_tot').textContent = 'Totale ' + eur(tot); renderCart(cart); } });
+    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, onChange: (cart, tot, n) => {
+      $('#co_tot').innerHTML = n ? \`<span class="q">\${n} \${n === 1 ? 'prodotto' : 'prodotti'}</span><span class="e">\${eur(tot)}</span>\` : \`<span class="q">Nessun prodotto</span>\`;
+      $('#co_send').disabled = !n;
+      renderCart(cart);
+    } });
     CO.focusSearch();
   } else { renderCart({}); }
   // Scansione della tessera: si evita di digitare il cognome e si prende quello vero.
@@ -11221,7 +11528,7 @@ function cucinaCard(g) {
   const righe = tutte.filter(({ r }) => !r.parent_riga_id).map(({ cm, r }) => {
     const dentro = figlieDi(r.id);
     return \`<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06)">
-      <span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${dentro.length ? \`<div style="font-size:.78rem;color:#5a5346;margin-top:2px">\${dentro.map(f => '\\u21b3 ' + esc(f.nome)).join('<br>')}</div>\` : ''}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
+      <span style="flex:1"><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${dentro.length ? \`<div style="font-size:.78rem;color:#5a5346;margin-top:2px">\${dentro.map(f => '\\u21b3 ' + esc(f.nome)).join('<br>')}</div>\` : ''}\${r.note ? \`<div class="muted aiuto" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span>
       \${r.stato === 'in_coda' ? \`<button class="btn gold sm" data-kr="\${cm.id}|\${r.id}|pronta">Pronta \\u2714</button>\` : \`<button class="btn ghost sm" data-kr="\${cm.id}|\${r.id}|consegnata">Consegna \\ud83d\\udece</button>\`}
       <button class="btn ghost sm" data-kstorna="\${r.id}" title="Non si pu\\u00f2 fare: il piatto non parte, niente conto e niente scarico">\\u21a9\\ufe0e</button>
       <button class="btn ghost sm" data-knons="\${r.id}" title="Gi\\u00e0 fatto ma non servito: esce dal conto, la merce resta scaricata">\\ud83d\\uddd1</button></div>\`;
@@ -11259,8 +11566,8 @@ function tavoloDetail(tb) {
   const comande = tb.cs.slice().sort((a, b) => tms(a) - tms(b));
   const blocks = comande.map(cm => {
     const t = parseTs(cm.created_at); const hh = t ? t.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '';
-    const righe = (cm.righe || []).map(r => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f4f2ea\${r.parent_riga_id ? ';padding-left:18px' : ''}"><span>\${r.parent_riga_id ? '<span class="muted">\u21B3</span> ' : \`<b>\${r.qta}\xD7</b> \`}\${esc(r.nome)} \${r.parent_riga_id ? '' : (r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}')}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${['pronta', 'consegnata'].includes(r.stato) ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
-    return \`<div style="margin-top:10px"><div class="muted" style="font-size:.74rem;font-weight:700">Comanda #\${cm.numero || cm.id}\${hh ? ' \xB7 ' + hh : ''}</div>\${righe}<div style="text-align:right;font-weight:800;margin-top:4px">\${eur(cm.totale)}</div></div>\`;
+    const righe = (cm.righe || []).map(r => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f4f2ea\${r.parent_riga_id ? ';padding-left:18px' : ''}"><span>\${r.parent_riga_id ? '<span class="muted">\u21B3</span> ' : \`<b>\${r.qta}\xD7</b> \`}\${esc(r.nome)} \${r.parent_riga_id ? '' : (r.stazione === 'cucina' ? '\u{1F373}' : '\u{1F379}')}\${r.note ? \`<div class="muted aiuto" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${['pronta', 'consegnata'].includes(r.stato) ? 'ok' : 'mid'}">\${esc(r.stato)}</span></div>\`).join('');
+    return \`<div style="margin-top:10px"><div class="muted aiuto" style="font-size:.74rem;font-weight:700">Comanda #\${cm.numero || cm.id}\${hh ? ' \xB7 ' + hh : ''}</div>\${righe}<div style="text-align:right;font-weight:800;margin-top:4px">\${eur(cm.totale)}</div></div>\`;
   }).join('') || '<p class="muted">Tavolo libero.</p>';
   const tot = comande.reduce((s, cm) => s + Number(cm.totale || 0), 0);
   const pay = tb.st.key === 'verde' ? \`<button class="btn gold block" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:12px">\u{1F4B6} Incassa \${eur(tot)}</button>\` : '';
@@ -11269,7 +11576,7 @@ function tavoloDetail(tb) {
 function cucinaDetail(g) {
   const c = ZCOL[g.st.key];
   const label = g.zona === 'bar' ? ('\u{1F378} ' + esc(g.rif)) : ('\u{1F37D}\uFE0F Tavolo ' + esc(g.rif));
-  const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #f4f2ea"><span><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${r.stato === 'in_coda' ? 'mid' : 'ok'}">\${r.stato === 'in_coda' ? 'da fare' : 'pronta'}</span></div>\`).join('');
+  const righe = g.comande.flatMap(cm => (cm.righe || []).map(r => ({ cm, r }))).map(({ cm, r }) => \`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #f4f2ea"><span><b>\${r.qta}\xD7</b> \${esc(r.nome)}\${r.note ? \`<div class="muted aiuto" style="font-size:.75rem">\${esc(r.note)}</div>\` : ''}</span><span class="tag \${r.stato === 'in_coda' ? 'mid' : 'ok'}">\${r.stato === 'in_coda' ? 'da fare' : 'pronta'}</span></div>\`).join('');
   return \`<div class="row" style="justify-content:space-between"><h3>\${label}</h3><span class="tchip" style="background:\${c.bd}">\${c.lb}\${g.st.mins != null ? ' \xB7 ' + g.st.mins + '\u2032' : ''}</span></div><div style="margin-top:8px">\${righe}</div><button class="btn ghost block" data-mclose style="margin-top:10px">Chiudi</button>\`;
 }
 
@@ -11340,11 +11647,11 @@ VIEWS.adesso = async () => {
       </div>
       <div style="flex:0 1 260px">
         <div class="panel">
-          <div class="muted" style="font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800">Il turno in una riga</div>
+          <div class="muted aiuto" style="font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800">Il turno in una riga</div>
           \${righe.length ? righe.map(([k, n]) =>
             \`<div class="row" style="justify-content:space-between;padding:4px 0"><span>\${esc(ETICHETTA[k] || k)}</span><b>\${esc(String(n))}</b></div>\`).join('')
             : '<div class="muted" style="font-size:.85rem;margin-top:6px">Niente da riassumere per i tuoi permessi.</div>'}
-          <div class="muted" style="font-size:.78rem;margin-top:10px;border-top:2px solid var(--riga);padding-top:8px">
+          <div class="muted aiuto" style="font-size:.78rem;margin-top:10px;border-top:2px solid var(--riga);padding-top:8px">
             Gli incassi non stanno qui. Questa \\u00e8 la schermata del servizio, non della cassa.</div>
         </div>
       </div>
@@ -11480,14 +11787,14 @@ VIEWS.bar = async () => {
         \`\${c.stato === 'pronta' ? \`<button class="btn ghost sm" data-cs="\${c.id}|consegnata">\${alTavolo ? 'Portata \\ud83c\\udf7d\\ufe0f' : 'Consegnata \\ud83d\\udece\\ufe0f'}</button>\` : ''}\` +
         \`\${alTavolo ? '' : \`<button class="btn gold sm" data-ch="\${c.id}">\\ud83d\\udcb6 Incassa</button><button class="btn danger sm" data-can="\${c.id}">Annulla</button>\`}\`;
       return \`<div class="panel" style="border:2px solid \${col.bd};background:\${col.bg};min-width:250px;flex:1 1 250px;max-width:340px;margin:0">
-        <div class="row" style="justify-content:space-between;align-items:center"><b>#\${esc(String(c.numero))}</b><span class="muted" style="font-size:.75rem">\${hhmm}</span></div>
+        <div class="row" style="justify-content:space-between;align-items:center"><b>#\${esc(String(c.numero))}</b><span class="muted aiuto" style="font-size:.75rem">\${hhmm}</span></div>
         <div style="margin:4px 0">\${provenienza}</div>
         <div style="margin-top:4px">\${righe}</div>
         <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${azioni}</div></div>\`;
     };
     const alTavolo = arr.filter(x => x.c.zona !== 'bar').length;
     $('#view').innerHTML = \`<div class="panel"><h3>\\ud83c\\udf78 Banco \\u00b7 da preparare <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:8px">\\u00b7 auto-aggiornata</span></h3>
-      <div class="muted" style="font-size:.76rem">Tutto quello che prepara il banco, <b>da qualunque parte arrivi l'ordine</b>: \${alTavolo ? \`<b>\${alTavolo}</b> \${alTavolo === 1 ? 'ordine' : 'ordini'} da portare a un tavolo del Garden\` : 'al momento solo ordini al banco'}. <b style="color:#c79200">Giallo</b> in lavorazione \\u00b7 <b style="color:#d64535">rosso</b> oltre \${rMin}\\u2032.</div>
+      <div class="muted aiuto" style="font-size:.76rem">Tutto quello che prepara il banco, <b>da qualunque parte arrivi l'ordine</b>: \${alTavolo ? \`<b>\${alTavolo}</b> \${alTavolo === 1 ? 'ordine' : 'ordini'} da portare a un tavolo del Garden\` : 'al momento solo ordini al banco'}. <b style="color:#c79200">Giallo</b> in lavorazione \\u00b7 <b style="color:#d64535">rosso</b> oltre \${rMin}\\u2032.</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">\${arr.map(card).join('') || '<p class="muted">Niente da preparare al banco. \\ud83c\\udf89</p>'}</div></div>\`;
     document.querySelectorAll('[data-cs]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.cs.split('|'); await api('/comande/' + id + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
     document.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => pickMetodo(async (metodo, email, tessera_code, pin) => { const r = await api('/comande/' + b.dataset.ch + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo, email, tessera_code, pin }) }); if (r && r.ricevuta_inviata) alert('Copia del conto inviata a ' + r.ricevuta_a + '.\\nLo scontrino fiscale va consegnato lo stesso.'); render(); }));
@@ -11528,7 +11835,7 @@ VIEWS.tavoli = async () => {
     const rank = { rosso: 0, giallo: 1, verde: 2, arancio: 3 };
     tables.sort((a, b) => (rank[a.st.key] - rank[b.st.key]) || ((a.st.since || Infinity) - (b.st.since || Infinity)) || (a.t - b.t));
     $('#view').innerHTML = \`<div class="panel" style="margin-bottom:12px"><div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><h3 style="margin:0">\u{1F5FA}\uFE0F Mappa tavoli \xB7 Bussola Garden <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 \${tables.length} tavoli\${sala ? ' \xB7 ' + esc(sala.layout.nome) : ''} \xB7 auto-aggiornamento</span></h3>
-      <div class="muted" style="font-size:.74rem">\u{1F7E7} libero \xB7 \u{1F7E8} acquisita \xB7 \u{1F7E5} oltre \${rMin}\u2032 \xB7 \u{1F7E9} consegnato</div></div></div>
+      <div class="muted aiuto" style="font-size:.74rem">\u{1F7E7} libero \xB7 \u{1F7E8} acquisita \xB7 \u{1F7E5} oltre \${rMin}\u2032 \xB7 \u{1F7E9} consegnato</div></div></div>
       <div class="board">\${tables.map(tavoloCard).join('')}</div>\`;
     const bindPay = (root) => root.querySelectorAll('[data-tpay]').forEach(b => b.onclick = () => pickMetodo(async (metodo) => {
       for (const id of String(b.dataset.tpay).split(',').filter(Boolean)) await api('/comande/' + id + '/chiudi', { method: 'POST', body: JSON.stringify({ metodo }) });
@@ -11700,7 +12007,7 @@ VIEWS.sport = async () => {
   // Struttura sempre visibile: ogni casella dice da dove arriva la casata e, se la classifica
   // esiste gia', chi la occuperebbe oggi. Si vede dove si e' diretti prima che si sblocchi.
   const cella = (s2) => s2.provvisorio
-    ? \`<b style="font-size:.86rem">\${esc(s2.provvisorio)}</b> <span class="muted" style="font-size:.68rem">(\${esc(s2.etichetta)})</span>\`
+    ? \`<b style="font-size:.86rem">\${esc(s2.provvisorio)}</b> <span class="muted aiuto" style="font-size:.68rem">(\${esc(s2.etichetta)})</span>\`
     : \`<span class="muted" style="font-size:.82rem;font-style:italic">\${esc(s2.etichetta)}</span>\`;
   const scontro = (x, titolo) => \`<div style="border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
       <div style="font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">\${esc(titolo)}</div>
@@ -11718,13 +12025,13 @@ VIEWS.sport = async () => {
         <div><b style="font-size:.9rem">Non ancora sbloccata.</b> <span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Mancano <b>\${gironiMancanti}</b> partite su \${gironiTot} nei gironi; gli accoppiamenti qui sotto sono quelli che risulterebbero con la classifica di adesso.\` : 'Gironi completati: la fase finale si sta generando, riapri la scheda.'}</span></div></div>\`;
   const statoFinale = (t.hasFinale && blocks) ? (schema + '<div style="margin-top:10px">' + blocks + '</div>') : (avviso + schema);
   const finaliHtml = \`<div class="panel"><h3>\u{1F3C6} Fase finale</h3>
-    <p class="muted" style="font-size:.76rem;margin-bottom:6px">Incroci fra i gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un vincitore.</p>\${statoFinale}</div>\`;
+    <p class="muted aiuto" style="font-size:.76rem;margin-bottom:6px">Incroci fra i gironi (1\xBA-4\xBA, 2\xBA-3\xBA, 3\xBA-2\xBA, 4\xBA-1\xBA) \u2192 semifinali \u2192 finali. In caso di pareggio serve un vincitore.</p>\${statoFinale}</div>\`;
 
   let gradHtml = '';
   if (t.graduatoria && t.graduatoria.length) {
     gradHtml = \`<div class="panel"><h3>\u{1F3C5} Graduatoria finale \xB7 punti Coppa</h3>
       <table><thead><tr><th>Pos.</th><th>Casata</th><th>Punti</th></tr></thead><tbody>\${t.graduatoria.map(r => \`<tr><td style="text-align:center"><b>\${esc(String(r.posizione))}</b></td><td><b>\${esc(r.nome)}</b></td><td style="text-align:center"><b style="color:var(--gold)">\${esc(String(r.punti))}</b></td></tr>\`).join('')}</tbody></table>
-      <p class="muted" style="font-size:.74rem;margin-top:6px">Confluiscono da soli nel cartellone della Coppa.</p></div>\`;
+      <p class="muted aiuto" style="font-size:.74rem;margin-top:6px">Confluiscono da soli nel cartellone della Coppa.</p></div>\`;
   }
 
   $('#view').innerHTML = head + gironiHtml + finaliHtml + gradHtml;
@@ -11856,12 +12163,12 @@ async function magQuadratura() {
   $('#view').innerHTML = magSubbar() + \`<div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
       <h3 style="margin:0">\u{1F4CA} Quadratura mensile \${data.chiusa ? '<span class="tag ok">chiusa</span>' : '<span class="tag mid">in corso</span>'}</h3>
       <div class="row"><label class="muted" style="font-size:.8rem">Mese</label><select id="mag_mese">\${mesiOpts}</select><button class="btn ghost sm" id="mag_chiudi">\u{1F512} Chiudi mese</button></div></div>
-    <p class="muted" style="font-size:.78rem;margin-top:6px">Flussi del mese per articolo e <b>consumi per zona</b> (bar/garden). <b>Atteso</b> = iniziale + carichi \u2212 scarichi; lo <b>scostamento</b> vs la giacenza reale evidenzia rettifiche/cali/anomalie (0 = quadra). L'iniziale c'\xE8 dal mese successivo alla prima chiusura. A fine mese la chiusura \xE8 automatica; puoi anche chiudere qui.</p>
+    <p class="muted aiuto" style="font-size:.78rem;margin-top:6px">Flussi del mese per articolo e <b>consumi per zona</b> (bar/garden). <b>Atteso</b> = iniziale + carichi \u2212 scarichi; lo <b>scostamento</b> vs la giacenza reale evidenzia rettifiche/cali/anomalie (0 = quadra). L'iniziale c'\xE8 dal mese successivo alla prima chiusura. A fine mese la chiusura \xE8 automatica; puoi anche chiudere qui.</p>
     <div class="row" style="gap:10px;margin-top:8px">
-      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Carichi</div><div style="font-size:1.3rem;font-weight:800;color:var(--teal)">\${t.carico || 0}</div></div>
-      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Consumo \u{1F378} Bar</div><div style="font-size:1.3rem;font-weight:800;color:var(--navy)">\${t.scarico_bar || 0}</div></div>
-      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Consumo \u{1F33F} Garden</div><div style="font-size:1.3rem;font-weight:800;color:var(--navy)">\${t.scarico_garden || 0}</div></div>
-      <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Scostamenti</div><div style="font-size:1.3rem;font-weight:800;color:\${t.scostamenti ? 'var(--coral)' : 'var(--navy)'}">\${t.scostamenti || 0}</div></div></div></div>
+      <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Carichi</div><div style="font-size:1.3rem;font-weight:800;color:var(--teal)">\${t.carico || 0}</div></div>
+      <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Consumo \u{1F378} Bar</div><div style="font-size:1.3rem;font-weight:800;color:var(--navy)">\${t.scarico_bar || 0}</div></div>
+      <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Consumo \u{1F33F} Garden</div><div style="font-size:1.3rem;font-weight:800;color:var(--navy)">\${t.scarico_garden || 0}</div></div>
+      <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Scostamenti</div><div style="font-size:1.3rem;font-weight:800;color:\${t.scostamenti ? 'var(--coral)' : 'var(--navy)'}">\${t.scostamenti || 0}</div></div></div></div>
     <div class="panel"><table><thead><tr><th>Articolo</th><th>Iniz.</th><th>Carico</th><th>Scarico</th><th>bar/garden</th><th>Finale</th><th>Atteso</th><th>Scost.</th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun movimento nel mese.</td></tr>'}</tbody></table></div>\`;
   $('#mag_mese').onchange = (e) => { MAG_MESE = e.target.value; show('magazzino'); };
   $('#mag_chiudi').onclick = async () => { if (!confirm('Chiudere il mese ' + data.mese + '? Registra la giacenza attuale come giacenza di fine mese (base per la riconciliazione del mese successivo).')) return; await api('/magazzino/quadratura/chiudi', { method: 'POST', body: JSON.stringify({ mese: data.mese }) }); show('magazzino'); };
@@ -11888,7 +12195,7 @@ async function magCalendario() {
   const gCon = {}; (ordini || []).forEach(o => { const k = o.data_prevista || '\u2014'; (gCon[k] = gCon[k] || []).push(o); });
   const conHtml = Object.keys(gCon).sort().map(dt => \`<div style="margin-bottom:8px"><div style="font-weight:800;color:\${dt !== '\u2014' && dt <= oggi ? 'var(--coral)' : 'var(--navy)'};font-size:.85rem;margin-bottom:3px">\${dt === '\u2014' ? 'senza data' : magDataLabel(dt, oggi)}</div>\${gCon[dt].map(o => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span>\u{1F69A} <b>\${esc(o.nome)}</b> \xB7 \${esc(String(o.quantita))} \${esc(o.unita)}</span><div class="row"><button class="btn gold sm" data-cric="\${o.id}">\u{1F4E5} Ricevi</button><button class="btn ghost sm" data-cann="\${o.id}">Annulla</button></div></div>\`).join('')}</div>\`).join('') || '<p class="muted">Nessuna consegna in programma.</p>';
   $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\u{1F4C5} Calendario ordini <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 lead time fornitore \${LEAD} gg</span></h3>
-    <p class="muted" style="font-size:.78rem">Per far arrivare la merce in tempo, ogni proposta ha una <b>data d'invio consigliata</b> = data di riordino \u2212 lead time. Le voci in rosso sono da inviare <b>subito</b>. Le consegne attese sono gli ordini gi\xE0 inviati, in arrivo alla data prevista.</p>
+    <p class="muted aiuto" style="font-size:.78rem">Per far arrivare la merce in tempo, ogni proposta ha una <b>data d'invio consigliata</b> = data di riordino \u2212 lead time. Le voci in rosso sono da inviare <b>subito</b>. Le consegne attese sono gli ordini gi\xE0 inviati, in arrivo alla data prevista.</p>
     <div class="row" style="margin-top:8px;gap:8px;align-items:center"><label class="muted" style="font-size:.8rem">Lead time fornitore (giorni)</label><input id="mag_lead" type="number" value="\${LEAD}" style="width:80px"><button class="btn ghost sm" id="mag_lead_save">Salva</button></div></div>
     <div class="panel"><h3>\u{1F4E4} Da inviare</h3>\${invHtml}</div>
     <div class="panel"><h3>\u{1F4E5} Consegne attese</h3>\${conHtml}</div>\`;
@@ -11923,10 +12230,10 @@ async function magPrevisione() {
   const senza = arts.filter(a => a.senza_storico).length;
   const ordPanel = \`<div class="panel"><h3>\u{1F69A} Ordini al fornitore in corso</h3>\${ordini.length ? ordini.map(o => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(o.nome)}</b> \xB7 \${esc(String(o.quantita))} \${esc(o.unita)}\${o.data_prevista ? \` \xB7 <span class="muted">arrivo ~\${esc(o.data_prevista)}</span>\` : ''}</span><div class="row"><button class="btn gold sm" data-oric="\${o.id}">\u{1F4E5} Ricevi</button><button class="btn ghost sm" data-oann="\${o.id}">Annulla</button></div></div>\`).join('') : '<p class="muted">Nessun ordine in corso.</p>'}</div>\`;
   $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\u{1F52E} Previsione riordino <span class="muted" style="font-weight:400;font-size:.72rem">\xB7 finestra \${N} giorni</span></h3>
-    <p class="muted" style="font-size:.78rem">Dal ritmo di consumo degli ultimi <b>\${N} giorni</b> stimo quando la giacenza effettiva raggiunge il punto di riordino e propongo una quantit\xE0 da ordinare al fornitore (gi\xE0 al netto di ci\xF2 che \xE8 in arrivo). <b>Valida</b> l'ordine con "Ordina": la merce risulter\xE0 <b>in arrivo</b> finch\xE9 non la ricevi (che equivale a un carico del Centrale).</p>
+    <p class="muted aiuto" style="font-size:.78rem">Dal ritmo di consumo degli ultimi <b>\${N} giorni</b> stimo quando la giacenza effettiva raggiunge il punto di riordino e propongo una quantit\xE0 da ordinare al fornitore (gi\xE0 al netto di ci\xF2 che \xE8 in arrivo). <b>Valida</b> l'ordine con "Ordina": la merce risulter\xE0 <b>in arrivo</b> finch\xE9 non la ricevi (che equivale a un carico del Centrale).</p>
     <div class="row" style="margin-top:8px;gap:8px;align-items:center"><label class="muted" style="font-size:.8rem">Finestra (giorni)</label><input id="mag_fin" type="number" value="\${N}" style="width:80px"><button class="btn ghost sm" id="mag_fin_save">Salva</button></div></div>
     <div class="panel"><table><thead><tr><th>Articolo</th><th>Ritmo</th><th>Disp.eff</th><th>In arrivo</th><th>Residui</th><th>Data riordino</th><th></th><th>Ordine fornitore</th></tr></thead><tbody>\${rows || '<tr><td colspan="8" class="muted">Nessun articolo con storico di consumo. Registra qualche scarico per attivare la previsione.</td></tr>'}</tbody></table>
-    \${senza ? \`<p class="muted" style="font-size:.74rem;margin-top:8px">\${senza} articoli senza consumi nella finestra non compaiono (nessun ritmo da stimare).</p>\` : ''}</div>\` + ordPanel;
+    \${senza ? \`<p class="muted aiuto" style="font-size:.74rem;margin-top:8px">\${senza} articoli senza consumi nella finestra non compaiono (nessun ritmo da stimare).</p>\` : ''}</div>\` + ordPanel;
   $('#mag_fin_save').onclick = async () => { await api('/magazzino/config', { method: 'POST', body: JSON.stringify({ finestra_giorni: Number($('#mag_fin').value) || 14 }) }); show('magazzino'); };
   document.querySelectorAll('[data-ord]').forEach(b => b.onclick = async () => {
     const id = b.dataset.ord; const q = Number(($('#oq_' + id) || {}).value);
@@ -11944,11 +12251,11 @@ async function magCentrale() {
   const impegni = await api('/magazzino/richieste?stato=impegnata').catch(() => []);
   const r = data.riepilogo || {};
   const alert = \`<div class="panel"><div class="row" style="gap:10px">
-    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.5rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
-    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.5rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
-    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.5rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div>
-    <div style="flex:1;min-width:120px"><div class="muted" style="font-size:.72rem">Impegni attivi</div><div style="font-size:1.5rem;font-weight:800;color:\${impegni.length ? 'var(--gold)' : 'var(--navy)'}">\${impegni.length}</div></div></div>
-    <p class="muted" style="font-size:.76rem;margin-top:8px">La merce \xE8 <b>unica</b> e sta qui al Centrale. La <b>zona</b> di un articolo \xE8 solo un'abilitazione (chi pu\xF2 usarlo). Bar e Garden non hanno scorta propria: vedono la disponibilit\xE0 in sola lettura, scaricano i consumi (che scendono da qui) e possono <b>impegnare</b> merce. <b>Giac.</b> = fisica \xB7 <b>Imp.</b> = impegnata \xB7 <b>Eff.</b> = effettiva (Giac. \u2212 Imp.), il numero che fa scattare il riordino.</p></div>\`;
+    <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.5rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
+    <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.5rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
+    <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Articoli</div><div style="font-size:1.5rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div>
+    <div style="flex:1;min-width:120px"><div class="muted aiuto" style="font-size:.72rem">Impegni attivi</div><div style="font-size:1.5rem;font-weight:800;color:\${impegni.length ? 'var(--gold)' : 'var(--navy)'}">\${impegni.length}</div></div></div>
+    <p class="muted aiuto" style="font-size:.76rem;margin-top:8px">La merce \xE8 <b>unica</b> e sta qui al Centrale. La <b>zona</b> di un articolo \xE8 solo un'abilitazione (chi pu\xF2 usarlo). Bar e Garden non hanno scorta propria: vedono la disponibilit\xE0 in sola lettura, scaricano i consumi (che scendono da qui) e possono <b>impegnare</b> merce. <b>Giac.</b> = fisica \xB7 <b>Imp.</b> = impegnata \xB7 <b>Eff.</b> = effettiva (Giac. \u2212 Imp.), il numero che fa scattare il riordino.</p></div>\`;
   const ricPanel = \`<div class="panel"><h3>\u{1F4CC} Impegni in corso <span class="muted" style="font-weight:400;font-size:.72rem">(merce prenotata dalle zone, non ancora consumata)</span></h3>\${impegni.length ? impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span>\${x.zona === 'bar' ? '\u{1F378}' : '\u{1F33F}'} <b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} impegnati per \${esc(x.zona)}</span><button class="btn ghost sm" data-evno="\${x.id}">Rilascia</button></div>\`).join('') : '<p class="muted">Nessun impegno attivo.</p>'}</div>\`;
   const areeOrdine = [...new Set([...MAG_AREE.map(a => a[0]), ...(data.aree || [])])];
   const perArea = areeOrdine.map(area => {
@@ -11963,7 +12270,7 @@ async function magCentrale() {
   const imp = \`<div class="panel"><h3>\u2B06\uFE0F Caricamento magazzino (master) da Excel/CSV</h3>
     <p class="muted" style="font-size:.82rem;margin-bottom:8px">Un solo file alimenta il Centrale. Colonne (in qualsiasi ordine): <b>nome</b>, <b>area</b>, <b>zona</b> (<b>bar</b>/<b>garden</b>/<b>comune</b>), <b>unita</b>, <b>giacenza</b>, <b>riordino</b>, <b>preavviso</b>. La zona rende l'articolo disponibile ai sotto-magazzini Bar/Garden (comune = entrambi).</p>
     <div class="row"><input type="file" id="mimp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="mimp_tpl">\u2193 Scarica modello CSV</button><button class="btn ghost sm" id="mimp_exp">\u2B07\uFE0F Esporta magazzino (Excel)</button></div>
-    <p class="muted" style="font-size:.78rem;margin-top:6px">Esporta lo stato attuale in un Excel nello stesso formato: lo modifichi (anche la colonna <b>zona</b>) e lo ricarichi qui.</p>
+    <p class="muted aiuto" style="font-size:.78rem;margin-top:6px">Esporta lo stato attuale in un Excel nello stesso formato: lo modifichi (anche la colonna <b>zona</b>) e lo ricarichi qui.</p>
     <div id="mimp_prev" style="margin-top:10px"></div></div>\`;
   const nuovo = \`<div class="panel"><h3>+ Nuovo articolo</h3><div class="row">
     <input id="ma_n" placeholder="Nome" style="min-width:160px"><select id="ma_a">\${areaOpts}</select>
@@ -12011,7 +12318,7 @@ async function magHubZona(zona) {
   const rows = core.map(riga).join('') + separatore + comuni.map(riga).join('');
   const ZLAB = { bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', carta: '\u{1F4DA} Casa di Carta' };
   $('#view').innerHTML = magSubbar() + \`<div class="panel"><h3>\${ZLAB[zona] || esc(zona)} \xB7 disponibilit\xE0 <span class="muted" style="font-weight:400;font-size:.72rem">(sola lettura dal Centrale \xB7 merce unica)</span></h3>
-    <p class="muted" style="font-size:.74rem"><b>Disp.</b> = giacenza effettiva del Centrale (fisica \u2212 impegni) per gli articoli abilitati a questa zona. <b>Imp.</b> = quanto ha impegnato questa zona.</p>
+    <p class="muted aiuto" style="font-size:.74rem"><b>Disp.</b> = giacenza effettiva del Centrale (fisica \u2212 impegni) per gli articoli abilitati a questa zona. <b>Imp.</b> = quanto ha impegnato questa zona.</p>
     <table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Disp.</th><th>Imp.</th><th>Stato</th></tr></thead><tbody>\${rows || '<tr><td colspan="5" class="muted">Nessun articolo.</td></tr>'}</tbody></table></div>
     <div class="panel"><h3>\u{1F4CC} Impegni di questa zona</h3>\${impegni.length ? impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:6px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)}</span><button class="btn ghost sm" data-evno="\${x.id}">Rilascia</button></div>\`).join('') : '<p class="muted">Nessun impegno attivo.</p>'}</div>\`;
   document.querySelectorAll('[data-evno]').forEach(b => b.onclick = async () => { await api('/magazzino/richieste/' + b.dataset.evno + '/annulla', { method: 'POST', body: '{}' }); show('magazzino'); });
@@ -12038,11 +12345,11 @@ VIEWS.scorte = async () => {
     </tr>\`).join('');
     const ric = impegni.map(x => \`<div class="row" style="justify-content:space-between;padding:5px 2px;border-bottom:1px solid #f0efe8"><span><b>\${esc(x.nome)}</b> \xB7 \${esc(String(x.quantita))} \${esc(x.unita)} impegnati</span><button class="btn ghost sm" data-gann="\${x.id}">Rilascia</button></div>\`).join('');
     $('#view').innerHTML = \`<div class="panel"><h3>\u{1F4CA} Giacenze \xB7 \${zonaLabel} <span class="muted" style="font-weight:400;font-size:.72rem;margin-left:6px">\xB7 merce unica al Centrale, qui in sola lettura</span></h3>
-      <p class="muted" style="font-size:.76rem">La merce \xE8 una sola, al Centrale. <b>Disp.</b> = giacenza effettiva (fisica \u2212 impegni). A fine servizio <b>scarica</b> le quantit\xE0 usate: scendono dal Centrale. Puoi <b>impegnare</b> merce per il tuo servizio: la prenoti senza spostarla (riduce la disponibilit\xE0 per l'altra zona). Lo scarico libera l'impegno corrispondente.</p>
+      <p class="muted aiuto" style="font-size:.76rem">La merce \xE8 una sola, al Centrale. <b>Disp.</b> = giacenza effettiva (fisica \u2212 impegni). A fine servizio <b>scarica</b> le quantit\xE0 usate: scendono dal Centrale. Puoi <b>impegnare</b> merce per il tuo servizio: la prenoti senza spostarla (riduce la disponibilit\xE0 per l'altra zona). Lo scarico libera l'impegno corrispondente.</p>
       <div class="row" style="gap:10px;margin-top:6px">
-        <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.4rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
-        <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.4rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
-        <div style="flex:1;min-width:110px"><div class="muted" style="font-size:.72rem">Articoli</div><div style="font-size:1.4rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div></div></div>
+        <div style="flex:1;min-width:110px"><div class="muted aiuto" style="font-size:.72rem">Da riordinare</div><div style="font-size:1.4rem;font-weight:800;color:\${r.da_riordinare ? 'var(--coral)' : 'var(--navy)'}">\${r.da_riordinare || 0}</div></div>
+        <div style="flex:1;min-width:110px"><div class="muted aiuto" style="font-size:.72rem">In esaurimento</div><div style="font-size:1.4rem;font-weight:800;color:\${r.in_esaurimento ? 'var(--gold)' : 'var(--navy)'}">\${r.in_esaurimento || 0}</div></div>
+        <div style="flex:1;min-width:110px"><div class="muted aiuto" style="font-size:.72rem">Articoli</div><div style="font-size:1.4rem;font-weight:800;color:var(--navy)">\${r.totale || 0}</div></div></div></div>
       <div class="panel"><table><thead><tr><th>Articolo</th><th>Unit\xE0</th><th>Disp.</th><th>Imp.</th><th>Stato</th><th>Scarico / Impegna</th></tr></thead><tbody>\${rows || '<tr><td colspan="6" class="muted">Nessun articolo per questa zona.</td></tr>'}</tbody></table></div>
       \${impegni.length ? \`<div class="panel"><h3>\u{1F4CC} Impegni in corso</h3>\${ric}</div>\` : ''}\`;
     const q = (id) => Number(($('#gq_' + id) || {}).value);
@@ -12449,7 +12756,7 @@ VIEWS.beach = async () => {
       <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Piazzola</span><b>\${v.misure.larghezza_m} \xD7 \${v.misure.profondita_m} m \xB7 \${v.misure.mq} m\xB2</b></div>
       <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ombrelloni disposti</span><b>\${v.disposti}</b></div>
       <div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>Ce ne stanno (indicativo)</span><b>\${v.capienza_indicativa} \xB7 \${v.persone} persone</b></div>
-      <p class="muted" style="font-size:.78rem;margin-top:8px">\${esc(v.nota)} Il conto usa \${v.regole.ingombro_m} m di ingombro e \${v.regole.passaggio_m} m di passaggio.</p>
+      <p class="muted aiuto" style="font-size:.78rem;margin-top:8px">\${esc(v.nota)} Il conto usa \${v.regole.ingombro_m} m di ingombro e \${v.regole.passaggio_m} m di passaggio.</p>
       <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
   });
 };
@@ -12587,7 +12894,7 @@ VIEWS.registro = async () => {
       <td>\${esc(r.autore || '\u2014')}\${r.canale ? \` <span class="muted">(\${esc(r.canale)})</span>\` : ''}</td>
       <td>\${esc(r.quando_servizio || '\u2014')}</td>
       <td style="text-align:right">\${r.importo != null ? eur(r.importo) : ''}</td>
-      <td class="muted" style="font-size:.78rem">\${esc(d)}</td></tr>\`;
+      <td class="muted aiuto" style="font-size:.78rem">\${esc(d)}</td></tr>\`;
   }).join('');
   $('#view').innerHTML = \`<div class="panel">
       <h3 style="margin-top:0">\u{1F4DA} Registro storico</h3>
@@ -12637,7 +12944,7 @@ VIEWS.riepilogo = async () => {
   const cnt = (st) => ogg.filter(c => c.stato === st).length;
   const incasso = ogg.filter(c => c.stato === 'chiusa').reduce((s, c) => s + Number(c.totale || 0), 0);
   const nPezzi = ogg.reduce((s, c) => s + (c.righe || []).reduce((x, r) => x + Number(r.qta || 0), 0), 0);
-  const stat = (l, v, col) => \`<div class="panel" style="flex:1;min-width:140px;margin:0"><div class="muted" style="font-size:.72rem">\${l}</div><div style="font-size:1.6rem;font-weight:800;color:\${col || 'var(--navy)'}">\${v}</div></div>\`;
+  const stat = (l, v, col) => \`<div class="panel" style="flex:1;min-width:140px;margin:0"><div class="muted aiuto" style="font-size:.72rem">\${l}</div><div style="font-size:1.6rem;font-weight:800;color:\${col || 'var(--navy)'}">\${v}</div></div>\`;
   // Incasso suddiviso per metodo di pagamento (solo comande chiuse)
   const chiuse = ogg.filter(c => c.stato === 'chiusa');
   const perMetodo = {};
@@ -12656,6 +12963,15 @@ $('#loginBtn').onclick = login;
 $('#p').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
 $('#hcBtn').onclick = () => applyContrasto(!document.body.classList.contains('hc'));
+$('#modBtn').onclick = () => apriModuli();
+// Le spiegazioni si riaccendono con un tocco e la scelta resta su questo dispositivo: chi e'
+// alla prima settimana le tiene accese, chi lavora da giugno se le toglie di mezzo.
+function applyAiuti(on) {
+  document.body.classList.toggle('aiuti', !!on);
+  try { localStorage.setItem('bussola_aiuti', on ? '1' : '0'); } catch (_) {}
+  const b = document.querySelector('#aiutoBtn'); if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+$('#aiutoBtn').onclick = () => applyAiuti(!document.body.classList.contains('aiuti'));
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.v));
 
 
@@ -12696,11 +13012,11 @@ VIEWS.campi = async () => {
       <b style="color:var(--navy)">\u{1F3BE} Campi</b>
       <input type="date" id="cw_data" value="\${data}">
     </div>
-    <p class="muted" style="font-size:.78rem;margin-top:6px">I campi sono gratuiti: qui si vede <b>chi usa</b> e a chi fare riferimento. Ogni prenotazione ha un titolare socio.</p></div>
+    <p class="muted aiuto" style="font-size:.78rem;margin-top:6px">I campi sono gratuiti: qui si vede <b>chi usa</b> e a chi fare riferimento. Ogni prenotazione ha un titolare socio.</p></div>
     <div class="panel"><b style="color:var(--navy)">Prenotazioni del giorno</b>
       <div style="margin-top:8px">\${righe || '<p class="muted">Nessuna prenotazione per questa data.</p>'}</div></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F3AB} Prenota al banco</b>
-      <p class="muted" style="font-size:.78rem;margin:6px 0">Serve la tessera del socio che prenota: resta lui il titolare.</p>
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0">Serve la tessera del socio che prenota: resta lui il titolare.</p>
       <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
         <select id="cw_campo">\${opts}</select>
         <select id="cw_slot"><option>\u2014</option></select>
@@ -12912,7 +13228,7 @@ VIEWS.cdc = async () => {
         <select id="cdc_tav"><option value="">\u2014 tavolo \u2014</option></select>
         <button class="btn gold sm" id="cdc_presta">+ Presta</button>
       </div>
-      <p class="muted" style="font-size:.76rem;margin-top:6px">Il <b>tavolo</b> dice dove il gioco viene usato: serve a ritrovarlo e a sapere chi ha lasciato il tavolo in disordine.</p></div>
+      <p class="muted aiuto" style="font-size:.76rem;margin-top:6px">Il <b>tavolo</b> dice dove il gioco viene usato: serve a ritrovarlo e a sapere chi ha lasciato il tavolo in disordine.</p></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F4BB} Coworking</b>
       <div class="muted" style="font-size:.82rem;margin-top:4px">Postazioni occupate per turno\${cowo ? ', su ' + esc(String(cowo.max)) : ''}. Il coworking vive nella Casa di Carta: il dato c'era, la schermata no.</div>
       \${cowo && cowo.giorni && cowo.giorni.length
@@ -12962,27 +13278,27 @@ async function renderSalaCarta() {
     return \`<div style="border:1px solid var(--line);border-left:4px solid \${occupato ? '#b14a35' : liberi < t.posti ? '#c88a2e' : '#2e6b45'};border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
       <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
         <b>Tavolo \${t.numero}</b>
-        <span class="muted" style="font-size:.78rem">\${cowo
+        <span class="muted aiuto" style="font-size:.78rem">\${cowo
           ? \`\${liberi}/\${t.posti} postazioni libere\`
           : occupato ? esc(t.nome || 'occupato') + ' \xB7 ' + (t.persone || '?') + 'p' : t.posti + ' posti liberi'}</span>
       </div>
-      \${(t.prestiti || []).length ? \`<div class="muted" style="font-size:.78rem;margin-top:4px">\u{1F3B2} \${t.prestiti.map(p => esc(p.gioco_nome) + ' (' + esc(p.giocatore || '\u2014') + ')').join(' \xB7 ')}</div>\` : ''}
+      \${(t.prestiti || []).length ? \`<div class="muted aiuto" style="font-size:.78rem;margin-top:4px">\u{1F3B2} \${t.prestiti.map(p => esc(p.gioco_nome) + ' (' + esc(p.giocatore || '\u2014') + ')').join(' \xB7 ')}</div>\` : ''}
     </div>\`;
   };
   box.innerHTML = \`<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
       \${d.turni.map(t => { const v = typeof t === 'string' ? t : t.turno; const lab = typeof t === 'string' ? t : (t.etichetta || t.turno); const ico = (typeof t === 'object' && t.scopo === 'coworking') ? '\u{1F4BB}' : '\u{1F557}';
         return \`<button class="btn \${v === d.turno ? 'gold' : 'ghost'} sm" data-carta-turno="\${esc(v)}">\${ico} \${esc(lab)}</button>\`; }).join('')}
       \${cowo
-        ? '<span class="muted" style="font-size:.76rem;align-self:center">postazioni singole \xB7 si lavora anche da soli</span>'
-        : (d.minimo ? \`<span class="muted" style="font-size:.76rem;align-self:center">minimo \${d.minimo} giocatori</span>\` : '')}
+        ? '<span class="muted aiuto" style="font-size:.76rem;align-self:center">postazioni singole \xB7 si lavora anche da soli</span>'
+        : (d.minimo ? \`<span class="muted aiuto" style="font-size:.76rem;align-self:center">minimo \${d.minimo} giocatori</span>\` : '')}
     </div>
     \${d.tavoli.map(chip).join('')}
-    \${d.prestiti_senza_tavolo.length ? \`<p class="muted" style="font-size:.78rem">Senza tavolo: \${d.prestiti_senza_tavolo.map(p => esc(p.gioco_nome)).join(', ')}</p>\` : ''}
+    \${d.prestiti_senza_tavolo.length ? \`<p class="muted aiuto" style="font-size:.78rem">Senza tavolo: \${d.prestiti_senza_tavolo.map(p => esc(p.gioco_nome)).join(', ')}</p>\` : ''}
     <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
       <input id="carta_chi" placeholder="Tessera o nome" style="min-width:140px">
       <input id="carta_p" type="number" min="1" value="\${cowo ? 1 : 2}" style="width:64px" title="\${cowo ? 'Postazioni' : 'Persone'}">
       <button class="btn gold sm" id="carta_pren">+ \${cowo ? 'Prenota postazione' : 'Prenota tavolo'}</button>
-    </div><div id="carta_msg" class="muted" style="font-size:.78rem;margin-top:4px"></div>\`;
+    </div><div id="carta_msg" class="muted aiuto" style="font-size:.78rem;margin-top:4px"></div>\`;
   document.querySelectorAll('[data-carta-turno]').forEach(b => b.onclick = () => { CARTA_TURNO = b.dataset.cartaTurno; renderSalaCarta(); });
   $('#carta_pren').onclick = async () => {
     const v = ($('#carta_chi').value || '').trim();
@@ -13055,7 +13371,7 @@ VIEWS.pianta = async () => {
     <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
       \${turniBtn}
       <span style="flex:1"></span>
-      <label class="muted" style="font-size:.78rem">Disposizione <select id="p_layout">\${layoutOpts}</select></label>
+      <label class="muted aiuto" style="font-size:.78rem">Disposizione <select id="p_layout">\${layoutOpts}</select></label>
     </div></div>\`;
 
   // Comande aperte su questo punto, indicizzate per tavolo.
@@ -13095,7 +13411,7 @@ VIEWS.pianta = async () => {
         <button class="btn ghost sm" id="p_reset">\u21BA Ripristina predefinita</button>
         <button class="btn ghost sm" id="p_spazio" title="Riporta la pianta alle misure vere della sala">\\ud83d\\udcd0 Ci sta davvero?</button>
       </div>
-      <p class="muted" style="font-size:.76rem;margin-top:6px">\${PIANTA.modo === 'disposizione'
+      <p class="muted aiuto" style="font-size:.76rem;margin-top:6px">\${PIANTA.modo === 'disposizione'
         ? \`Trascina \${PIANTA.ambiente === 'stage' ? 'le sedute' : 'i tavoli'}; tocca per cambiarne i posti o toglierli dal servizio. <b>I numeri non cambiano</b>: restano quelli dei QR e delle comande. La disposizione decide anche l'ordine di riempimento, che va sempre <b>dal centro verso l'esterno</b>.\`
         : PIANTA.ambiente === 'stage'
           ? \`\u{1F7EB} prima fila <b>over 70</b> \xB7 \u{1F7E9} <b>chi cena</b> al primo turno \xB7 \u{1F7E6} <b>solo spettacolo</b> \xB7 \u{1F7E8} extra \xB7 \u{1F7E5} occupato \u2014 le due quote si alternano per fila, cos\xEC chi non cena non finisce in fondo. <b>Tocca una seduta per assegnarla al banco.</b>\`
@@ -13240,7 +13556,7 @@ VIEWS.pianta = async () => {
       \${riga('Ce ne stanno', v.capienza_teorica + (v.cosa === 'sedute' ? '' : ' \\u00b7 ' + v.posti_teorici + ' posti'))}
       \${riga('Metri quadri per coperto', v.mq_per_coperto == null ? '\\u2014' : v.mq_per_coperto)}
       \${v.troppo_vicini.length ? \`<p class="muted" style="font-size:.8rem;margin-top:8px">\${v.cosa === 'sedute' ? 'Sedute troppo vicine' : 'Tavoli troppo vicini'}: \${v.troppo_vicini.slice(0, 6).map(x => x.a + '\\u2013' + x.b + ' (' + x.luce + ' m)').join(', ')}</p>\` : ''}
-      <p class="muted" style="font-size:.78rem;margin-top:8px">Il conto usa \${v.regole.ingombro_tavolo_m} m di ingombro \${v.cosa === 'sedute' ? 'per seduta' : 'per tavolo <b>con le sedie occupate</b>'} e \${v.regole.corridoio_m} m di \${v.cosa === 'sedute' ? 'distanza fra le file' : 'passaggio'}. Si cambiano nei parametri, se la tua sala \\u00e8 fatta diversamente.</p>
+      <p class="muted aiuto" style="font-size:.78rem;margin-top:8px">Il conto usa \${v.regole.ingombro_tavolo_m} m di ingombro \${v.cosa === 'sedute' ? 'per seduta' : 'per tavolo <b>con le sedie occupate</b>'} e \${v.regole.corridoio_m} m di \${v.cosa === 'sedute' ? 'distanza fra le file' : 'passaggio'}. Si cambiano nei parametri, se la tua sala \\u00e8 fatta diversamente.</p>
       <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-mclose>Chiudi</button></div>\`);
   };
   $('#p_reset').onclick = async () => {
@@ -13284,12 +13600,12 @@ VIEWS.pianta = async () => {
             <b style="font-size:.86rem">Conto del tavolo</b>
             <b style="font-size:1.05rem;color:var(--navy)">\${eur(totaleTavolo)}</b>
           </div>
-          <div class="muted" style="font-size:.78rem">\${cs.length} \${cs.length === 1 ? 'comanda' : 'comande'}\${daQr ? \` \xB7 \${daQr} dal QR, \${cs.length - daQr} dalla crew\` : ''} \u2014 si pagano insieme.</div>
+          <div class="muted aiuto" style="font-size:.78rem">\${cs.length} \${cs.length === 1 ? 'comanda' : 'comande'}\${daQr ? \` \xB7 \${daQr} dal QR, \${cs.length - daQr} dalla crew\` : ''} \u2014 si pagano insieme.</div>
           \${cs.map(c => \`<div style="padding:6px 0;border-bottom:1px solid var(--line)">
             <div class="row" style="justify-content:space-between"><b>#\${esc(String(c.numero))} \${c.canale === 'self' ? '\u{1F4F1}' : '\u{1F9FE}'}</b><span class="muted">\${esc(c.stato)} \xB7 \${eur(c.totale || 0)}</span></div>
             <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.parent_riga_id ? '\u21B3 ' : r.qta + '\xD7 '}\${esc(r.nome)}\`).join(' \xB7 ')}</div>
             <div style="margin-top:4px">\${(c.righe || []).filter(r => !r.parent_riga_id).map(r => r.stato === 'stornata'
-              ? \`<div class="muted" style="font-size:.78rem;text-decoration:line-through">\${r.qta}\xD7 \${esc(r.nome)} \u2014 \${esc(r.motivo_storno || 'stornata')}</div>\`
+              ? \`<div class="muted aiuto" style="font-size:.78rem;text-decoration:line-through">\${r.qta}\xD7 \${esc(r.nome)} \u2014 \${esc(r.motivo_storno || 'stornata')}</div>\`
               : \`<div class="row" style="justify-content:space-between;align-items:center;font-size:.8rem;padding:2px 0"><span>\${r.qta}\xD7 \${esc(r.nome)}</span><button class="btn ghost sm" data-storna="\${r.id}" title="Articolo finito, riga sbagliata, cliente che rinuncia">\u21A9\uFE0E storna</button></div>\`).join('')}</div>
             <div class="row" style="gap:6px;margin-top:6px">
               <button class="btn ghost sm" data-cchiudi="\${c.id}">\u2713 Chiudi solo questa</button>
@@ -13325,7 +13641,7 @@ VIEWS.pianta = async () => {
         })()}
         \${chi ? \`<div style="background:#eaf3ec;border-left:4px solid #2e6b45;border-radius:0 8px 8px 0;padding:8px 12px;margin-bottom:10px">
             <b style="color:var(--navy)">\${esc(chi)}</b> \xB7 \${pren.persone} \${pren.persone === 1 ? 'persona' : 'persone'}
-            <div class="muted" style="font-size:.78rem">Chiamali per nome: sanno di essere attesi.</div></div>\` : ''}
+            <div class="muted aiuto" style="font-size:.78rem">Chiamali per nome: sanno di essere attesi.</div></div>\` : ''}
         <!-- Alla Casa di Carta e in platea non si ordina dal tavolo: li' si gioca e si guarda
              uno spettacolo, e chi vuole qualcosa va al banco. Un tasto "Ordina" che apre un
              menu' dove non si serve fa perdere tempo e basta. Tutto il resto \u2014 libera, unisci,
@@ -13683,7 +13999,7 @@ VIEWS.fitness = async () => {
       <div class="muted" style="font-size:.82rem;margin:6px 0 10px">\${diQuesta.length} lezioni in settimana \xB7 \${inAttesa} sotto il minimo \xB7 da incassare <b>\${eur(daIncassareTot)}</b></div>
       <table class="fitgrid"><thead><tr><th></th>\${giorni.map((g, i) => \`<th>\${GG[i]}<span>\${g.slice(8)}</span></th>\`).join('')}</tr></thead>
         <tbody>\${righeOre.map(o => \`<tr><th class="ora">\${o.slice(0, 2)}</th>\${giorni.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>
-      <p class="muted" style="font-size:.78rem;margin-top:8px">Tocca una lezione per iscrivere al banco e incassare. Il colore \xE8 la disciplina; la barra a sinistra dice se \xE8 confermata, in attesa o al completo.</p>
+      <p class="muted aiuto" style="font-size:.78rem;margin-top:8px">Tocca una lezione per iscrivere al banco e incassare. Il colore \xE8 la disciplina; la barra a sinistra dice se \xE8 confermata, in attesa o al completo.</p>
     </div>\`;
   document.querySelectorAll('[data-fitsett]').forEach(b => b.onclick = () => { FIT_SETT = b.dataset.fitsett; show('fitness'); });
   document.querySelectorAll('[data-fitapri]').forEach(b => b.onclick = () => apriLezione(Number(b.dataset.fitapri)));
@@ -13741,7 +14057,7 @@ VIEWS.cinema = async () => {
   const chips = pr.map(p => \`<button class="btn \${p.id === CINE_SEL ? 'gold' : 'ghost'} sm" data-cinesel="\${p.id}">\${esc(p.data.slice(8) + '/' + p.data.slice(5, 7))} \xB7 \${esc(p.titolo || '\u2014')}</button>\`).join('');
   $('#view').innerHTML = \`
     <div class="panel"><b style="color:var(--navy)">\u{1F3AD} Stage</b>
-      <p class="muted" style="font-size:.78rem;margin-top:4px">La <b>platea</b> \u2014 palco, sedute, chi \xE8 a sedere e prenotazione al banco toccando la seduta \u2014 sta nella tab <b>Pianta</b>. Qui il programma e il conto degli ingressi, senza ripetere la stessa mappa due volte.</p></div>
+      <p class="muted aiuto" style="font-size:.78rem;margin-top:4px">La <b>platea</b> \u2014 palco, sedute, chi \xE8 a sedere e prenotazione al banco toccando la seduta \u2014 sta nella tab <b>Pianta</b>. Qui il programma e il conto degli ingressi, senza ripetere la stessa mappa due volte.</p></div>
     <div class="panel"><b style="color:var(--navy)">\u{1F3AC} Proiezioni e spettacoli</b>
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
     <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -13984,11 +14300,14 @@ var ordina_default = `<!doctype html>
  * Indipendente e riusabile: nessuna dipendenza esterna, CSS auto-iniettato una volta.
  *
  * API:  const c = Comanda.create({ mount, menu, search=true, onChange(cart,total,count) })
- *       c.getRighe() -> [{menu_id, qta}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
+ *       c.getRighe() -> [{menu_id, qta, complementi, combo}]   c.total()   c.count()   c.clear()   c.setMenu(menu)   c.focusSearch()
  */
 window.Comanda = (function () {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-  function eur(n) { return '\u20AC ' + (Number(n) || 0).toFixed(2); }
+  // All'italiana: \u20AC 1,00 e non \u20AC 1.00. Questo e' il formattatore che disegna i prezzi MENTRE
+  // si batte la comanda \u2014 era rimasto all'inglese quando gli altri tre erano gia' a posto,
+  // quindi il socio vedeva la virgola nell'app e l'operatore il punto sullo stesso prodotto.
+  function eur(n) { return '\\u20ac ' + (Number(n) || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function norm(s) { return (s == null ? '' : String(s)).toLowerCase(); }
 
   // Auto-categorie: se l'articolo non ha \`categoria\` valorizzata, la deduciamo dal NOME
@@ -14035,6 +14354,10 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+      .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
+      .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
+      .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
       .cmd-step{display:flex;gap:6px;align-items:center}
@@ -14088,7 +14411,10 @@ window.Comanda = (function () {
       return t;
     }
     function count() { let n = 0; Object.keys(cart).forEach(id => n += cart[id]); return n; }
-    function fire() { onChange(cart, total(), count()); }
+    // Le scelte viaggiano insieme al carrello: chi invia la comanda le passa al server, che le
+    // ricontrolla comunque. Il controllo a schermo serve a non far sbagliare; quello sul
+    // server serve a non farsi aggirare.
+    function fire() { onChange(cart, total(), count(), scelteCombo); }
 
     // Un'icona per capire al volo di che si tratta, ricavata da categoria e nome.
     function iconaDi(m) {
@@ -14130,8 +14456,46 @@ window.Comanda = (function () {
       const nomi = compDi(m).filter(c => sel.includes(Number(c.id))).map(c => c.nome);
       return nomi.length ? '+ ' + nomi.join(', ') : '';
     }
+    // LE SCELTE DI UNA COMBO. Chiave: id combo \u2192 { posto_id: menu_id }. Una combo con i posti
+    // vuoti non si puo' aggiungere: "un panino a scelta" e' una promessa, e il momento in cui
+    // si decide quale panino e' adesso, non al ritiro davanti a un cliente che ha gia' pagato.
+    const scelteCombo = {};
+    function comboPronta(m) {
+      const p = m.posti || [];
+      return p.length > 0 && p.every((x) => (scelteCombo[m.id] || {})[x.id]);
+    }
+    function comboRiassunto(m) {
+      const sc = scelteCombo[m.id] || {};
+      const nomi = (m.posti || []).map((p) => {
+        const id = sc[p.id];
+        const v = id && (p.scelte || []).find((x) => Number(x.id) === Number(id));
+        return v ? v.nome : null;
+      });
+      return nomi.every(Boolean) ? nomi.join(' + ') : '';
+    }
+    function comboHTML(m) {
+      if (!m.combo || !(m.posti || []).length) return '';
+      const sc = scelteCombo[m.id] || {};
+      return \`<div class="cmd-combo" data-cbox2="\${m.id}">\` + m.posti.map((p) => \`
+        <div class="cmd-posto"><span class="cmd-posto-t">\${esc(p.etichetta)}</span>
+          <select data-cpick="\${m.id}:\${p.id}">
+            <option value="">\u2014 scegli \u2014</option>
+            \${(p.scelte || []).map((x) => \`<option value="\${x.id}" \${Number(sc[p.id]) === Number(x.id) ? 'selected' : ''}>\${esc(x.nome)}</option>\`).join('')}
+          </select></div>\`).join('') + \`</div>\`;
+    }
+
     function itemHTML(m) {
       const q = cart[m.id] || 0;
+      if (m.combo && (m.posti || []).length) {
+        const pronta = comboPronta(m);
+        const riass = comboRiassunto(m);
+        return \`<div class="cmd-item\${q ? ' sel' : ''}">
+          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-pz">\${eur(m.prezzo)}</span>
+          <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
+          \${comboHTML(m)}</div>\`;
+      }
       // Icona e descrizione sono CLICCABILI e aggiungono: su un telefono il bersaglio non
       // puo' essere solo il "+" da 34 px. Gli allergeni non compaiono: sono nel menu', e a
       // bordo campo allungano la riga senza servire a chi batte la comanda.
@@ -14171,8 +14535,20 @@ window.Comanda = (function () {
     }
 
     // Delegazione: un solo listener per tutto il componente.
+    mount.addEventListener('change', (ev) => {
+      const sel = ev.target.closest('[data-cpick]'); if (!sel) return;
+      const [mid, pid] = sel.dataset.cpick.split(':');
+      scelteCombo[mid] = scelteCombo[mid] || {};
+      if (sel.value) scelteCombo[mid][pid] = Number(sel.value); else delete scelteCombo[mid][pid];
+      // Se la combo era gia' nel carrello e si cambia una scelta, resta: cambia solo cosa c'e'
+      // dentro. Ma se si svuota un posto, esce \u2014 altrimenti si spedirebbe una promessa a meta'.
+      const m = menu.find((x) => String(x.id) === String(mid));
+      if (m && cart[mid] && !comboPronta(m)) { delete cart[mid]; }
+      renderList(); fire();
+    });
     mount.addEventListener('click', (ev) => {
       const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      if (a.disabled) return;
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -14202,7 +14578,17 @@ window.Comanda = (function () {
     renderChips(); renderList(); fire();
 
     return {
-      getRighe() { return Object.keys(cart).map(id => ({ menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() })); },
+      // Le scelte della combo escono da QUI, non da chi invia: Crew, app del socio e QR usano
+      // tutti getRighe(), quindi aggiungerle in un posto solo le fa arrivare a tutte e tre le
+      // porte senza toccarne nessuna. Se ognuna se le componesse da se', prima o poi una si
+      // dimenticherebbe e il server rifiuterebbe l'ordine senza che si capisca perche'.
+      getRighe() {
+        return Object.keys(cart).map(id => {
+          const r = { menu_id: Number(id), qta: cart[id], complementi: (comp[id] || []).slice() };
+          if (scelteCombo[id] && Object.keys(scelteCombo[id]).length) r.combo = scelteCombo[id];
+          return r;
+        });
+      },
       total, count,
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
@@ -14312,7 +14698,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.04.0" : "dev";
+var VERSION = true ? "6.07.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17942,6 +18328,63 @@ async function risolviPosizione(input) {
 
 // server/routes/admin.js
 init_fitness();
+
+// server/combo.js
+init_db();
+async function postiCombo(comboId) {
+  const posti = await db.prepare(
+    "SELECT id,etichetta,categoria,prezzo_max,ordine FROM menu_combo_posti WHERE combo_id=? ORDER BY ordine,id"
+  ).all(comboId).catch(() => []);
+  const out = [];
+  for (const p of posti) {
+    const espliciti = await db.prepare(
+      `SELECT m.id,m.nome,m.prezzo,m.stazione,m.categoria,m.magazzino_id
+       FROM menu_combo_ammessi a JOIN menu_articoli m ON m.id=a.menu_id
+       WHERE a.posto_id=? AND m.attivo=1 ORDER BY m.ordine,m.nome`
+    ).all(p.id).catch(() => []);
+    let scelte = espliciti;
+    if (!scelte.length) {
+      const cond = ["attivo=1", "combo=0", "complemento=0"];
+      const arg = [];
+      if (p.categoria) {
+        cond.push("categoria=?");
+        arg.push(p.categoria);
+      }
+      if (p.prezzo_max != null) {
+        cond.push("prezzo<=?");
+        arg.push(Number(p.prezzo_max));
+      }
+      scelte = await db.prepare(
+        `SELECT id,nome,prezzo,stazione,categoria,magazzino_id FROM menu_articoli WHERE ${cond.join(" AND ")} ORDER BY ordine,nome`
+      ).all(...arg).catch(() => []);
+    }
+    out.push({ ...p, esplicito: espliciti.length > 0, scelte });
+  }
+  return out;
+}
+async function comboDelMenu() {
+  const combo = await db.prepare("SELECT id FROM menu_articoli WHERE attivo=1 AND combo=1").all().catch(() => []);
+  const mappa = {};
+  for (const c of combo) mappa[c.id] = await postiCombo(c.id);
+  return mappa;
+}
+async function verificaCombo(comboArticolo, scelte) {
+  const posti = await postiCombo(comboArticolo.id);
+  if (!posti.length)
+    return { errore: `"${comboArticolo.nome}" non ha ancora i suoi posti: va completata nel back office prima di venderla.` };
+  const s = scelte && typeof scelte === "object" ? scelte : {};
+  const figlie = [];
+  for (const p of posti) {
+    const scelto = Number(s[p.id] || s[String(p.id)] || 0);
+    if (!scelto) return { errore: `Scegli ${p.etichetta.toLowerCase()} per "${comboArticolo.nome}".` };
+    const ok = p.scelte.find((x) => Number(x.id) === scelto);
+    if (!ok) return { errore: `Quella scelta non rientra in "${comboArticolo.nome}" (${p.etichetta}).` };
+    figlie.push(ok);
+  }
+  return { figlie };
+}
+
+// server/routes/admin.js
 function menuZona(v, stazione) {
   const s = String(v || "").trim().toLowerCase();
   if (s === "garden") return "garden";
@@ -18903,6 +19346,42 @@ adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) =
   const rows = arts.map((a) => ({ nome: a.nome, area: a.area, zona: a.zona, unita: a.unita, giacenza: Number(a.giacenza), riordino: Number(a.punto_riordino), preavviso: Number(a.soglia_preavviso) }));
   res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
 });
+adminRouter.get("/menu/:id/combo", requireAnyCap("comande", "menu"), async (req, res) => {
+  res.json(await postiCombo(req.params.id));
+});
+adminRouter.post("/menu/:id/combo", requireCap("menu"), async (req, res) => {
+  const m = await db.prepare("SELECT id,nome FROM menu_articoli WHERE id=?").get(req.params.id);
+  if (!m) return res.status(404).json({ error: "Articolo non trovato" });
+  const b = req.body || {};
+  const et = String(b.etichetta || "").trim();
+  if (!et) return res.status(400).json({ error: "Il posto ha bisogno di un nome: \xE8 quello che legge il cliente (\u201CIl panino\u201D)." });
+  const n = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM menu_combo_posti WHERE combo_id=?").get(m.id)).n;
+  const info = await db.prepare("INSERT INTO menu_combo_posti (combo_id,etichetta,categoria,prezzo_max,ordine) VALUES (?,?,?,?,?)").run(m.id, et, b.categoria || null, b.prezzo_max === "" || b.prezzo_max == null ? null : Number(b.prezzo_max), n);
+  await db.prepare("UPDATE menu_articoli SET combo=1 WHERE id=?").run(m.id);
+  audit(req.adminUser.username, "combo_posto", "menu", m.id, et);
+  res.status(201).json({ ok: true, id: info.lastInsertRowid });
+});
+adminRouter.put("/menu/combo/posti/:id", requireCap("menu"), async (req, res) => {
+  const b = req.body || {};
+  const p = await db.prepare("SELECT * FROM menu_combo_posti WHERE id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Posto non trovato" });
+  await db.prepare("UPDATE menu_combo_posti SET etichetta=?,categoria=?,prezzo_max=? WHERE id=?").run(String(b.etichetta || p.etichetta), b.categoria ?? p.categoria, b.prezzo_max === "" || b.prezzo_max == null ? null : Number(b.prezzo_max), p.id);
+  if (Array.isArray(b.ammessi)) {
+    await db.prepare("DELETE FROM menu_combo_ammessi WHERE posto_id=?").run(p.id);
+    for (const id of b.ammessi.map(Number).filter(Boolean))
+      await db.prepare("INSERT OR IGNORE INTO menu_combo_ammessi (posto_id,menu_id) VALUES (?,?)").run(p.id, id);
+  }
+  res.json({ ok: true, posti: await postiCombo(p.combo_id) });
+});
+adminRouter.delete("/menu/combo/posti/:id", requireCap("menu"), async (req, res) => {
+  const p = await db.prepare("SELECT * FROM menu_combo_posti WHERE id=?").get(req.params.id);
+  if (!p) return res.status(404).json({ error: "Posto non trovato" });
+  await db.prepare("DELETE FROM menu_combo_posti WHERE id=?").run(p.id);
+  const resta = (await db.prepare("SELECT COUNT(*) n FROM menu_combo_posti WHERE combo_id=?").get(p.combo_id)).n;
+  if (!resta) await db.prepare("UPDATE menu_articoli SET combo=0 WHERE id=?").run(p.combo_id);
+  audit(req.adminUser.username, "combo_posto_del", "menu", p.combo_id, p.etichetta);
+  res.json({ ok: true, posti: await postiCombo(p.combo_id) });
+});
 adminRouter.get("/menu/export", requireCap("menu"), async (req, res) => {
   const m = await db.prepare("SELECT * FROM menu_articoli ORDER BY ordine,id").all();
   const sn = (v) => Number(v) === 1 ? "si" : "no";
@@ -18931,7 +19410,8 @@ adminRouter.get("/menu", requireAnyCap("comande", "menu"), async (req, res) => {
     return res.json(rows.map((m) => ({ ...m, e_condimento: eCondimento(m) ? 1 : 0, supplemento: suppl })));
   }
   const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
-  res.json(voci);
+  const combo = await comboDelMenu();
+  res.json(voci.map((v) => combo[v.id] ? { ...v, combo: 1, posti: combo[v.id] } : v));
 });
 adminRouter.get("/registro", requireCap("comande"), async (req, res) => {
   res.json(await cerca({
@@ -19138,7 +19618,7 @@ adminRouter.put("/menu/:id", requireCap("menu"), async (req, res) => {
   const nome = dato("nome") ? b.nome : ex.nome;
   const categoria = dato("categoria") ? b.categoria || null : ex.categoria;
   const stazione = dato("stazione") ? b.stazione === "cucina" ? "cucina" : b.stazione === "bar" ? "bar" : inferStazione(nome, categoria) : ex.stazione;
-  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=?,con_condimenti=?,alcolico=? WHERE id=?").run(
+  await db.prepare("UPDATE menu_articoli SET nome=?,prezzo=?,stazione=?,zona=?,categoria=?,descrizione=?,allergeni=?,magazzino_id=?,attivo=?,con_condimenti=?,alcolico=?,combo=? WHERE id=?").run(
     nome,
     dato("prezzo") ? Number(b.prezzo || 0) : ex.prezzo,
     stazione,
@@ -19150,6 +19630,7 @@ adminRouter.put("/menu/:id", requireCap("menu"), async (req, res) => {
     dato("attivo") ? b.attivo === false ? 0 : 1 : ex.attivo,
     dato("con_condimenti") ? b.con_condimenti ? 1 : 0 : ex.con_condimenti,
     dato("alcolico") ? b.alcolico ? 1 : 0 : ex.alcolico,
+    dato("combo") ? b.combo ? 1 : 0 : ex.combo,
     req.params.id
   );
   audit(req.adminUser.username, "modifica", "menu_articoli", req.params.id);
@@ -19451,6 +19932,19 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
     const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=?").get(r.menu_id);
     if (!m) continue;
     const qta = Math.max(1, Math.round(Number(r.qta)));
+    if (Number(m.combo)) {
+      const v = await verificaCombo(m, r.combo);
+      if (v.errore) {
+        await db.prepare("DELETE FROM comande WHERE id=?").run(cid);
+        return res.status(400).json({ error: v.errore });
+      }
+      totale += Number(m.prezzo) * qta;
+      const pInfo = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,NULL)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda");
+      const padreCombo = Number(pInfo.lastInsertRowid);
+      for (const f of v.figlie)
+        await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id,parent_riga_id) VALUES (?,?,?,0,?,?,NULL,'in_coda',?,?)").run(cid, f.id, f.nome, qta, f.stazione, f.magazzino_id || null, padreCombo);
+      continue;
+    }
     totale += Number(m.prezzo) * qta;
     const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?,?,?)").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null, "in_coda", m.magazzino_id || null);
     const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
@@ -19484,6 +19978,12 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   });
   audit(req.adminUser.username, "crea", "comande", cid, "n." + numero);
   res.status(201).json({ ...await comandaConRighe(cid), avviso: avvisoRitiro(nonPrima) });
+});
+adminRouter.get("/comande/:id", requireCap("comande"), async (req, res) => {
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
+  if (!c) return res.status(404).json({ error: "Comanda non trovata" });
+  const righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY parent_riga_id IS NOT NULL, id").all(c.id);
+  res.json({ ...c, righe });
 });
 adminRouter.put("/comande/:id/stato", requireCap("comande"), async (req, res) => {
   const stato = req.body && req.body.stato;
@@ -20318,6 +20818,9 @@ adminRouter.post("/casate/composizione", requireCap("casate"), async (req, res) 
     dettaglio: { iscritti: esito.iscritti, casate: esito.casate_schierabili, problemi: esito.problemi.length }
   });
   res.json(esito);
+});
+adminRouter.get("/casate", async (req, res) => {
+  res.json(await db.prepare("SELECT id,nome,colore,motto,punti,posizione FROM casate ORDER BY nome").all().catch(() => []));
 });
 adminRouter.get("/casate/capitani", requireCap("casate"), async (req, res) => {
   res.json(await proponiCapitani());
@@ -21871,7 +22374,8 @@ publicRouter.get("/albo-casate", async (req, res) => {
 });
 publicRouter.get("/menu", async (req, res) => {
   const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
-  res.json(voci);
+  const combo = await comboDelMenu();
+  res.json(voci.map((v) => combo[v.id] ? { ...v, combo: 1, posti: combo[v.id] } : v));
 });
 function zonaDaPunto(punto) {
   const p = String(punto || "").toLowerCase();
@@ -21911,6 +22415,19 @@ publicRouter.post("/self-order", async (req, res) => {
     const m = await db.prepare("SELECT * FROM menu_articoli WHERE id=? AND attivo=1").get(r.menu_id);
     if (!m) continue;
     const qta = Math.max(1, Math.round(Number(r.qta)));
+    if (Number(m.combo)) {
+      const v = await verificaCombo(m, r.combo);
+      if (v.errore) {
+        await db.prepare("DELETE FROM comande WHERE id=?").run(cid);
+        return res.status(400).json({ error: v.errore });
+      }
+      totale += Number(m.prezzo) * qta;
+      const pInfo = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
+      const padreCombo = Number(pInfo.lastInsertRowid);
+      for (const f of v.figlie)
+        await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,parent_riga_id) VALUES (?,?,?,0,?,?,NULL,'in_coda',?)").run(cid, f.id, f.nome, qta, f.stazione, padreCombo);
+      continue;
+    }
     totale += Number(m.prezzo) * qta;
     const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato) VALUES (?,?,?,?,?,?,?, 'in_coda')").run(cid, m.id, m.nome, Number(m.prezzo), qta, m.stazione, r.note || null);
     const scelti = Array.isArray(r.complementi) ? r.complementi.map(Number).filter(Boolean) : [];
@@ -23770,7 +24287,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-08-31 18:09" : "online";
+var BUILD = true ? "2026-08-31 20:09" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
