@@ -10545,6 +10545,25 @@ body.hc .panel{border-color:#8F8B7C}
 .giohd{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:6px}
 .gio{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--riga)}
 
+/* GLI OMBRELLONI. Stessa forma delle sedute della platea: caselle piccole, il colore DENTRO,
+   allineate. Erano quadrati da 52px con lo stile scritto a mano dentro il codice, e ogni
+   piazzola era un pannello col titolo grande \u2014 lo schema di prima del riordino, rimasto qui
+   perche' la spiaggia era fuori dalla crew e quando l'ho rimessa l'ho rimessa com'era. */
+.ombg{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+.omb{width:38px;height:38px;border-radius:var(--r);border:2px solid var(--riga);background:var(--paper);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;
+  font-family:inherit;cursor:pointer;padding:0;color:var(--ink)}
+.omb b{font-size:.82rem;font-weight:800;line-height:1}
+.omb i{font-style:normal;font-size:.54rem;font-weight:700;line-height:1.1;opacity:.85}
+.omb.u-libero{background:#dff0e4;border-color:#2e6b45}
+.omb.u-inizio{background:#f7dfc4;border-color:#b8791f}
+.omb.u-seconda_meta{background:#e5d3bd;border-color:#8a5a2b}
+.omb.u-in_scadenza,.omb.u-scaduto{background:#f3c9c2;border-color:#b14a35}
+.omb.u-occupato{background:#e5d3bd;border-color:#8a5a2b}
+.omb.u-bloccato{background:var(--riga);border-color:var(--muted);opacity:.6}
+.omb.allarme{background:var(--coral);border-color:var(--coral);color:#fff}
+.omb:hover{outline:2px solid var(--ink)}
+
 /* CHIP, CAMPI E TITOLETTI. Esistevano solo nell'app dei soci: usandoli nel Crew i chip
    uscivano schiacciati uno contro l'altro, senza spaziatura e senza il selezionato pieno. */
 .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -13137,53 +13156,73 @@ VIEWS.beach = async () => {
   const omb = (o) => {
     const c = COLORI[o.stato_uso] || COLORI.libero;
     const alert = o.non_rilasciato;
-    return \`<button data-ombsel="\${o.id}" title="\${esc(o.preso_da || c.et)}"
-      style="width:52px;height:52px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;
-             background:\${alert ? '#fdecea' : c.bg};border:\${alert ? '3px' : '2px'} solid \${alert ? '#b14a35' : c.bd};color:\${c.tx};font-size:.72rem;font-weight:700;padding:0">
-      <span style="font-size:.9rem">\${o.numero}</span>
-      \${alert ? '<span style="font-size:.55rem;font-weight:900;color:#b14a35">NON RESO</span>'
-        : o.minuti_alla_fine != null && o.stato_uso !== 'libero' ? \`<span style="font-size:.55rem;font-weight:600">\${o.minuti_alla_fine}\u2032</span>\` : ''}
+    return \`<button data-ombsel="\${o.id}" title="\${esc(o.preso_da || c.et)}" class="omb u-\${esc(o.stato_uso || 'libero')}\${alert ? ' allarme' : ''}">
+      <b>\${o.numero}</b>
+      \${alert ? '<i>non reso</i>'
+        : o.minuti_alla_fine != null && o.stato_uso !== 'libero' ? \`<i>\${o.minuti_alla_fine}\\u2032</i>\` : ''}
     </button>\`;
   };
 
-  const legenda = Object.entries(COLORI).filter(([k]) => ['libero', 'inizio', 'seconda_meta', 'in_scadenza'].includes(k))
-    .map(([, c]) => \`<span style="display:inline-flex;align-items:center;gap:4px;font-size:.74rem;margin-right:10px">
-      <span style="width:12px;height:12px;border-radius:3px;background:\${c.bg};border:2px solid \${c.bd};display:inline-block"></span>\${c.et}</span>\`).join('') +
-    \`<span style="display:inline-flex;align-items:center;gap:4px;font-size:.74rem"><span style="width:12px;height:12px;border-radius:3px;background:#fdecea;border:3px solid #b14a35;display:inline-block"></span><b style="color:#b14a35">non reso a fine fascia</b></span>\`;
+  // La legenda comune, come in tutti gli altri moduli.
+  const legenda = legendaColori([
+    ['#dff0e4', 'libero'], ['#f7dfc4', 'inizio fascia'], ['#e5d3bd', 'seconda met\\u00e0'],
+    ['#f3c9c2', 'ultima mezz\\u2019ora'], ['#b14a35', 'non reso a fine fascia']
+  ]);
+
+  const totOcc = d.piazzole.reduce((n, p) => n + Number(p.occupati || 0), 0);
+  const totOmb = d.piazzole.reduce((n, p) => n + Number(p.totale || 0), 0);
+  const nonResi = d.piazzole.reduce((n, p) => n + (p.ombrelloni || []).filter(o => o.non_rilasciato).length, 0);
+  capoStato(\`<span class="et">\${esc((d.fasce || []).find(f => f.fascia === d.fascia)?.fascia || 'Fascia')}</span>\`
+    + \`<b>\${totOcc}/\${totOmb} occupati</b>\`
+    + \`<span>\${nonResi ? nonResi + ' non ' + (nonResi === 1 ? 'reso' : 'resi') : 'nessun disallineamento'}</span>\`);
+
+  /* LE PIAZZOLE, nello schema comune: un riquadro per piazzola e dentro i suoi ombrelloni.
+     Prima erano pannelli col titolo grande e una riga di comandi ciascuno \u2014 lo schema di prima
+     del riordino, rimasto qui perche' la spiaggia era fuori dalla crew e quando l'ho rimessa
+     l'ho rimessa com'era. Il tono e' quello di sempre: rosso solo dove qualcuno non ha
+     rilasciato, che e' l'unica cosa che chiede un intervento. */
+  const riquadri = d.piazzole.map(p => {
+    const fuori = (p.ombrelloni || []).filter(o => o.non_rilasciato).length;
+    const senzaMisure = !p.larghezza_m;
+    return riquadro({
+      num: p.nome,
+      stato: senzaMisure ? 'misure mancanti' : \`\${p.occupati}/\${p.totale}\`,
+      tono: fuori ? 'chiama' : p.bloccata ? 'fatto' : p.occupati ? 'attesa' : 'libero',
+      det: [
+        p.bloccata ? \`<b style="color:var(--coral)">chiusa \\u00b7 \${esc(p.bloccata.motivo)}\${p.bloccata.nota ? ' \\u2014 ' + esc(p.bloccata.nota) : ''}</b>\` : '',
+        senzaMisure ? 'senza misure non si sa se gli ombrelloni ci stanno'
+          : \`\${p.larghezza_m}\\u00d7\${p.profondita_m} m\`,
+        (p.ombrelloni || []).length ? \`<div class="ombg">\${p.ombrelloni.map(omb).join('')}</div>\` : 'nessun ombrellone disposto',
+        fuori ? \`<b style="color:var(--coral)">\${fuori} non \${fuori === 1 ? 'reso' : 'resi'} a fine fascia</b>\` : ''
+      ],
+      azioni: !supervisore() ? [] : [
+        \`<button class="btn ghost sm" data-beverifica="\${p.id}">Ci stanno?</button>\`,
+        \`<button class="btn ghost sm" data-beconf="\${p.id}">Misure</button>\`,
+        \`<button class="btn ghost sm" data-beadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled'}>+ Ombrelloni</button>\`,
+        ...((p.ombrelloni || []).length ? [\`<button class="btn ghost sm" data-besvuota="\${p.id}">Svuota</button>\`] : []),
+        \`<button class="btn ghost sm" data-beblocca="\${p.id}">Chiudi oggi</button>\`
+      ]
+    });
+  });
 
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u26F1\uFE0F Piazzole</h3>
-      <p class="muted" style="font-size:.82rem">Sulle piazzole non c'\xE8 nessuno di noi: qui si guarda la situazione, si sistema un disallineamento e si chiude una piazzola quando tira vento. Il resto dipende da chi dichiara e da chi rilascia.</p>
-      <div class="row" style="gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-        <input type="date" id="be_data" value="\${data}">
-        \${(d.fasce || []).map(f => \`<button class="btn \${f.fascia === d.fascia ? 'gold' : 'ghost'} sm" data-befascia="\${f.fascia}">\${f.fascia} \${esc(f.da)}\u2013\${esc(f.a)}\${f.in_corso ? ' \xB7 in corso' : ''}</button>\`).join('')}
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <input type="date" id="be_data" value="\${data}" style="width:auto">
+        \${(d.fasce || []).map(f => \`<button class="btn \${f.fascia === d.fascia ? 'gold' : 'ghost'} sm" data-befascia="\${f.fascia}">\${f.fascia} \${esc(f.da)}\\u2013\${esc(f.a)}\${f.in_corso ? ' \\u00b7 in corso' : ''}</button>\`).join('')}
+        <span style="flex:1"></span>
+        \${legenda}
       </div>
-      <div style="margin-top:10px">\${legenda}</div></div>
-
-    \${d.piazzole.map(p => \`<div class="panel">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <h3 style="margin:0">\${esc(p.nome)} <span class="muted" style="font-weight:400;font-size:.82rem">\xB7 \${p.occupati}/\${p.totale} occupati\${p.larghezza_m ? \` \xB7 \${p.larghezza_m}\xD7\${p.profondita_m} m\` : ' \xB7 <b style="color:#b14a35">misure mancanti</b>'}</span></h3>
-        <!-- Le misure della piazzola e la verifica degli ingombri si fanno una volta a
-             stagione, col metro in mano: non sono lavoro di banco. -->
-        \${!supervisore() ? '' : \`<div class="row" style="gap:6px">
-          <button class="btn ghost sm" data-beverifica="\${p.id}">\u{1F4D0} Ci stanno?</button>
-          <button class="btn ghost sm" data-beconf="\${p.id}">\u2699\uFE0E Misure</button>
-        </div>\`}
-      </div>
-      \${p.bloccata ? \`<div style="background:#fdecea;border-left:4px solid #b14a35;border-radius:0 8px 8px 0;padding:8px 10px;margin:8px 0">
-        <b style="color:#8a2a20">Chiusa \xB7 \${esc(p.bloccata.motivo)}</b>\${p.bloccata.nota ? ' \u2014 ' + esc(p.bloccata.nota) : ''}</div>\` : ''}
-      \${p.ombrelloni.length
-        ? \`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">\${p.ombrelloni.map(omb).join('')}</div>\`
-        : \`<p class="muted" style="font-size:.82rem;margin-top:6px">\${p.larghezza_m ? 'Nessun ombrellone: aggiungili qui sotto.' : 'Prima le misure: senza, non si sa se gli ombrelloni ci stanno.'}</p>\`}
-      <!-- Disporre gli ombrelloni e chiudere una piazzola per vento o marea sono decisioni
-           sulla giornata, non lavoro di banco: stesso confine di tutti gli altri moduli. -->
-      \${!supervisore() ? '' : \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
-        <input id="be_n_\${p.id}" type="number" min="1" max="40" value="6" style="width:70px">
-        <button class="btn ghost sm" data-beadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled title="Prima le misure"'}>+ Ombrelloni</button>
-        \${p.ombrelloni.length ? \`<button class="btn ghost sm" data-besvuota="\${p.id}">\u{1F5D1} Svuota</button>\` : ''}
-        <select id="be_m_\${p.id}"><option value="vento">vento</option><option value="marea">marea</option><option value="manutenzione">manutenzione</option></select>
-        <button class="btn danger sm" data-beblocca="\${p.id}">Chiudi la piazzola oggi</button>
-      </div>\`}</div>\`).join('')}\`;
+      \${supervisore() ? \`<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <!-- Quanti ombrelloni aggiungere e con che motivo chiudere: una volta sola per tutte
+             le piazzole, invece di ripetere gli stessi due campi in ogni riquadro. -->
+        <label class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Ombrelloni da aggiungere
+          <input id="be_n" type="number" min="1" max="40" value="6" style="width:70px;margin-left:6px"></label>
+        <label class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Motivo della chiusura
+          <select id="be_m" style="width:auto;margin-left:6px"><option value="vento">vento</option><option value="marea">marea</option><option value="manutenzione">manutenzione</option></select></label>
+      </div>\` : ''}
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">Sulle piazzole non c\\u2019\\u00e8 nessuno di noi: qui si guarda la situazione e si sistema un disallineamento. Il resto dipende da chi dichiara e da chi rilascia.</p></div>
+    \${griglia(riquadri, 'Nessuna piazzola configurata.')}\`;
 
   $('#be_data').onchange = () => { window.__beachData = $('#be_data').value; show('beach'); };
   document.querySelectorAll('[data-befascia]').forEach(b => b.onclick = () => { window.__beachFascia = b.dataset.befascia; show('beach'); });
@@ -13226,7 +13265,7 @@ VIEWS.beach = async () => {
   });
 
   document.querySelectorAll('[data-beadd]').forEach(b => b.onclick = async () => {
-    const q = Number(($('#be_n_' + b.dataset.beadd) || {}).value) || 1;
+    const q = Number(($('#be_n') || {}).value) || 1;
     try { await api('/spiaggia/piazzole/' + b.dataset.beadd + '/ombrelloni', { method: 'POST', body: JSON.stringify({ quanti: q }) }); }
     catch (e) { alert(e.message); return; }
     show('beach');
@@ -13238,7 +13277,7 @@ VIEWS.beach = async () => {
     show('beach');
   });
   document.querySelectorAll('[data-beblocca]').forEach(b => b.onclick = async () => {
-    const motivo = ($('#be_m_' + b.dataset.beblocca) || {}).value || 'vento';
+    const motivo = ($('#be_m') || {}).value || 'vento';
     if (!confirm('Chiudere la piazzola per ' + motivo + '? Nessuno potr\xE0 prendere un ombrellone.')) return;
     await api('/spiaggia/blocchi', { method: 'POST', body: JSON.stringify({ piazzola_id: Number(b.dataset.beblocca), data, motivo }) });
     show('beach');
@@ -15570,7 +15609,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.25.0" : "dev";
+var VERSION = true ? "6.26.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25291,7 +25330,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 16:18" : "online";
+var BUILD = true ? "2026-09-01 16:58" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
