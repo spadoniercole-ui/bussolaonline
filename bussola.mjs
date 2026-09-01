@@ -13156,7 +13156,7 @@ VIEWS.tornei = async () => {
   if ($('#ti_add')) $('#ti_add').onclick = async () => {
     const v = ($('#ti_v').value || '').trim();
     if (!v) { alert('Scrivi il nome, oppure la tessera.'); return; }
-    const corpo = /^(RB|BR)-/i.test(v) ? { tessera_code: v.toUpperCase() } : { nome: v };
+    const corpo = RE_TESSERA.test(v) ? { tessera_code: v.toUpperCase() } : { nome: v };
     try { await api('/tornei/' + apertoId + '/iscritti', { method: 'POST', body: JSON.stringify(corpo) }); }
     catch (e) { alert(e.message); return; }
     show('tornei');
@@ -13651,7 +13651,7 @@ async function renderSalaCarta() {
   $('#carta_pren').onclick = async () => {
     const v = ($('#carta_chi').value || '').trim();
     const body = { data: oggiISO(), turno: CARTA_TURNO, persone: Number($('#carta_p').value) || 2 };
-    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (RE_TESSERA.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     try { await api('/carta/prenota', { method: 'POST', body: JSON.stringify(body) }); renderSalaCarta(); }
     catch (e) { $('#carta_msg').textContent = e.message; }
   };
@@ -13939,7 +13939,7 @@ VIEWS.pianta = async () => {
   if ($('#p_pren')) $('#p_pren').onclick = async () => {
     const v = $('#p_nome').value.trim();
     const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#p_pers').value) || 2 };
-    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (RE_TESSERA.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     try { await api('/tavoli/prenota', { method: 'POST', body: JSON.stringify(body) }); show('pianta'); }
     catch (e) { $('#p_msg2').textContent = e.message; }
   };
@@ -14470,42 +14470,78 @@ function apriLezione(id) {
 
 // ===== MODULO CINEMA (cap 'cinema') \u2014 platea e ingressi ====================================
 let CINE_SEL = null;
+/* LO STAGE, in una schermata sola.
+   Prima erano quattro pannelli, e il primo diceva "la platea sta in un'altra scheda": due
+   schede per un lavoro solo, e chi e' all'ingresso doveva sapere quale.
+   La mappa della platea resta nella scheda Pianta, dove serve al manager per disporre le
+   sedute. Qui c'e' il lavoro dell'ingresso: chi ha prenotato, quanti posti restano e di quale
+   tipo, e come far sedere chi arriva.
+
+   I posti liberi si mostrano DIVISI PER QUOTA, perche' non sono intercambiabili: la prima fila
+   e' degli over 70, una parte e' di chi ha cenato al primo turno. "Ventidue liberi" non basta
+   per rispondere a chi si presenta senza aver cenato. */
 VIEWS.cinema = async () => {
   const pr = (await api('/proiezioni').catch(() => [])).filter(p => p.stato !== 'annullata');
-  if (!pr.length) { $('#view').innerHTML = '<div class="panel"><p class="muted">Nessuna proiezione in programma. Il cartellone si compone nel back office.</p></div>'; return; }
-  if (!CINE_SEL || !pr.some(p => p.id === CINE_SEL)) CINE_SEL = pr[0].id;
+  if (!pr.length) { $('#view').innerHTML = '<div class="panel"><p class="muted">Nessuno spettacolo in programma. Il cartellone si compone nel back office.</p></div>'; return; }
+  if (!CINE_SEL || !pr.some(p => p.id === CINE_SEL)) {
+    // Si apre sul PROSSIMO, non sul primo dell'elenco: se il cartellone comincia a giugno, ad
+    // agosto la prima voce e' morta e chi apre il modulo deve cercare quella giusta.
+    const oggi = oggiISO();
+    CINE_SEL = (pr.find(p => p.data >= oggi) || pr[pr.length - 1]).id;
+  }
   const d = await api('/proiezioni/' + CINE_SEL + '/platea');
+  const sedute = (d.tavoli || []).filter(t => (t.tipo || 'standard') !== 'arredo');
+  const liberoDi = (q) => sedute.filter(t => t.quota === q && t.libero).length;
+  const QUOTE = [['over70', 'prima fila over 70', '#7a5c2e'], ['garden', 'chi ha cenato', '#2e6b45'], ['spettacolo', 'solo spettacolo', '#2f5d8a']];
+
+  capoStato(\`<span class="et">\${esc(d.proiezione.ora || '')}</span><b>\${d.coperti_prenotati} in sala</b>\`
+    + \`<span>\${d.posti_liberi} liberi su \${sedute.length}</span>\`);
+
   const chips = pr.map(p => \`<button class="btn \${p.id === CINE_SEL ? 'gold' : 'ghost'} sm" data-cinesel="\${p.id}">\${esc(p.data.slice(8) + '/' + p.data.slice(5, 7))} \xB7 \${esc(p.titolo || '\u2014')}</button>\`).join('');
+
+  // Ogni prenotazione e' un riquadro: nome, quante persone, quali posti. Il tono e' neutro \u2014
+  // all'ingresso non c'e' niente "in allarme", c'e' gente che arriva.
+  const riquadri = (d.prenotazioni || []).map(p => riquadro({
+    num: p.nome || '\u2014', stato: p.persone + (p.persone === 1 ? ' persona' : ' persone'), tono: 'attesa',
+    det: [
+      'posti ' + (p.tavoli || []).join(', '),
+      /cena/i.test(p.note || '') ? 'ha cenato al primo turno' : ''
+    ],
+    azioni: [\`<button class="btn ghost sm" data-cineann="\${p.id}">Annulla</button>\`]
+  }));
+
   $('#view').innerHTML = \`
-    <div class="panel"><b style="color:var(--navy)">\u{1F3AD} Stage</b>
-      <p class="muted aiuto" style="font-size:.78rem;margin-top:4px">La <b>platea</b> \u2014 palco, sedute, chi \xE8 a sedere e prenotazione al banco toccando la seduta \u2014 sta nella tab <b>Pianta</b>. Qui il programma e il conto degli ingressi, senza ripetere la stessa mappa due volte.</p></div>
-    <div class="panel"><b style="color:var(--navy)">\u{1F3AC} Proiezioni e spettacoli</b>
-      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">\${chips}</div></div>
-    <div class="panel"><div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <div><b style="color:var(--navy)">\${esc(d.proiezione.titolo || '')}</b>
-          <div class="muted" style="font-size:.82rem">\${esc(d.proiezione.data)} \xB7 \${esc(d.proiezione.ora)}</div></div>
-        <div style="text-align:right"><b>\${d.coperti_prenotati}</b> <span class="muted">in sala</span>
-          <div class="muted" style="font-size:.82rem">\${d.standard_liberi} standard liberi \xB7 \${d.posti_liberi} in tutto</div></div>
-      </div></div>
-    <div class="panel"><b style="color:var(--navy)">\u{1F39F}\uFE0F Ingressi</b>
-      <div style="margin-top:8px">\${(d.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
-        <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 posti \${p.tavoli.join(', ')}\${/cena/i.test(p.note || '') ? ' \xB7 con cena' : ''}</span></span>
-        <button class="btn ghost sm" data-cineann="\${p.id}">Annulla</button></div>\`).join('') || '<p class="muted">Nessun ingresso prenotato.</p>'}</div>
-      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
-        <input id="cine_chi" placeholder="Tessera o nome" style="min-width:140px">
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;flex-wrap:wrap">\${chips}</div></div>
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;align-items:baseline;flex-wrap:wrap">
+        <b style="color:var(--navy)">\${esc(d.proiezione.titolo || '')}</b>
+        <span class="muted" style="font-size:.82rem">\${esc(d.proiezione.data)} \xB7 \${esc(d.proiezione.ora)}</span>
+        <span style="flex:1"></span>
+        \${QUOTE.map(([q, lab, col]) => \`<span class="rifleg" style="display:inline-flex"><span><i style="background:\${col}"></i><b>\${liberoDi(q)}</b> \${esc(lab)}</span></span>\`).join('')}
+      </div>
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">I posti non sono intercambiabili: la prima fila e' riservata agli over 70 e una parte alle persone che hanno cenato al primo turno. La disposizione delle sedute si cambia dalla scheda Pianta.</p></div>
+    <!-- LA RIGA DELL'INGRESSO in alto, non in fondo: e' il gesto che si fa cento volte,
+         e stava sotto l'elenco di tutti i prenotati. -->
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+        <input id="cine_chi" placeholder="Tessera o nome" style="min-width:150px">
         <input id="cine_p" type="number" min="1" value="2" style="width:64px">
-        <button class="btn gold sm" id="cine_add">+ Metti a sedere</button>
-      </div><div id="cine_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>\`;
+        <button class="btn gold sm" id="cine_add">Metti a sedere</button>
+      </div>
+      <div id="cine_msg" class="muted" style="font-size:.8rem;margin-top:6px"></div></div>
+    \${griglia(riquadri, 'Nessun ingresso prenotato.')}\`;
   document.querySelectorAll('[data-cinesel]').forEach(b => b.onclick = () => { CINE_SEL = Number(b.dataset.cinesel); show('cinema'); });
   document.querySelectorAll('[data-cineann]').forEach(b => b.onclick = async () => {
     if (!confirm('Annullare l\\'ingresso?')) return;
     await api('/proiezioni/prenotazioni/' + b.dataset.cineann, { method: 'PUT', body: '{}' });
     show('cinema');
+
   });
   $('#cine_add').onclick = async () => {
     const v = ($('#cine_chi').value || '').trim();
     const body = { persone: Number($('#cine_p').value) || 1 };
-    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (RE_TESSERA.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     try { await api('/proiezioni/' + CINE_SEL + '/prenota', { method: 'POST', body: JSON.stringify(body) }); show('cinema'); }
     catch (e) { $('#cine_msg').textContent = e.message; }
   };
@@ -14613,7 +14649,7 @@ function apriPrenotaTavolo(numero, t) {
   $('#pr_ok').onclick = async () => {
     const v = ($('#pr_chi').value || '').trim();
     const body = { data: PIANTA.data, turno: PIANTA.turno, persone: Number($('#pr_p').value) || 1, tavoli: [numero] };
-    if (/^(RB|BR)-/i.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
+    if (RE_TESSERA.test(v)) body.tessera_code = v.toUpperCase(); else body.nome = v || 'Ospite';
     const rotta = PIANTA.ambiente === 'carta' ? '/carta/prenota' : stage ? null : '/tavoli/prenota';
     try {
       if (rotta) await api(rotta, { method: 'POST', body: JSON.stringify(body) });
@@ -15119,7 +15155,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.13.0" : "dev";
+var VERSION = true ? "6.14.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -24779,7 +24815,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 07:57" : "online";
+var BUILD = true ? "2026-09-01 09:12" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
