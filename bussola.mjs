@@ -8759,7 +8759,7 @@ VIEWS.spiaggia = async () => {
      quanti ce ne sono, cosa non torna. */
   document.querySelectorAll('[data-spver]').forEach(b => b.onclick = async () => {
     let v;
-    try { v = await api('/spiaggia/piazzole/' + b.dataset.spver + '/verifica'); }
+    try { v = await api('/spiaggia/piazzole/' + b.dataset.spver + '/verifica'); v.__id = b.dataset.spver; }
     catch (e) { alert(e.message); return; }
     if (v.misure_mancanti) { alert(v.nota || 'Prima le misure: senza, non si sa se ci stanno.'); return; }
     const ok = !(v.problemi || []).length;
@@ -8768,10 +8768,30 @@ VIEWS.spiaggia = async () => {
         <b style="color:\${ok ? '#2e6b45' : '#8a2a20'};font-size:1.05rem">\${esc(v.verdetto)}</b></div>
       <p><b>\${v.misure.larghezza_m}\\u00d7\${v.misure.profondita_m} m</b> \\u00b7 \${v.misure.mq} mq \\u00b7 passaggio \${v.regole.passaggio_m} m \\u00b7 ombrellone \${v.regole.ingombro_m} m</p>
       <p>Ce ne stanno <b>\${v.capienza_indicativa}</b> (circa <b>\${v.persone}</b> persone). Ne hai disposti <b>\${v.disposti}</b>\${v.mq_per_ombrellone ? \` \\u00b7 \${v.mq_per_ombrellone} mq ciascuno\` : ''}.</p>
+      \${v.disposizione ? \`<div style="background:var(--paper);padding:10px 12px;margin:10px 0">
+        <b>Come disporli: \${v.disposizione.file} \${v.disposizione.file === 1 ? 'fila' : 'file'} \\u00d7 \${v.disposizione.colonne} \${v.disposizione.colonne === 1 ? 'colonna' : 'colonne'}</b>
+        <div class="muted" style="font-size:.85rem;margin-top:4px">
+          Un ombrellone ogni <b>\${v.disposizione.passo_m} m</b> da palo a palo \\u2014 e' la misura che si usa col metro in spiaggia.
+          \${v.disposizione.avanzo_larghezza_m > 0.3 || v.disposizione.avanzo_profondita_m > 0.3
+            ? \`Avanzano \${v.disposizione.avanzo_larghezza_m} m in larghezza e \${v.disposizione.avanzo_profondita_m} m in profondit\\u00e0: distribuiscili fra i passaggi, si sta pi\\u00f9 comodi.\`
+            : 'Lo spazio \\u00e8 usato tutto: non c\\u2019\\u00e8 margine per allargare i passaggi.'}
+        </div>
+        <button class="btn ghost sm" style="margin-top:8px" data-spusa="\${v.__id}|\${v.disposizione.file}|\${v.disposizione.colonne}">Usa \${v.disposizione.file}\\u00d7\${v.disposizione.colonne}</button>
+      </div>\` : ''}
       \${(v.problemi || []).length ? '<ul>' + v.problemi.map(x => \`<li>\${esc(x)}</li>\`).join('') + '</ul>' : ''}
       <p class="muted" style="font-size:.82rem">\${esc(v.nota || '')}</p>
       <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`);
     $('#mCancel').onclick = closeModal;
+    // "Usa 3\\u00d73" riempie i campi file e colonne col valore calcolato: il conto l'ha appena
+    // fatto il sistema, ricopiarlo a mano e' un modo di sbagliarlo.
+    const usa = document.querySelector('[data-spusa]');
+    if (usa) usa.onclick = () => {
+      const [id, f, c] = usa.dataset.spusa.split('|');
+      const ef = $('#sp_f_' + id), ec = $('#sp_c_' + id);
+      if (ef) ef.value = f;
+      if (ec) ec.value = c;
+      closeModal();
+    };
   });
   document.querySelectorAll('[data-spadd]').forEach(b => b.onclick = async () => {
     const id = b.dataset.spadd;
@@ -15665,7 +15685,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.28.0" : "dev";
+var VERSION = true ? "6.29.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -18833,6 +18853,20 @@ async function verificaPiazzola(piazzolaId) {
     regole: { ingombro_m: ing, passaggio_m: pass },
     disposti: ombrelloni.length,
     capienza_indicativa: capienza,
+    /* COME disporli, non solo quanti. File e colonne si calcolavano gia' — la capienza e' il
+       loro prodotto — e poi si buttavano via: restava il numero, che da solo non dice a chi
+       pianta gli ombrelloni dove metterli.
+       `avanzo` e' lo spazio che resta dopo l'ultima fila e l'ultima colonna: se e' tanto, o si
+       allarga il passaggio (piu' comodo per tutti) o ci sta un'altra fila stringendo altrove.
+       `passo` e' la distanza da centro a centro: e' la misura che si usa col metro in spiaggia,
+       perche' fra due ombrelloni si misura da palo a palo, non i bordi. */
+    disposizione: {
+      file,
+      colonne: perFila,
+      passo_m: Number(passo.toFixed(2)),
+      avanzo_larghezza_m: Number(Math.max(0, L - (perFila * ing + Math.max(0, perFila - 1) * pass)).toFixed(2)),
+      avanzo_profondita_m: Number(Math.max(0, P - (file * ing + Math.max(0, file - 1) * pass)).toFixed(2))
+    },
     persone: capienza * (Number(await par("beach_posti_ombrellone")) || 2),
     mq_per_ombrellone: ombrelloni.length ? Number((L * P / ombrelloni.length).toFixed(1)) : null,
     troppo_vicini: vicini.slice(0, 12),
@@ -25386,7 +25420,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 05:39" : "online";
+var BUILD = true ? "2026-09-02 06:10" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
