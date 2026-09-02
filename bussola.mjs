@@ -4811,14 +4811,22 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      /* LE COLONNE SI ADATTANO AL RIQUADRO, non alla finestra.
+         repeat(3,1fr) con le media query era sbagliato due volte. Le media query guardano la
+         FINESTRA: dentro un foglio stretto (la comanda del socio, che si apre in una scheda
+         alta e magra) restavano tre colonne da centodieci pixel, con i nomi dei prodotti
+         spezzati una parola per riga e una barra di scorrimento orizzontale. E questo file lo
+         usano TRE app: cambiato guardando solo il Crew.
+         auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
+         ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
          a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
-      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
-      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
-      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
+      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
+         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
+         finestra: conta quanto e largo il posto in cui si trova. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -5199,7 +5207,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.41.0';
+const VERSIONE_APP = '6.42.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -8379,14 +8387,22 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      /* LE COLONNE SI ADATTANO AL RIQUADRO, non alla finestra.
+         repeat(3,1fr) con le media query era sbagliato due volte. Le media query guardano la
+         FINESTRA: dentro un foglio stretto (la comanda del socio, che si apre in una scheda
+         alta e magra) restavano tre colonne da centodieci pixel, con i nomi dei prodotti
+         spezzati una parola per riga e una barra di scorrimento orizzontale. E questo file lo
+         usano TRE app: cambiato guardando solo il Crew.
+         auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
+         ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
          a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
-      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
-      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
-      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
+      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
+         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
+         finestra: conta quanto e largo il posto in cui si trova. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -11960,14 +11976,22 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      /* LE COLONNE SI ADATTANO AL RIQUADRO, non alla finestra.
+         repeat(3,1fr) con le media query era sbagliato due volte. Le media query guardano la
+         FINESTRA: dentro un foglio stretto (la comanda del socio, che si apre in una scheda
+         alta e magra) restavano tre colonne da centodieci pixel, con i nomi dei prodotti
+         spezzati una parola per riga e una barra di scorrimento orizzontale. E questo file lo
+         usano TRE app: cambiato guardando solo il Crew.
+         auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
+         ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
          a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
-      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
-      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
-      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
+      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
+         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
+         finestra: conta quanto e largo il posto in cui si trova. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -16651,14 +16675,22 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      /* LE COLONNE SI ADATTANO AL RIQUADRO, non alla finestra.
+         repeat(3,1fr) con le media query era sbagliato due volte. Le media query guardano la
+         FINESTRA: dentro un foglio stretto (la comanda del socio, che si apre in una scheda
+         alta e magra) restavano tre colonne da centodieci pixel, con i nomi dei prodotti
+         spezzati una parola per riga e una barra di scorrimento orizzontale. E questo file lo
+         usano TRE app: cambiato guardando solo il Crew.
+         auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
+         ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
          a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
-      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
-      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
-      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
+      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
+         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
+         finestra: conta quanto e largo il posto in cui si trova. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -17132,7 +17164,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.41.0" : "dev";
+var VERSION = true ? "6.42.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27112,7 +27144,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 13:05" : "online";
+var BUILD = true ? "2026-09-02 13:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
