@@ -4784,6 +4784,10 @@ window.Comanda = (function () {
          nome di prodotto sta su due righe. */
       .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
+         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
+      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
       @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
       @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
@@ -5041,9 +5045,23 @@ window.Comanda = (function () {
         const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
         return r(a) - r(b) || String(a).localeCompare(String(b));
       }));
+      /* I PANINI PRENDONO LO SPAZIO CHE AVANZA.
+         Le prime due colonne finiscono presto \u2014 il bar e le bevande sono poche voci \u2014 mentre i
+         panini sono quindici e allungavano la terza colonna da soli, lasciando mezza schermata
+         bianca a sinistra. Non e' una questione di bellezza: quella colonna diventava un
+         rotolo, e per arrivare all'ultimo panino si scorreva oltre la fine di tutto il resto.
+         Ora i panini escono dalle colonne e si dispongono SOTTO, su tutta la larghezza, a due
+         per riga. I condimenti stanno sotto ogni scheda e non danno fastidio. */
+      const RX_PANINI = /panin|toast|hot/i;
+      const sotto = [];
+      colonne.forEach((cs, i) => {
+        if (i !== 2) return;
+        for (let k = cs.length - 1; k >= 0; k--) if (RX_PANINI.test(cs[k])) sotto.unshift(cs.splice(k, 1)[0]);
+      });
       const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
         ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
+          + (sotto.length ? \`<div class="cmd-larghi">\${sotto.map(blocco).join('')}</div>\` : '')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -8273,6 +8291,10 @@ window.Comanda = (function () {
          nome di prodotto sta su due righe. */
       .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
+         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
+      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
       @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
       @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
@@ -8530,9 +8552,23 @@ window.Comanda = (function () {
         const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
         return r(a) - r(b) || String(a).localeCompare(String(b));
       }));
+      /* I PANINI PRENDONO LO SPAZIO CHE AVANZA.
+         Le prime due colonne finiscono presto \u2014 il bar e le bevande sono poche voci \u2014 mentre i
+         panini sono quindici e allungavano la terza colonna da soli, lasciando mezza schermata
+         bianca a sinistra. Non e' una questione di bellezza: quella colonna diventava un
+         rotolo, e per arrivare all'ultimo panino si scorreva oltre la fine di tutto il resto.
+         Ora i panini escono dalle colonne e si dispongono SOTTO, su tutta la larghezza, a due
+         per riga. I condimenti stanno sotto ogni scheda e non danno fastidio. */
+      const RX_PANINI = /panin|toast|hot/i;
+      const sotto = [];
+      colonne.forEach((cs, i) => {
+        if (i !== 2) return;
+        for (let k = cs.length - 1; k >= 0; k--) if (RX_PANINI.test(cs[k])) sotto.unshift(cs.splice(k, 1)[0]);
+      });
       const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
         ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
+          + (sotto.length ? \`<div class="cmd-larghi">\${sotto.map(blocco).join('')}</div>\` : '')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -9304,7 +9340,25 @@ VIEWS.spiaggia = async () => {
       <button class="btn ghost sm" data-spadd="\${p.id}" \${p.larghezza_m ? '' : 'disabled title="Prima le misure"'}>+ Ombrelloni</button>
       \${p.totale ? \`<button class="btn danger sm" data-spsvuota="\${p.id}">Svuota</button>\` : ''}
     </td></tr>\`;
-  $('#view').innerHTML = \`<div class="panel"><h3>\u26F1\uFE0F Spiaggia \xB7 piazzole e ombrelloni</h3>
+  /* COSA VEDE IL SOCIO, detto qui.
+     Servono TRE cose insieme perche' l'ombrellone compaia nell'app: la gestione accesa, le
+     misure delle piazzole, e gli ombrelloni disposti. Se ne manca una il socio non vede niente
+     \u2014 ed e' giusto \u2014 ma chi configura non ha modo di sapere QUALE manca: guarda la sua
+     schermata piena di campi e conclude che la funzione non esiste. */
+  const attiva = !!(tuttiPar.find((p) => p.chiave === 'beach_attiva') || {}).valore;
+  const conMisure = (d.piazzole || []).filter((p) => p.larghezza_m).length;
+  const conOmbrelloni = (d.piazzole || []).reduce((n, p) => n + Number(p.totale || 0), 0);
+  const manca = !attiva ? 'la gestione degli ombrelloni e\\u2019 <b>spenta</b> (qui sotto, fra le regole)'
+    : !conMisure ? 'nessuna piazzola ha le <b>misure</b>'
+    : !conOmbrelloni ? 'non c\\u2019e\\u2019 nessun <b>ombrellone disposto</b>'
+    : null;
+  $('#view').innerHTML = \`<div class="panel" style="border-left:5px solid \${manca ? '#b14a35' : '#2e6b45'}">
+      <b style="color:\${manca ? '#8a2a20' : '#2e6b45'}">\${manca
+        ? 'I soci NON vedono gli ombrelloni nell\\u2019app: ' + manca + '.'
+        : \`I soci vedono <b>\${conOmbrelloni}</b> ombrelloni nell\\u2019app e possono dichiarare la presa.\`}</b>
+      <p class="muted" style="font-size:.82rem;margin-top:4px">Servono tutte e tre le cose: gestione accesa, misure delle piazzole, ombrelloni disposti.</p>
+    </div>
+    <div class="panel"><h3>\u26F1\uFE0F Spiaggia \xB7 piazzole e ombrelloni</h3>
     <p class="muted" style="font-size:.82rem">Le misure servono a sapere quanti ombrelloni ci stanno davvero: senza, "Ci stanno?" non pu\\u00f2 rispondere e gli ombrelloni non si possono aggiungere. Si prendono una volta a stagione.</p>
     <table><thead><tr><th>Piazzola</th><th>Larghezza (m)</th><th>Profondit\\u00e0 (m)</th><th>File \\u00d7 colonne</th><th>Ombrelloni</th><th class="right">Azioni</th></tr></thead>
       <tbody>\${(d.piazzole || []).map(riga).join('') || '<tr><td colspan="6" class="muted">Nessuna piazzola.</td></tr>'}</tbody></table>
@@ -11769,6 +11823,10 @@ window.Comanda = (function () {
          nome di prodotto sta su due righe. */
       .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
+         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
+      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
       @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
       @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
@@ -12026,9 +12084,23 @@ window.Comanda = (function () {
         const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
         return r(a) - r(b) || String(a).localeCompare(String(b));
       }));
+      /* I PANINI PRENDONO LO SPAZIO CHE AVANZA.
+         Le prime due colonne finiscono presto \u2014 il bar e le bevande sono poche voci \u2014 mentre i
+         panini sono quindici e allungavano la terza colonna da soli, lasciando mezza schermata
+         bianca a sinistra. Non e' una questione di bellezza: quella colonna diventava un
+         rotolo, e per arrivare all'ultimo panino si scorreva oltre la fine di tutto il resto.
+         Ora i panini escono dalle colonne e si dispongono SOTTO, su tutta la larghezza, a due
+         per riga. I condimenti stanno sotto ogni scheda e non danno fastidio. */
+      const RX_PANINI = /panin|toast|hot/i;
+      const sotto = [];
+      colonne.forEach((cs, i) => {
+        if (i !== 2) return;
+        for (let k = cs.length - 1; k >= 0; k--) if (RX_PANINI.test(cs[k])) sotto.unshift(cs.splice(k, 1)[0]);
+      });
       const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
         ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
+          + (sotto.length ? \`<div class="cmd-larghi">\${sotto.map(blocco).join('')}</div>\` : '')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -16442,6 +16514,10 @@ window.Comanda = (function () {
          nome di prodotto sta su due righe. */
       .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
+         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
+      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px;align-items:start}
+      @media (max-width:720px){ .cmd-larghi{grid-template-columns:1fr} }
       @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
       @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
@@ -16699,9 +16775,23 @@ window.Comanda = (function () {
         const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
         return r(a) - r(b) || String(a).localeCompare(String(b));
       }));
+      /* I PANINI PRENDONO LO SPAZIO CHE AVANZA.
+         Le prime due colonne finiscono presto \u2014 il bar e le bevande sono poche voci \u2014 mentre i
+         panini sono quindici e allungavano la terza colonna da soli, lasciando mezza schermata
+         bianca a sinistra. Non e' una questione di bellezza: quella colonna diventava un
+         rotolo, e per arrivare all'ultimo panino si scorreva oltre la fine di tutto il resto.
+         Ora i panini escono dalle colonne e si dispongono SOTTO, su tutta la larghezza, a due
+         per riga. I condimenti stanno sotto ogni scheda e non danno fastidio. */
+      const RX_PANINI = /panin|toast|hot/i;
+      const sotto = [];
+      colonne.forEach((cs, i) => {
+        if (i !== 2) return;
+        for (let k = cs.length - 1; k >= 0; k--) if (RX_PANINI.test(cs[k])) sotto.unshift(cs.splice(k, 1)[0]);
+      });
       const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
         ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
+          + (sotto.length ? \`<div class="cmd-larghi">\${sotto.map(blocco).join('')}</div>\` : '')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -16903,7 +16993,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.35.0" : "dev";
+var VERSION = true ? "6.36.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23194,12 +23284,13 @@ adminRouter.put("/spiaggia/piazzole/:id", requireCap("beach"), async (req, res) 
   const p = await db.prepare("SELECT * FROM piazzole WHERE id=?").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Piazzola non trovata" });
   const b = req.body || {};
+  const dato = (v, vecchio) => v === void 0 ? vecchio : v === null || v === "" ? null : v;
   await db.prepare("UPDATE piazzole SET nome=?,larghezza_m=?,profondita_m=?,file=?,colonne=?,attiva=? WHERE id=?").run(
     b.nome ?? p.nome,
-    b.larghezza_m ?? p.larghezza_m,
-    b.profondita_m ?? p.profondita_m,
-    b.file ?? p.file,
-    b.colonne ?? p.colonne,
+    dato(b.larghezza_m, p.larghezza_m),
+    dato(b.profondita_m, p.profondita_m),
+    dato(b.file, p.file),
+    dato(b.colonne, p.colonne),
     b.attiva === false ? 0 : 1,
     p.id
   );
@@ -26804,7 +26895,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 09:15" : "online";
+var BUILD = true ? "2026-09-02 09:43" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
