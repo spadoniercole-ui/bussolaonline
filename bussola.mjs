@@ -4555,6 +4555,13 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
+         aggiunge, e la bolla si chiude toccando di nuovo. */
+      .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
+        background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
+      .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
+        padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
       .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
       .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
@@ -4585,6 +4592,14 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
+    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
+       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
+       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
+       stesso ordine.
+       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
+       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
+    const descrizioniAperte = opts.descrizioni !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -4702,8 +4717,9 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
+        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -4748,8 +4764,25 @@ window.Comanda = (function () {
       renderList(); fire();
     });
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore],[data-cdesc]'); if (!a) return;
       if (a.disabled) return;
+      // Il "?" apre la descrizione sopra la riga e la richiude: non porta via la schermata e
+      // non aggiunge niente all'ordine. Una alla volta \u2014 due bolle aperte insieme rimettono
+      // dentro lo spazio che si era guadagnato.
+      if (a.dataset.cdesc != null) {
+        ev.stopPropagation();
+        const gia = mount.querySelector('.cmd-bolla');
+        const era = gia && gia.dataset.di === a.dataset.cdesc;
+        if (gia) gia.remove();
+        if (era) return;
+        const m = menu.find((x) => String(x.id) === String(a.dataset.cdesc));
+        if (!m) return;
+        const b = document.createElement('div');
+        b.className = 'cmd-bolla'; b.dataset.di = a.dataset.cdesc;
+        b.textContent = m.descrizione || '';
+        a.closest('.cmd-item').appendChild(b);
+        return;
+      }
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -4791,6 +4824,17 @@ window.Comanda = (function () {
         });
       },
       total, count,
+      /* Serve al riepilogo, che ora e' una schermata a se': deve poter LEGGERE cosa c'e' dentro
+         e TOGLIERE una riga finita li' per sbaglio. Prima l'unico modo era tornare al menu' e
+         premere il meno tante volte quanta la quantita'. */
+      getCart() { return { ...cart }; },
+      setQta(id, q) {
+        const k = String(id);
+        const n = Math.max(0, Number(q) || 0);
+        if (n === 0) { delete cart[k]; delete comp[k]; delete scelteCombo[k]; }
+        else cart[k] = n;
+        renderList(); fire();
+      },
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
@@ -7917,6 +7961,13 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
+         aggiunge, e la bolla si chiude toccando di nuovo. */
+      .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
+        background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
+      .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
+        padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
       .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
       .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
@@ -7947,6 +7998,14 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
+    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
+       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
+       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
+       stesso ordine.
+       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
+       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
+    const descrizioniAperte = opts.descrizioni !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -8064,8 +8123,9 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
+        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -8110,8 +8170,25 @@ window.Comanda = (function () {
       renderList(); fire();
     });
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore],[data-cdesc]'); if (!a) return;
       if (a.disabled) return;
+      // Il "?" apre la descrizione sopra la riga e la richiude: non porta via la schermata e
+      // non aggiunge niente all'ordine. Una alla volta \u2014 due bolle aperte insieme rimettono
+      // dentro lo spazio che si era guadagnato.
+      if (a.dataset.cdesc != null) {
+        ev.stopPropagation();
+        const gia = mount.querySelector('.cmd-bolla');
+        const era = gia && gia.dataset.di === a.dataset.cdesc;
+        if (gia) gia.remove();
+        if (era) return;
+        const m = menu.find((x) => String(x.id) === String(a.dataset.cdesc));
+        if (!m) return;
+        const b = document.createElement('div');
+        b.className = 'cmd-bolla'; b.dataset.di = a.dataset.cdesc;
+        b.textContent = m.descrizione || '';
+        a.closest('.cmd-item').appendChild(b);
+        return;
+      }
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -8153,6 +8230,17 @@ window.Comanda = (function () {
         });
       },
       total, count,
+      /* Serve al riepilogo, che ora e' una schermata a se': deve poter LEGGERE cosa c'e' dentro
+         e TOGLIERE una riga finita li' per sbaglio. Prima l'unico modo era tornare al menu' e
+         premere il meno tante volte quanta la quantita'. */
+      getCart() { return { ...cart }; },
+      setQta(id, q) {
+        const k = String(id);
+        const n = Math.max(0, Number(q) || 0);
+        if (n === 0) { delete cart[k]; delete comp[k]; delete scelteCombo[k]; }
+        else cart[k] = n;
+        renderList(); fire();
+      },
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
@@ -10685,8 +10773,14 @@ body.hc .panel{border-color:#8F8B7C}
    della schermata. E \`align-self:stretch\` la faceva alta quanto il contenuto, quindi scorrendo
    spariva del tutto e per cambiare modulo bisognava risalire.
    \`top:56px\` la ferma sotto la testata; l'altezza e' quella della finestra meno la testata. */
-#moduli{flex:0 0 214px;position:sticky;top:56px;align-self:flex-start;
-  max-height:calc(100vh - 56px);overflow:auto;
+/* LA BARRA SI FERMA ESATTAMENTE SOTTO LA TESTATA, misurata da lei.
+   \`top:56px\` era un numero scritto a mano: la testata e' alta 40 su schermo largo, quindi
+   restavano 16 px di buco in cui la prima voce scorreva sopra \u2014 e i due elementi sembravano
+   volersi coprire a vicenda. \`--h-top\` la misura il codice al caricamento e a ogni ridisegno,
+   cosi' resta giusta anche se la testata cambia altezza (una riga in piu', un carattere
+   ingrandito, la tacca di un telefono). */
+#moduli{flex:0 0 214px;position:sticky;top:var(--h-top,56px);align-self:flex-start;
+  max-height:calc(100vh - var(--h-top,56px));overflow:auto;
   background:var(--card);border-right:var(--bordo) solid var(--tratto);padding:8px;display:flex;flex-direction:column;gap:6px}
 #moduli .grp{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);padding:12px 4px 2px;font-weight:800}
 #moduli button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
@@ -10883,6 +10977,12 @@ body.hc .panel{border-color:#8F8B7C}
 /* Il bottone che apre l'elenco dei moduli. Dichiarato PRIMA della media query: se sta dopo,
    il suo display:none vince su quello del telefono e il bottone non compare \u2014 e senza quello,
    sul telefono non si cambia piu' modulo. */
+/* LE SPIEGAZIONI SONO SPENTE DAPPERTUTTO, non solo sul telefono.
+   Stavano dentro la media query dei telefoni: su un tablet in orizzontale o su uno schermo da
+   banco tornavano tutte, e sono le stesse cinquantaquattro righe di guida che nessuno rilegge
+   dopo la prima sera. Il tasto "?" in testata le riaccende, e la scelta resta sul dispositivo:
+   chi e' alla prima settimana se le tiene. */
+body:not(.aiuti) .aiuto{display:none}
 #modBtn{display:none; align-items:center; gap:6px; background:rgba(255,255,255,.14); color:#fff;
   border:1px solid rgba(255,255,255,.45); border-radius:4px; padding:6px 10px; font-weight:800; font-size:.86rem; cursor:pointer}
 /* SUL TELEFONO LA BARRA DEI MODULI NON STA IN RIGA.
@@ -10910,7 +11010,7 @@ body.hc .panel{border-color:#8F8B7C}
      occupano lo spazio in cui dovrebbe esserci il tavolo da servire \u2014 e chi lavora quelle
      righe le ha gia' lette la prima sera. Restano a un tocco: il bottone "?" in alto le
      riaccende tutte. */
-  body:not(.aiuti) .aiuto{display:none}
+  /* (la regola sulle spiegazioni e' salita fuori dalla media query: vale a ogni larghezza) */
 }
 
 /* Le sotto-schede, ora su fondo chiaro: squadrate come tutto il resto, con la selezionata
@@ -11115,6 +11215,13 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
+         aggiunge, e la bolla si chiude toccando di nuovo. */
+      .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
+        background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
+      .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
+        padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
       .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
       .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
@@ -11145,6 +11252,14 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
+    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
+       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
+       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
+       stesso ordine.
+       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
+       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
+    const descrizioniAperte = opts.descrizioni !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -11262,8 +11377,9 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
+        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -11308,8 +11424,25 @@ window.Comanda = (function () {
       renderList(); fire();
     });
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore],[data-cdesc]'); if (!a) return;
       if (a.disabled) return;
+      // Il "?" apre la descrizione sopra la riga e la richiude: non porta via la schermata e
+      // non aggiunge niente all'ordine. Una alla volta \u2014 due bolle aperte insieme rimettono
+      // dentro lo spazio che si era guadagnato.
+      if (a.dataset.cdesc != null) {
+        ev.stopPropagation();
+        const gia = mount.querySelector('.cmd-bolla');
+        const era = gia && gia.dataset.di === a.dataset.cdesc;
+        if (gia) gia.remove();
+        if (era) return;
+        const m = menu.find((x) => String(x.id) === String(a.dataset.cdesc));
+        if (!m) return;
+        const b = document.createElement('div');
+        b.className = 'cmd-bolla'; b.dataset.di = a.dataset.cdesc;
+        b.textContent = m.descrizione || '';
+        a.closest('.cmd-item').appendChild(b);
+        return;
+      }
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -11351,6 +11484,17 @@ window.Comanda = (function () {
         });
       },
       total, count,
+      /* Serve al riepilogo, che ora e' una schermata a se': deve poter LEGGERE cosa c'e' dentro
+         e TOGLIERE una riga finita li' per sbaglio. Prima l'unico modo era tornare al menu' e
+         premere il meno tante volte quanta la quantita'. */
+      getCart() { return { ...cart }; },
+      setQta(id, q) {
+        const k = String(id);
+        const n = Math.max(0, Number(q) || 0);
+        if (n === 0) { delete cart[k]; delete comp[k]; delete scelteCombo[k]; }
+        else cart[k] = n;
+        renderList(); fire();
+      },
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
@@ -11560,6 +11704,13 @@ function segnaModulo(z) {
 // L'elenco dei moduli a tutto schermo. Su schermo largo la barra sta sempre a sinistra e questo
 // non serve; sul telefono e' l'unico modo di leggere tutti i nomi in una volta invece di
 // scorrere alla cieca una striscia larga il triplo dello schermo.
+// L'altezza vera della testata, misurata e messa a disposizione del foglio di stile: e' l'unico
+// modo perche' la barra si fermi esattamente sotto invece che a un numero deciso a mano.
+function misuraTestata() {
+  const t = document.querySelector('#top');
+  if (t) document.documentElement.style.setProperty('--h-top', Math.round(t.getBoundingClientRect().height) + 'px');
+}
+addEventListener('resize', misuraTestata);
 function apriModuli(apri) {
   const nav = document.querySelector('#moduli');
   const b = document.querySelector('#modBtn');
@@ -11760,6 +11911,7 @@ async function show(v) {
   const mio = ++VISTA_N;
   if (window.__kdsTimer) { clearInterval(window.__kdsTimer); window.__kdsTimer = null; }
   disegnaCapo(v);
+  misuraTestata();   // le sotto-schede cambiano l'altezza della testata: si rimisura a ogni vista
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   // La barra laterale segue la vista: se sei in Adesso e' Adesso a essere acceso, altrimenti
   // il modulo in cui ti trovi. Senza, si resta con due cose accese e non si sa dove si e'.
@@ -11966,32 +12118,61 @@ VIEWS.comande = async () => {
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F9FE} Nuova comanda \xB7 \${garden ? '\u{1F33F} Garden (a tavolo)' : '\u{1F378} Bar (a nome)'}</h3>
       <div class="row" style="margin-bottom:8px">\${entry}</div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap">
-        <div style="flex:2;min-width:280px">
-          \${menu.length ? '<div id="co_menu"></div>' : '<p class="muted">Men\xF9 vuoto. Lo carica il gestore dal back office, sezione \u201CMen\xF9 &amp; listino\u201D.</p>'}
-        </div>
-        <div style="flex:1;min-width:260px" class="panel co-conto">
-          <b style="color:var(--navy)">Comanda</b><div id="co_cart" style="margin-top:6px"></div>
-          <!-- Totale e invio in una barra che sul telefono resta INCOLLATA IN BASSO. Prima
-               stavano in cima al pannello: appena si comincia a scorrere il menu' escono da
-               sopra, e per sapere quanto e per inviare bisogna risalire tutta la pagina. -->
-          <div class="co-invio">
-            <div id="co_tot"></div>
-            <button class="btn gold" id="co_send">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
-          </div>
-          <p class="muted aiuto" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'}; i piatti li lavora la postazione \u{1F373} <b>Cucina</b>.</p>
-        </div>
-      </div></div>\`;
+      <!-- IL MENU' OCCUPA TUTTA LA LARGHEZZA. Il riepilogo stava in una colonna a fianco, come
+           un "di cui" del menu': due elenchi affiancati che si somigliano e non si capisce
+           quale sia quello che stai componendo. Ora il menu' e' solo menu'; il riepilogo e' una
+           schermata sua, che si apre dalla barra in basso \u2014 dove il totale c'e' gia'. -->
+      \${menu.length ? '<div id="co_menu"></div>' : '<p class="muted">Men\xF9 vuoto. Lo carica il gestore dal back office, sezione \u201CMen\xF9 &amp; listino\u201D.</p>'}
+      <p class="muted aiuto" style="font-size:.74rem;margin-top:8px">Lo stato delle comande \xE8 nella tab \${garden ? '\u{1F5FA}\uFE0F <b>Tavoli</b>' : '\u{1F378} <b>Bar</b>'}; i piatti li lavora la postazione \u{1F373} <b>Cucina</b>.</p>
+    </div>
+    <!-- La barra del totale resta sempre in basso e diventa la porta del riepilogo: toccarla
+         apre la comanda per intero, con le righe e il tasto per inviarla. -->
+    <div class="co-invio">
+      <button class="btn ghost" id="co_apri" style="flex:1;justify-content:flex-start">
+        <span id="co_tot"></span></button>
+      <button class="btn gold" id="co_send">\${garden ? '\u{1F33F} Invia (tavolo)' : '\u{1F378} Invia (bar)'}</button>
+    </div>\`;
 
+  /* IL RIEPILOGO, in una schermata sua.
+     Stava in una colonna accanto al menu': due elenchi affiancati che si somigliano, e chi
+     guarda non capisce al volo quale dei due sta componendo. Qui si apre a schermo pieno,
+     mostra le righe con quantita' e importo, e permette di togliere quello che e' finito
+     dentro per sbaglio \u2014 prima si poteva solo tornare al menu' e premere il meno. */
   const renderCart = (cart) => {
-    const ids = Object.keys(cart || {});
-    $('#co_cart').innerHTML = ids.length
-      ? ids.map(id => { const m = menu.find(x => String(x.id) === id); return \`<div style="display:flex;gap:6px;padding:3px 0;font-size:.85rem"><span style="flex:1">\${cart[id]}\xD7 \${esc(m.nome)}</span><span style="width:60px;text-align:right">\${eur(m.prezzo * cart[id])}</span></div>\`; }).join('')
-      : '<span class="muted" style="font-size:.85rem">Tocca un prodotto del men\xF9.</span>';
+    const box = $('#co_cart'); if (!box) return;   // aperta solo quando il riepilogo e' a schermo
+    const ids = Object.keys(cart || {}).filter(id => cart[id] > 0);
+    box.innerHTML = ids.length
+      ? ids.map(id => { const m = menu.find(x => String(x.id) === id); if (!m) return '';
+          return \`<div class="mrow">
+            <span><b>\${cart[id]}\\u00d7</b> \${esc(m.nome)}</span>
+            <span class="row" style="gap:8px;align-items:center">
+              <b>\${eur(m.prezzo * cart[id])}</b>
+              <button class="btn ghost sm" data-cotogli="\${id}">\\u2715</button></span></div>\`; }).join('')
+      : '<p class="muted">Ancora niente. Torna al men\\u00f9 e tocca i prodotti.</p>';
+    document.querySelectorAll('[data-cotogli]').forEach(b => b.onclick = () => {
+      CO.setQta(b.dataset.cotogli, 0);
+      renderCart(CO.getCart());
+    });
+  };
+  // La schermata del riepilogo: si apre dalla barra in basso.
+  const apriRiepilogo = () => {
+    const cart = CO.getCart();
+    openModal(\`<h3>Comanda</h3>
+      <div id="co_cart"></div>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px;gap:8px">
+        <b style="font-size:1.15rem">\${eur(CO.total())}</b>
+        <span class="row" style="gap:6px">
+          <button class="btn ghost sm" data-mclose>Continua a ordinare</button>
+          <button class="btn gold sm" id="co_send2">\${garden ? 'Invia (tavolo)' : 'Invia (bar)'}</button>
+        </span></div>\`);
+    renderCart(cart);
+    $('#co_send2').onclick = () => { closeModal(); $('#co_send').click(); };
   };
   let CO = null;
   if (menu.length) {
-    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, onChange: (cart, tot, n) => {
+    // \`descrizioni:false\` \u2014 chi batte i prodotti li conosce e ne scorre decine: la descrizione
+    // sta dietro il "?", che la mostra sopra la riga quando serve davvero.
+    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, descrizioni: false, onChange: (cart, tot, n) => {
       $('#co_tot').innerHTML = n ? \`<span class="q">\${n} \${n === 1 ? 'prodotto' : 'prodotti'}</span><span class="e">\${eur(tot)}</span>\` : \`<span class="q">Nessun prodotto</span>\`;
       $('#co_send').disabled = !n;
       renderCart(cart);
@@ -12008,6 +12189,9 @@ VIEWS.comande = async () => {
       if (s2 && s2.nome) el.value = (s2.nome + ' ' + (s2.cognome || '')).trim();
     } catch (_) { }
   });
+  // La barra in basso apre il riepilogo: e' la stessa barra che porta il totale, quindi il
+  // gesto e' dove uno guarda gia'.
+  $('#co_apri').onclick = () => { if (CO.count()) apriRiepilogo(); };
   $('#co_send').onclick = async () => {
     const righe = CO ? CO.getRighe() : [];
     if (!righe.length) { alert('Aggiungi almeno un prodotto.'); return; }
@@ -13434,12 +13618,14 @@ VIEWS.beach = async () => {
 
   $('#view').innerHTML = \`
     <div class="panel" style="padding:8px 10px">
+      <!-- La legenda sotto, non a fianco: accanto ai pulsanti spingeva la riga a occupare tutta
+           la larghezza e su schermo stretto andava a capo male. Sotto sta in una riga sua,
+           stretta, e si legge meglio. -->
       <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
         <input type="date" id="be_data" value="\${data}" style="width:auto">
         \${(d.fasce || []).map(f => \`<button class="btn \${f.fascia === d.fascia ? 'gold' : 'ghost'} sm" data-befascia="\${f.fascia}">\${f.fascia} \${esc(f.da)}\\u2013\${esc(f.a)}\${f.in_corso ? ' \\u00b7 in corso' : ''}</button>\`).join('')}
-        <span style="flex:1"></span>
-        \${legenda}
       </div>
+      <div style="margin-top:6px">\${legenda}</div>
       \${supervisore() ? \`<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
         <!-- Quanti ombrelloni aggiungere e con che motivo chiudere: una volta sola per tutte
              le piazzole, invece di ripetere gli stessi due campi in ogni riquadro. -->
@@ -13983,12 +14169,20 @@ VIEWS.serate = async () => {
       </div>
       \${s.motivo ? \`<div class="muted aiuto" style="font-size:.78rem;margin-top:4px">\${esc(s.motivo)}</div>\` : ''}</div>
 
-    <div class="panel"><b style="color:var(--navy)">\u{1F39F}\uFE0F Ingresso</b>
-      <div class="muted" style="font-size:.82rem;margin-top:4px">Il ticket si valida una volta sola. Chi non ha pagato non ce l'ha.</div>
-      <div class="row" style="gap:6px;margin-top:8px">
-        <input id="ser_tk" placeholder="SER-01-0042-7" style="flex:1;min-width:180px;text-transform:uppercase">
-        <button class="btn gold" id="ser_tkgo">Valida</button></div>
-      <div id="ser_tkmsg" style="margin-top:8px"></div></div>
+    <!-- L'INGRESSO SI FA CON LA FOTOCAMERA. Il ticket e' un QR: all'ingresso si inquadra, non
+         si digita "SER-01-0042-7" carattere per carattere con la fila che aspetta. Il campo
+         resta per il caso in cui il telefono del socio sia scarico, ma stretto: e' il ripiego,
+         non il gesto normale. Prima occupava tutta la larghezza del pannello per un lavoro che
+         nessuno fa a mano. -->
+    <div class="panel" style="padding:8px 10px">
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="muted" style="font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800">Ingresso</span>
+        <button class="btn gold sm" id="ser_scan" title="Inquadra il QR del ticket">\u{1F4F7} Inquadra il ticket</button>
+        <input id="ser_tk" placeholder="oppure SER-01-0042-7" style="width:190px;text-transform:uppercase">
+        <button class="btn ghost sm" id="ser_tkgo">Valida</button>
+      </div>
+      <div id="ser_tkmsg" style="margin-top:6px"></div>
+      <p class="muted aiuto" style="font-size:.78rem;margin:6px 0 0">Il ticket si valida una volta sola. Chi non ha pagato non ce l'ha.</p></div>
 
     \${!s.chiusa ? \`<div class="panel"><b style="color:var(--navy)">\u2795 Prenota al banco</b>
       <div class="muted" style="font-size:.82rem;margin-top:4px">Si salda sul momento: la prenotazione nasce pagata e il ticket viene emesso subito.</div>
@@ -14028,6 +14222,13 @@ VIEWS.serate = async () => {
     }
   };
   $('#ser_tkgo').onclick = valida;
+  // La fotocamera riempie il campo e valida da sola: inquadrare e basta, senza un secondo tocco
+  // con la fila che aspetta. E' lo stesso scanner della tessera, non un secondo pezzo di codice.
+  if ($('#ser_scan')) $('#ser_scan').onclick = () => scansionaTessera((codice) => {
+    const el = $('#ser_tk'); if (!el) return;
+    el.value = String(codice || '').toUpperCase();
+    valida();
+  });
   $('#ser_tk').onkeydown = (e) => { if (e.key === 'Enter') valida(); };
 
   if ($('#ser_go')) $('#ser_go').onclick = async () => {
@@ -15440,6 +15641,13 @@ window.Comanda = (function () {
       .cmd-info{flex:1;min-width:0}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
+      /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
+         aggiunge, e la bolla si chiude toccando di nuovo. */
+      .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
+        background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
+      .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
+        padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
       .cmd-posto{display:flex;align-items:center;gap:6px;flex:1 1 210px}
       .cmd-posto-t{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:800;color:#5a6670;white-space:nowrap}
@@ -15470,6 +15678,14 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
+    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
+       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
+       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
+       stesso ordine.
+       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
+       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
+    const descrizioniAperte = opts.descrizioni !== false;
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -15587,8 +15803,9 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
+        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -15633,8 +15850,25 @@ window.Comanda = (function () {
       renderList(); fire();
     });
     mount.addEventListener('click', (ev) => {
-      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore]'); if (!a) return;
+      const a = ev.target.closest('[data-cadd],[data-cdec],[data-ccat],[data-cmore],[data-cdesc]'); if (!a) return;
       if (a.disabled) return;
+      // Il "?" apre la descrizione sopra la riga e la richiude: non porta via la schermata e
+      // non aggiunge niente all'ordine. Una alla volta \u2014 due bolle aperte insieme rimettono
+      // dentro lo spazio che si era guadagnato.
+      if (a.dataset.cdesc != null) {
+        ev.stopPropagation();
+        const gia = mount.querySelector('.cmd-bolla');
+        const era = gia && gia.dataset.di === a.dataset.cdesc;
+        if (gia) gia.remove();
+        if (era) return;
+        const m = menu.find((x) => String(x.id) === String(a.dataset.cdesc));
+        if (!m) return;
+        const b = document.createElement('div');
+        b.className = 'cmd-bolla'; b.dataset.di = a.dataset.cdesc;
+        b.textContent = m.descrizione || '';
+        a.closest('.cmd-item').appendChild(b);
+        return;
+      }
       if (a.dataset.cmore != null) {
         const box = mount.querySelector('[data-cbox="' + a.dataset.cmore + '"]');
         if (box) { box.hidden = !box.hidden; a.textContent = box.hidden ? 'condimenti \u25BE' : 'condimenti \u25B4'; }
@@ -15676,6 +15910,17 @@ window.Comanda = (function () {
         });
       },
       total, count,
+      /* Serve al riepilogo, che ora e' una schermata a se': deve poter LEGGERE cosa c'e' dentro
+         e TOGLIERE una riga finita li' per sbaglio. Prima l'unico modo era tornare al menu' e
+         premere il meno tante volte quanta la quantita'. */
+      getCart() { return { ...cart }; },
+      setQta(id, q) {
+        const k = String(id);
+        const n = Math.max(0, Number(q) || 0);
+        if (n === 0) { delete cart[k]; delete comp[k]; delete scelteCombo[k]; }
+        else cart[k] = n;
+        renderList(); fire();
+      },
       clear() { Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       setMenu(m) { menu = m || []; Object.keys(cart).forEach(k => delete cart[k]); Object.keys(comp).forEach(k => delete comp[k]); selCat = ''; renderChips(); renderList(); fire(); },
       focusSearch() { if (qEl) qEl.focus(); },
@@ -15784,7 +16029,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.30.0" : "dev";
+var VERSION = true ? "6.31.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25525,7 +25770,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 06:49" : "online";
+var BUILD = true ? "2026-09-02 07:24" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
