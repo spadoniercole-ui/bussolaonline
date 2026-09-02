@@ -4494,6 +4494,138 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 </div>
 
 <script>
+/* LE COMBO SI RICONOSCONO DA SOLE.
+ *
+ * Prima una combo era un ARTICOLO da vendere: "Offerta Combo \u20AC 10" con dentro dei posti da
+ * riempire. Chi prendeva l'ordine doveva sapere che quella combo esisteva, cercarla nel menu' e
+ * comporla; se batteva panino, patatine e bibita uno per uno \u2014 che e' il gesto naturale \u2014 il
+ * cliente pagava il prezzo pieno e lo sconto non lo vedeva nessuno.
+ *
+ * Ma una combo non e' un prodotto: e' uno SCONTO su una composizione. Il panino e' lo stesso
+ * panino, le patatine sono le stesse patatine. L'unica cosa che cambia e' quanto si paga, e
+ * quindi lo scontrino.
+ *
+ * Qui la combo si riconosce da sola: si guarda cosa c'e' nella comanda, e se ci sono i pezzi
+ * che formano una combo, lo sconto si applica. L'operatore batte come ha sempre battuto.
+ *
+ * SCRITTA UNA VOLTA SOLA, e usata da tutti:
+ *   - i tre front-end la includono, per mostrare lo sconto PRIMA di inviare;
+ *   - il server la importa, perche' i soldi li decide lui e non il browser.
+ * Due copie di questo calcolo vorrebbero dire che a schermo si legge un totale e sullo
+ * scontrino ne esce un altro.
+ *
+ * COME SI APPLICA PIU' VOLTE: due panini, due patatine e due bibite fanno DUE combo. Si conta
+ * quante volte la composizione ci sta dentro, non se ci sta.
+ *
+ * QUALE COMBO VINCE: se gli stessi prodotti potrebbero formare due combo diverse, si prende
+ * quella che sconta di piu'. Il cliente non deve rimetterci perche' l'operatore ha battuto in
+ * un ordine invece che in un altro.
+ */
+(function (radice) {
+  'use strict';
+
+  // Un posto e' "coperto" da un prodotto se il prodotto e' fra quelli ammessi, oppure \u2014 quando
+  // non c'e' un elenco esplicito \u2014 se rientra nel filtro per categoria e prezzo massimo.
+  function copre(posto, art) {
+    if (!art) return false;
+    const ammessi = posto.ammessi || [];
+    if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
+    if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || '').toLowerCase()) return false;
+    if (posto.prezzo_max != null && Number(art.prezzo) > Number(posto.prezzo_max) + 0.001) return false;
+    return true;
+  }
+
+  /* Quante volte questa combo ci sta dentro le righe, e quali pezzi consuma.
+     I posti si assegnano dal piu' difficile al piu' facile: un posto che accetta un prodotto
+     solo va servito prima di uno che ne accetta dieci, altrimenti il prodotto raro finisce nel
+     posto generico e la combo non si chiude piu'. */
+  function quanteVolte(combo, disponibili, articoli) {
+    const posti = (combo.posti || []).slice();
+    if (!posti.length) return { volte: 0, usa: {} };
+    const artDi = (id) => articoli.find((a) => String(a.id) === String(id));
+    const candidati = posti.map((p) => ({
+      posto: p,
+      quali: Object.keys(disponibili).filter((id) => copre(p, artDi(id)))
+    }));
+    candidati.sort((a, b) => a.quali.length - b.quali.length);
+
+    let volte = 0;
+    const usa = {};
+    const resto = { ...disponibili };
+    for (;;) {
+      const presi = [];
+      for (const c of candidati) {
+        // A parita' di posto si prende il prodotto piu' CARO fra quelli ammessi: e' quello che
+        // il cliente ha effettivamente ordinato e che rende lo sconto piu' favorevole a lui.
+        const scelto = c.quali
+          .filter((id) => (resto[id] || 0) > 0)
+          .sort((x, y) => Number((artDi(y) || {}).prezzo || 0) - Number((artDi(x) || {}).prezzo || 0))[0];
+        if (!scelto) { presi.length = 0; break; }
+        resto[scelto]--;
+        presi.push(scelto);
+      }
+      if (!presi.length) break;
+      volte++;
+      for (const id of presi) usa[id] = (usa[id] || 0) + 1;
+    }
+    return { volte, usa };
+  }
+
+  /* Le combo trovate in una comanda.
+     \`righe\`   : [{ menu_id, qta }]
+     \`articoli\`: il menu' completo, con prezzo e categoria
+     \`combos\`  : [{ id, nome, prezzo, posti:[{etichetta, categoria, prezzo_max, ammessi:[id]}] }]
+     Torna: [{ combo_id, nome, volte, pieno, prezzo, sconto, usa }]
+     \`sconto\` e' quanto si toglie: la somma di quello che i pezzi costerebbero da soli, meno il
+     prezzo della combo. Se e' zero o negativo la combo non si applica: non si "sconta" qualcosa
+     che costa di piu'. */
+  function trova(righe, articoli, combos) {
+    const disponibili = {};
+    for (const r of righe || []) {
+      const k = String(r.menu_id);
+      disponibili[k] = (disponibili[k] || 0) + (Number(r.qta) || 0);
+    }
+    const artDi = (id) => (articoli || []).find((a) => String(a.id) === String(id));
+    // Prima le combo che scontano di piu': se gli stessi pezzi ne formano due, vince quella che
+    // conviene al cliente.
+    const ordinate = (combos || []).slice().sort((a, b) => {
+      const s = (c) => (c.posti || []).length;   // piu' posti = composizione piu' ricca
+      return s(b) - s(a);
+    });
+    const fuori = [];
+    for (const c of ordinate) {
+      const { volte, usa } = quanteVolte(c, disponibili, articoli || []);
+      if (!volte) continue;
+      // Quanto costerebbero da soli i pezzi che questa combo si prende.
+      let pieno = 0;
+      for (const id of Object.keys(usa)) pieno += Number((artDi(id) || {}).prezzo || 0) * usa[id];
+      const sconto = Math.round((pieno - Number(c.prezzo || 0) * volte) * 100) / 100;
+      if (sconto <= 0) continue;   // non e' uno sconto: si lascia stare
+      for (const id of Object.keys(usa)) disponibili[id] -= usa[id];
+      fuori.push({
+        combo_id: c.id, nome: c.nome, volte,
+        pieno: Math.round(pieno * 100) / 100,
+        prezzo: Math.round(Number(c.prezzo || 0) * volte * 100) / 100,
+        sconto, usa
+      });
+    }
+    return fuori;
+  }
+
+  // Lo sconto totale, che e' l'unica cosa che tocca lo scontrino.
+  function sconto(righe, articoli, combos) {
+    return trova(righe, articoli, combos).reduce((n, c) => n + c.sconto, 0);
+  }
+
+  // Il file serve a due mondi: i browser lo caricano come pezzo di pagina e si aspettano
+  // \`Combo\` globale; il server lo importa come modulo. Si mette a disposizione in tutti e due i
+  // modi, e resta un file solo \u2014 che e' il punto.
+  radice.Combo = { trova, sconto, copre };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+/* NIENTE \`export\` QUI DENTRO. Questo file lo caricano anche i browser, come pezzo di pagina e
+   non come modulo: un \`export\` a fondo file fa fallire tutto lo script con "Unexpected token
+   export", e la schermata resta bianca. Misurato: il Crew non apriva piu' la comanda.
+   Il server lo importa dal fratello \`combo.mjs\`, che e' tre righe e sta accanto a questo. */
 /* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
  * Step 0: chi lo usa carica il men\xF9 (da qualunque fonte) e lo passa qui.
  * Step 1: il men\xF9 viene raggruppato in modo logico e omogeneo (per categoria) e reso IDENTICO
@@ -4544,15 +4676,31 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-list{columns:280px;column-gap:16px}
+      /* GRIGLIA, non colonne da giornale. columns:280px spezzava il contenuto come le
+         colonne di un quotidiano: le schede si comprimevano, i nomi lunghi andavano su sei
+         righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
+         scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
+         nome di prodotto sta su due righe. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+      /* UNA GRIGLIA, non un flex che va a capo. Con flex-wrap ogni riga si componeva come
+         capita: i nomi lunghi mandavano prezzo e tasti sotto, quelli corti li tenevano di
+         fianco, e la stessa colonna aveva schede alte 52 px accanto a schede alte 130. Chi
+         scorre decine di prodotti non trova mai il piu nello stesso posto.
+         Ora le colonne sono FISSE: icona, nome, punto interrogativo, prezzo, tasti. Il nome e
+         la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
+.cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
+  display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
-      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
-      .cmd-info{flex:1;min-width:0}
+      .cmd-info{min-width:0}
+      /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
+         scheda del doppio per una parola sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
@@ -4560,6 +4708,7 @@ window.Comanda = (function () {
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
         background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
       .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-info-btn.vuoto{border-color:transparent;background:none;pointer-events:none}
       .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
         padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
@@ -4568,10 +4717,17 @@ window.Comanda = (function () {
       .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
-      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-step{display:flex;gap:6px;align-items:center;justify-self:end}
+/* Il prezzo a larghezza FISSA: con min-width la colonna si allargava sul prezzo piu lungo
+         della scheda, non del listino, e il piu finiva 8 px piu in la su alcune righe. Chi
+         batte cento comande lo cerca a colpo sicuro. */
+      .cmd-pz{justify-self:end;width:64px;text-align:right}
+/* Le righe che stanno sotto \u2014 i condimenti, la bolla della descrizione \u2014 prendono tutta la
+   larghezza della scheda invece di infilarsi in una colonna. */
+.cmd-item>.cmd-comp,.cmd-item>.cmd-bolla,.cmd-item>.cmd-combo{grid-column:1/-1}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
-      /* "Esaurito" sta accanto al piu', ma smorzato: e' un gesto che si fa una volta ogni
+      /* Esaurito sta accanto al piu, ma smorzato: e un gesto che si fa una volta ogni
          tanto e non deve competere con quello che si fa cento volte a sera. */
       .cmd-b.out{background:#fff;color:#9E2B20;border-color:#9E2B20;font-size:.9rem;opacity:.75}
       .cmd-b.out:hover{opacity:1}
@@ -4719,7 +4875,13 @@ window.Comanda = (function () {
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
           <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
+        \${!descrizioniAperte
+          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
+          ? (m.descrizione
+              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+              : '<span class="cmd-info-btn vuoto"></span>')
+          : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -7955,15 +8117,31 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-list{columns:280px;column-gap:16px}
+      /* GRIGLIA, non colonne da giornale. columns:280px spezzava il contenuto come le
+         colonne di un quotidiano: le schede si comprimevano, i nomi lunghi andavano su sei
+         righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
+         scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
+         nome di prodotto sta su due righe. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+      /* UNA GRIGLIA, non un flex che va a capo. Con flex-wrap ogni riga si componeva come
+         capita: i nomi lunghi mandavano prezzo e tasti sotto, quelli corti li tenevano di
+         fianco, e la stessa colonna aveva schede alte 52 px accanto a schede alte 130. Chi
+         scorre decine di prodotti non trova mai il piu nello stesso posto.
+         Ora le colonne sono FISSE: icona, nome, punto interrogativo, prezzo, tasti. Il nome e
+         la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
+.cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
+  display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
-      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
-      .cmd-info{flex:1;min-width:0}
+      .cmd-info{min-width:0}
+      /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
+         scheda del doppio per una parola sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
@@ -7971,6 +8149,7 @@ window.Comanda = (function () {
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
         background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
       .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-info-btn.vuoto{border-color:transparent;background:none;pointer-events:none}
       .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
         padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
@@ -7979,10 +8158,17 @@ window.Comanda = (function () {
       .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
-      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-step{display:flex;gap:6px;align-items:center;justify-self:end}
+/* Il prezzo a larghezza FISSA: con min-width la colonna si allargava sul prezzo piu lungo
+         della scheda, non del listino, e il piu finiva 8 px piu in la su alcune righe. Chi
+         batte cento comande lo cerca a colpo sicuro. */
+      .cmd-pz{justify-self:end;width:64px;text-align:right}
+/* Le righe che stanno sotto \u2014 i condimenti, la bolla della descrizione \u2014 prendono tutta la
+   larghezza della scheda invece di infilarsi in una colonna. */
+.cmd-item>.cmd-comp,.cmd-item>.cmd-bolla,.cmd-item>.cmd-combo{grid-column:1/-1}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
-      /* "Esaurito" sta accanto al piu', ma smorzato: e' un gesto che si fa una volta ogni
+      /* Esaurito sta accanto al piu, ma smorzato: e un gesto che si fa una volta ogni
          tanto e non deve competere con quello che si fa cento volte a sera. */
       .cmd-b.out{background:#fff;color:#9E2B20;border-color:#9E2B20;font-size:.9rem;opacity:.75}
       .cmd-b.out:hover{opacity:1}
@@ -8130,7 +8316,13 @@ window.Comanda = (function () {
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
           <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
+        \${!descrizioniAperte
+          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
+          ? (m.descrizione
+              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+              : '<span class="cmd-info-btn vuoto"></span>')
+          : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -11165,6 +11357,138 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
 <div id="modal" class="modal hide"><div class="mbg" id="modalBg"></div><div class="mbox" id="mbox"></div></div>
 
 <script>
+/* LE COMBO SI RICONOSCONO DA SOLE.
+ *
+ * Prima una combo era un ARTICOLO da vendere: "Offerta Combo \u20AC 10" con dentro dei posti da
+ * riempire. Chi prendeva l'ordine doveva sapere che quella combo esisteva, cercarla nel menu' e
+ * comporla; se batteva panino, patatine e bibita uno per uno \u2014 che e' il gesto naturale \u2014 il
+ * cliente pagava il prezzo pieno e lo sconto non lo vedeva nessuno.
+ *
+ * Ma una combo non e' un prodotto: e' uno SCONTO su una composizione. Il panino e' lo stesso
+ * panino, le patatine sono le stesse patatine. L'unica cosa che cambia e' quanto si paga, e
+ * quindi lo scontrino.
+ *
+ * Qui la combo si riconosce da sola: si guarda cosa c'e' nella comanda, e se ci sono i pezzi
+ * che formano una combo, lo sconto si applica. L'operatore batte come ha sempre battuto.
+ *
+ * SCRITTA UNA VOLTA SOLA, e usata da tutti:
+ *   - i tre front-end la includono, per mostrare lo sconto PRIMA di inviare;
+ *   - il server la importa, perche' i soldi li decide lui e non il browser.
+ * Due copie di questo calcolo vorrebbero dire che a schermo si legge un totale e sullo
+ * scontrino ne esce un altro.
+ *
+ * COME SI APPLICA PIU' VOLTE: due panini, due patatine e due bibite fanno DUE combo. Si conta
+ * quante volte la composizione ci sta dentro, non se ci sta.
+ *
+ * QUALE COMBO VINCE: se gli stessi prodotti potrebbero formare due combo diverse, si prende
+ * quella che sconta di piu'. Il cliente non deve rimetterci perche' l'operatore ha battuto in
+ * un ordine invece che in un altro.
+ */
+(function (radice) {
+  'use strict';
+
+  // Un posto e' "coperto" da un prodotto se il prodotto e' fra quelli ammessi, oppure \u2014 quando
+  // non c'e' un elenco esplicito \u2014 se rientra nel filtro per categoria e prezzo massimo.
+  function copre(posto, art) {
+    if (!art) return false;
+    const ammessi = posto.ammessi || [];
+    if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
+    if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || '').toLowerCase()) return false;
+    if (posto.prezzo_max != null && Number(art.prezzo) > Number(posto.prezzo_max) + 0.001) return false;
+    return true;
+  }
+
+  /* Quante volte questa combo ci sta dentro le righe, e quali pezzi consuma.
+     I posti si assegnano dal piu' difficile al piu' facile: un posto che accetta un prodotto
+     solo va servito prima di uno che ne accetta dieci, altrimenti il prodotto raro finisce nel
+     posto generico e la combo non si chiude piu'. */
+  function quanteVolte(combo, disponibili, articoli) {
+    const posti = (combo.posti || []).slice();
+    if (!posti.length) return { volte: 0, usa: {} };
+    const artDi = (id) => articoli.find((a) => String(a.id) === String(id));
+    const candidati = posti.map((p) => ({
+      posto: p,
+      quali: Object.keys(disponibili).filter((id) => copre(p, artDi(id)))
+    }));
+    candidati.sort((a, b) => a.quali.length - b.quali.length);
+
+    let volte = 0;
+    const usa = {};
+    const resto = { ...disponibili };
+    for (;;) {
+      const presi = [];
+      for (const c of candidati) {
+        // A parita' di posto si prende il prodotto piu' CARO fra quelli ammessi: e' quello che
+        // il cliente ha effettivamente ordinato e che rende lo sconto piu' favorevole a lui.
+        const scelto = c.quali
+          .filter((id) => (resto[id] || 0) > 0)
+          .sort((x, y) => Number((artDi(y) || {}).prezzo || 0) - Number((artDi(x) || {}).prezzo || 0))[0];
+        if (!scelto) { presi.length = 0; break; }
+        resto[scelto]--;
+        presi.push(scelto);
+      }
+      if (!presi.length) break;
+      volte++;
+      for (const id of presi) usa[id] = (usa[id] || 0) + 1;
+    }
+    return { volte, usa };
+  }
+
+  /* Le combo trovate in una comanda.
+     \`righe\`   : [{ menu_id, qta }]
+     \`articoli\`: il menu' completo, con prezzo e categoria
+     \`combos\`  : [{ id, nome, prezzo, posti:[{etichetta, categoria, prezzo_max, ammessi:[id]}] }]
+     Torna: [{ combo_id, nome, volte, pieno, prezzo, sconto, usa }]
+     \`sconto\` e' quanto si toglie: la somma di quello che i pezzi costerebbero da soli, meno il
+     prezzo della combo. Se e' zero o negativo la combo non si applica: non si "sconta" qualcosa
+     che costa di piu'. */
+  function trova(righe, articoli, combos) {
+    const disponibili = {};
+    for (const r of righe || []) {
+      const k = String(r.menu_id);
+      disponibili[k] = (disponibili[k] || 0) + (Number(r.qta) || 0);
+    }
+    const artDi = (id) => (articoli || []).find((a) => String(a.id) === String(id));
+    // Prima le combo che scontano di piu': se gli stessi pezzi ne formano due, vince quella che
+    // conviene al cliente.
+    const ordinate = (combos || []).slice().sort((a, b) => {
+      const s = (c) => (c.posti || []).length;   // piu' posti = composizione piu' ricca
+      return s(b) - s(a);
+    });
+    const fuori = [];
+    for (const c of ordinate) {
+      const { volte, usa } = quanteVolte(c, disponibili, articoli || []);
+      if (!volte) continue;
+      // Quanto costerebbero da soli i pezzi che questa combo si prende.
+      let pieno = 0;
+      for (const id of Object.keys(usa)) pieno += Number((artDi(id) || {}).prezzo || 0) * usa[id];
+      const sconto = Math.round((pieno - Number(c.prezzo || 0) * volte) * 100) / 100;
+      if (sconto <= 0) continue;   // non e' uno sconto: si lascia stare
+      for (const id of Object.keys(usa)) disponibili[id] -= usa[id];
+      fuori.push({
+        combo_id: c.id, nome: c.nome, volte,
+        pieno: Math.round(pieno * 100) / 100,
+        prezzo: Math.round(Number(c.prezzo || 0) * volte * 100) / 100,
+        sconto, usa
+      });
+    }
+    return fuori;
+  }
+
+  // Lo sconto totale, che e' l'unica cosa che tocca lo scontrino.
+  function sconto(righe, articoli, combos) {
+    return trova(righe, articoli, combos).reduce((n, c) => n + c.sconto, 0);
+  }
+
+  // Il file serve a due mondi: i browser lo caricano come pezzo di pagina e si aspettano
+  // \`Combo\` globale; il server lo importa come modulo. Si mette a disposizione in tutti e due i
+  // modi, e resta un file solo \u2014 che e' il punto.
+  radice.Combo = { trova, sconto, copre };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+/* NIENTE \`export\` QUI DENTRO. Questo file lo caricano anche i browser, come pezzo di pagina e
+   non come modulo: un \`export\` a fondo file fa fallire tutto lo script con "Unexpected token
+   export", e la schermata resta bianca. Misurato: il Crew non apriva piu' la comanda.
+   Il server lo importa dal fratello \`combo.mjs\`, che e' tre righe e sta accanto a questo. */
 /* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
  * Step 0: chi lo usa carica il men\xF9 (da qualunque fonte) e lo passa qui.
  * Step 1: il men\xF9 viene raggruppato in modo logico e omogeneo (per categoria) e reso IDENTICO
@@ -11215,15 +11539,31 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-list{columns:280px;column-gap:16px}
+      /* GRIGLIA, non colonne da giornale. columns:280px spezzava il contenuto come le
+         colonne di un quotidiano: le schede si comprimevano, i nomi lunghi andavano su sei
+         righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
+         scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
+         nome di prodotto sta su due righe. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+      /* UNA GRIGLIA, non un flex che va a capo. Con flex-wrap ogni riga si componeva come
+         capita: i nomi lunghi mandavano prezzo e tasti sotto, quelli corti li tenevano di
+         fianco, e la stessa colonna aveva schede alte 52 px accanto a schede alte 130. Chi
+         scorre decine di prodotti non trova mai il piu nello stesso posto.
+         Ora le colonne sono FISSE: icona, nome, punto interrogativo, prezzo, tasti. Il nome e
+         la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
+.cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
+  display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
-      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
-      .cmd-info{flex:1;min-width:0}
+      .cmd-info{min-width:0}
+      /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
+         scheda del doppio per una parola sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
@@ -11231,6 +11571,7 @@ window.Comanda = (function () {
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
         background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
       .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-info-btn.vuoto{border-color:transparent;background:none;pointer-events:none}
       .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
         padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
@@ -11239,10 +11580,17 @@ window.Comanda = (function () {
       .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
-      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-step{display:flex;gap:6px;align-items:center;justify-self:end}
+/* Il prezzo a larghezza FISSA: con min-width la colonna si allargava sul prezzo piu lungo
+         della scheda, non del listino, e il piu finiva 8 px piu in la su alcune righe. Chi
+         batte cento comande lo cerca a colpo sicuro. */
+      .cmd-pz{justify-self:end;width:64px;text-align:right}
+/* Le righe che stanno sotto \u2014 i condimenti, la bolla della descrizione \u2014 prendono tutta la
+   larghezza della scheda invece di infilarsi in una colonna. */
+.cmd-item>.cmd-comp,.cmd-item>.cmd-bolla,.cmd-item>.cmd-combo{grid-column:1/-1}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
-      /* "Esaurito" sta accanto al piu', ma smorzato: e' un gesto che si fa una volta ogni
+      /* Esaurito sta accanto al piu, ma smorzato: e un gesto che si fa una volta ogni
          tanto e non deve competere con quello che si fa cento volte a sera. */
       .cmd-b.out{background:#fff;color:#9E2B20;border-color:#9E2B20;font-size:.9rem;opacity:.75}
       .cmd-b.out:hover{opacity:1}
@@ -11390,7 +11738,13 @@ window.Comanda = (function () {
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
           <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
+        \${!descrizioniAperte
+          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
+          ? (m.descrizione
+              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+              : '<span class="cmd-info-btn vuoto"></span>')
+          : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -12109,6 +12463,10 @@ VIEWS.comande = async () => {
   // Con la zona della postazione: al Bar si vede il Bar (piu' la cucina, che serve tutti i
   // punti), al Garden il Garden. Senza, l'operatore vedeva un elenco diverso dal socio.
   const menu = await api('/menu?ordinabile=1&zona=' + (ZONA === 'bar' ? 'bar' : 'garden'));
+  // Le combo del listino, per riconoscerle mentre si batte. Se la chiamata non riesce si resta
+  // senza sconto a schermo, ma il server lo applica lo stesso quando salva: il conto e' giusto
+  // comunque, e a schermo manca un'informazione invece di comparirne una sbagliata.
+  COMBO_DEF = await api('/combo-definite').catch(() => []);
   const garden = ZONA === 'garden';
   const entry = garden
     ? \`<label>Tavolo <input id="co_tav" type="number" min="1" inputmode="numeric" placeholder="n\xB0" style="width:100px"></label>\`
@@ -12168,10 +12526,20 @@ VIEWS.comande = async () => {
   // La schermata del riepilogo: si apre dalla barra in basso.
   const apriRiepilogo = () => {
     const cart = CO.getCart();
+    // LE COMBO SI VEDONO PRIMA DI INVIARE. Il conto lo rifa' il server quando salva, con questa
+    // stessa funzione: qui serve perche' l'operatore possa dire al cliente quanto paga, non per
+    // decidere il prezzo.
+    const righeCart = Object.keys(cart).filter(id => cart[id] > 0).map(id => ({ menu_id: Number(id), qta: cart[id] }));
+    const trovate = (typeof Combo !== 'undefined' && COMBO_DEF.length)
+      ? Combo.trova(righeCart, menu, COMBO_DEF) : [];
+    const scontoTot = trovate.reduce((n, c) => n + c.sconto, 0);
     openModal(\`<h3>Comanda</h3>
       <div id="co_cart"></div>
+      \${trovate.map(c => \`<div class="mrow" style="color:var(--verde)">
+        <span>\\u2713 <b>\${esc(c.nome)}</b>\${c.volte > 1 ? ' \\u00d7' + c.volte : ''} \\u2014 riconosciuta</span>
+        <b>\\u2212\${eur(c.sconto)}</b></div>\`).join('')}
       <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px;gap:8px">
-        <b style="font-size:1.15rem">\${eur(CO.total())}</b>
+        <b style="font-size:1.15rem">\${eur(CO.total() - scontoTot)}\${scontoTot ? \` <span class="muted" style="font-weight:400;font-size:.85rem;text-decoration:line-through">\${eur(CO.total())}</span>\` : ''}</b>
         <span class="row" style="gap:6px">
           <button class="btn ghost sm" data-mclose>Continua a ordinare</button>
           <button class="btn gold sm" id="co_send2">\${garden ? 'Invia (tavolo)' : 'Invia (bar)'}</button>
@@ -13912,6 +14280,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.
 const oggiISO = () => new Date().toISOString().slice(0, 10);
 let CAMPI_DATA = '';
 let CW_CAMPO = null;   // il campo scelto nella riga di prenotazione, come nell'app del socio
+let COMBO_DEF = [];    // le combo del listino, per riconoscerle mentre si batte
 let TEN_CAMPO = null;  // lo stesso, per l'area tennis
 
 /* PRENOTARE UN CAMPO: UN BLOCCO SOLO, per i campi liberi e per l'area tennis.
@@ -15591,6 +15960,138 @@ var ordina_default = `<!doctype html>
   <div class="cartbar"><div class="tot" id="tot">Tocca i prodotti per ordinare</div><button class="btn gold" id="send" disabled>Invia ordine</button></div>
   <div class="ok" id="ok"><div class="okbox"><div style="font-size:2.4rem">\u2705</div><h2>Ordine inviato!</h2><div class="muted">Numero comanda</div><div class="big" id="okn">\u2014</div><p class="muted" id="okinfo"></p><button class="btn gold" id="reload">Nuovo ordine</button></div></div>
 <script>
+/* LE COMBO SI RICONOSCONO DA SOLE.
+ *
+ * Prima una combo era un ARTICOLO da vendere: "Offerta Combo \u20AC 10" con dentro dei posti da
+ * riempire. Chi prendeva l'ordine doveva sapere che quella combo esisteva, cercarla nel menu' e
+ * comporla; se batteva panino, patatine e bibita uno per uno \u2014 che e' il gesto naturale \u2014 il
+ * cliente pagava il prezzo pieno e lo sconto non lo vedeva nessuno.
+ *
+ * Ma una combo non e' un prodotto: e' uno SCONTO su una composizione. Il panino e' lo stesso
+ * panino, le patatine sono le stesse patatine. L'unica cosa che cambia e' quanto si paga, e
+ * quindi lo scontrino.
+ *
+ * Qui la combo si riconosce da sola: si guarda cosa c'e' nella comanda, e se ci sono i pezzi
+ * che formano una combo, lo sconto si applica. L'operatore batte come ha sempre battuto.
+ *
+ * SCRITTA UNA VOLTA SOLA, e usata da tutti:
+ *   - i tre front-end la includono, per mostrare lo sconto PRIMA di inviare;
+ *   - il server la importa, perche' i soldi li decide lui e non il browser.
+ * Due copie di questo calcolo vorrebbero dire che a schermo si legge un totale e sullo
+ * scontrino ne esce un altro.
+ *
+ * COME SI APPLICA PIU' VOLTE: due panini, due patatine e due bibite fanno DUE combo. Si conta
+ * quante volte la composizione ci sta dentro, non se ci sta.
+ *
+ * QUALE COMBO VINCE: se gli stessi prodotti potrebbero formare due combo diverse, si prende
+ * quella che sconta di piu'. Il cliente non deve rimetterci perche' l'operatore ha battuto in
+ * un ordine invece che in un altro.
+ */
+(function (radice) {
+  'use strict';
+
+  // Un posto e' "coperto" da un prodotto se il prodotto e' fra quelli ammessi, oppure \u2014 quando
+  // non c'e' un elenco esplicito \u2014 se rientra nel filtro per categoria e prezzo massimo.
+  function copre(posto, art) {
+    if (!art) return false;
+    const ammessi = posto.ammessi || [];
+    if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
+    if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || '').toLowerCase()) return false;
+    if (posto.prezzo_max != null && Number(art.prezzo) > Number(posto.prezzo_max) + 0.001) return false;
+    return true;
+  }
+
+  /* Quante volte questa combo ci sta dentro le righe, e quali pezzi consuma.
+     I posti si assegnano dal piu' difficile al piu' facile: un posto che accetta un prodotto
+     solo va servito prima di uno che ne accetta dieci, altrimenti il prodotto raro finisce nel
+     posto generico e la combo non si chiude piu'. */
+  function quanteVolte(combo, disponibili, articoli) {
+    const posti = (combo.posti || []).slice();
+    if (!posti.length) return { volte: 0, usa: {} };
+    const artDi = (id) => articoli.find((a) => String(a.id) === String(id));
+    const candidati = posti.map((p) => ({
+      posto: p,
+      quali: Object.keys(disponibili).filter((id) => copre(p, artDi(id)))
+    }));
+    candidati.sort((a, b) => a.quali.length - b.quali.length);
+
+    let volte = 0;
+    const usa = {};
+    const resto = { ...disponibili };
+    for (;;) {
+      const presi = [];
+      for (const c of candidati) {
+        // A parita' di posto si prende il prodotto piu' CARO fra quelli ammessi: e' quello che
+        // il cliente ha effettivamente ordinato e che rende lo sconto piu' favorevole a lui.
+        const scelto = c.quali
+          .filter((id) => (resto[id] || 0) > 0)
+          .sort((x, y) => Number((artDi(y) || {}).prezzo || 0) - Number((artDi(x) || {}).prezzo || 0))[0];
+        if (!scelto) { presi.length = 0; break; }
+        resto[scelto]--;
+        presi.push(scelto);
+      }
+      if (!presi.length) break;
+      volte++;
+      for (const id of presi) usa[id] = (usa[id] || 0) + 1;
+    }
+    return { volte, usa };
+  }
+
+  /* Le combo trovate in una comanda.
+     \`righe\`   : [{ menu_id, qta }]
+     \`articoli\`: il menu' completo, con prezzo e categoria
+     \`combos\`  : [{ id, nome, prezzo, posti:[{etichetta, categoria, prezzo_max, ammessi:[id]}] }]
+     Torna: [{ combo_id, nome, volte, pieno, prezzo, sconto, usa }]
+     \`sconto\` e' quanto si toglie: la somma di quello che i pezzi costerebbero da soli, meno il
+     prezzo della combo. Se e' zero o negativo la combo non si applica: non si "sconta" qualcosa
+     che costa di piu'. */
+  function trova(righe, articoli, combos) {
+    const disponibili = {};
+    for (const r of righe || []) {
+      const k = String(r.menu_id);
+      disponibili[k] = (disponibili[k] || 0) + (Number(r.qta) || 0);
+    }
+    const artDi = (id) => (articoli || []).find((a) => String(a.id) === String(id));
+    // Prima le combo che scontano di piu': se gli stessi pezzi ne formano due, vince quella che
+    // conviene al cliente.
+    const ordinate = (combos || []).slice().sort((a, b) => {
+      const s = (c) => (c.posti || []).length;   // piu' posti = composizione piu' ricca
+      return s(b) - s(a);
+    });
+    const fuori = [];
+    for (const c of ordinate) {
+      const { volte, usa } = quanteVolte(c, disponibili, articoli || []);
+      if (!volte) continue;
+      // Quanto costerebbero da soli i pezzi che questa combo si prende.
+      let pieno = 0;
+      for (const id of Object.keys(usa)) pieno += Number((artDi(id) || {}).prezzo || 0) * usa[id];
+      const sconto = Math.round((pieno - Number(c.prezzo || 0) * volte) * 100) / 100;
+      if (sconto <= 0) continue;   // non e' uno sconto: si lascia stare
+      for (const id of Object.keys(usa)) disponibili[id] -= usa[id];
+      fuori.push({
+        combo_id: c.id, nome: c.nome, volte,
+        pieno: Math.round(pieno * 100) / 100,
+        prezzo: Math.round(Number(c.prezzo || 0) * volte * 100) / 100,
+        sconto, usa
+      });
+    }
+    return fuori;
+  }
+
+  // Lo sconto totale, che e' l'unica cosa che tocca lo scontrino.
+  function sconto(righe, articoli, combos) {
+    return trova(righe, articoli, combos).reduce((n, c) => n + c.sconto, 0);
+  }
+
+  // Il file serve a due mondi: i browser lo caricano come pezzo di pagina e si aspettano
+  // \`Combo\` globale; il server lo importa come modulo. Si mette a disposizione in tutti e due i
+  // modi, e resta un file solo \u2014 che e' il punto.
+  radice.Combo = { trova, sconto, copre };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+/* NIENTE \`export\` QUI DENTRO. Questo file lo caricano anche i browser, come pezzo di pagina e
+   non come modulo: un \`export\` a fondo file fa fallire tutto lo script con "Unexpected token
+   export", e la schermata resta bianca. Misurato: il Crew non apriva piu' la comanda.
+   Il server lo importa dal fratello \`combo.mjs\`, che e' tre righe e sta accanto a questo. */
 /* Componente COMANDA condiviso \u2014 una sola presentazione del men\xF9 per ogni contesto.
  * Step 0: chi lo usa carica il men\xF9 (da qualunque fonte) e lo passa qui.
  * Step 1: il men\xF9 viene raggruppato in modo logico e omogeneo (per categoria) e reso IDENTICO
@@ -15641,15 +16142,31 @@ window.Comanda = (function () {
       .cmd-chips{display:flex;gap:6px;flex-wrap:wrap;padding-bottom:2px;margin-bottom:8px}
       .cmd-chip{border:1.5px solid var(--c-line);background:#fff;color:var(--c-navy);border-radius:999px;padding:6px 14px;font-weight:700;font-size:.85rem;white-space:nowrap;cursor:pointer}
       .cmd-chip.on{background:var(--c-navy);color:#fff;border-color:var(--c-navy)}
-      .cmd-list{columns:280px;column-gap:16px}
+      /* GRIGLIA, non colonne da giornale. columns:280px spezzava il contenuto come le
+         colonne di un quotidiano: le schede si comprimevano, i nomi lunghi andavano su sei
+         righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
+         scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
+         nome di prodotto sta su due righe. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
       .cmd-group:first-child .cmd-cat{padding-top:0}
-      .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+      /* UNA GRIGLIA, non un flex che va a capo. Con flex-wrap ogni riga si componeva come
+         capita: i nomi lunghi mandavano prezzo e tasti sotto, quelli corti li tenevano di
+         fianco, e la stessa colonna aveva schede alte 52 px accanto a schede alte 130. Chi
+         scorre decine di prodotti non trova mai il piu nello stesso posto.
+         Ora le colonne sono FISSE: icona, nome, punto interrogativo, prezzo, tasti. Il nome e
+         la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
+.cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
+  display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
       .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
-      .cmd-tap{flex:1;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit}
+      .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
-      .cmd-info{flex:1;min-width:0}
+      .cmd-info{min-width:0}
+      /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
+         scheda del doppio per una parola sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
       .cmd-info b{display:block;color:var(--c-navy)}
       .cmd-desc{font-size:.78rem;color:#555;display:block}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
@@ -15657,6 +16174,7 @@ window.Comanda = (function () {
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
         background:#fff;color:#5b6b78;font-weight:800;font-size:.8rem;cursor:pointer;align-self:center;font-family:inherit}
       .cmd-info-btn:hover{border-color:#8a97a3;color:#26343f}
+      .cmd-info-btn.vuoto{border-color:transparent;background:none;pointer-events:none}
       .cmd-bolla{flex:1 0 100%;margin-top:6px;background:#f4f1e9;border-left:3px solid #b8a271;
         padding:8px 10px;font-size:.82rem;color:#3c4a54;line-height:1.4}
       .cmd-combo{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
@@ -15665,10 +16183,17 @@ window.Comanda = (function () {
       .cmd-posto select{flex:1;min-width:0;min-height:44px}
 
       .cmd-pz{color:var(--c-gold);font-weight:800;white-space:nowrap;font-size:.92rem}
-      .cmd-step{display:flex;gap:6px;align-items:center}
+      .cmd-step{display:flex;gap:6px;align-items:center;justify-self:end}
+/* Il prezzo a larghezza FISSA: con min-width la colonna si allargava sul prezzo piu lungo
+         della scheda, non del listino, e il piu finiva 8 px piu in la su alcune righe. Chi
+         batte cento comande lo cerca a colpo sicuro. */
+      .cmd-pz{justify-self:end;width:64px;text-align:right}
+/* Le righe che stanno sotto \u2014 i condimenti, la bolla della descrizione \u2014 prendono tutta la
+   larghezza della scheda invece di infilarsi in una colonna. */
+.cmd-item>.cmd-comp,.cmd-item>.cmd-bolla,.cmd-item>.cmd-combo{grid-column:1/-1}
       .cmd-b{border:1.5px solid var(--c-line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.15rem;font-weight:800;color:var(--c-navy);line-height:1}
       .cmd-b.add{background:var(--c-gold);color:#fff;border-color:var(--c-gold)}
-      /* "Esaurito" sta accanto al piu', ma smorzato: e' un gesto che si fa una volta ogni
+      /* Esaurito sta accanto al piu, ma smorzato: e un gesto che si fa una volta ogni
          tanto e non deve competere con quello che si fa cento volte a sera. */
       .cmd-b.out{background:#fff;color:#9E2B20;border-color:#9E2B20;font-size:.9rem;opacity:.75}
       .cmd-b.out:hover{opacity:1}
@@ -15816,7 +16341,13 @@ window.Comanda = (function () {
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
           <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${m.descrizione && !descrizioniAperte ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\` : ''}
+        \${!descrizioniAperte
+          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
+          ? (m.descrizione
+              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+              : '<span class="cmd-info-btn vuoto"></span>')
+          : ''}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -16040,7 +16571,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.32.0" : "dev";
+var VERSION = true ? "6.33.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -16140,9 +16671,93 @@ function mountPwa(app2) {
 }
 
 // server/routes/admin.js
+import { Router } from "express";
+
+// shared/combo.js
+(function(radice) {
+  "use strict";
+  function copre2(posto, art) {
+    if (!art) return false;
+    const ammessi = posto.ammessi || [];
+    if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
+    if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || "").toLowerCase()) return false;
+    if (posto.prezzo_max != null && Number(art.prezzo) > Number(posto.prezzo_max) + 1e-3) return false;
+    return true;
+  }
+  function quanteVolte(combo, disponibili, articoli) {
+    const posti = (combo.posti || []).slice();
+    if (!posti.length) return { volte: 0, usa: {} };
+    const artDi = (id) => articoli.find((a) => String(a.id) === String(id));
+    const candidati = posti.map((p) => ({
+      posto: p,
+      quali: Object.keys(disponibili).filter((id) => copre2(p, artDi(id)))
+    }));
+    candidati.sort((a, b) => a.quali.length - b.quali.length);
+    let volte = 0;
+    const usa = {};
+    const resto = { ...disponibili };
+    for (; ; ) {
+      const presi = [];
+      for (const c of candidati) {
+        const scelto = c.quali.filter((id) => (resto[id] || 0) > 0).sort((x, y) => Number((artDi(y) || {}).prezzo || 0) - Number((artDi(x) || {}).prezzo || 0))[0];
+        if (!scelto) {
+          presi.length = 0;
+          break;
+        }
+        resto[scelto]--;
+        presi.push(scelto);
+      }
+      if (!presi.length) break;
+      volte++;
+      for (const id of presi) usa[id] = (usa[id] || 0) + 1;
+    }
+    return { volte, usa };
+  }
+  function trova2(righe, articoli, combos) {
+    const disponibili = {};
+    for (const r of righe || []) {
+      const k = String(r.menu_id);
+      disponibili[k] = (disponibili[k] || 0) + (Number(r.qta) || 0);
+    }
+    const artDi = (id) => (articoli || []).find((a) => String(a.id) === String(id));
+    const ordinate = (combos || []).slice().sort((a, b) => {
+      const s = (c) => (c.posti || []).length;
+      return s(b) - s(a);
+    });
+    const fuori = [];
+    for (const c of ordinate) {
+      const { volte, usa } = quanteVolte(c, disponibili, articoli || []);
+      if (!volte) continue;
+      let pieno = 0;
+      for (const id of Object.keys(usa)) pieno += Number((artDi(id) || {}).prezzo || 0) * usa[id];
+      const sconto3 = Math.round((pieno - Number(c.prezzo || 0) * volte) * 100) / 100;
+      if (sconto3 <= 0) continue;
+      for (const id of Object.keys(usa)) disponibili[id] -= usa[id];
+      fuori.push({
+        combo_id: c.id,
+        nome: c.nome,
+        volte,
+        pieno: Math.round(pieno * 100) / 100,
+        prezzo: Math.round(Number(c.prezzo || 0) * volte * 100) / 100,
+        sconto: sconto3,
+        usa
+      });
+    }
+    return fuori;
+  }
+  function sconto2(righe, articoli, combos) {
+    return trova2(righe, articoli, combos).reduce((n, c) => n + c.sconto, 0);
+  }
+  radice.Combo = { trova: trova2, sconto: sconto2, copre: copre2 };
+})(typeof globalThis !== "undefined" ? globalThis : void 0);
+
+// shared/combo.mjs
+var combo_default = globalThis.Combo;
+var { trova, sconto, copre } = globalThis.Combo;
+
+// server/routes/admin.js
 init_asyncroute();
 init_auth();
-import { Router } from "express";
 import { readFileSync, unlinkSync, statSync } from "node:fs";
 import * as XLSX from "xlsx";
 
@@ -20814,6 +21429,30 @@ adminRouter.get("/magazzino/export", requireCap("magazzino"), async (req, res) =
   const rows = arts.map((a) => ({ nome: a.nome, area: a.area, zona: a.zona, unita: a.unita, giacenza: Number(a.giacenza), riordino: Number(a.punto_riordino), preavviso: Number(a.soglia_preavviso) }));
   res.json({ filename: "magazzino.xlsx", mime: XLSX_MIME, b64: xlsxB64(rows, "Magazzino") });
 });
+async function comboDefinite() {
+  const combos = await db.prepare("SELECT id,nome,prezzo FROM menu_articoli WHERE combo=1 AND attivo=1").all().catch(() => []);
+  const fuori = [];
+  for (const c of combos) {
+    const posti = await db.prepare("SELECT * FROM menu_combo_posti WHERE combo_id=? ORDER BY ordine,id").all(c.id).catch(() => []);
+    if (!posti.length) continue;
+    for (const p of posti) {
+      const amm = await db.prepare("SELECT menu_id FROM menu_combo_ammessi WHERE posto_id=?").all(p.id).catch(() => []);
+      p.ammessi = amm.map((x) => x.menu_id);
+    }
+    fuori.push({ ...c, posti });
+  }
+  return fuori;
+}
+async function scontiCombo(righe) {
+  const combos = await comboDefinite();
+  if (!combos.length) return [];
+  const articoli = await db.prepare("SELECT id,nome,prezzo,categoria FROM menu_articoli WHERE attivo=1").all().catch(() => []);
+  const semplici = (righe || []).filter((r) => r.menu_id && !r.combo);
+  return combo_default.trova(semplici.map((r) => ({ menu_id: r.menu_id, qta: Number(r.qta) || 1 })), articoli, combos);
+}
+adminRouter.get("/combo-definite", requireAnyCap("comande", "menu"), async (req, res) => {
+  res.json(await comboDefinite());
+});
 adminRouter.get("/menu/:id/combo", requireAnyCap("comande", "menu"), async (req, res) => {
   res.json(await postiCombo(req.params.id));
 });
@@ -20879,7 +21518,7 @@ adminRouter.get("/menu", requireAnyCap("comande", "menu"), async (req, res) => {
   }
   const { voci } = await daOrdinare({ zona: String(req.query.zona || "") });
   const combo = await comboDelMenu();
-  res.json(voci.map((v) => combo[v.id] ? { ...v, combo: 1, posti: combo[v.id] } : v));
+  res.json(voci.filter((v) => !combo[v.id]));
 });
 adminRouter.get("/registro", requireCap("comande"), async (req, res) => {
   res.json(await cerca({
@@ -21433,7 +22072,12 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   }
   const haCucina = !!await db.prepare("SELECT 1 x FROM comanda_righe WHERE comanda_id=? AND stazione='cucina' LIMIT 1").get(cid);
   const nonPrima = await primoRitiro(haCucina);
-  await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(totale, nonPrima, cid);
+  const sconti = await scontiCombo(righe);
+  for (const c of sconti) {
+    totale -= c.sconto;
+    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,NULL,?,?,1,?,?,?,NULL)").run(cid, `Sconto ${c.nome}${c.volte > 1 ? " \xD7" + c.volte : ""}`, -c.sconto, "cassa", null, "pronto");
+  }
+  await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(Math.round(totale * 100) / 100, nonPrima, cid);
   await registra({
     fatto: "comanda_aperta",
     servizio: "comande",
@@ -25781,7 +26425,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 07:47" : "online";
+var BUILD = true ? "2026-09-02 08:34" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
