@@ -1433,6 +1433,23 @@ async function initSchema() {
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS incassi_online (
+    id          INTEGER PRIMARY KEY,
+    fornitore   TEXT NOT NULL,                               -- paypal | satispay | manuale
+    transazione TEXT NOT NULL,                               -- l'identificativo dato da LORO
+    ambito      TEXT NOT NULL,                               -- serata | (fitness, stage: piu' avanti)
+    riferimento INTEGER NOT NULL,                            -- id della prenotazione pagata
+    importo     REAL NOT NULL DEFAULT 0,
+    stato       TEXT NOT NULL DEFAULT 'incassato',           -- trattenuto | incassato | liberato
+    chiuso_at   TEXT,
+    socio_id    INTEGER REFERENCES soci(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  /* La stessa conferma arriva due volte se il socio ricarica la pagina di ritorno, e una terza
+     se il fornitore manda anche la sua notifica. Il vincolo fa in modo che il secondo e il
+     terzo arrivo non incassino di nuovo: tre arrivi, un incasso solo, un ticket solo. */
+  CREATE UNIQUE INDEX IF NOT EXISTS ix_incassi_transazione ON incassi_online(fornitore, transazione);
+
   CREATE TABLE IF NOT EXISTS proposte (
     id         INTEGER PRIMARY KEY,
     socio_id   INTEGER REFERENCES soci(id) ON DELETE SET NULL,
@@ -1774,6 +1791,12 @@ async function migrate() {
   };
   await addIfMissing("contest", "punti_scala", "punti_scala TEXT");
   await addIfMissing("contest", "esito_assegnato", "esito_assegnato INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("serate_prenotazioni", "scadenza_saldo", "scadenza_saldo TEXT");
+  await addIfMissing("serate", "minimo", "minimo INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("serate", "attivata_at", "attivata_at TEXT");
+  await addIfMissing("incassi_online", "stato", "stato TEXT NOT NULL DEFAULT 'incassato'");
+  await addIfMissing("incassi_online", "chiuso_at", "chiuso_at TEXT");
+  await addIfMissing("serate_prenotazioni", "avvisata_at", "avvisata_at TEXT");
   await addIfMissing("soci", "soggiorno_dal", "soggiorno_dal TEXT");
   await addIfMissing("soci", "soggiorno_al", "soggiorno_al TEXT");
   await addIfMissing("utenti_admin", "permessi", "permessi TEXT");
@@ -3791,6 +3814,47 @@ var init_parametri = __esm({
         etichetta: "Turni al giorno per socio",
         aiuto: "Cosi' i tavoli girano e non restano occupati dagli stessi dalla mattina alla sera."
       },
+      /* ---- Incasso online ----
+         Il fornitore e' un parametro perche' il sistema non deve saperlo: arriva la notizia che
+         un pagamento e' avvenuto, e da li' in poi il percorso e' uno solo. */
+      {
+        chiave: "pagamenti_online_attivi",
+        gruppo: "Pagamenti",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "Si paga dall'app",
+        aiuto: "Spento, la quota si salda in cassa e la prenotazione resta da saldare fino a quando qualcuno la incassa a mano. Acceso, il socio paga dal telefono e il ticket si emette da solo. Il numero della carta non passa mai da noi: la pagina di pagamento sta dal fornitore."
+      },
+      {
+        chiave: "pagamenti_fornitori",
+        gruppo: "Pagamenti",
+        tipo: "testo",
+        predefinito: "paypal",
+        dipende_da: "pagamenti_online_attivi",
+        etichetta: "Fornitori attivi (separati da virgola)",
+        aiuto: "paypal, satispay. PayPal incassa da chiunque e accetta anche una carta senza conto PayPal: e' la strada che non lascia fuori gli ospiti stranieri. Satispay va bene per chi ce l'ha, e in Italia sono tanti. Tenerli entrambi non costa niente al sistema: e' lo stesso percorso."
+      },
+      {
+        chiave: "serate_giorni_saldo",
+        gruppo: "Pagamenti",
+        tipo: "numero",
+        predefinito: 3,
+        min: 0,
+        max: 30,
+        etichetta: "Giorni per saldare una serata prenotata dall'app",
+        aiuto: "Zero: nessuna scadenza, il posto resta tenuto fino alla sera anche se nessuno paga \\u2014 ed e' il posto che hai negato a un altro, con la spesa gia' fatta. Tre giorni: chi non versa libera il posto e la serata si rivende. La scadenza non scatta mai dopo la chiusura delle prenotazioni: li' il posto non e' piu' rivendibile e toglierlo non recupera niente."
+      },
+      {
+        chiave: "serate_avviso_ore",
+        gruppo: "Pagamenti",
+        tipo: "numero",
+        predefinito: 24,
+        min: 0,
+        max: 168,
+        dipende_da: "serate_giorni_saldo",
+        etichetta: "Avviso prima che la prenotazione decada (ore)",
+        aiuto: "Quanto prima si avvisa chi non ha ancora saldato. Una prenotazione che decade senza preavviso e' una discussione la sera stessa, non un posto recuperato."
+      },
       // ---- Cinema ----
       {
         chiave: "stage_larghezza_m",
@@ -5222,7 +5286,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.43.0';
+const VERSIONE_APP = '6.45.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -17221,7 +17285,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.43.0" : "dev";
+var VERSION = true ? "6.45.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17697,6 +17761,59 @@ function ticketSerata(serataId, prenId) {
     alt = !alt;
   }
   return "SER-" + n + "-" + (10 - somma % 10) % 10;
+}
+
+// server/incassi.js
+var FORNITORI = ["paypal", "satispay", "manuale"];
+function scadenzaSaldo(inizioSerata2, giorni, adesso = /* @__PURE__ */ new Date()) {
+  if (!inizioSerata2 || !(giorni > 0)) return null;
+  const limite = new Date(adesso.getTime() + giorni * 864e5);
+  return limite >= inizioSerata2 ? null : limite.toISOString();
+}
+function esitoValido(risposta) {
+  if (!risposta || typeof risposta !== "object") return { paga: false, motivo: "Nessuna risposta dal fornitore." };
+  if (risposta.stato !== "completato") return { paga: false, motivo: risposta.motivo || "Pagamento non completato." };
+  if (!risposta.transazione) return { paga: false, motivo: "Il fornitore non ha dato un identificativo di transazione." };
+  if (!(Number(risposta.importo) > 0)) return { paga: false, motivo: "Importo mancante." };
+  return { paga: true, motivo: null };
+}
+function importoCoincide(pagato, dovuto) {
+  return Math.abs(Number(pagato) - Number(dovuto)) <= 0.01;
+}
+async function decadiScadute(db2, adesso = /* @__PURE__ */ new Date()) {
+  const ora = adesso.toISOString();
+  const scadute = await db2.prepare(
+    `SELECT id, serata_id, socio_id, persone FROM serate_prenotazioni
+      WHERE stato='da_saldare' AND scadenza_saldo IS NOT NULL AND scadenza_saldo <= ?`
+  ).all(ora).catch(() => []);
+  if (!scadute.length) return [];
+  await db2.prepare(
+    `UPDATE serate_prenotazioni SET stato='annullata'
+      WHERE stato='da_saldare' AND scadenza_saldo IS NOT NULL AND scadenza_saldo <= ?`
+  ).run(ora);
+  return scadute;
+}
+async function daAvvisare(db2, ore, adesso = /* @__PURE__ */ new Date()) {
+  if (!(ore > 0)) return [];
+  const soglia = new Date(adesso.getTime() + ore * 36e5).toISOString();
+  return db2.prepare(
+    `SELECT p.id, p.socio_id, p.importo, p.scadenza_saldo, s.titolo FROM serate_prenotazioni p
+       JOIN serate s ON s.id=p.serata_id
+      WHERE p.stato='da_saldare' AND p.avvisata_at IS NULL
+        AND p.scadenza_saldo IS NOT NULL AND p.scadenza_saldo <= ? AND p.scadenza_saldo > ?`
+  ).all(soglia, adesso.toISOString()).catch(() => []);
+}
+function attivazione(minimo, iscritti, attivataAt) {
+  const min = Math.max(0, Number(minimo) || 0);
+  if (attivataAt) return { attiva: true, minimo: min, mancano: 0, motivo: null };
+  if (min === 0) return { attiva: true, minimo: 0, mancano: 0, motivo: null };
+  const mancano = Math.max(0, min - (Number(iscritti) || 0));
+  return {
+    attiva: mancano === 0,
+    minimo: min,
+    mancano,
+    motivo: mancano === 0 ? null : `Servono ${min} partecipanti perch\xE9 si faccia: ne mancano ${mancano}. Il posto \xE8 tuo, e la quota non ti viene prelevata finch\xE9 non \xE8 certo.`
+  };
 }
 
 // server/vendor/qrcode-generator.mjs
@@ -24010,16 +24127,90 @@ adminRouter.post("/contest/:id/assegna", requireCap("contest"), async (req, res)
     res.status(400).json({ error: e.message });
   }
 });
+async function chiudiTrattenuti(serataId, stato, quando) {
+  const ids = (await db.prepare("SELECT id FROM serate_prenotazioni WHERE serata_id=?").all(serataId)).map((r) => r.id);
+  if (!ids.length) return 0;
+  let n = 0;
+  for (const id of ids) {
+    const r = await db.prepare("UPDATE incassi_online SET stato=?, chiuso_at=? WHERE ambito='serata' AND riferimento=? AND stato='trattenuto'").run(stato, quando, id);
+    n += r?.changes ?? 0;
+  }
+  return n;
+}
+adminRouter.post("/serate/:id/attiva", requireCap("serate"), async (req, res) => {
+  const s = await db.prepare("SELECT * FROM serate WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Serata non trovata" });
+  if (s.attivata_at) return res.json({ ok: true, gia_attiva: true });
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  await db.prepare("UPDATE serate SET attivata_at=? WHERE id=?").run(now, s.id);
+  const pren = await db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? AND stato='saldata' AND ticket IS NULL").all(s.id);
+  for (const pr of pren) {
+    const t = ticketSerata(s.id, pr.id);
+    await db.prepare("UPDATE serate_prenotazioni SET ticket=?, ticket_at=? WHERE id=?").run(t, now, pr.id);
+    if (pr.socio_id) {
+      try {
+        await sendToSocio(pr.socio_id, { title: "Si fa \u2014 " + s.titolo, body: `${t} \xB7 ${pr.persone} ${pr.persone === 1 ? "persona" : "persone"}. Mostralo all'ingresso.`, url: "/" });
+      } catch (_) {
+      }
+    }
+  }
+  const inc = await chiudiTrattenuti(s.id, "incassato", now);
+  audit(req.adminUser.username, "attiva_serata", "serate", s.id, `${pren.length} ticket`);
+  res.json({ ok: true, ticket_emessi: pren.length, incassi_sbloccati: inc });
+});
+adminRouter.post("/serate/:id/annulla", requireCap("serate"), async (req, res) => {
+  const s = await db.prepare("SELECT * FROM serate WHERE id=?").get(req.params.id);
+  if (!s) return res.status(404).json({ error: "Serata non trovata" });
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const pren = await db.prepare("SELECT * FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").all(s.id);
+  const conTicket = pren.filter((p) => p.ticket).length;
+  if (conTicket > 0 && !req.body?.confermo_rimborsi)
+    return res.status(409).json({
+      error: `${conTicket} ${conTicket === 1 ? "quota \xE8 gi\xE0 stata incassata" : "quote sono gi\xE0 state incassate"}: annullare adesso comporta un rimborso vero, da fare a mano. Conferma se vuoi procedere lo stesso.`,
+      da_rimborsare: conTicket
+    });
+  await db.prepare("UPDATE serate_prenotazioni SET stato='annullata' WHERE serata_id=? AND stato!='annullata'").run(s.id);
+  const lib = await chiudiTrattenuti(s.id, "liberato", now);
+  await db.prepare("UPDATE serate SET attivo=0 WHERE id=?").run(s.id);
+  for (const pr of pren) {
+    if (!pr.socio_id) continue;
+    try {
+      await sendToSocio(pr.socio_id, { title: "Non si fa \u2014 " + s.titolo, body: "La serata non ha raggiunto il minimo. La quota non ti \xE8 mai stata prelevata: non c'\xE8 niente da farsi rimborsare.", url: "/" });
+    } catch (_) {
+    }
+  }
+  audit(req.adminUser.username, "annulla_serata", "serate", s.id, `${pren.length} prenotazioni`);
+  res.json({ ok: true, prenotazioni: pren.length, impegni_liberati: lib, rimborsi_da_fare: conTicket });
+});
+adminRouter.get("/incassi-online", requireCap("serate"), async (req, res) => {
+  const righe = await db.prepare(
+    `SELECT i.id, i.fornitore, i.transazione, i.ambito, i.riferimento, i.importo, i.stato,
+            i.chiuso_at, i.created_at, s.nome, s.cognome
+       FROM incassi_online i LEFT JOIN soci s ON s.id=i.socio_id
+      ORDER BY i.id DESC LIMIT 200`
+  ).all().catch(() => []);
+  const somma = (st) => Math.round(righe.filter((r) => r.stato === st).reduce((a, r) => a + Number(r.importo || 0), 0) * 100) / 100;
+  res.json({
+    righe,
+    in_cassa: false,
+    totale: somma("incassato"),
+    trattenuto: somma("trattenuto"),
+    liberato: somma("liberato")
+  });
+});
 adminRouter.get("/serate", async (req, res) => {
   const rows = await db.prepare("SELECT * FROM serate ORDER BY ordine,data").all();
   const out = [];
   for (const s of rows) {
     const p = await db.prepare("SELECT COALESCE(SUM(CASE WHEN stato!='annullata' THEN persone ELSE 0 END),0) coperti, COALESCE(SUM(CASE WHEN stato='da_saldare' THEN importo ELSE 0 END),0) da_incassare FROM serate_prenotazioni WHERE serata_id=?").get(s.id);
     const f = finestraSerata(s);
+    const att = attivazione(s.minimo, p.coperti, s.attivata_at);
     out.push({
       ...s,
       coperti_prenotati: p.coperti,
       da_incassare: p.da_incassare,
+      attiva: att.attiva,
+      mancano: att.mancano,
       prenotabile_app: f.aperta && f.canale === "app",
       solo_banco: f.aperta && f.canale === "banco",
       chiusa: !f.aperta,
@@ -24039,7 +24230,7 @@ adminRouter.post("/serate", requireCap("serate"), async (req, res) => {
 });
 adminRouter.put("/serate/:id", requireCap("serate"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, b.attivo ? 1 : 0, req.params.id);
+  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,minimo=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, Math.max(0, Number(b.minimo) || 0), b.attivo ? 1 : 0, req.params.id);
   audit(req.adminUser.username, "modifica", "serate", req.params.id);
   res.json({ ok: true });
 });
@@ -24933,10 +25124,11 @@ adminRouter.get("/adesso", async (req, res) => {
   }
   if (puo("serate")) {
     const ds = await db.prepare(
-      `SELECT s.id, s.titolo, COUNT(*) n, COALESCE(SUM(p.importo),0) tot
+      `SELECT s.id, s.titolo, COUNT(*) n, COALESCE(SUM(p.importo),0) tot,
+              SUM(CASE WHEN p.scadenza_saldo IS NOT NULL AND p.scadenza_saldo <= ? THEN 1 ELSE 0 END) in_scadenza
        FROM serate_prenotazioni p JOIN serate s ON s.id=p.serata_id
        WHERE p.stato='da_saldare' GROUP BY s.id`
-    ).all().catch(() => []);
+    ).all(new Date(Date.now() + 864e5).toISOString()).catch(() => []);
     for (const r of ds)
       v({
         fonte: "serate",
@@ -24944,7 +25136,9 @@ adminRouter.get("/adesso", async (req, res) => {
         chiave: "dasaldare:" + r.id,
         attesa: 1,
         titolo: `${r.titolo}: ${r.n} ${r.n === 1 ? "prenotazione" : "prenotazioni"} da saldare`,
-        corpo: "Senza saldo non c\u2019\xE8 il ticket, e senza ticket non si entra."
+        // Il posto tenuto vale piu' della quota non incassata: la cucina ci ha fatto la spesa
+        // sopra, e quel coperto e' stato negato a qualcun altro.
+        corpo: r.in_scadenza > 0 ? `Senza saldo non c\u2019\xE8 il ticket. ${r.in_scadenza} ${r.in_scadenza === 1 ? "decade" : "decadono"} entro domani e il posto torna libero.` : "Senza saldo non c\u2019\xE8 il ticket, e senza ticket non si entra."
       });
   }
   if (puo("cinema")) {
@@ -25483,18 +25677,51 @@ publicRouter.get("/coworking/disponibilita", async (req, res) => {
     pomeriggio: { usati: u.pomeriggio, liberi: Math.max(0, COWO_MAX - u.pomeriggio) }
   });
 });
+async function liberaPostiScaduti() {
+  const ore = Number(await par("serate_avviso_ore")) || 0;
+  for (const p of await daAvvisare(db, ore)) {
+    await db.prepare("UPDATE serate_prenotazioni SET avvisata_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), p.id);
+    if (!p.socio_id) continue;
+    try {
+      await sendToSocio(p.socio_id, {
+        title: "Salda entro poco \u2014 " + p.titolo,
+        body: `La quota di \u20AC${p.importo} non risulta versata: senza saldo il posto torna libero.`,
+        url: "/"
+      });
+    } catch (_) {
+    }
+  }
+  for (const p of await decadiScadute(db)) {
+    audit("sistema", "serata_decaduta", "serate_prenotazioni", p.id, "saldo non pervenuto");
+    if (!p.socio_id) continue;
+    try {
+      await sendToSocio(p.socio_id, {
+        title: "Prenotazione decaduta",
+        body: "La quota non \xE8 stata saldata e il posto \xE8 tornato libero. Se vuoi ancora esserci, prenota di nuovo.",
+        url: "/"
+      });
+    } catch (_) {
+    }
+  }
+}
 async function seratePostiUsati(serataId) {
   return (await db.prepare("SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'").get(serataId)).n;
 }
 publicRouter.get("/serate", async (req, res) => {
-  const rows = await db.prepare("SELECT id,chiave,titolo,data,quando,tema,descrizione,quota,capienza FROM serate WHERE attivo=1 ORDER BY ordine,data").all();
+  await liberaPostiScaduti();
+  const rows = await db.prepare("SELECT id,chiave,titolo,data,quando,tema,descrizione,quota,capienza,minimo,attivata_at FROM serate WHERE attivo=1 ORDER BY ordine,data").all();
   const out = [];
   for (const s of rows) {
     const usati = await seratePostiUsati(s.id);
     const f = finestraSerata(s);
+    const att = attivazione(s.minimo, usati, s.attivata_at);
     out.push({
       ...s,
       posti_liberi: Math.max(0, s.capienza - usati),
+      attiva: att.attiva,
+      minimo: att.minimo,
+      mancano: att.mancano,
+      motivo_attivazione: att.motivo,
       prenotabile_app: f.aperta && f.canale === "app",
       solo_banco: f.aperta && f.canale === "banco",
       chiusa: !f.aperta,
@@ -25523,10 +25750,74 @@ publicRouter.post("/serate/:id/prenota", async (req, res) => {
   if (noMin) return res.status(403).json({ error: noMin });
   const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
   const importo = Math.round(s.quota * persone * 100) / 100;
-  const info = await db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato) VALUES (?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare");
+  const giorni = Number(await par("serate_giorni_saldo")) || 0;
+  const scadenza = scadenzaSaldo(inizioSerata(s), giorni);
+  const info = await db.prepare("INSERT INTO serate_prenotazioni (serata_id,socio_id,tessera_code,nome,persone,importo,stato,scadenza_saldo) VALUES (?,?,?,?,?,?,?,?)").run(s.id, socio?.id ?? null, tessera, nome, persone, importo, "da_saldare", scadenza);
   audit(tessera || "ospite", "prenota_serata", "serate", s.id, `${persone}p \xB7 \u20AC${importo}`);
-  res.status(201).json({ ok: true, id: info.lastInsertRowid, importo, persone, stato: "da_saldare", titolo: s.titolo });
+  const online = String(await par("pagamenti_online_attivi")) === "true" || await par("pagamenti_online_attivi") === true;
+  res.status(201).json({
+    ok: true,
+    id: info.lastInsertRowid,
+    importo,
+    persone,
+    stato: "da_saldare",
+    titolo: s.titolo,
+    scadenza_saldo: scadenza,
+    paga_online: online,
+    fornitori: online ? String(await par("pagamenti_fornitori") || "").split(",").map((x) => x.trim()).filter((x) => FORNITORI.includes(x)) : []
+  });
 });
+publicRouter.post("/pagamenti/conferma", async (req, res) => {
+  const attivi = String(await par("pagamenti_online_attivi")) === "true" || await par("pagamenti_online_attivi") === true;
+  if (!attivi) return res.status(409).json({ error: "Il pagamento dall'app non e\u0300 attivo." });
+  const fornitore = FORNITORI.includes(req.body?.fornitore) ? req.body.fornitore : null;
+  if (!fornitore) return res.status(400).json({ error: "Fornitore non riconosciuto." });
+  const ammessi = String(await par("pagamenti_fornitori") || "").split(",").map((x) => x.trim());
+  if (!ammessi.includes(fornitore)) return res.status(409).json({ error: "Fornitore non attivo." });
+  if (req.body?.ambito !== "serata") return res.status(400).json({ error: "Ambito non riconosciuto." });
+  const pr = await db.prepare("SELECT * FROM serate_prenotazioni WHERE id=?").get(Number(req.body?.riferimento) || 0);
+  if (!pr) return res.status(404).json({ error: "Prenotazione non trovata." });
+  if (pr.stato === "annullata") return res.status(409).json({ error: "La prenotazione e\u0300 stata annullata: non si puo\u0300 saldare." });
+  if (pr.stato === "saldata" && pr.ticket) return res.json({ ok: true, gia_registrato: true, ticket: pr.ticket, importo: pr.importo });
+  const verifica = await verificaPagamento(fornitore, req.body?.transazione, pr.importo);
+  const esito = esitoValido(verifica);
+  if (!esito.paga) return res.status(402).json({ ok: false, error: esito.motivo });
+  if (!importoCoincide(verifica.importo, pr.importo))
+    return res.status(409).json({ ok: false, error: "L'importo pagato non corrisponde alla quota: la prenotazione resta da saldare e la guarda il gestore." });
+  try {
+    await db.prepare("INSERT INTO incassi_online (fornitore,transazione,ambito,riferimento,importo,socio_id) VALUES (?,?,?,?,?,?)").run(fornitore, String(verifica.transazione), "serata", pr.id, verifica.importo, pr.socio_id ?? null);
+  } catch (_) {
+    const g = await db.prepare("SELECT ticket FROM serate_prenotazioni WHERE id=?").get(pr.id);
+    return res.json({ ok: true, gia_registrato: true, ticket: g?.ticket || null, importo: pr.importo });
+  }
+  const ser = await db.prepare("SELECT * FROM serate WHERE id=?").get(pr.serata_id);
+  const usatiOra = await seratePostiUsati(pr.serata_id);
+  const att = attivazione(ser?.minimo, usatiOra, ser?.attivata_at);
+  const trattieni = !att.attiva;
+  await db.prepare("UPDATE incassi_online SET stato=? WHERE fornitore=? AND transazione=?").run(trattieni ? "trattenuto" : "incassato", fornitore, String(verifica.transazione));
+  if (trattieni) {
+    await db.prepare("UPDATE serate_prenotazioni SET stato='saldata', scadenza_saldo=NULL WHERE id=?").run(pr.id);
+    audit(pr.tessera_code || "ospite", "incasso_trattenuto", "serate_prenotazioni", pr.id, `${fornitore} \xB7 \u20AC${verifica.importo} \xB7 mancano ${att.mancano}`);
+    return res.status(201).json({ ok: true, trattenuto: true, ticket: null, importo: verifica.importo, fornitore, mancano: att.mancano, motivo: att.motivo });
+  }
+  const ticket = pr.ticket || ticketSerata(pr.serata_id, pr.id);
+  await db.prepare("UPDATE serate_prenotazioni SET stato='saldata', ticket=?, ticket_at=?, scadenza_saldo=NULL WHERE id=?").run(ticket, (/* @__PURE__ */ new Date()).toISOString(), pr.id);
+  audit(pr.tessera_code || "ospite", "incasso_online", "serate_prenotazioni", pr.id, `${fornitore} \xB7 \u20AC${verifica.importo} \xB7 ${ticket}`);
+  if (pr.socio_id) {
+    try {
+      await sendToSocio(pr.socio_id, { title: "Il tuo ticket \u2014 " + (ser?.titolo || "serata"), body: `${ticket} \xB7 ${pr.persone} ${pr.persone === 1 ? "persona" : "persone"}. Mostralo all'ingresso.`, url: "/" });
+    } catch (_) {
+    }
+  }
+  res.status(201).json({ ok: true, ticket, importo: verifica.importo, fornitore });
+});
+async function verificaPagamento(fornitore, transazione, dovuto) {
+  if (fornitore === "manuale") {
+    if (!transazione) return { stato: "rifiutato", motivo: "Manca l'identificativo." };
+    return { stato: "completato", transazione: String(transazione), importo: Number(dovuto) };
+  }
+  return { stato: "rifiutato", motivo: "Il collegamento con " + fornitore + " non e\u0300 ancora attivo: la quota si salda in cassa." };
+}
 publicRouter.get("/discipline/:dominio", async (req, res) => {
   const dominio = req.params.dominio === "giochi" ? "giochi" : "sport";
   const discs = await db.prepare("SELECT id,chiave,nome,min_giocatori,max_giocatori FROM discipline WHERE dominio=? AND attivo=1 ORDER BY ordine").all(dominio);
@@ -27201,7 +27492,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 14:19" : "online";
+var BUILD = true ? "2026-09-02 17:17" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
