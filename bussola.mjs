@@ -3220,6 +3220,76 @@ var init_parametri = __esm({
         aiuto: `Con "solo unendosi", chi ha gia' una prenotazione quel giorno su quel campo deve aggregarsi a una partita aperta invece di aprirne un'altra.`
       },
       // ---- Comande ----
+      /* LA COMBO COME REGOLA, non come prodotto.
+         Prima era un ARTICOLO di menu' con dei posti da riempire: per definire uno sconto bisognava
+         creare una voce finta nel listino, che poi compariva fra le cose da vendere. Ma una combo
+         non e' un prodotto: e' una regola su quali cose insieme costano meno.
+         Qui si scrive la regola: quali famiglie devono esserci, e a quanto va il totale. Il sistema
+         la riconosce nella comanda e sullo scontrino le tre righe diventano UNA. */
+      {
+        chiave: "combo_attiva",
+        gruppo: "Comande",
+        tipo: "bool",
+        predefinito: false,
+        etichetta: "Riconosci le combo da sola",
+        aiuto: "Se nella comanda ci sono un panino, una bibita e le patatine, il sistema applica il prezzo della combo senza che l'operatore debba cercarla nel menu'. Sullo scontrino le tre righe diventano una sola."
+      },
+      {
+        chiave: "combo_nome",
+        gruppo: "Comande",
+        tipo: "testo",
+        predefinito: "Menu completo",
+        dipende_da: "combo_attiva",
+        etichetta: "Come si chiama sul conto",
+        aiuto: "E' il nome che legge il cliente al posto dei tre prodotti."
+      },
+      {
+        chiave: "combo_prezzo",
+        gruppo: "Comande",
+        tipo: "numero",
+        predefinito: 10,
+        min: 0,
+        max: 200,
+        dipende_da: "combo_attiva",
+        etichetta: "Quanto costa la combo (\u20AC)",
+        aiuto: "Il totale dei tre insieme. Se e' piu' alto di quanto costerebbero separati, la combo non si applica: non si sconta qualcosa che costa di piu'."
+      },
+      {
+        chiave: "combo_panino",
+        gruppo: "Comande",
+        tipo: "testo",
+        predefinito: "panin|hot dog|hotdog|toast",
+        dipende_da: "combo_attiva",
+        etichetta: "Cosa vale come panino",
+        aiuto: "Parole che devono comparire nel nome. Il panino completo si esclude scrivendolo fra le esclusioni qui sotto."
+      },
+      {
+        chiave: "combo_bibita",
+        gruppo: "Comande",
+        tipo: "testo",
+        predefinito: "lattina",
+        dipende_da: "combo_attiva",
+        etichetta: "Cosa vale come bibita",
+        aiuto: "Di solito la bibita in lattina: l'acqua e le birre non fanno parte dell'offerta."
+      },
+      {
+        chiave: "combo_contorno",
+        gruppo: "Comande",
+        tipo: "testo",
+        predefinito: "patatine fritte",
+        dipende_da: "combo_attiva",
+        etichetta: "Cosa vale come contorno",
+        aiuto: 'Le patatine fritte. Se scrivi solo "patatine" ci rientrano anche quelle in busta.'
+      },
+      {
+        chiave: "combo_escludi",
+        gruppo: "Comande",
+        tipo: "testo",
+        predefinito: "completo",
+        dipende_da: "combo_attiva",
+        etichetta: "Cosa NON entra mai nella combo",
+        aiuto: "Il panino completo costa gia' di suo: se entrasse nella combo si regalerebbe la differenza."
+      },
       {
         chiave: "comande_chiusura_automatica",
         gruppo: "Comande",
@@ -4528,6 +4598,13 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   // non c'e' un elenco esplicito \u2014 se rientra nel filtro per categoria e prezzo massimo.
   function copre(posto, art) {
     if (!art) return false;
+    // Regola scritta a parole: si guarda il nome. Le esclusioni vincono sempre \u2014 il panino
+    // completo non deve entrare in nessuna combo, per quanto assomigli a un panino.
+    if (posto.parole) {
+      const nome = String(art.nome || '');
+      if (posto.escludi && posto.escludi.test(nome)) return false;
+      return new RegExp(posto.parole.split('|').map((s) => s.trim()).filter(Boolean).join('|'), 'i').test(nome);
+    }
     const ammessi = posto.ammessi || [];
     if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
     if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || '').toLowerCase()) return false;
@@ -4620,7 +4697,31 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   // Il file serve a due mondi: i browser lo caricano come pezzo di pagina e si aspettano
   // \`Combo\` globale; il server lo importa come modulo. Si mette a disposizione in tutti e due i
   // modi, e resta un file solo \u2014 che e' il punto.
-  radice.Combo = { trova, sconto, copre };
+  /* LA COMBO DEFINITA DAI PARAMETRI, invece che da un articolo finto nel listino.
+     Prima per definire uno sconto bisognava creare una voce nel menu', che poi compariva fra le
+     cose da vendere. Ma una combo non e' un prodotto: e' una regola su quali cose insieme
+     costano meno. Qui si legge la regola dai parametri e si costruisce la stessa forma che
+     \`trova\` sa gia' leggere, cosi' il calcolo resta uno solo. */
+  function daParametri(par) {
+    if (!par || !par.combo_attiva) return [];
+    const escludi = String(par.combo_escludi || '').trim();
+    const rxEsc = escludi ? new RegExp(escludi.split('|').map((s) => s.trim()).filter(Boolean).join('|'), 'i') : null;
+    // Niente elenco esplicito di prodotti: si guarda il NOME. Cosi' un panino nuovo entra nella
+    // combo appena lo si mette a listino, senza doverlo aggiungere da nessuna parte.
+    const posto = (etichetta, parole) => ({ etichetta, parole: String(parole || '').trim(), escludi: rxEsc });
+    const p = [
+      posto('panino', par.combo_panino),
+      posto('bibita', par.combo_bibita),
+      posto('contorno', par.combo_contorno),
+    ].filter((x) => x.parole);
+    if (p.length < 2) return [];   // meno di due pezzi non e' una composizione
+    return [{
+      id: 'par', nome: String(par.combo_nome || 'Combo'),
+      prezzo: Number(par.combo_prezzo) || 0, posti: p, da_parametri: true
+    }];
+  }
+
+  radice.Combo = { trova, sconto, copre, daParametri };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 /* NIENTE \`export\` QUI DENTRO. Questo file lo caricano anche i browser, come pezzo di pagina e
    non come modulo: un \`export\` a fondo file fa fallire tutto lo script con "Unexpected token
@@ -4681,7 +4782,10 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      .cmd-col{min-width:0}
+      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
+      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -4902,8 +5006,44 @@ window.Comanda = (function () {
       const keys = sortCats(Object.keys(g));
       // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
       // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
+      /* TRE COLONNE PER FAMIGLIA, non riempite a caso.
+         La griglia automatica metteva le categorie una dopo l'altra e le distribuiva come
+         capitava: gli alcolici accanto alle granite, il gelato in fondo a destra, i panini
+         spezzati fra due colonne. Chi batte cerca per FAMIGLIA (dov'e' il bar, dov'e' da bere,
+         dov'e' da mangiare) e la posizione deve restare la stessa comanda dopo comanda, se no
+         ogni volta si ricomincia a cercare.
+           1a: il BAR - caffetteria, granite, e i gelati sotto le granite
+           2a: da BERE - bibite, analcolici, alcolici, cocktail
+           3a: da MANGIARE - prima i piatti, poi i panini
+         Una categoria che non rientra in nessuna famiglia finisce nella terza: meglio in fondo
+         che sparita. */
+      const FAMIGLIE = [
+        /caff|caffetter|granit|gelat|dolc|cornett|brioch/i,
+        /bibit|bevand|analcol|alcol|aperitiv|cocktail|birr|vino|amar|distillat|liquor/i,
+        /piatt|panin|toast|fritt|snack|patatin|insalat|cucina/i,
+      ];
+      /* E DENTRO OGNI COLONNA c'e' un ordine, non l'alfabeto. Il gelato sta SOTTO le granite
+         perche' e' la stessa vetrina; i piatti stanno PRIMA dei panini perche' sono il servizio
+         principale e i panini si scorrono dopo. Chi non e' nell'elenco va in fondo alla sua
+         colonna: meglio ultimo che sparito. */
+      const DENTRO = [
+        [/caff|caffetter/i, /granit/i, /gelat/i, /dolc|cornett|brioch/i],
+        [/bibit|bevand|analcol/i, /birr/i, /aperitiv|cocktail/i, /alcol|vino|amar|distillat|liquor/i],
+        [/piatt|insalat|cucina/i, /panin|toast|hot/i, /fritt|snack|patatin|cald/i],
+      ];
+      const colonne = [[], [], []];
+      for (const cat of keys) {
+        let i = FAMIGLIE.findIndex((rx) => rx.test(cat));
+        if (i < 0) i = 2;
+        colonne[i].push(cat);
+      }
+      colonne.forEach((cs, i) => cs.sort((a, b) => {
+        const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
+        return r(a) - r(b) || String(a).localeCompare(String(b));
+      }));
+      const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
+        ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -8131,7 +8271,10 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      .cmd-col{min-width:0}
+      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
+      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -8352,8 +8495,44 @@ window.Comanda = (function () {
       const keys = sortCats(Object.keys(g));
       // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
       // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
+      /* TRE COLONNE PER FAMIGLIA, non riempite a caso.
+         La griglia automatica metteva le categorie una dopo l'altra e le distribuiva come
+         capitava: gli alcolici accanto alle granite, il gelato in fondo a destra, i panini
+         spezzati fra due colonne. Chi batte cerca per FAMIGLIA (dov'e' il bar, dov'e' da bere,
+         dov'e' da mangiare) e la posizione deve restare la stessa comanda dopo comanda, se no
+         ogni volta si ricomincia a cercare.
+           1a: il BAR - caffetteria, granite, e i gelati sotto le granite
+           2a: da BERE - bibite, analcolici, alcolici, cocktail
+           3a: da MANGIARE - prima i piatti, poi i panini
+         Una categoria che non rientra in nessuna famiglia finisce nella terza: meglio in fondo
+         che sparita. */
+      const FAMIGLIE = [
+        /caff|caffetter|granit|gelat|dolc|cornett|brioch/i,
+        /bibit|bevand|analcol|alcol|aperitiv|cocktail|birr|vino|amar|distillat|liquor/i,
+        /piatt|panin|toast|fritt|snack|patatin|insalat|cucina/i,
+      ];
+      /* E DENTRO OGNI COLONNA c'e' un ordine, non l'alfabeto. Il gelato sta SOTTO le granite
+         perche' e' la stessa vetrina; i piatti stanno PRIMA dei panini perche' sono il servizio
+         principale e i panini si scorrono dopo. Chi non e' nell'elenco va in fondo alla sua
+         colonna: meglio ultimo che sparito. */
+      const DENTRO = [
+        [/caff|caffetter/i, /granit/i, /gelat/i, /dolc|cornett|brioch/i],
+        [/bibit|bevand|analcol/i, /birr/i, /aperitiv|cocktail/i, /alcol|vino|amar|distillat|liquor/i],
+        [/piatt|insalat|cucina/i, /panin|toast|hot/i, /fritt|snack|patatin|cald/i],
+      ];
+      const colonne = [[], [], []];
+      for (const cat of keys) {
+        let i = FAMIGLIE.findIndex((rx) => rx.test(cat));
+        if (i < 0) i = 2;
+        colonne[i].push(cat);
+      }
+      colonne.forEach((cs, i) => cs.sort((a, b) => {
+        const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
+        return r(a) - r(b) || String(a).localeCompare(String(b));
+      }));
+      const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
+        ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -11404,6 +11583,13 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
   // non c'e' un elenco esplicito \u2014 se rientra nel filtro per categoria e prezzo massimo.
   function copre(posto, art) {
     if (!art) return false;
+    // Regola scritta a parole: si guarda il nome. Le esclusioni vincono sempre \u2014 il panino
+    // completo non deve entrare in nessuna combo, per quanto assomigli a un panino.
+    if (posto.parole) {
+      const nome = String(art.nome || '');
+      if (posto.escludi && posto.escludi.test(nome)) return false;
+      return new RegExp(posto.parole.split('|').map((s) => s.trim()).filter(Boolean).join('|'), 'i').test(nome);
+    }
     const ammessi = posto.ammessi || [];
     if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
     if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || '').toLowerCase()) return false;
@@ -11496,7 +11682,31 @@ input,select,textarea{border:var(--bordo) solid var(--line) !important;}
   // Il file serve a due mondi: i browser lo caricano come pezzo di pagina e si aspettano
   // \`Combo\` globale; il server lo importa come modulo. Si mette a disposizione in tutti e due i
   // modi, e resta un file solo \u2014 che e' il punto.
-  radice.Combo = { trova, sconto, copre };
+  /* LA COMBO DEFINITA DAI PARAMETRI, invece che da un articolo finto nel listino.
+     Prima per definire uno sconto bisognava creare una voce nel menu', che poi compariva fra le
+     cose da vendere. Ma una combo non e' un prodotto: e' una regola su quali cose insieme
+     costano meno. Qui si legge la regola dai parametri e si costruisce la stessa forma che
+     \`trova\` sa gia' leggere, cosi' il calcolo resta uno solo. */
+  function daParametri(par) {
+    if (!par || !par.combo_attiva) return [];
+    const escludi = String(par.combo_escludi || '').trim();
+    const rxEsc = escludi ? new RegExp(escludi.split('|').map((s) => s.trim()).filter(Boolean).join('|'), 'i') : null;
+    // Niente elenco esplicito di prodotti: si guarda il NOME. Cosi' un panino nuovo entra nella
+    // combo appena lo si mette a listino, senza doverlo aggiungere da nessuna parte.
+    const posto = (etichetta, parole) => ({ etichetta, parole: String(parole || '').trim(), escludi: rxEsc });
+    const p = [
+      posto('panino', par.combo_panino),
+      posto('bibita', par.combo_bibita),
+      posto('contorno', par.combo_contorno),
+    ].filter((x) => x.parole);
+    if (p.length < 2) return [];   // meno di due pezzi non e' una composizione
+    return [{
+      id: 'par', nome: String(par.combo_nome || 'Combo'),
+      prezzo: Number(par.combo_prezzo) || 0, posti: p, da_parametri: true
+    }];
+  }
+
+  radice.Combo = { trova, sconto, copre, daParametri };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 /* NIENTE \`export\` QUI DENTRO. Questo file lo caricano anche i browser, come pezzo di pagina e
    non come modulo: un \`export\` a fondo file fa fallire tutto lo script con "Unexpected token
@@ -11557,7 +11767,10 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      .cmd-col{min-width:0}
+      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
+      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -11778,8 +11991,44 @@ window.Comanda = (function () {
       const keys = sortCats(Object.keys(g));
       // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
       // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
+      /* TRE COLONNE PER FAMIGLIA, non riempite a caso.
+         La griglia automatica metteva le categorie una dopo l'altra e le distribuiva come
+         capitava: gli alcolici accanto alle granite, il gelato in fondo a destra, i panini
+         spezzati fra due colonne. Chi batte cerca per FAMIGLIA (dov'e' il bar, dov'e' da bere,
+         dov'e' da mangiare) e la posizione deve restare la stessa comanda dopo comanda, se no
+         ogni volta si ricomincia a cercare.
+           1a: il BAR - caffetteria, granite, e i gelati sotto le granite
+           2a: da BERE - bibite, analcolici, alcolici, cocktail
+           3a: da MANGIARE - prima i piatti, poi i panini
+         Una categoria che non rientra in nessuna famiglia finisce nella terza: meglio in fondo
+         che sparita. */
+      const FAMIGLIE = [
+        /caff|caffetter|granit|gelat|dolc|cornett|brioch/i,
+        /bibit|bevand|analcol|alcol|aperitiv|cocktail|birr|vino|amar|distillat|liquor/i,
+        /piatt|panin|toast|fritt|snack|patatin|insalat|cucina/i,
+      ];
+      /* E DENTRO OGNI COLONNA c'e' un ordine, non l'alfabeto. Il gelato sta SOTTO le granite
+         perche' e' la stessa vetrina; i piatti stanno PRIMA dei panini perche' sono il servizio
+         principale e i panini si scorrono dopo. Chi non e' nell'elenco va in fondo alla sua
+         colonna: meglio ultimo che sparito. */
+      const DENTRO = [
+        [/caff|caffetter/i, /granit/i, /gelat/i, /dolc|cornett|brioch/i],
+        [/bibit|bevand|analcol/i, /birr/i, /aperitiv|cocktail/i, /alcol|vino|amar|distillat|liquor/i],
+        [/piatt|insalat|cucina/i, /panin|toast|hot/i, /fritt|snack|patatin|cald/i],
+      ];
+      const colonne = [[], [], []];
+      for (const cat of keys) {
+        let i = FAMIGLIE.findIndex((rx) => rx.test(cat));
+        if (i < 0) i = 2;
+        colonne[i].push(cat);
+      }
+      colonne.forEach((cs, i) => cs.sort((a, b) => {
+        const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
+        return r(a) - r(b) || String(a).localeCompare(String(b));
+      }));
+      const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
+        ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -16007,6 +16256,13 @@ var ordina_default = `<!doctype html>
   // non c'e' un elenco esplicito \u2014 se rientra nel filtro per categoria e prezzo massimo.
   function copre(posto, art) {
     if (!art) return false;
+    // Regola scritta a parole: si guarda il nome. Le esclusioni vincono sempre \u2014 il panino
+    // completo non deve entrare in nessuna combo, per quanto assomigli a un panino.
+    if (posto.parole) {
+      const nome = String(art.nome || '');
+      if (posto.escludi && posto.escludi.test(nome)) return false;
+      return new RegExp(posto.parole.split('|').map((s) => s.trim()).filter(Boolean).join('|'), 'i').test(nome);
+    }
     const ammessi = posto.ammessi || [];
     if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
     if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || '').toLowerCase()) return false;
@@ -16099,7 +16355,31 @@ var ordina_default = `<!doctype html>
   // Il file serve a due mondi: i browser lo caricano come pezzo di pagina e si aspettano
   // \`Combo\` globale; il server lo importa come modulo. Si mette a disposizione in tutti e due i
   // modi, e resta un file solo \u2014 che e' il punto.
-  radice.Combo = { trova, sconto, copre };
+  /* LA COMBO DEFINITA DAI PARAMETRI, invece che da un articolo finto nel listino.
+     Prima per definire uno sconto bisognava creare una voce nel menu', che poi compariva fra le
+     cose da vendere. Ma una combo non e' un prodotto: e' una regola su quali cose insieme
+     costano meno. Qui si legge la regola dai parametri e si costruisce la stessa forma che
+     \`trova\` sa gia' leggere, cosi' il calcolo resta uno solo. */
+  function daParametri(par) {
+    if (!par || !par.combo_attiva) return [];
+    const escludi = String(par.combo_escludi || '').trim();
+    const rxEsc = escludi ? new RegExp(escludi.split('|').map((s) => s.trim()).filter(Boolean).join('|'), 'i') : null;
+    // Niente elenco esplicito di prodotti: si guarda il NOME. Cosi' un panino nuovo entra nella
+    // combo appena lo si mette a listino, senza doverlo aggiungere da nessuna parte.
+    const posto = (etichetta, parole) => ({ etichetta, parole: String(parole || '').trim(), escludi: rxEsc });
+    const p = [
+      posto('panino', par.combo_panino),
+      posto('bibita', par.combo_bibita),
+      posto('contorno', par.combo_contorno),
+    ].filter((x) => x.parole);
+    if (p.length < 2) return [];   // meno di due pezzi non e' una composizione
+    return [{
+      id: 'par', nome: String(par.combo_nome || 'Combo'),
+      prezzo: Number(par.combo_prezzo) || 0, posti: p, da_parametri: true
+    }];
+  }
+
+  radice.Combo = { trova, sconto, copre, daParametri };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 /* NIENTE \`export\` QUI DENTRO. Questo file lo caricano anche i browser, come pezzo di pagina e
    non come modulo: un \`export\` a fondo file fa fallire tutto lo script con "Unexpected token
@@ -16160,7 +16440,10 @@ window.Comanda = (function () {
          righe e una scheda poteva tagliarsi a meta fra due colonne. Con una griglia ogni
          scheda resta intera e la colonna non scende mai sotto i 340 px, larghezza in cui un
          nome di prodotto sta su due righe. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:8px 16px;align-items:start}
+      .cmd-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;align-items:start}
+      .cmd-col{min-width:0}
+      @media (max-width:1100px){ .cmd-list{grid-template-columns:repeat(2,1fr)} }
+      @media (max-width:720px){ .cmd-list{grid-template-columns:1fr} }
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -16381,8 +16664,44 @@ window.Comanda = (function () {
       const keys = sortCats(Object.keys(g));
       // Ogni categoria \xE8 un blocco che NON si spezza tra le colonne: su schermi larghi (cassa/tablet)
       // il men\xF9 si dispone su pi\xF9 colonne e l'operatore non deve scorrere per cercare l'articolo.
+      /* TRE COLONNE PER FAMIGLIA, non riempite a caso.
+         La griglia automatica metteva le categorie una dopo l'altra e le distribuiva come
+         capitava: gli alcolici accanto alle granite, il gelato in fondo a destra, i panini
+         spezzati fra due colonne. Chi batte cerca per FAMIGLIA (dov'e' il bar, dov'e' da bere,
+         dov'e' da mangiare) e la posizione deve restare la stessa comanda dopo comanda, se no
+         ogni volta si ricomincia a cercare.
+           1a: il BAR - caffetteria, granite, e i gelati sotto le granite
+           2a: da BERE - bibite, analcolici, alcolici, cocktail
+           3a: da MANGIARE - prima i piatti, poi i panini
+         Una categoria che non rientra in nessuna famiglia finisce nella terza: meglio in fondo
+         che sparita. */
+      const FAMIGLIE = [
+        /caff|caffetter|granit|gelat|dolc|cornett|brioch/i,
+        /bibit|bevand|analcol|alcol|aperitiv|cocktail|birr|vino|amar|distillat|liquor/i,
+        /piatt|panin|toast|fritt|snack|patatin|insalat|cucina/i,
+      ];
+      /* E DENTRO OGNI COLONNA c'e' un ordine, non l'alfabeto. Il gelato sta SOTTO le granite
+         perche' e' la stessa vetrina; i piatti stanno PRIMA dei panini perche' sono il servizio
+         principale e i panini si scorrono dopo. Chi non e' nell'elenco va in fondo alla sua
+         colonna: meglio ultimo che sparito. */
+      const DENTRO = [
+        [/caff|caffetter/i, /granit/i, /gelat/i, /dolc|cornett|brioch/i],
+        [/bibit|bevand|analcol/i, /birr/i, /aperitiv|cocktail/i, /alcol|vino|amar|distillat|liquor/i],
+        [/piatt|insalat|cucina/i, /panin|toast|hot/i, /fritt|snack|patatin|cald/i],
+      ];
+      const colonne = [[], [], []];
+      for (const cat of keys) {
+        let i = FAMIGLIE.findIndex((rx) => rx.test(cat));
+        if (i < 0) i = 2;
+        colonne[i].push(cat);
+      }
+      colonne.forEach((cs, i) => cs.sort((a, b) => {
+        const r = (c) => { const k = DENTRO[i].findIndex((rx) => rx.test(c)); return k < 0 ? 99 : k; };
+        return r(a) - r(b) || String(a).localeCompare(String(b));
+      }));
+      const blocco = (cat) => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`;
       listEl.innerHTML = keys.length
-        ? keys.map(cat => \`<div class="cmd-group"><div class="cmd-cat">\${esc(cat)}</div>\${g[cat].map(itemHTML).join('')}</div>\`).join('')
+        ? colonne.map((cs) => \`<div class="cmd-col">\${cs.map(blocco).join('')}</div>\`).join('')
         : \`<p class="cmd-empty">Nessun prodotto\${q ? ' per \u201C' + esc(q) + '\u201D' : ''}.</p>\`;
     }
     function setN(id) { const el = mount.querySelector('[data-cn="' + id + '"]'); if (el) el.textContent = cart[id] || 0; }
@@ -16584,7 +16903,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.34.0" : "dev";
+var VERSION = true ? "6.35.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -16691,6 +17010,11 @@ import { Router } from "express";
   "use strict";
   function copre2(posto, art) {
     if (!art) return false;
+    if (posto.parole) {
+      const nome = String(art.nome || "");
+      if (posto.escludi && posto.escludi.test(nome)) return false;
+      return new RegExp(posto.parole.split("|").map((s) => s.trim()).filter(Boolean).join("|"), "i").test(nome);
+    }
     const ammessi = posto.ammessi || [];
     if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
     if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || "").toLowerCase()) return false;
@@ -16761,7 +17085,26 @@ import { Router } from "express";
   function sconto2(righe, articoli, combos) {
     return trova2(righe, articoli, combos).reduce((n, c) => n + c.sconto, 0);
   }
-  radice.Combo = { trova: trova2, sconto: sconto2, copre: copre2 };
+  function daParametri(par2) {
+    if (!par2 || !par2.combo_attiva) return [];
+    const escludi = String(par2.combo_escludi || "").trim();
+    const rxEsc = escludi ? new RegExp(escludi.split("|").map((s) => s.trim()).filter(Boolean).join("|"), "i") : null;
+    const posto = (etichetta, parole) => ({ etichetta, parole: String(parole || "").trim(), escludi: rxEsc });
+    const p = [
+      posto("panino", par2.combo_panino),
+      posto("bibita", par2.combo_bibita),
+      posto("contorno", par2.combo_contorno)
+    ].filter((x) => x.parole);
+    if (p.length < 2) return [];
+    return [{
+      id: "par",
+      nome: String(par2.combo_nome || "Combo"),
+      prezzo: Number(par2.combo_prezzo) || 0,
+      posti: p,
+      da_parametri: true
+    }];
+  }
+  radice.Combo = { trova: trova2, sconto: sconto2, copre: copre2, daParametri };
 })(typeof globalThis !== "undefined" ? globalThis : void 0);
 
 // shared/combo.mjs
@@ -21465,14 +21808,22 @@ async function comboDefinite() {
   return fuori;
 }
 async function scontiCombo(righe) {
-  const combos = await comboDefinite();
+  const elenco = await tuttiParametri().catch(() => []);
+  const valori = {};
+  for (const p of elenco) valori[p.chiave] = p.valore;
+  const daPar = combo_default.daParametri(valori);
+  const combos = daPar.length ? daPar : await comboDefinite();
   if (!combos.length) return [];
   const articoli = await db.prepare("SELECT id,nome,prezzo,categoria FROM menu_articoli WHERE attivo=1").all().catch(() => []);
   const semplici = (righe || []).filter((r) => r.menu_id && !r.combo);
   return combo_default.trova(semplici.map((r) => ({ menu_id: r.menu_id, qta: Number(r.qta) || 1 })), articoli, combos);
 }
 adminRouter.get("/combo-definite", requireAnyCap("comande", "menu"), async (req, res) => {
-  res.json(await comboDefinite());
+  const elenco = await tuttiParametri().catch(() => []);
+  const valori = {};
+  for (const p of elenco) valori[p.chiave] = p.valore;
+  const daPar = combo_default.daParametri(valori);
+  res.json(daPar.length ? daPar : await comboDefinite());
 });
 adminRouter.get("/menu/:id/combo", requireAnyCap("comande", "menu"), async (req, res) => {
   res.json(await postiCombo(req.params.id));
@@ -22095,8 +22446,14 @@ adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const nonPrima = await primoRitiro(haCucina);
   const sconti = await scontiCombo(righe);
   for (const c of sconti) {
+    const info2 = await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,NULL,?,?,?,?,?,?,NULL)").run(cid, c.nome, Number(c.prezzo) / c.volte, c.volte, "cassa", null, "pronto");
+    for (const [menuId, quante] of Object.entries(c.usa)) {
+      await db.prepare(
+        "UPDATE comanda_righe SET prezzo=0, parent_riga_id=? WHERE id IN (SELECT id FROM comanda_righe WHERE comanda_id=? AND menu_id=? AND prezzo>0 ORDER BY id LIMIT ?)"
+      ).run(Number(info2.lastInsertRowid), cid, Number(menuId), Number(quante)).catch(() => {
+      });
+    }
     totale -= c.sconto;
-    await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,NULL,?,?,1,?,?,?,NULL)").run(cid, `Sconto ${c.nome}${c.volte > 1 ? " \xD7" + c.volte : ""}`, -c.sconto, "cassa", null, "pronto");
   }
   await db.prepare("UPDATE comande SET totale=?, non_prima=? WHERE id=?").run(Math.round(totale * 100) / 100, nonPrima, cid);
   await registra({
@@ -26447,7 +26804,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 08:51" : "online";
+var BUILD = true ? "2026-09-02 09:15" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
