@@ -4821,12 +4821,17 @@ window.Comanda = (function () {
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
       .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
-      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
-         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
-         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
-         finestra: conta quanto e largo il posto in cui si trova. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
+         Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
+         una colonna sola, e quindici panini si stendevano uno per riga su tutta la larghezza,
+         con un nome corto in mezzo a un metro di bianco.
+         Ora il blocco resta pieno e sono i PRODOTTI a disporsi in griglia dentro ogni categoria.
+         Il minimo vale max(25%,280px): sotto i 1680 px comanda il 420 e le colonne calano da
+         sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
+         quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
+      .cmd-larghi{grid-column:1/-1}
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -4844,10 +4849,15 @@ window.Comanda = (function () {
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
       /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
-         scheda del doppio per una parola sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
-      .cmd-info b{display:block;color:var(--c-navy)}
-      .cmd-desc{font-size:.78rem;color:#555;display:block}
+         scheda del doppio per una parola sola.
+         Il tetto non ha MAI funzionato: la regola qui sotto rimetteva display:block con la
+         stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
+         spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
+         128 px accanto a una da 58. Le due regole ora sono una sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+      /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
+         prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
+      .cmd-fermo{cursor:default}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
          aggiunge, e la bolla si chiude toccando di nuovo. */
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
@@ -4893,14 +4903,13 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
-    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
-       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
-       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
-       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
-       stesso ordine.
-       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
-       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
-    const descrizioniAperte = opts.descrizioni !== false;
+    /* DESCRIZIONI: mai in riga, in nessuna delle tre app.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" fa passare
+       la riga da 56 a oltre 140 px: il triplo dello scorrimento per lo stesso ordine. Non e' un
+       ristorante gourmet \u2014 chi ordina un caffe' sa cos'e' un caffe', e chi batte la comanda i
+       prodotti li conosce.
+       Non si buttano via: stanno dietro un "?" che le apre sopra la riga. Chi ha un dubbio le
+       trova in un tocco, e chi non ce l'ha non le scorre. */
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -5006,9 +5015,17 @@ window.Comanda = (function () {
       if (m.combo && (m.posti || []).length) {
         const pronta = comboPronta(m);
         const riass = comboRiassunto(m);
+        // Stesse cinque colonne della riga normale: icona, nome, "?", prezzo, tasti. Prima
+        // l'icona stava da sola nella colonna elastica e il nome in una fissa, cosi' la combo
+        // portava il prezzo e il piu' in un punto diverso da tutte le altre righe.
         return \`<div class="cmd-item\${q ? ' sel' : ''}">
-          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-tap cmd-fermo">
+            <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+            <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          </span>
+          \${m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
           <span class="cmd-pz">\${eur(m.prezzo)}</span>
           <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
           \${comboHTML(m)}</div>\`;
@@ -5018,15 +5035,13 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b><span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${!descrizioniAperte
-          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
-          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
-          ? (m.descrizione
-              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
-              : '<span class="cmd-info-btn vuoto"></span>')
-          : ''}
+        \${/* La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+              descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato. */
+          m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -5207,7 +5222,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.42.0';
+const VERSIONE_APP = '6.43.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -8397,12 +8412,17 @@ window.Comanda = (function () {
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
       .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
-      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
-         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
-         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
-         finestra: conta quanto e largo il posto in cui si trova. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
+         Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
+         una colonna sola, e quindici panini si stendevano uno per riga su tutta la larghezza,
+         con un nome corto in mezzo a un metro di bianco.
+         Ora il blocco resta pieno e sono i PRODOTTI a disporsi in griglia dentro ogni categoria.
+         Il minimo vale max(25%,280px): sotto i 1680 px comanda il 420 e le colonne calano da
+         sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
+         quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
+      .cmd-larghi{grid-column:1/-1}
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -8420,10 +8440,15 @@ window.Comanda = (function () {
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
       /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
-         scheda del doppio per una parola sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
-      .cmd-info b{display:block;color:var(--c-navy)}
-      .cmd-desc{font-size:.78rem;color:#555;display:block}
+         scheda del doppio per una parola sola.
+         Il tetto non ha MAI funzionato: la regola qui sotto rimetteva display:block con la
+         stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
+         spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
+         128 px accanto a una da 58. Le due regole ora sono una sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+      /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
+         prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
+      .cmd-fermo{cursor:default}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
          aggiunge, e la bolla si chiude toccando di nuovo. */
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
@@ -8469,14 +8494,13 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
-    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
-       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
-       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
-       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
-       stesso ordine.
-       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
-       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
-    const descrizioniAperte = opts.descrizioni !== false;
+    /* DESCRIZIONI: mai in riga, in nessuna delle tre app.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" fa passare
+       la riga da 56 a oltre 140 px: il triplo dello scorrimento per lo stesso ordine. Non e' un
+       ristorante gourmet \u2014 chi ordina un caffe' sa cos'e' un caffe', e chi batte la comanda i
+       prodotti li conosce.
+       Non si buttano via: stanno dietro un "?" che le apre sopra la riga. Chi ha un dubbio le
+       trova in un tocco, e chi non ce l'ha non le scorre. */
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -8582,9 +8606,17 @@ window.Comanda = (function () {
       if (m.combo && (m.posti || []).length) {
         const pronta = comboPronta(m);
         const riass = comboRiassunto(m);
+        // Stesse cinque colonne della riga normale: icona, nome, "?", prezzo, tasti. Prima
+        // l'icona stava da sola nella colonna elastica e il nome in una fissa, cosi' la combo
+        // portava il prezzo e il piu' in un punto diverso da tutte le altre righe.
         return \`<div class="cmd-item\${q ? ' sel' : ''}">
-          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-tap cmd-fermo">
+            <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+            <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          </span>
+          \${m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
           <span class="cmd-pz">\${eur(m.prezzo)}</span>
           <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
           \${comboHTML(m)}</div>\`;
@@ -8594,15 +8626,13 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b><span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${!descrizioniAperte
-          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
-          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
-          ? (m.descrizione
-              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
-              : '<span class="cmd-info-btn vuoto"></span>')
-          : ''}
+        \${/* La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+              descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato. */
+          m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -11600,9 +11630,6 @@ body:not(.aiuti) .aiuto{display:none}
   #modBtn{display:inline-flex}
   /* Comprimi/Espandi costavano una riga intera per una comodita' da scrivania. */
   .foldbar{display:none !important}
-  /* Le descrizioni dei prodotti servono al socio, non a chi batte: l'operatore i prodotti li
-     conosce, e con la descrizione ogni riga di menu' passa da 56 a oltre 140 px. */
-  .cmd-desc{display:none}
   /* I PARAGRAFI DI SPIEGAZIONE non sono lavoro: sono guida. Su un telefono in servizio
      occupano lo spazio in cui dovrebbe esserci il tavolo da servire \u2014 e chi lavora quelle
      righe le ha gia' lette la prima sera. Restano a un tocco: il bottone "?" in alto le
@@ -11986,12 +12013,17 @@ window.Comanda = (function () {
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
       .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
-      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
-         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
-         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
-         finestra: conta quanto e largo il posto in cui si trova. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
+         Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
+         una colonna sola, e quindici panini si stendevano uno per riga su tutta la larghezza,
+         con un nome corto in mezzo a un metro di bianco.
+         Ora il blocco resta pieno e sono i PRODOTTI a disporsi in griglia dentro ogni categoria.
+         Il minimo vale max(25%,280px): sotto i 1680 px comanda il 420 e le colonne calano da
+         sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
+         quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
+      .cmd-larghi{grid-column:1/-1}
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -12009,10 +12041,15 @@ window.Comanda = (function () {
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
       /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
-         scheda del doppio per una parola sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
-      .cmd-info b{display:block;color:var(--c-navy)}
-      .cmd-desc{font-size:.78rem;color:#555;display:block}
+         scheda del doppio per una parola sola.
+         Il tetto non ha MAI funzionato: la regola qui sotto rimetteva display:block con la
+         stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
+         spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
+         128 px accanto a una da 58. Le due regole ora sono una sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+      /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
+         prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
+      .cmd-fermo{cursor:default}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
          aggiunge, e la bolla si chiude toccando di nuovo. */
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
@@ -12058,14 +12095,13 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
-    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
-       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
-       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
-       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
-       stesso ordine.
-       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
-       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
-    const descrizioniAperte = opts.descrizioni !== false;
+    /* DESCRIZIONI: mai in riga, in nessuna delle tre app.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" fa passare
+       la riga da 56 a oltre 140 px: il triplo dello scorrimento per lo stesso ordine. Non e' un
+       ristorante gourmet \u2014 chi ordina un caffe' sa cos'e' un caffe', e chi batte la comanda i
+       prodotti li conosce.
+       Non si buttano via: stanno dietro un "?" che le apre sopra la riga. Chi ha un dubbio le
+       trova in un tocco, e chi non ce l'ha non le scorre. */
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -12171,9 +12207,17 @@ window.Comanda = (function () {
       if (m.combo && (m.posti || []).length) {
         const pronta = comboPronta(m);
         const riass = comboRiassunto(m);
+        // Stesse cinque colonne della riga normale: icona, nome, "?", prezzo, tasti. Prima
+        // l'icona stava da sola nella colonna elastica e il nome in una fissa, cosi' la combo
+        // portava il prezzo e il piu' in un punto diverso da tutte le altre righe.
         return \`<div class="cmd-item\${q ? ' sel' : ''}">
-          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-tap cmd-fermo">
+            <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+            <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          </span>
+          \${m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
           <span class="cmd-pz">\${eur(m.prezzo)}</span>
           <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
           \${comboHTML(m)}</div>\`;
@@ -12183,15 +12227,13 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b><span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${!descrizioniAperte
-          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
-          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
-          ? (m.descrizione
-              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
-              : '<span class="cmd-info-btn vuoto"></span>')
-          : ''}
+        \${/* La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+              descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato. */
+          m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -13046,9 +13088,9 @@ VIEWS.comande = async () => {
   };
   let CO = null;
   if (menu.length) {
-    // \`descrizioni:false\` \u2014 chi batte i prodotti li conosce e ne scorre decine: la descrizione
-    // sta dietro il "?", che la mostra sopra la riga quando serve davvero.
-    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, descrizioni: false, onChange: (cart, tot, n) => {
+    // La descrizione sta dietro il "?" in tutte e tre le app: non e' piu' un'opzione di questa
+    // vista, e' come e' fatto il componente.
+    CO = Comanda.create({ mount: $('#co_menu'), menu, search: true, onChange: (cart, tot, n) => {
       $('#co_tot').innerHTML = n ? \`<span class="q">\${n} \${n === 1 ? 'prodotto' : 'prodotti'}</span><span class="e">\${eur(tot)}</span>\` : \`<span class="q">Nessun prodotto</span>\`;
       $('#co_send').disabled = !n;
       renderCart(cart);
@@ -16685,12 +16727,17 @@ window.Comanda = (function () {
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
       .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
-      /* Il blocco che sta sotto le tre colonne e le attraversa tutte: dentro, le schede vanno
-         a due per riga, larghezza in cui il nome di un panino sta su una riga sola. */
-      /* Stessa cosa qui: auto-fit invece di due colonne fisse con una media query. Dove ci
-         stanno due schede ne fa due, dove ne sta una ne fa una, senza sapere niente della
-         finestra: conta quanto e largo il posto in cui si trova. */
-      .cmd-larghi{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
+         Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
+         una colonna sola, e quindici panini si stendevano uno per riga su tutta la larghezza,
+         con un nome corto in mezzo a un metro di bianco.
+         Ora il blocco resta pieno e sono i PRODOTTI a disporsi in griglia dentro ogni categoria.
+         Il minimo vale max(25%,280px): sotto i 1680 px comanda il 420 e le colonne calano da
+         sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
+         quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
+      .cmd-larghi{grid-column:1/-1}
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
       .cmd-cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--c-navy);font-size:.8rem;margin:0 0 6px;padding-top:2px}
@@ -16708,10 +16755,15 @@ window.Comanda = (function () {
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
       /* Il nome sta su due righe al massimo e poi si taglia: tre o quattro righe alzano la
-         scheda del doppio per una parola sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
-      .cmd-info b{display:block;color:var(--c-navy)}
-      .cmd-desc{font-size:.78rem;color:#555;display:block}
+         scheda del doppio per una parola sola.
+         Il tetto non ha MAI funzionato: la regola qui sotto rimetteva display:block con la
+         stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
+         spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
+         128 px accanto a una da 58. Le due regole ora sono una sola. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+      /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
+         prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
+      .cmd-fermo{cursor:default}
       /* Il "?" e la bolla della descrizione: piccoli, fuori dal percorso del pollice che
          aggiunge, e la bolla si chiude toccando di nuovo. */
       .cmd-info-btn{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1.5px solid #cfd6dc;
@@ -16757,14 +16809,13 @@ window.Comanda = (function () {
     const mount = opts.mount;
     let menu = opts.menu || [];
     const useSearch = opts.search !== false;
-    /* DESCRIZIONI: utili al socio, d'ostacolo a chi batte.
-       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" serve a
-       scegliere; chi prende la comanda i prodotti li conosce e deve scorrerne decine. Con la
-       descrizione ogni riga passa da 56 a oltre 140 px: il triplo dello scorrimento per lo
-       stesso ordine.
-       Non si buttano via: restano dietro un "?" che le mostra sopra la riga. Chi ha un dubbio
-       \u2014 un cliente che chiede cosa c'e' dentro \u2014 le trova in un tocco. */
-    const descrizioniAperte = opts.descrizioni !== false;
+    /* DESCRIZIONI: mai in riga, in nessuna delle tre app.
+       "Miscela pregiata estratta a pressione, dal gusto intenso e corpo avvolgente" fa passare
+       la riga da 56 a oltre 140 px: il triplo dello scorrimento per lo stesso ordine. Non e' un
+       ristorante gourmet \u2014 chi ordina un caffe' sa cos'e' un caffe', e chi batte la comanda i
+       prodotti li conosce.
+       Non si buttano via: stanno dietro un "?" che le apre sopra la riga. Chi ha un dubbio le
+       trova in un tocco, e chi non ce l'ha non le scorre. */
     const onChange = typeof opts.onChange === 'function' ? opts.onChange : function () {};
     const cart = {};
     const comp = {};   // menu_id -> [id complementi spuntati]
@@ -16870,9 +16921,17 @@ window.Comanda = (function () {
       if (m.combo && (m.posti || []).length) {
         const pronta = comboPronta(m);
         const riass = comboRiassunto(m);
+        // Stesse cinque colonne della riga normale: icona, nome, "?", prezzo, tasti. Prima
+        // l'icona stava da sola nella colonna elastica e il nome in una fissa, cosi' la combo
+        // portava il prezzo e il piu' in un punto diverso da tutte le altre righe.
         return \`<div class="cmd-item\${q ? ' sel' : ''}">
-          <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          <span class="cmd-tap cmd-fermo">
+            <span class="cmd-ico">\\u{1F37D}\\u{FE0F}</span>
+            <span class="cmd-info"><b>\${esc(m.nome)}</b>\${riass ? \`<span class="cmd-badge">\${esc(riass)}</span>\` : ''}</span>
+          </span>
+          \${m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
           <span class="cmd-pz">\${eur(m.prezzo)}</span>
           <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}" \${pronta ? '' : 'disabled title="Scegli prima cosa ci va dentro"'}>+</button></div>
           \${comboHTML(m)}</div>\`;
@@ -16882,15 +16941,13 @@ window.Comanda = (function () {
       // bordo campo allungano la riga senza servire a chi batte la comanda.
       return \`<div class="cmd-item\${q ? ' sel' : ''}"><button class="cmd-tap" data-cadd="\${m.id}" aria-label="Aggiungi \${esc(m.nome)}">
           <span class="cmd-ico">\${esc(iconaDi(m))}</span>
-          <span class="cmd-info"><b>\${esc(m.nome)}</b>\${m.descrizione && descrizioniAperte ? \`<span class="cmd-desc">\${esc(m.descrizione)}</span>\` : ''}<span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
+          <span class="cmd-info"><b>\${esc(m.nome)}</b><span class="cmd-badge" data-cbadge="\${m.id}">\${esc(labelScelti(m))}</span></span>
         </button>
-        \${!descrizioniAperte
-          // La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
-          // descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato.
-          ? (m.descrizione
-              ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
-              : '<span class="cmd-info-btn vuoto"></span>')
-          : ''}
+        \${/* La colonna del "?" esiste SEMPRE, anche vuota: se comparisse solo dove c'e' una
+              descrizione, il piu' si sposterebbe di otto pixel da una riga all'altra. Misurato. */
+          m.descrizione
+            ? \`<button class="cmd-info-btn" data-cdesc="\${m.id}" title="Cos\\u2019\\u00e8" aria-label="Descrizione di \${esc(m.nome)}">?</button>\`
+            : '<span class="cmd-info-btn vuoto"></span>'}
         <span class="cmd-pz">\${eur(m.prezzo)}</span>
         <div class="cmd-step"><button class="cmd-b" data-cdec="\${m.id}">\u2212</button><b class="cmd-n" data-cn="\${m.id}">\${q}</b><button class="cmd-b add" data-cadd="\${m.id}">+</button></div>
         \${compHTML(m)}</div>\`;
@@ -17164,7 +17221,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.42.0" : "dev";
+var VERSION = true ? "6.43.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27144,7 +27201,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 13:23" : "online";
+var BUILD = true ? "2026-09-02 14:19" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
