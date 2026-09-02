@@ -5199,7 +5199,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.40.0';
+const VERSIONE_APP = '6.41.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -11355,7 +11355,17 @@ body.hc .panel{border-color:#8F8B7C}
 #moduli #chiSono{overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;line-height:1.35}
 #moduli button.urge .n{background:var(--coral);border-color:var(--coral);color:#fff}
 #moduli #chiSono{margin-top:auto;padding:10px 4px 2px;border-top:var(--bordo) solid var(--riga);font-size:.78rem;color:var(--muted);line-height:1.4}
-#lavoro{flex:1;min-width:0}
+/* LO SPAZIO FRA LA BARRA E IL LAVORO.
+   L'area di lavoro cominciava esattamente dove finisce la barra dei moduli: zero pixel di
+   distanza. Misurato. Non e' una sovrapposizione, ma a occhio lo sembra \u2014 il riquadro bianco
+   di un modulo e il titolo della schermata si toccano, e sembra che uno si mangi l'altro.
+   Sedici pixel bastano perche' i due si leggano come due cose separate.
+
+   E una LARGHEZZA MASSIMA: senza, su uno schermo largo tutto si allarga fino al bordo e la
+   pagina cresce in orizzontale invece che in verticale \u2014 mentre le stesse schermate su un
+   telefono crescono in verticale. Due layout diversi per la stessa cosa, e chi passa dall'uno
+   all'altro deve reimparare dove sono le cose. */
+#lavoro{flex:1;min-width:0;padding-left:16px;max-width:1180px}
 #capo{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;
   padding:10px 0 12px;border-bottom:var(--bordo) solid var(--ink);margin-bottom:12px}
 #capo .occh{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;font-weight:800;color:var(--muted)}
@@ -11483,7 +11493,9 @@ body.hc .panel{border-color:#8F8B7C}
 @media (max-width:560px){ .sed{height:30px;font-size:.68rem}
   .fila{gap:3px;grid-template-columns:18px repeat(var(--meta),30px) 10px repeat(var(--resto),30px)}
   .palco{width:86%} }
-.kboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px}
+/* Anche qui \`align-items:start\`: una comanda con otto piatti faceva alte come lei anche quelle
+   con un caffe', e la coda della cucina diventava un muro di rettangoli mezzi vuoti. */
+.kboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px;align-items:start}
 .kcard{border:var(--bordo) solid var(--ink);border-radius:var(--r);background:var(--card);display:flex;flex-direction:column;overflow:hidden}
 .kcard>header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:9px 11px;background:var(--ink);color:#fff;cursor:pointer}
 .kcard>header b{font-size:1.05rem}
@@ -11511,7 +11523,12 @@ body.hc .panel{border-color:#8F8B7C}
 .kcard .kact:last-child{border-right:none}
 .kcard .kact.primaria{background:var(--ink);color:#fff}
 .kcard .kact[disabled]{opacity:.4;cursor:default}
-.griglia{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-top:10px}
+/* \`align-items:start\` \u2014 ogni riquadro finisce dove finisce il suo contenuto.
+   Senza, la griglia stira tutte le schede all'altezza della piu' alta: la piazzola con
+   venticinque ombrelloni faceva alte come lei anche quelle con due, e sotto restava un
+   rettangolo vuoto bordato che non conteneva niente. Il contorno deve finire col contenuto. */
+.griglia{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-top:10px;align-items:start;
+  max-width:calc(210px*4 + 10px*3)}
 .riq{border:2px solid var(--ink);border-radius:4px;background:var(--card);padding:10px 12px;min-height:96px;display:flex;flex-direction:column;gap:4px}
 .riq .cap{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .riq .num{font-weight:800;font-size:1.15rem;line-height:1}
@@ -11595,7 +11612,14 @@ body:not(.aiuti) .aiuto{display:none}
 #loginErr{color:var(--coral);font-size:.85rem;margin-top:8px;min-height:1em}
 .hide{display:none!important}
 /* board tabelloni (Tavoli / Cucina): griglia che riempie tutto lo spazio + card accattivanti */
-.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+/* QUATTRO COLONNE AL MASSIMO, e poi si cresce in basso.
+   Con \`auto-fill\` su uno schermo largo uscivano sei tavoli per riga e la sala si allargava fino
+   al bordo; sullo stesso schermo, in verticale, gli stessi tavoli vanno uno sotto l'altro. Due
+   disposizioni diverse per la stessa cosa, e chi passa dall'una all'altra deve rimparare dove
+   sono i tavoli. Crescere sempre in basso e' l'unico modo perche' la posizione di un tavolo
+   nella pagina non dipenda da che schermo hai davanti. */
+.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;align-items:start;
+  max-width:calc(210px*4 + 12px*3)}
 .fitgrid{width:100%;border-collapse:collapse;table-layout:fixed}
 .fitgrid th{font-size:.72rem;color:var(--muted);font-weight:700;padding:2px 0;text-align:center}
 .fitgrid th span{display:block;font-weight:400;font-size:.66rem}
@@ -17108,7 +17132,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.40.0" : "dev";
+var VERSION = true ? "6.41.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27088,7 +27112,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 12:37" : "online";
+var BUILD = true ? "2026-09-02 13:05" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
