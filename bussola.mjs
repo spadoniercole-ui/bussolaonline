@@ -5822,6 +5822,11 @@ async function mostraOmbrellone() {
   }
 
   if (!liberi.length) {
+    /* "Tutti presi" e "non ce n'e' nessuno" sono due cose diverse, e dirle uguali fa aspettare
+       una fascia che non liberera' niente. Se sulla spiaggia non c'e' ancora nessun ombrellone
+       disposto, il socio non deve leggere che sono occupati: non esistono. */
+    const disposti = piazzole.reduce((n, p) => n + (p.ombrelloni || []).length, 0);
+    if (!disposti) { box.innerHTML = ''; return; }
     box.innerHTML = \`<div class="blocco"><div class="tit">\${T('Ombrelloni')}</div>
       <p class="tiny muted" style="padding:0 13px 12px">\${T('Al momento sono tutti presi. Si liberano a fine fascia.')}</p></div>\`;
     return;
@@ -10994,7 +10999,13 @@ body:not(.aiuti) .aiuto{display:none}
    una volta invece di scorrere, e in servizio la barra non occupa niente. */
 @media (max-width:900px){
   #corpo{display:block}
-  #moduli{position:fixed; inset:0; z-index:60; flex-direction:column; overflow:auto;
+  /* \\U0001f534 L'elenco a tutto schermo partiva da \`inset:0\`, cioe' dal bordo ALTO della finestra:
+     copriva la testata \u2014 il nome del modulo, il tasto per chiudere, l'uscita \u2014 e i due
+     sembravano volersi coprire a vicenda, perche' e' esattamente quello che succedeva.
+     Si vede a zoom 2\xD7 su uno schermo da banco, o su un telefono in orizzontale: misurato,
+     la barra cominciava 42 px SOPRA la fine della testata.
+     Ora parte da sotto la testata, che resta visibile e raggiungibile. */
+  #moduli{position:fixed; inset:var(--h-top,56px) 0 0 0; z-index:4; flex-direction:column; overflow:auto;
     border:none; background:var(--paper); padding:8px 0 24px; display:none;}
   #moduli.aperto{display:flex}
   #moduli .grp{display:block; padding:14px 16px 6px}
@@ -16029,7 +16040,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.31.0" : "dev";
+var VERSION = true ? "6.32.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25770,7 +25781,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-02 07:24" : "online";
+var BUILD = true ? "2026-09-02 07:47" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
