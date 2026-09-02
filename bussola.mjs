@@ -8148,7 +8148,7 @@ function applyMenuPermessi() {
 const VIEWS = {};
 async function show(v) {
   document.querySelectorAll('#menu button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', fitness:'Area fitness', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
+  $('#viewTitle').textContent = { dashboard:'Cruscotto', soci:'Utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', campi:'Campi & prenotazioni', tabellone:'Tornei', contest:'Contest Serata dei Clan', serate:'Serate & cena', proposte:'Proposte', eventi:'Eventi', avvisi:'Avvisi push', bussola:'Guida', luoghi:'Luoghi (Siamo qui)', operatori:'Operatori & permessi', cinema:'Cinema', fitness:'Area fitness', menu:'Men\\u00f9 & listino', confronto:'Teorico contro reale', spiaggia:'Spiaggia \\u00b7 piazzole e ombrelloni', installa:'Installa app (QR)', parametri:'Regole & parametri', database:'Database', audit:'Registro attivit\xE0' }[v] || v;
   $('#view').innerHTML = '<p class="muted">Carico\u2026</p>';
   window.__view = v;
   try { await VIEWS[v](); } catch (e) { $('#view').innerHTML = \`<p class="muted">Errore: \${esc(e.message)}</p>\`; }
@@ -8707,15 +8707,19 @@ function pickPhoto(onReady) {
    Nel Crew resta quello che serve la sera: guardare la situazione, sistemare un disallineamento,
    chiudere una piazzola quando tira vento. */
 VIEWS.spiaggia = async () => {
-  const d = await api('/spiaggia');
+  const [d, tuttiPar] = await Promise.all([api('/spiaggia'), caricaParametri()]);
+  // Le regole della spiaggia stavano in "Regole & parametri" insieme a tutto il resto, mentre
+  // le misure delle piazzole stanno qui: chi configura la spiaggia doveva aprire due sezioni
+  // per decidere una cosa sola. Ora sono nello stesso posto.
+  const gruppiSp = [...new Set(tuttiPar.map(p => p.gruppo))].filter(g => /spiaggia/i.test(g));
   // Tutti i campi che il server accetta, nessuno perso nel trasloco dal Crew: nome, misure,
   // file e colonne. File e colonne servono a disegnare la piazzola come le altre piante.
   const riga = (p) => \`<tr>
     <td><input id="sp_nome_\${p.id}" value="\${esc(p.nome)}" style="width:130px"></td>
     <td><input id="sp_l_\${p.id}" type="number" step="0.1" value="\${p.larghezza_m ?? ''}" style="width:80px" placeholder="larg."></td>
     <td><input id="sp_p_\${p.id}" type="number" step="0.1" value="\${p.profondita_m ?? ''}" style="width:80px" placeholder="prof."></td>
-    <td><input id="sp_f_\${p.id}" type="number" min="1" value="\${p.file ?? ''}" style="width:60px" placeholder="file">
-        <input id="sp_c_\${p.id}" type="number" min="1" value="\${p.colonne ?? ''}" style="width:60px" placeholder="col."></td>
+    <td style="white-space:nowrap"><input id="sp_f_\${p.id}" type="number" min="1" value="\${p.file ?? ''}" style="width:56px;display:inline-block" placeholder="file"> \\u00d7
+        <input id="sp_c_\${p.id}" type="number" min="1" value="\${p.colonne ?? ''}" style="width:56px;display:inline-block" placeholder="col."></td>
     <td>\${p.totale} ombrelloni \xB7 \${p.occupati} in uso</td>
     <td class="right">
       <button class="btn ghost sm" data-spsave="\${p.id}">Salva misure</button>
@@ -8728,7 +8732,13 @@ VIEWS.spiaggia = async () => {
     <p class="muted" style="font-size:.82rem">Le misure servono a sapere quanti ombrelloni ci stanno davvero: senza, "Ci stanno?" non pu\\u00f2 rispondere e gli ombrelloni non si possono aggiungere. Si prendono una volta a stagione.</p>
     <table><thead><tr><th>Piazzola</th><th>Larghezza (m)</th><th>Profondit\\u00e0 (m)</th><th>File \\u00d7 colonne</th><th>Ombrelloni</th><th class="right">Azioni</th></tr></thead>
       <tbody>\${(d.piazzole || []).map(riga).join('') || '<tr><td colspan="6" class="muted">Nessuna piazzola.</td></tr>'}</tbody></table>
-    <p class="muted" style="font-size:.78rem;margin-top:10px">In servizio la spiaggia si guarda dal Crew: chi si libera e quando, e chi non ha rilasciato. Qui si configura e basta.</p></div>\`;
+    <p class="muted" style="font-size:.78rem;margin-top:10px">In servizio la spiaggia si guarda dal Crew: chi si libera e quando, e chi non ha rilasciato. Qui si configura e basta.</p></div>
+    \${bloccoParametri(tuttiPar, gruppiSp)}
+    \${gruppiSp.length ? \`<div class="row" style="gap:8px;margin-top:4px;align-items:center">
+      <button class="btn gold" id="p_save">\u{1F4BE} Salva le regole</button>
+      <span class="muted" id="p_msg" style="font-size:13px"></span>
+    </div>\` : ''}\`;
+  agganciaSalvataggioParametri('spiaggia');
 
   document.querySelectorAll('[data-spsave]').forEach(b => b.onclick = async () => {
     const id = b.dataset.spsave;
@@ -8741,9 +8751,27 @@ VIEWS.spiaggia = async () => {
     }) });
     show('spiaggia');
   });
+  /* IL VERDETTO SI LEGGE, non si scarica.
+     Cercavo un campo \`messaggio\` che il server non manda mai, e ripiegavo su
+     \`JSON.stringify(r)\`: a schermo compariva il dump grezzo della risposta \u2014 virgolette,
+     parentesi graffe, nomi dei campi. Chi lo legge non ci capisce niente, e non e' colpa sua.
+     Il server manda tutto quello che serve per scriverla in italiano: quanti ce ne stanno,
+     quanti ce ne sono, cosa non torna. */
   document.querySelectorAll('[data-spver]').forEach(b => b.onclick = async () => {
-    const r = await api('/spiaggia/piazzole/' + b.dataset.spver + '/verifica');
-    alert(r.messaggio || JSON.stringify(r));
+    let v;
+    try { v = await api('/spiaggia/piazzole/' + b.dataset.spver + '/verifica'); }
+    catch (e) { alert(e.message); return; }
+    if (v.misure_mancanti) { alert(v.nota || 'Prima le misure: senza, non si sa se ci stanno.'); return; }
+    const ok = !(v.problemi || []).length;
+    modal(\`<h3>\\ud83d\\udcd0 \${esc(v.piazzola)}</h3>
+      <div style="background:\${ok ? '#eaf3ec' : '#fdecea'};border-left:5px solid \${ok ? '#2e6b45' : '#b14a35'};padding:10px 12px;margin-bottom:12px">
+        <b style="color:\${ok ? '#2e6b45' : '#8a2a20'};font-size:1.05rem">\${esc(v.verdetto)}</b></div>
+      <p><b>\${v.misure.larghezza_m}\\u00d7\${v.misure.profondita_m} m</b> \\u00b7 \${v.misure.mq} mq \\u00b7 passaggio \${v.regole.passaggio_m} m \\u00b7 ombrellone \${v.regole.ingombro_m} m</p>
+      <p>Ce ne stanno <b>\${v.capienza_indicativa}</b> (circa <b>\${v.persone}</b> persone). Ne hai disposti <b>\${v.disposti}</b>\${v.mq_per_ombrellone ? \` \\u00b7 \${v.mq_per_ombrellone} mq ciascuno\` : ''}.</p>
+      \${(v.problemi || []).length ? '<ul>' + v.problemi.map(x => \`<li>\${esc(x)}</li>\`).join('') + '</ul>' : ''}
+      <p class="muted" style="font-size:.82rem">\${esc(v.nota || '')}</p>
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Chiudi</button></div>\`);
+    $('#mCancel').onclick = closeModal;
   });
   document.querySelectorAll('[data-spadd]').forEach(b => b.onclick = async () => {
     const id = b.dataset.spadd;
@@ -9556,15 +9584,19 @@ async function caricaParametri() {
     return list;
   } catch (_) { PAR = {}; return []; }
 }
-VIEWS.parametri = async () => {
-  const list = await caricaParametri();
-  const gruppi = [...new Set(list.map(p => p.gruppo))];
+/* I PARAMETRI, DISEGNATI UNA VOLTA SOLA.
+   Il gruppo "Spiaggia" stava in "Regole & parametri" insieme a tutto il resto, mentre la
+   spiaggia ha una sezione sua: chi va a configurare le piazzole trova le misure di la' e i
+   metri di ingombro di qua, e sono la stessa decisione presa nello stesso momento.
+   Qui il disegno e il salvataggio diventano funzioni, cosi' lo stesso blocco puo' comparire
+   nella sezione della spiaggia senza essere scritto due volte \u2014 due copie divergerebbero, ed
+   e' il difetto che ho gia' fatto altrove. */
+function bloccoParametri(list, gruppi) {
   const campo = (p) => {
     if (p.tipo === 'bool') return \`<label class="check" style="margin:0"><input type="checkbox" class="p_in" data-pk="\${esc(p.chiave)}" data-pt="bool" \${p.valore ? 'checked' : ''}> <b>\${p.valore ? 'S\xCC' : 'NO'}</b></label>\`;
     if (p.tipo === 'numero') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="numero" type="number" \${p.min != null ? \`min="\${p.min}"\` : ''} \${p.max != null ? \`max="\${p.max}"\` : ''} value="\${esc(String(p.valore ?? p.predefinito))}" style="width:110px">\`;
     // Un parametro di TESTO non e' una scelta fra opzioni: senza \`opzioni\` diventava una
     // tendina vuota, e il gestore non poteva scrivere ne' una data ne' un numero di telefono.
-    // Il tipo decide il campo: data, ora, telefono, testo libero.
     if (p.tipo === 'data') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="date" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
     if (p.tipo === 'dataora') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="datetime-local" value="\${esc(String(p.valore ?? p.predefinito ?? '').replace(' ', 'T').slice(0, 16))}" style="width:100%">\`;
     if (p.tipo === 'ora') return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="time" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
@@ -9572,7 +9604,7 @@ VIEWS.parametri = async () => {
     if (p.tipo === 'testo' && !(p.opzioni || []).length) return \`<input class="p_in" data-pk="\${esc(p.chiave)}" data-pt="testo" type="text" value="\${esc(p.valore ?? p.predefinito ?? '')}" style="width:100%">\`;
     return \`<select class="p_in" data-pk="\${esc(p.chiave)}" data-pt="scelta">\${(p.opzioni || []).map(o => \`<option value="\${esc(o.valore)}" \${o.valore === (p.valore ?? p.predefinito) ? 'selected' : ''}>\${esc(o.etichetta)}</option>\`).join('')}</select>\`;
   };
-  const blocchi = gruppi.map(g => \`<div class="panel"><h3>\${esc(g)}</h3>
+  return gruppi.map(g => \`<div class="panel"><h3>\${esc(g)}</h3>
     \${list.filter(p => p.gruppo === g).map(p => \`<div style="display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line);\${p.attivo ? '' : 'opacity:.45'}">
       <div style="flex:1">
         <b style="font-size:.95rem">\${p.dipende_da ? '\u21B3 ' : ''}\${esc(p.etichetta)}</b>
@@ -9581,14 +9613,12 @@ VIEWS.parametri = async () => {
       </div>
       <div style="min-width:180px;text-align:right">\${campo(p)}</div>
     </div>\`).join('')}</div>\`).join('');
-  $('#view').innerHTML = \`<div class="panel"><h3>\u2699\uFE0F Regole di funzionamento</h3>
-      <p class="muted" style="font-size:13px">Tutto ci\xF2 che determina una condizione si accende e si spegne da qui, e vale per l'intero residence. Le voci con <b>\u21B3</b> dipendono dall'interruttore sopra di loro: se quello \xE8 spento, non vengono applicate.</p>
-    </div>\${blocchi}
-    <div class="row" style="gap:8px;margin-top:4px;align-items:center">
-      <button class="btn gold" id="p_save">\u{1F4BE} Salva le regole</button>
-      <span class="muted" id="p_msg" style="font-size:13px"></span>
-    </div>\`;
-  $('#p_save').onclick = async () => {
+}
+// Il salvataggio: legge tutti i campi presenti a schermo, quindi funziona uguale in tutte e due
+// le sezioni. \`dove\` dice quale ridisegnare dopo.
+function agganciaSalvataggioParametri(dove) {
+  const b = $('#p_save'); if (!b) return;
+  b.onclick = async () => {
     const body = {};
     document.querySelectorAll('.p_in').forEach(el => {
       const k = el.dataset.pk;
@@ -9597,14 +9627,29 @@ VIEWS.parametri = async () => {
     try {
       const r = await api('/parametri', { method: 'PUT', body: JSON.stringify(body) });
       PAR = Object.fromEntries((r.parametri || []).map(p => [p.chiave, p.valore]));
-      show('parametri');
+      show(dove);
       setTimeout(() => { const m = $('#p_msg'); if (m) m.textContent = '\u2713 Regole salvate.'; }, 60);
     } catch (e) { $('#p_msg').textContent = 'Non salvate: ' + e.message; }
   };
-  // le voci figlie si accendono/spengono subito, senza salvare
   document.querySelectorAll('.p_in[data-pt="bool"]').forEach(el => el.onchange = () => {
-    const b = el.closest('div').querySelector('b'); if (b) b.textContent = el.checked ? 'S\xCC' : 'NO';
+    const t = el.closest('div').querySelector('b'); if (t) t.textContent = el.checked ? 'S\xCC' : 'NO';
   });
+}
+
+VIEWS.parametri = async () => {
+  const list = await caricaParametri();
+  // Il gruppo Spiaggia non compare qui: sta nella sezione della spiaggia, insieme alle misure
+  // delle piazzole. Sono la stessa decisione presa nello stesso momento.
+  const gruppi = [...new Set(list.map(p => p.gruppo))].filter(g => !/spiaggia/i.test(g));
+  $('#view').innerHTML = \`<div class="panel"><h3>\u2699\uFE0F Regole di funzionamento</h3>
+      <p class="muted" style="font-size:13px">Tutto ci\xF2 che determina una condizione si accende e si spegne da qui, e vale per l'intero residence. Le voci con <b>\u21B3</b> dipendono dall'interruttore sopra di loro: se quello \xE8 spento, non vengono applicate.</p>
+      <p class="muted" style="font-size:13px">Le regole della <b>spiaggia</b> \u2014 ingombro, passaggi, fasce, prese per nucleo \u2014 stanno nella sezione <b>\u26F1\uFE0F Spiaggia</b>, insieme alle misure delle piazzole.</p>
+    </div>\${bloccoParametri(list, gruppi)}
+    <div class="row" style="gap:8px;margin-top:4px;align-items:center">
+      <button class="btn gold" id="p_save">\u{1F4BE} Salva le regole</button>
+      <span class="muted" id="p_msg" style="font-size:13px"></span>
+    </div>\`;
+  agganciaSalvataggioParametri('parametri');
 };
 
 
@@ -15620,7 +15665,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.27.0" : "dev";
+var VERSION = true ? "6.28.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25341,7 +25386,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-01 17:29" : "online";
+var BUILD = true ? "2026-09-02 05:39" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
