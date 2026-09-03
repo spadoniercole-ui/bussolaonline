@@ -5313,7 +5313,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.50.0';
+const VERSIONE_APP = '6.52.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -11776,8 +11776,18 @@ body.hc .panel{border-color:#8F8B7C}
    Senza, la griglia stira tutte le schede all'altezza della piu' alta: la piazzola con
    venticinque ombrelloni faceva alte come lei anche quelle con due, e sotto restava un
    rettangolo vuoto bordato che non conteneva niente. Il contorno deve finire col contenuto. */
-.griglia{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-top:10px;align-items:start;
-  max-width:calc(210px*4 + 10px*3)}
+/* IL TETTO STA NELLE COLONNE, NON NELLA LARGHEZZA.
+   Prima il tetto di quattro colonne era una max-width: la griglia si fermava a 870 px mentre i
+   pannelli sopra e sotto arrivavano al bordo, e il bordo destro dei riquadri non si allineava
+   con niente. Sulla sala si vedeva subito: quindici tavoli e una colonna di vuoto a destra.
+   Con un minimo di max(23%,210px) le colonne non possono mai essere piu' di quattro, e la
+   griglia riempie tutta la larghezza che ha. Nessuna media query: quella percentuale e' del
+   posto in cui la griglia sta, non della finestra.
+   PERCHE' 23 E NON 25: quattro colonne al 25% fanno gia' il 100%, e i tre distacchi fra loro
+   non ci starebbero \u2014 cosi' ne uscivano sempre tre, piu' larghe. Misurato: col 25% i tavoli
+   erano tre per riga invece di quattro. Il 23 lascia il posto ai distacchi e il quinto resta
+   comunque impossibile (cinque volte 23 fa 115). */
+.griglia{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(23%,210px),1fr));gap:10px;margin-top:10px;align-items:start}
 .riq{border:2px solid var(--ink);border-radius:4px;background:var(--card);padding:10px 12px;min-height:96px;display:flex;flex-direction:column;gap:4px}
 .riq .cap{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .riq .num{font-weight:800;font-size:1.15rem;line-height:1}
@@ -11788,7 +11798,7 @@ body.hc .panel{border-color:#8F8B7C}
 .riq.attesa{border-color:var(--ink)}
 .riq.chiama{border-color:var(--coral)} .riq.chiama .st{color:var(--coral)}
 .riq.fatto{background:var(--ink);color:#fff;border-color:var(--ink)} .riq.fatto .det{color:#cfd6dc}
-@media (max-width:560px){.griglia{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
+@media (max-width:560px){.griglia{grid-template-columns:repeat(auto-fit,minmax(max(23%,150px),1fr))}}
 /* SUL TELEFONO IL CONTO VA IN FONDO, NON IN CIMA.
    Portarlo sopra il menu' lo rendeva visibile ma spingeva giu' il listino: per battere il primo
    prodotto bisognava scorrere oltre il carrello. Qui resta appiccicato al BORDO INFERIORE, dove
@@ -11864,8 +11874,9 @@ body:not(.aiuti) .aiuto{display:none}
    disposizioni diverse per la stessa cosa, e chi passa dall'una all'altra deve rimparare dove
    sono i tavoli. Crescere sempre in basso e' l'unico modo perche' la posizione di un tavolo
    nella pagina non dipenda da che schermo hai davanti. */
-.board{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;align-items:start;
-  max-width:calc(210px*4 + 12px*3)}
+/* Stesso tetto della griglia, e per la stessa ragione: quattro colonne al massimo, e il bordo
+   destro allineato ai pannelli sopra e sotto. */
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(23%,210px),1fr));gap:12px;align-items:start}
 .fitgrid{width:100%;border-collapse:collapse;table-layout:fixed}
 .fitgrid th{font-size:.72rem;color:var(--muted);font-weight:700;padding:2px 0;text-align:center}
 .fitgrid th span{display:block;font-weight:400;font-size:.66rem}
@@ -12658,6 +12669,11 @@ const API_BASE = (typeof window !== 'undefined' && (window.BUSSOLA_API || window
 
 async function api(path, opts = {}) {
   const r = await fetch(API_BASE + '/api/admin' + path, { headers: { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}) }, ...opts });
+  /* Il 401 qui dentro significa UNA cosa sola: il token non vale piu', e si esce. Percio'
+     nessuna rotta deve rispondere 401 per un motivo diverso dalla sessione \\u2014 una password
+     ridigitata sbagliata, un permesso che manca, un dato non valido hanno i loro codici.
+     E' successo: l'occhio degli incassi del tennis rispondeva 401 a chi sbagliava a digitare,
+     e l'operatore veniva buttato fuori invece di rileggere l'avviso. */
   if (r.status === 401) { logout(); throw new Error('non autorizzato'); }
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
   return r.json();
@@ -17472,7 +17488,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.50.0" : "dev";
+var VERSION = true ? "6.52.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -24185,7 +24201,8 @@ adminRouter.post("/tennis/incassi/svela", requireTennisOperativo, async (req, re
   const u = await db.prepare("SELECT password_hash FROM utenti_admin WHERE username=?").get(req.adminUser.username);
   if (!u || !verifyPassword(String(req.body?.password || ""), u.password_hash)) {
     audit(req.adminUser.username, "svela_incassi_tennis_fallito", "tennis_incassi", 0, "password errata");
-    return res.status(401).json({ error: "Password non corretta." });
+    await new Promise((r) => setTimeout(r, 600));
+    return res.status(422).json({ error: "Password non corretta." });
   }
   const data = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.data || "")) ? String(req.body.data) : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const g = await db.prepare(
@@ -27851,7 +27868,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-03 06:30" : "online";
+var BUILD = true ? "2026-09-03 08:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
