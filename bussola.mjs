@@ -5313,7 +5313,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.49.0';
+const VERSIONE_APP = '6.50.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -8925,6 +8925,13 @@ window.Comanda = (function () {
 /* Back office Bussola Residence \u2014 SPA minimale su fetch/API. */
 'use strict';
 let TOKEN = null, USER = null, PAR = {}, CASATE = [], ME = { ruolo: '', gestore: false, caps: [] };
+/* Il file scelto per l'import del menu', tenuto fra la prova a vuoto e l'invio vero.
+   ERA DICHIARATO NEL CREW. Quando il listino e' passato di qui il codice e' stato spostato e
+   la dichiarazione e' rimasta la', dove non serviva piu' a nessuno. Nel Crew funzionava; qui
+   no, perche' questo file gira in modalita' rigorosa e assegnare a un nome mai dichiarato non
+   crea una variabile globale: solleva un errore. Da fuori si leggeva solo
+   "IMPORT_B64 is not defined" sotto il tasto, e l'import non partiva. */
+let IMPORT_B64 = null;
 const can = (cap) => ME.gestore || (ME.caps || []).includes(cap);
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -14382,7 +14389,6 @@ VIEWS.scorte = async () => {
 };
 
 /* ---------- MEN\xD9 (config + import Excel/CSV) ---------- */
-let IMPORT_B64 = null;
 // Men\xF9 stampabile (PDF via "Salva come PDF" del browser) con logo, punto vendita, categorie, composizione, allergeni.
 /* Il listino NON sta piu' qui. Vedi il back office, sezione "Menu' & listino".
    Questa era la scheda Menu' del Crew: era l'editor completo \u2014 prezzi, allergeni, stazione,
@@ -17466,7 +17472,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.49.0" : "dev";
+var VERSION = true ? "6.50.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27845,7 +27851,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-03 05:35" : "online";
+var BUILD = true ? "2026-09-03 06:30" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
