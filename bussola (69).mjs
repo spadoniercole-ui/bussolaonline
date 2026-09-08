@@ -21,6 +21,10 @@ function asyncify(router) {
   }
   return router;
 }
+function id(x) {
+  const n = Number(x);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
 var init_asyncroute = __esm({
   "server/asyncroute.js"() {
   }
@@ -86,8 +90,8 @@ async function sendToSoci(socioIds, payload) {
   if (!ENABLED || !socioIds || !socioIds.length) return 0;
   const uniq = [...new Set(socioIds.filter(Boolean).map(Number))];
   const rows = [];
-  for (const id of uniq) {
-    const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(id);
+  for (const id2 of uniq) {
+    const subs = await db.prepare("SELECT endpoint,p256dh,auth FROM push_sub WHERE socio_id=?").all(id2);
     rows.push(...subs);
   }
   return sendToSubs(rows, payload);
@@ -388,10 +392,10 @@ var init_authuser = __esm({
           tipo === "ospite_temporaneo" ? b.soggiorno_al || null : null,
           1
         ];
-        const { id, tessera_code } = await insertSocioUnique(cols, vals);
-        const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id);
+        const { id: id2, tessera_code } = await insertSocioUnique(cols, vals);
+        const socio = await db.prepare("SELECT * FROM soci WHERE id=?").get(id2);
         const token = await createUserSession(socio);
-        audit(tessera_code, "auto_registrazione", "soci", id, tipo);
+        audit(tessera_code, "auto_registrazione", "soci", id2, tipo);
         const posta = email ? await inviaBenvenuto(email, { nome, tessera: tessera_code }) : { inviata: false };
         res.status(201).json({
           token,
@@ -736,14 +740,14 @@ var init_authuser = __esm({
       const ambito = req.params.ambito === "capitani" ? "capitani" : "casata";
       if (ambito === "capitani" && me.ruolo !== "capitano") return res.status(403).json({ error: "Il gruppo e\u0300 riservato ai capitani" });
       if (ambito === "casata" && !me.casata_id) return res.status(409).json({ error: "Non risulti in nessuna casata" });
-      let testo = String(req.body?.testo || "").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
-      if (!testo) return res.status(400).json({ error: "Scrivi qualcosa" });
-      if (testo.length > CHAT_MAX) testo = testo.slice(0, CHAT_MAX);
-      if (/https?:\/\/|www\./i.test(testo)) return res.status(400).json({ error: "Niente collegamenti nella chat: qui si scrive solo testo." });
+      let testo2 = String(req.body?.testo || "").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+      if (!testo2) return res.status(400).json({ error: "Scrivi qualcosa" });
+      if (testo2.length > CHAT_MAX) testo2 = testo2.slice(0, CHAT_MAX);
+      if (/https?:\/\/|www\./i.test(testo2)) return res.status(400).json({ error: "Niente collegamenti nella chat: qui si scrive solo testo." });
       const nome = (me.nome + " " + (me.cognome || "")).trim();
       const info = await db.prepare(
         "INSERT INTO chat_messaggi (ambito,casata_id,socio_id,tessera_code,nome,testo) VALUES (?,?,?,?,?,?)"
-      ).run(ambito, ambito === "capitani" ? null : me.casata_id, me.id, me.tessera_code, nome, testo);
+      ).run(ambito, ambito === "capitani" ? null : me.casata_id, me.id, me.tessera_code, nome, testo2);
       res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
     });
     authUserRouter.post("/chat/messaggi/:id/segnala", requireUser, async (req, res) => {
@@ -858,13 +862,7 @@ var init_menucat = __esm({
   }
 });
 
-// server/tournament.js
-async function casateByName() {
-  const rows = await db.prepare("SELECT id,nome FROM casate").all();
-  const m = {};
-  rows.forEach((r) => m[r.nome] = r.id);
-  return m;
-}
+// shared/girone.mjs
 function roundRobinRounds(teams) {
   const arr = teams.slice();
   if (arr.length % 2 === 1) arr.push(null);
@@ -883,6 +881,18 @@ function roundRobinRounds(teams) {
     rest = [rest[rest.length - 1], ...rest.slice(0, rest.length - 1)];
   }
   return rounds;
+}
+var init_girone = __esm({
+  "shared/girone.mjs"() {
+  }
+});
+
+// server/tournament.js
+async function casateByName() {
+  const rows = await db.prepare("SELECT id,nome FROM casate").all();
+  const m = {};
+  rows.forEach((r) => m[r.nome] = r.id);
+  return m;
 }
 async function generaCalendario(disciplinaId) {
   const disc = await db.prepare("SELECT id FROM discipline WHERE id=?").get(disciplinaId);
@@ -1045,15 +1055,15 @@ async function strutturaFinale(disciplinaId) {
     const m = (await faseMatches(disciplinaId, fase)).find((x) => x.giornata === slot);
     return m || null;
   };
-  const daVincente = async (fase, slot, testo) => {
+  const daVincente = async (fase, slot, testo2) => {
     const m = await giocata(fase, slot);
     const w = m ? vincitrice(m) : null;
-    return { etichetta: testo, provvisorio: w ? w.nome : null };
+    return { etichetta: testo2, provvisorio: w ? w.nome : null };
   };
-  const daPerdente = async (fase, slot, testo) => {
+  const daPerdente = async (fase, slot, testo2) => {
     const m = await giocata(fase, slot);
     const l = m ? perdente(m) : null;
-    return { etichetta: testo, provvisorio: l ? l.nome : null };
+    return { etichetta: testo2, provvisorio: l ? l.nome : null };
   };
   const quarti = [
     { slot: 1, a: daGirone(0, 0), b: daGirone(1, 3) },
@@ -1101,6 +1111,7 @@ var ORDINE_CASATE, COPPA_PUNTI, vincitrice, perdente;
 var init_tournament = __esm({
   "server/tournament.js"() {
     init_db();
+    init_girone();
     ORDINE_CASATE = ["Aretusa", "Ortigia", "Neapolis", "Dionisio", "Ciane", "Plemmirio", "Epipoli", "Anapo"];
     COPPA_PUNTI = { 1: 12, 2: 10, 3: 8, 4: 6, altri: 4 };
     vincitrice = (m) => m.gol_a == null || m.gol_b == null || m.gol_a === m.gol_b ? null : m.gol_a > m.gol_b ? { id: m.casata_a_id, nome: m.casa_a } : { id: m.casata_b_id, nome: m.casa_b };
@@ -1838,6 +1849,30 @@ async function migrate() {
   await addIfMissing("menu_articoli", "con_condimenti", "con_condimenti INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("menu_articoli", "alcolico", "alcolico INTEGER NOT NULL DEFAULT 0");
   await addIfMissing("comande", "verifica_eta", "verifica_eta INTEGER NOT NULL DEFAULT 0");
+  await addIfMissing("tornei_ko", "formato", "formato TEXT NOT NULL DEFAULT 'ko'");
+  await addIfMissing("tornei_ko", "punti_vittoria", "punti_vittoria INTEGER NOT NULL DEFAULT 3");
+  await addIfMissing("tornei_ko", "punti_pareggio", "punti_pareggio INTEGER NOT NULL DEFAULT 1");
+  await addIfMissing("tornei_ko", "qualificati_girone", "qualificati_girone INTEGER NOT NULL DEFAULT 2");
+  await addIfMissing("tornei_ko", "parita", "parita TEXT NOT NULL DEFAULT 'scontro,differenza,dichiarata'");
+  await addIfMissing("tornei_ko", "chiuso_at", "chiuso_at TEXT");
+  await addIfMissing("tornei_ko_iscritti", "girone", "girone TEXT");
+  await addIfMissing("tornei_ko_partite", "girone", "girone TEXT");
+  await addIfMissing("tornei_ko_partite", "giornata", "giornata INTEGER");
+  await db.exec(`
+  CREATE TABLE IF NOT EXISTS tornei_punti (
+    id         INTEGER PRIMARY KEY,
+    torneo_id  INTEGER NOT NULL REFERENCES tornei_ko(id) ON DELETE CASCADE,
+    iscritto_id INTEGER NOT NULL REFERENCES tornei_ko_iscritti(id) ON DELETE CASCADE,
+    punti      REAL NOT NULL,
+    nota       TEXT,
+    data       TEXT,
+    operatore  TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_tornei_punti ON tornei_punti(torneo_id, iscritto_id)");
+  await addIfMissing("comande", "eta_esito", "eta_esito TEXT");
+  await addIfMissing("comande", "eta_operatore", "eta_operatore TEXT");
+  await addIfMissing("comande", "eta_at", "eta_at TEXT");
   await addIfMissing("comanda_righe", "motivo_storno", "motivo_storno TEXT");
   await addIfMissing("comanda_righe", "stornata_da", "stornata_da TEXT");
   await addIfMissing("tavoli", "posti_base", "posti_base INTEGER");
@@ -2782,18 +2817,35 @@ var init_db = __esm({
 });
 
 // server/auth.js
-import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { scrypt, scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${hash}`;
 }
+function confrontaHash(atteso, stored) {
+  const [, hash] = String(stored).split(":");
+  const ref = Buffer.from(hash, "hex");
+  return atteso.length === ref.length && timingSafeEqual(atteso, ref);
+}
 function verifyPassword(password, stored) {
   const [salt, hash] = String(stored).split(":");
   if (!salt || !hash) return false;
-  const test = scryptSync(password, salt, 64);
-  const ref = Buffer.from(hash, "hex");
-  return test.length === ref.length && timingSafeEqual(test, ref);
+  return confrontaHash(scryptSync(password, salt, 64), stored);
+}
+function verifyPasswordAsync(password, stored) {
+  const [salt, hash] = String(stored).split(":");
+  if (!salt || !hash) return Promise.resolve(false);
+  return new Promise((risolvi) => {
+    scrypt(password, salt, 64, (err, atteso) => {
+      if (err) return risolvi(false);
+      try {
+        risolvi(confrontaHash(atteso, stored));
+      } catch {
+        risolvi(false);
+      }
+    });
+  });
 }
 async function persist(token, kind, data, exp) {
   cache.set(token, { kind, data, exp });
@@ -2942,11 +2994,11 @@ async function punteggiCoppa() {
     if (!Array.isArray(righe2)) continue;
     archivio.push({ disciplina_nome: e.disciplina_nome, righe: righe2 });
     for (const r of righe2) {
-      const id = Number(r.casata_id);
-      if (tornei[id] == null) continue;
-      tornei[id] += Number(r.punti) || 0;
+      const id2 = Number(r.casata_id);
+      if (tornei[id2] == null) continue;
+      tornei[id2] += Number(r.punti) || 0;
       if (e.disciplina_id && celle[e.disciplina_id]) {
-        celle[e.disciplina_id][id] = (celle[e.disciplina_id][id] || 0) + (Number(r.punti) || 0);
+        celle[e.disciplina_id][id2] = (celle[e.disciplina_id][id2] || 0) + (Number(r.punti) || 0);
       }
     }
   }
@@ -2954,9 +3006,9 @@ async function punteggiCoppa() {
     "SELECT ce.casata_id, SUM(ce.punti) p FROM contest_esiti ce JOIN contest c ON c.id=ce.contest_id WHERE c.esito_assegnato=1 GROUP BY ce.casata_id"
   ).all();
   for (const e of esiti) {
-    const id = Number(e.casata_id);
-    if (contest[id] == null) continue;
-    contest[id] = Number(e.p) || 0;
+    const id2 = Number(e.casata_id);
+    if (contest[id2] == null) continue;
+    contest[id2] = Number(e.p) || 0;
   }
   const righe = casate.map((c) => ({
     id: c.id,
@@ -3359,6 +3411,65 @@ var init_parametri = __esm({
         dipende_da: "comande_chiusura_automatica",
         etichetta: "Dopo quante ore",
         aiuto: "Sei ore coprono un servizio intero: quello che resta aperto oltre e' quasi sempre una dimenticanza."
+      },
+      {
+        /* LE REGOLE DI GARA DEI TORNEI.
+           Questi tre valori sono i PREDEFINITI: quando un torneo nasce se li copia addosso e da
+           quel momento non li rilegge piu'. Cambiarli qui vale per i tornei futuri, mai per quelli
+           in corso e tantomeno per quelli finiti — altrimenti il vincitore di agosto cambierebbe a
+           settembre senza che nessuno abbia toccato un risultato.
+           Nella schermata di creazione compaiono gia' compilati e si possono cambiare li': ping
+           pong e calcetto convivono nella stessa stagione, e il pareggio esiste in uno e non
+           nell'altro. */
+        chiave: "tornei_punti_vittoria",
+        gruppo: "Tornei",
+        tipo: "numero",
+        predefinito: 3,
+        etichetta: "Punti per una vittoria nel girone",
+        aiuto: "Con 3 vittoria / 1 pareggio si usa il conteggio del calcio. Per gli sport senza pareggio \u2014 tennis, ping pong, biliardino \u2014 metti 1 e 0: la classifica diventa il numero di vittorie."
+      },
+      {
+        chiave: "tornei_punti_pareggio",
+        gruppo: "Tornei",
+        tipo: "numero",
+        predefinito: 1,
+        etichetta: "Punti per un pareggio nel girone",
+        aiuto: "Zero negli sport dove il pareggio non esiste."
+      },
+      {
+        chiave: "tornei_qualificati_girone",
+        gruppo: "Tornei",
+        tipo: "numero",
+        predefinito: 2,
+        etichetta: "Quanti passano da ogni girone",
+        aiuto: "I primi di ogni girone entrano nel tabellone. Se non bastano a riempirlo, si ripescano i migliori fra chi e' arrivato subito dopo."
+      },
+      {
+        /* I CARTELLI OBBLIGATORI DEL LOCALE. Non sono impostazioni dell'app: sono dati che finiscono
+           stampati su un foglio appeso alla porta, e devono stare in un posto solo perche' cambiando
+           l'orario non si ristampi il cartello vecchio. */
+        chiave: "orario_apertura",
+        gruppo: "Cartelli obbligatori",
+        tipo: "testo",
+        predefinito: "16:00",
+        etichetta: "Orario di apertura",
+        aiuto: "Va sul cartello degli orari, esposto sulla porta d'ingresso."
+      },
+      {
+        chiave: "orario_chiusura",
+        gruppo: "Cartelli obbligatori",
+        tipo: "testo",
+        predefinito: "23:30",
+        etichetta: "Orario di chiusura",
+        aiuto: "Se si va oltre la mezzanotte servono anche le tabelle alcolemiche e l'etilometro a disposizione."
+      },
+      {
+        chiave: "giorno_riposo",
+        gruppo: "Cartelli obbligatori",
+        tipo: "testo",
+        predefinito: "",
+        etichetta: "Giorno di riposo settimanale",
+        aiuto: "Vuoto: nessun riposo settimanale. Sul cartello ci va scritto, non lasciato in bianco."
       },
       {
         chiave: "beach_attiva",
@@ -4155,37 +4266,138 @@ var frontend_default = `<!DOCTYPE html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <!-- PWA: manifest + service worker iniettati dal server (server/pwa.js) -->
 <style>
-:root{
-  /* FORMA SQUADRATA, COLORI POCHI, CONTRASTO ALTO.
-     Il criterio non e' il gusto: e' che questa app si usa in spiaggia, col sole in faccia e lo
-     schermo al minimo di luminosita' per non consumare. Il contrasto si misura (rapporto WCAG:
-     4.5 e' il minimo, 7 per stare comodi) e sotto il sole la soglia pratica sale.
-     Misurato sui colori di prima: l'oro su carta stava a 5.38 e il bianco su oro a 5.91 \u2014
-     leggibili in casa, faticosi in spiaggia. Ed erano proprio i colori delle AZIONI.
-     Adesso: testo 18.5, tenue 9.1, azione 14.6, avviso 7.5. Tutto sopra il 7.
-     L'oro resta, ma come bordo e accento \u2014 non piu' come fondo di un pulsante da leggere. */
-  --navy:#102A43; --gold:#8a5a12; --teal:#12524c; --coral:#9E2B20;
-  --plum:#4b3d7a; --sage:#2f5a2d; --ink:#101418; --paper:#F4F1E9;
-  --mute:#3c4a54; --tratto:#101418; --line:var(--tratto); --card:#FFFFFF;
-  --scale:1;                 /* controllo dimensione testo (accessibilit\xE0) */
-  --tap:56px;                /* area tocco: al sole e con le mani bagnate serve larga */
+/* ==============================================================================================
+   I TOKEN \u2014 un nome, un valore, un posto solo.
+   ==============================================================================================
+
+   Questo file lo includono tutti e quattro i front-end. Da qui in poi un colore non si scrive
+   piu' a mano dentro un \`:root\`: si prende da qui, o non esiste.
+
+   PERCHE'. Prima ogni front-end dichiarava la propria palette. Non era una scelta: era che
+   nessuno aveva un posto dove metterla in comune, quindi si copiava \u2014 e a ogni copia qualcosa
+   restava indietro. Il conto misurato, non guardato:
+
+     \xB7 il back office e il Crew avevano DUE \`:root\` nello stesso foglio. Il secondo vinceva e il
+       primo era morto, ma nessuno lo aveva tolto: chi apriva il file leggeva \`--navy:#12324F\`
+       e ci credeva, mentre il browser calcolava #102A43. Meta' delle divergenze che avevamo
+       messo a verbale erano di questo tipo: non esistevano sullo schermo.
+     \xB7 cinque nomi erano USATI e mai dichiarati \u2014 \`--danger\` cinque volte nel back office,
+       \`--muted\` quattro, \`--ok\` tre, \`--paper\` una, \`--verde\` una nel Crew. Una regola che
+       nomina una variabile inesistente non da' errore: diventa invalida e il colore lo eredita
+       dal genitore. La riga che doveva essere rossa non era rossa, e nessuno se n'era accorto.
+     \xB7 \`--line\` valeva il tratto nero (#101418) in tre front-end e un grigio azzurro (#cbd2d8)
+       nel quarto: lo stesso nome per due mestieri opposti. Quel nome qui non c'e' piu'.
+       Il bordo strutturale e' \`--tratto\`, la riga che separa e' \`--riga\`.
+
+   COME SI AGGIUNGE UN COLORE. Si aggiunge QUI, con un nome che dice il mestiere e non la tinta,
+   e si misura prima: \`node scripts/palette.mjs --proposta '#XXXXXX'\`. Se il valore esiste gia'
+   sotto un altro nome, si usa \`var()\` invece di riscrivere il numero \u2014 cosi' il legame resta
+   visibile e non si perde alla prima modifica.
+
+   LA MISURA. Il contrasto e' un rapporto (WCAG): 4.5 e' il minimo di legge, 7 la soglia che ci
+   siamo dati, perche' questa roba si guarda in spiaggia col sole in faccia e lo schermo al
+   minimo. I numeri qui sotto sono il rapporto con il BIANCO sopra.
+   ============================================================================================== */
+
+:root {
+  /* --- I fondi ------------------------------------------------------------------------------
+     La carta e' una sola. Prima erano tre creme quasi uguali con tre nomi diversi
+     (--paper #F4F1E9, --bg #f4f2ea nel back office, --bg #f3efe6 al tavolo): nessuno le
+     distingueva a occhio, e proprio per questo nessuno si accorgeva che erano diverse. */
+  --paper:#F4F1E9;
+  --card:#FFFFFF;
+
+  /* --- L'inchiostro e i grigi ---------------------------------------------------------------
+     --ink   il testo (18.5)
+     --mute  il testo secondario (9.13). Si chiamava anche \`--muted\` nel Crew, con un valore
+             diverso (#49525A, 7.96): due nomi per lo stesso mestiere sono gia' una divergenza,
+             perche' chi ne cambia uno non sa che esiste l'altro. Resta il piu' scuro. */
+  --ink:#101418;
+  --mute:#3c4a54;
+
+  /* --- I due tratti, che NON sono la stessa cosa --------------------------------------------
+     --tratto  il bordo che delimita un blocco: nero pieno, si vede controluce.
+     --riga    la riga che separa dentro un blocco: non taglia, accompagna.
+     --riga2   il filetto piu' chiaro, dentro le liste fitte.
+     Distinguerli e' il motivo per cui \`--line\` non esiste piu'. */
+  --tratto:#101418;
+  --riga:#E3E1D6;
+  --riga2:#DBD8D0;
+
+  /* --- I colori che dicono qualcosa ---------------------------------------------------------
+     --navy   l'azione. Blocchi pieni con testo bianco: 14.64.
+     --gold   l'accento e il bordo. NON e' un fondo con testo bianco sopra: 5.91 sta sotto la
+              soglia che ci siamo dati. Al tavolo era #C9A227 e ci stava scritto sopra in
+              bianco: 2.42, cioe' si indovinava. Adesso i pulsanti li' sono blocchi navy come
+              nelle altre tre app.
+     --teal   il servizio (campi, fitness): 8.99. Nel Crew era #256B65 (6.23).
+     --coral  il rifiuto, il negativo: 7.45. Non e' il rosso d'allarme.
+     --plum, --sage  le casate e le categorie.
+     --ok     il buon esito. */
+  --navy:#102A43;
+  --gold:#8a5a12;
+  --teal:#12524C;
+  --coral:#9E2B20;
+  --plum:#4b3d7a;
+  --sage:#2f5a2d;
+  --ok:#2e6b45;
+
+  /* --- Il rosso, che fa due mestieri e vuole due valori --------------------------------------
+     --rosso    IDENTITA': l'occhiello "STASERA", i filetti, i titoletti sul nero. Non ci va
+                mai testo bianco sopra: bianco su questo misura 4.20.
+     --rosso-b  AZIONE: il pulsante pieno. E' il piu' chiaro della stessa tinta che arriva a
+                7.33 col bianco sopra. A occhio e' lo stesso rosso; al sole e' la differenza
+                fra leggere e indovinare.
+     E la regola che vale piu' di entrambi: il rosso d'allarme non e' mai un colore d'azione.
+     Se il rosso vuol dire "questo tavolo ha bisogno di te" in una schermata e "premi qui" in
+     quella accanto, in sala piena si preme la cosa sbagliata. */
+  --rosso:#EC3013;
+  --rosso-b:#A81F0A;
+
+  /* --- Gli alias, dichiarati e non ricopiati -------------------------------------------------
+     Questi nomi esistevano gia' nel Crew e nel back office e valevano lo stesso colore di uno
+     qui sopra \u2014 scritto un'altra volta a mano. Scritti come \`var()\` il legame resta visibile:
+     cambiando il colore sopra cambiano anche loro, che e' quello che ci si aspetta. */
+  --accent:var(--navy);
+  --mid:var(--gold);
+  --no:var(--coral);
+  --danger:var(--coral);
+  --verde:var(--ok);
+
+  /* --- Le misure ----------------------------------------------------------------------------
+     --tap    l'area minima di tocco: 56 px e' la misura di un polpastrello. Al sole e con le
+              mani bagnate serve larga. Nel Crew non era dichiarata e ogni \`min-height:var(--tap)\`
+              era una regola senza effetto.
+     --r      il raggio. Squadrato, non tondo.
+     --bordo  il bordo strutturale: spesso, delimita davvero anche controluce.
+     --focus  l'anello di messa a fuoco, per chi naviga da tastiera. */
+  --tap:56px;
+  --r:4px;
+  --bordo:2px;
   --focus:#0a66c2;
-  /* Il rosso dell'artefatto. Fa DUE mestieri e servono due valori, perche' il secondo porta
-     testo bianco addosso:
-       --rosso   #EC3013  identita': l'occhiello "STASERA", i filetti, i titoletti sul nero.
-                          Non ci va mai testo bianco sopra: bianco su questo misura 4,20.
-       --rosso-b #A81F0A  i pulsanti pieni. E' il piu' CHIARO della stessa tinta (9\xB0) che
-                          arriva a 7,33 col bianco sopra. A occhio e' lo stesso rosso; al sole
-                          e' la differenza fra leggere e indovinare.
-     Il grigio secondario resta #3C4A54 (8,09 sulla carta): l'artefatto lo conferma e ha
-     ritirato il #605D5D, che a 5,78 stava sotto la soglia. */
-  --rosso:#EC3013; --rosso-b:#A81F0A;
-  --riga2:#DBD8D0;           /* filetto interno: divide senza tagliare, piu' chiaro del tratto */
-  --r:4px;                   /* raggio: squadrato, non tondo */
-  --bordo:2px;               /* bordi spessi: delimitano davvero, anche controluce */
+}
+
+/* ==============================================================================================
+   QUELLO CHE QUESTO FILE NON HA ANCORA SISTEMATO, misurato.
+
+   I RAGGI scritti a mano, contati nei quattro fogli:
+     app soci   20 valori distinti (2px, 3px, 6px, 10px, 12px, 13px, 14px, 15px, 16px, 18px,
+                20px, 22px, 40px, 50%, 999px, piu' cinque forme composte)
+     Crew       11    back office  9    QR al tavolo  4
+   Collassarli su una scala di quattro voci sposta dei pixel in una quarantina di punti: e' un
+   lavoro con la sua misura prima e dopo, e non si fa insieme ai colori. Nel Crew e nel back
+   office, per giunta, buona parte di quei valori e' gia' morta \u2014 una regola con \`!important\`
+   li riporta tutti a \`var(--r)\`, e chi legge il foglio non lo vede.
+
+   LE SPAZIATURE non sono ancora una scala. Stesso discorso: prima si contano, poi si sposta.
+   ============================================================================================== */
+/* Quello che segue e' SOLO dell'app dei soci: il resto viene dai token condivisi.
+   Prima qui c'era la palette intera, ricopiata anche nelle altre tre app. */
+:root{
+  --scale:1;                 /* controllo dimensione testo (accessibilit\xE0) */
 }
 /* Alto contrasto (attivabile dall'utente) */
-body.hc{--navy:#0a1f33; --gold:#6b4406; --teal:#12433f; --mute:#33414a; --line:#b9b6a8; --paper:#fbf9f2; --ink:#0c141a;}
+body.hc{--navy:#0a1f33; --gold:#6b4406; --teal:#12433f; --mute:#33414a; --tratto:#b9b6a8; --paper:#fbf9f2; --ink:#0c141a;}
 body.hc .card{border-color:#8f8b7c;}
 *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
 html,body{height:100%;}
@@ -4233,7 +4445,7 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .card + .card{margin-top:11px;}
 .eyebrow{font-size:.66rem; letter-spacing:1.4px; text-transform:uppercase; color:var(--gold); font-weight:700;}
 .sect-title{font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; font-weight:800; color:var(--mute); margin:18px 2px 8px; display:flex; align-items:center; gap:8px;}
-.sect-title::after{content:""; flex:1; height:1px; background:var(--line);}
+.sect-title::after{content:""; flex:1; height:1px; background:var(--tratto);}
 .btn{display:inline-flex; align-items:center; justify-content:center; gap:6px; border:none; border-radius:var(--r); padding:11px 16px; font-size:.86rem; font-weight:800; cursor:pointer; font-family:inherit; min-height:var(--tap);}
 /* L'AZIONE PRINCIPALE. La classe si chiama ancora "gold" perche' e' usata in 44 punti e
    rinominarla a mano sarebbe il modo di dimenticarne uno; il colore pero' e' il rosso
@@ -4253,7 +4465,7 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .welcome p{font-size:.75rem; color:var(--mute);}
 /* Modo semplice: bersagli grandi, etichetta sempre scritta, nessun gesto da imparare. */
 .bigtile{display:flex; align-items:center; gap:14px; width:100%; min-height:82px; margin-top:12px;
-  background:var(--card); border:1.5px solid var(--line); border-radius:18px; padding:14px 16px;
+  background:var(--card); border:1.5px solid var(--tratto); border-radius:18px; padding:14px 16px;
   text-align:left; font:inherit; color:var(--navy); cursor:pointer;}
 .bigtile .bt-ico{font-size:2rem; flex:0 0 auto;}
 .bigtile .bt-txt{flex:1; display:flex; flex-direction:column; gap:2px;}
@@ -4334,7 +4546,7 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .rifleg span{display:inline-flex; align-items:center; gap:6px; border:var(--bordo) solid var(--tratto); border-radius:var(--r); padding:5px 9px; font-size:.76rem; font-weight:700;}
 .rifleg i{width:12px; height:12px; border-radius:2px; display:inline-block;}
 .pgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:8px;}
-.ptile{display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:13px; padding:9px 11px; cursor:pointer; box-shadow:0 2px 6px rgba(18,50,79,.05); min-height:var(--tap);}
+.ptile{display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--tratto); border-radius:13px; padding:9px 11px; cursor:pointer; box-shadow:0 2px 6px rgba(18,50,79,.05); min-height:var(--tap);}
 .ptile .ic{font-size:1.5rem; line-height:1; flex:0 0 auto;}
 .ptile .tx{min-width:0; display:block;}
 .ptile .tx b{display:block; font-size:.82rem; color:var(--navy); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
@@ -4346,7 +4558,7 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
    rip...". Sette giorni stanno comodamente in una schermata anche a due righe, e la settimana
    si legge per intero invece che a meta'. */
 .evrow{display:flex; align-items:center; gap:12px; position:relative; background:var(--card);
-  border:1px solid var(--line); border-radius:12px; padding:12px 12px 12px 18px; margin-bottom:9px;
+  border:1px solid var(--tratto); border-radius:12px; padding:12px 12px 12px 18px; margin-bottom:9px;
   cursor:pointer; overflow:hidden;}
 .evrow .stripe{position:absolute; left:0; top:0; bottom:0; width:6px;}
 .evrow .gg{flex:0 0 34px; font-size:.7rem; font-weight:800; letter-spacing:.06em;
@@ -4363,7 +4575,7 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
    resto per un soffio. Usa l'oro vero. */
 .evrow .ora{font-size:.72rem; font-weight:700; color:var(--gold); flex:0 0 auto;}
 .evrow .chev{flex:0 0 auto; color:var(--mute);}
-.evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--line); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
+.evcard{display:flex; align-items:stretch; background:#fff; border:1px solid var(--tratto); border-radius:15px; overflow:hidden; margin-bottom:10px; box-shadow:0 4px 12px rgba(18,50,79,.06); cursor:pointer;}
 .evcard .stripe{width:6px; flex:0 0 6px;}
 .evcard .body{flex:1; padding:12px 4px 12px 13px; min-width:0;}
 .evcard .dl{font-size:.66rem; letter-spacing:.6px; text-transform:uppercase; color:var(--mute); font-weight:700;}
@@ -4386,14 +4598,24 @@ header{background:linear-gradient(160deg, #163a5a, var(--navy)); color:#fff; pad
 .bar{flex:1; height:12px; background:#e6e6e6; border-radius:6px; overflow:hidden;} .bar span{display:block; height:100%; border-radius:6px;}
 .rank .pt{width:32px; text-align:right; font-size:.78rem; font-weight:700; color:var(--navy);}
 .tessera{border-radius:20px; padding:20px; color:#fff; background:linear-gradient(135deg,#123a5c 0%, #0d2740 60%, #123a5c 100%); position:relative; overflow:hidden; box-shadow:0 12px 30px rgba(9,20,33,.35);}
+/* LA TESSERA DEI MINORENNI SI RICONOSCE DA LONTANO.
+   E' la stessa idea del braccialetto colorato dei villaggi, e non e' un'invenzione nostra: in
+   Italia diversi accordi fra prefetture, forze di polizia e categoria promuovono sistemi di
+   identificazione visiva dei minorenni \u2014 braccialetti, timbri, contrassegni \u2014 proprio per
+   agevolare chi somministra. Il senso e' togliere il controllo dal momento della mescita, dove
+   crea attrito e imbarazzo, e metterlo in un segno che si legge in un colpo d'occhio.
+   Fascia arancio e scritta in chiaro: nessun ammiccamento, e nessuna vergogna. */
+.tessera.ragazzi{background:linear-gradient(135deg,#7a3b12 0%, #52260a 60%, #7a3b12 100%)}
+.tessera .eta18{position:absolute; top:0; right:0; background:#EC3013; color:#fff; font-size:.66rem;
+  font-weight:800; letter-spacing:.12em; padding:6px 14px; border-bottom-left-radius:12px}
 .tessera .lab{font-size:.62rem; letter-spacing:2px; text-transform:uppercase; color:#e2b45a; font-weight:700;}
 .tessera h2{font-family:Georgia,serif; font-size:1.4rem; margin:10px 0 2px;} .tessera .role{font-size:.75rem; opacity:.85;}
 .tessera .qr{width:88px; height:88px; background:#fff; border-radius:12px; margin-top:16px; padding:8px;} .qr svg{width:100%; height:100%;}
 .tessera .foot{display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;}
-.benefit{display:flex; gap:10px; align-items:flex-start; padding:11px 2px; border-bottom:1px solid var(--line);}
+.benefit{display:flex; gap:10px; align-items:flex-start; padding:11px 2px; border-bottom:1px solid var(--tratto);}
 .benefit:last-child{border-bottom:none;} .benefit .bic{color:var(--teal); flex:0 0 auto; margin-top:1px; font-weight:800;}
 .benefit b{font-size:.85rem;} .benefit p{font-size:.76rem; color:var(--mute); margin-top:1px;}
-nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(255,255,255,.97); backdrop-filter:blur(10px); border-top:1px solid var(--line); display:flex; z-index:30; padding-bottom:6px;}
+nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(255,255,255,.97); backdrop-filter:blur(10px); border-top:1px solid var(--tratto); display:flex; z-index:30; padding-bottom:6px;}
 .tab{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; color:var(--mute); font-size:.66rem; font-weight:600; min-height:var(--tap); background:none; border:none; font-family:inherit;}
 .tab svg{width:23px; height:23px;} .tab.on{color:var(--navy);} .tab.on svg{color:var(--gold);}
 .ov{position:absolute; inset:0; z-index:60; display:none;} .ov.show{display:block;}
@@ -4406,7 +4628,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .field{margin-bottom:12px;} /* Le etichette di sezione: maiuscoletto spaziato grigio, come nell'artefatto. Sono
    un'indicazione, non un titolo: non devono competere col contenuto sotto. */
 .field label{font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; font-weight:800; color:var(--mute); display:block; margin-bottom:8px;}
-.field input,.field textarea{width:100%; border:1.5px solid var(--line); border-radius:12px; padding:12px; font-size:.9rem; font-family:inherit; background:#fff; color:var(--ink); min-height:var(--tap);}
+.field input,.field textarea{width:100%; border:1.5px solid var(--tratto); border-radius:12px; padding:12px; font-size:.9rem; font-family:inherit; background:#fff; color:var(--ink); min-height:var(--tap);}
 .field textarea{resize:none; height:70px;}
 .chips{display:flex; flex-wrap:wrap; gap:8px;}
 .chip{border:var(--bordo) solid var(--tratto); background:#fff; border-radius:var(--r); padding:10px 14px; font-size:.86rem; cursor:pointer; font-weight:700; color:var(--ink); min-height:var(--tap); display:inline-flex; align-items:center;}
@@ -4415,18 +4637,18 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .okmsg .big{width:60px;height:60px;border-radius:50%;background:var(--sage);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;}
 .note{background:#FFF2EF; border:none; border-left:3px solid var(--rosso); border-radius:0; padding:12px 13px; font-size:.8rem; color:#7C1405; margin-top:10px; line-height:1.45;}
 .discrow{display:flex; gap:8px; overflow-x:auto; padding:2px 0 4px; margin-bottom:6px;} .discrow::-webkit-scrollbar{display:none;}
-.disc{flex:0 0 auto; border:1.5px solid var(--line); background:#fff; border-radius:20px; padding:10px 15px; font-size:.8rem; font-weight:700; color:var(--mute); cursor:pointer; white-space:nowrap; min-height:var(--tap);}
+.disc{flex:0 0 auto; border:1.5px solid var(--tratto); background:#fff; border-radius:20px; padding:10px 15px; font-size:.8rem; font-weight:700; color:var(--mute); cursor:pointer; white-space:nowrap; min-height:var(--tap);}
 .disc.on{background:var(--navy); color:#fff; border-color:var(--navy);}
 .gtable{width:100%; border-collapse:collapse; margin-top:6px;}
 .gtable th{font-size:.6rem; text-transform:uppercase; letter-spacing:.4px; color:var(--mute); padding:3px 2px; font-weight:700;}
-.gtable td{padding:8px 2px; font-size:.8rem; border-top:1px solid var(--line); text-align:center;}
+.gtable td{padding:8px 2px; font-size:.8rem; border-top:1px solid var(--tratto); text-align:center;}
 .gtable td.team{text-align:left; font-weight:600; white-space:nowrap;}
 .gtable td.team .gpos{color:var(--mute); font-family:Georgia,serif; font-weight:700; margin-right:6px;}
 .gtable td.team .d{display:inline-block; width:9px;height:9px;border-radius:50%; margin-right:6px; vertical-align:middle;}
 .mapwrap{padding:0 0 10px;}
-.mapbox{position:relative; border-radius:12px; overflow:hidden; border:1px solid var(--line);}
+.mapbox{position:relative; border-radius:12px; overflow:hidden; border:1px solid var(--tratto);}
 .mapbox iframe{width:100%; height:46vh; min-height:260px; border:0; display:block;}
-.mapopen{display:block; text-align:center; padding:8px; font-size:.78rem; background:var(--card); color:var(--navy); text-decoration:none; border-top:1px solid var(--line);}
+.mapopen{display:block; text-align:center; padding:8px; font-size:.78rem; background:var(--card); color:var(--navy); text-decoration:none; border-top:1px solid var(--tratto);}
 /* Chat: leggera, solo testo, bolle sobrie. Niente allegati e niente emoticon: serve a
    organizzarsi, non a chiacchierare. */
 /* Griglia settimanale delle lezioni: sette colonne strette su schermo di telefono, quindi
@@ -4435,17 +4657,17 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .fitgrid th{font-size:.66rem; color:var(--mute); font-weight:700; padding:2px 0; text-align:center;}
 .fitgrid th span{display:block; font-weight:400; font-size:.6rem;}
 .fitgrid th.ora{width:26px; color:var(--mute); font-size:.62rem; vertical-align:top; padding-top:6px;}
-.fitgrid td.fitv{padding:1px; vertical-align:top; border-top:1px solid var(--line); height:34px;}
+.fitgrid td.fitv{padding:1px; vertical-align:top; border-top:1px solid var(--tratto); height:34px;}
 .fitq{display:block; width:100%; border:0; border-left:4px solid transparent; border-radius:6px;
   color:#fff; padding:3px 2px; margin-bottom:2px; cursor:pointer; line-height:1.05; font:inherit;}
 .fitq b{display:block; font-size:.58rem; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .fitq span{display:block; font-size:.54rem; opacity:.9;}
 .fitq.ok{border-left-color:#2e6b45;} .fitq.attesa{border-left-color:#b08b3e;}
 .fitq.pieno{border-left-color:#b14a35; opacity:.55;} .fitq.mio{border-left-color:#fff; box-shadow:0 0 0 2px var(--navy);}
-.chatbox{max-height:44vh; overflow:auto; background:var(--card); border:1px solid var(--line);
+.chatbox{max-height:44vh; overflow:auto; background:var(--card); border:1px solid var(--tratto);
   border-radius:12px; padding:10px; margin-top:10px;}
 .msg{position:relative; margin:8px 0; padding:8px 34px 8px 10px; border-radius:10px;
-  background:#fff; border:1px solid var(--line);}
+  background:#fff; border:1px solid var(--tratto);}
 .msg.mio{background:#eaf3ec; border-color:#cfe3d6; margin-left:22px;}
 .msg b{display:block; font-size:.76rem; color:var(--navy); margin-bottom:2px;}
 .msg p{margin:0; font-size:.9rem; line-height:1.4; overflow-wrap:anywhere;}
@@ -4454,7 +4676,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   font-size:.9rem; cursor:pointer; padding:2px 4px;}
 .chatinvio{display:flex; gap:8px; margin-top:10px;}
 .chatinvio input{flex:1; min-width:0;}
-.matchrow{display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line);} .matchrow:last-child{border-bottom:none;}
+.matchrow{display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--tratto);} .matchrow:last-child{border-bottom:none;}
 .matchrow .wh{width:58px; text-align:center; font-size:.68rem; color:var(--navy); font-weight:700;}
 .matchrow .vs{flex:1; font-size:.8rem;} .matchrow .vs small{color:var(--mute);} .matchrow .ct{font-size:.68rem; color:var(--mute); margin-top:1px;}
 .matchrow .sc{font-weight:700; color:var(--navy); font-size:.88rem;}
@@ -4470,7 +4692,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .onb ul{text-align:left; font-size:.82rem; color:var(--ink); margin:10px 0 14px; padding-left:2px; list-style:none;}
 .onb ul li{padding:6px 0; display:flex; gap:9px; align-items:flex-start;}
 .onb ul li b{color:var(--navy);}
-.sos{display:block; width:100%; text-align:left; background:#fff; border:1.5px solid var(--line); border-radius:14px; padding:12px 14px; margin-top:11px; cursor:pointer;}
+.sos{display:block; width:100%; text-align:left; background:#fff; border:1.5px solid var(--tratto); border-radius:14px; padding:12px 14px; margin-top:11px; cursor:pointer;}
 .sos b{color:var(--coral); font-size:.85rem;} .sos p{font-size:.72rem; color:var(--mute); margin-top:2px;}
 .skip-link{position:absolute; left:-999px; top:0; background:#fff; color:var(--navy); padding:8px 12px; z-index:100;}
 .skip-link:focus{left:8px; top:8px;}
@@ -4484,7 +4706,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .gatebox h2{font-family:Georgia,serif; color:var(--navy); font-size:1.4rem;}
 .gsub2{color:var(--mute); font-size:.8rem; margin:4px 0 12px; line-height:1.35;}
 .gatebox label{display:block; font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; font-weight:800; color:var(--mute); margin:10px 0 7px;}
-.gatebox input{width:100%; padding:12px; border:1.5px solid var(--line); border-radius:12px; font-size:16px; font-family:inherit;}
+.gatebox input{width:100%; padding:12px; border:1.5px solid var(--tratto); border-radius:12px; font-size:16px; font-family:inherit;}
 .gate-err{color:var(--coral); font-size:.75rem; min-height:16px;}
 .gate-demo{background:none; border:none; color:var(--mute); font-size:.72rem; text-decoration:underline; margin-top:14px; width:100%; cursor:pointer;}
 
@@ -4516,7 +4738,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
        lunghe il doppio dell'italiano. */
 
   .gate-lang{display:flex; gap:6px; justify-content:center; flex-wrap:wrap; margin:0 0 14px;}
-  .gate-lang button{border:var(--bordo) solid var(--line); border-radius:var(--r); background:var(--card);
+  .gate-lang button{border:var(--bordo) solid var(--tratto); border-radius:var(--r); background:var(--card);
     color:var(--ink); font-weight:800; font-size:.86rem; padding:8px 12px; min-height:44px; cursor:pointer;}
   .gate-lang button[aria-pressed="true"]{background:var(--navy); color:#fff; border-color:var(--navy);}
 
@@ -4528,16 +4750,16 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
     border-radius:var(--r) !important;
     box-shadow:none !important;
   }
-  .card, .panel, .srv, .mie, .gatebox{border:var(--bordo) solid var(--line) !important;}
-  input, select, textarea{border:var(--bordo) solid var(--line) !important;}
-  .btn{border-radius:var(--r) !important; box-shadow:none !important; border:var(--bordo) solid var(--line);
+  .card, .panel, .srv, .mie, .gatebox{border:var(--bordo) solid var(--tratto) !important;}
+  input, select, textarea{border:var(--bordo) solid var(--tratto) !important;}
+  .btn{border-radius:var(--r) !important; box-shadow:none !important; border:var(--bordo) solid var(--tratto);
     min-height:var(--tap); font-weight:800; letter-spacing:.01em;}
   /* Le azioni: fondo pieno e testo bianco. E' la combinazione che regge il sole.
      L'AZIONE PRINCIPALE e' il rosso dell'artefatto nella variante leggibile: bianco sopra
      7,33. La secondaria resta navy: due pieni identici non dicono quale premere. */
   .btn.gold{background:var(--rosso-b); color:#fff; border-color:var(--rosso-b);}
   .btn.navy{background:var(--navy); color:#fff; border-color:var(--navy);}
-  .btn.ghost{background:var(--card); color:var(--ink); border-color:var(--line);}
+  .btn.ghost{background:var(--card); color:var(--ink); border-color:var(--tratto);}
   /* Su un fondo scuro il pulsante chiaro con testo bianco diventa illeggibile: "Non
      disponibile" spariva dentro il suo stesso bottone. Dentro una scheda scura il ghost e'
      trasparente col bordo bianco \u2014 un contorno si vede sempre. */
@@ -4545,7 +4767,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   .btn.danger{background:var(--coral); color:#fff; border-color:var(--coral);}
   /* L'eroe: fondo pieno, non sfumato. Un gradiente al sole diventa una macchia e il testo
      bianco ci galleggia sopra; un blocco di colore pieno regge. */
-  .hero{border:var(--bordo) solid var(--line); background:var(--navy) !important;}
+  .hero{border:var(--bordo) solid var(--tratto); background:var(--navy) !important;}
   /* I tondi della testata: squadrati anche loro, altrimenti sono l'unica cosa tonda rimasta.
      E il tasto Tessera diventa un blocco pieno chiaro su fondo scuro: e' il piu' toccato di
      tutti e deve trovarsi senza cercarlo. */
@@ -4555,13 +4777,13 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   .tesschip{background:#fff !important; color:var(--navy) !important; border:var(--bordo) solid #fff !important;}
   /* Dentro l'eroe il fondo e' gia' navy: un pulsante navy sparirebbe. Li' l'azione e' bianca. */
   .hero .btn.gold, .hero .btn.navy{background:#fff !important; color:var(--navy) !important; border-color:#fff !important;}
-  .tabbar{border-top:var(--bordo) solid var(--line);}
-  .srv{border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--card); margin-top:10px;}
+  .tabbar{border-top:var(--bordo) solid var(--tratto);}
+  .srv{border:1px solid var(--tratto); border-radius:14px; overflow:hidden; background:var(--card); margin-top:10px;}
   .srv-h{font-size:.72rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase;
     color:var(--mute); padding:10px 14px 6px;}
   .srv-g{display:grid; grid-template-columns:1fr 1fr;}
-  .srv-g > button{appearance:none; background:var(--card); border:0; border-top:1px solid var(--line);
-    border-right:1px solid var(--line); padding:14px 14px; text-align:left; cursor:pointer; min-height:64px;
+  .srv-g > button{appearance:none; background:var(--card); border:0; border-top:1px solid var(--tratto);
+    border-right:1px solid var(--tratto); padding:14px 14px; text-align:left; cursor:pointer; min-height:64px;
     display:flex; flex-direction:column; gap:2px; font:inherit;}
   .srv-g > button:nth-child(2n){border-right:0;}
   .srv-g > button:active{background:#f2ede4;}
@@ -4575,11 +4797,11 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
   .srv-g span{font-size:.82rem; color:var(--mute); line-height:1.25;}
 
   /* La scheda "quello che hai prenotato": la prima domanda di chi apre l'app. */
-  .mie{border:1px solid var(--line); border-left:4px solid var(--gold); border-radius:12px;
+  .mie{border:1px solid var(--tratto); border-left:4px solid var(--gold); border-radius:12px;
     background:var(--card); padding:12px 14px; margin-top:12px;}
   .mie .lab{font-size:.7rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:var(--gold);}
   .mie .riga{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 0;
-    border-bottom:1px solid var(--line);}
+    border-bottom:1px solid var(--tratto);}
   .mie .riga:last-child{border-bottom:0;}
   .mie .riga b{font-size:.98rem; color:var(--navy);}
   .mie .riga .q{font-size:.82rem; color:var(--mute);}
@@ -4890,7 +5112,14 @@ window.Comanda = (function () {
     if (document.getElementById('cmd-css')) return;
     const st = document.createElement('style'); st.id = 'cmd-css';
     st.textContent = \`
-      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      /* LA QUINTA PALETTE, quella che nessuno aveva contato. Questo pezzo di comanda gira in
+         TRE app, e si portava dietro tre colori suoi: un ripiego navy #12324F e uno oro
+         #C9A227 (i valori vecchi del QR al tavolo, non quelli di nessuna app viva) e una riga
+         #cbd2d8 scritta a mano, senza nemmeno la variabile. Il ripiego e la parte peggiore:
+         non scatta mai finche tutto va bene, e quando scatta nessuno lo collega a qui.
+         Adesso i tre nomi sono legami, non copie.
+         (Niente apostrofi in questo commento: sta dentro una stringa a backtick.) */
+      .cmd{--c-navy:var(--navy);--c-gold:var(--gold);--c-line:var(--riga)}
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
@@ -4910,7 +5139,11 @@ window.Comanda = (function () {
          usano TRE app: cambiato guardando solo il Crew.
          auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* IL PAVIMENTO DELLA COLONNA NON PUO ESSERE PIU LARGO DELLA STANZA. Un minimo scritto in
+         pixel e ASSOLUTO: dentro un contenitore da 290 px una colonna col minimo a 300 resta 300
+         e sborda, portandosi dietro il prezzo e i tasti. Con min(100%, 300px) il minimo si
+         arrende alla larghezza vera del posto in cui si trova. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
          Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
@@ -4921,7 +5154,12 @@ window.Comanda = (function () {
          sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
          quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
       .cmd-larghi{grid-column:1/-1}
-      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      /* Stessa cosa, e qui faceva danno vero: 420 px di minimo dentro la lista di un telefono, che
+         al massimo ne ha 332. Le schede dei panini uscivano di 88 px dallo schermo e con loro il
+         prezzo e il piu; le bibite, che stanno in un altro blocco, restavano dentro. Risultato:
+         due colonne di prezzi a due altezze diverse nella stessa schermata, e i tasti dei panini
+         mezzi fuori. Misurato a 360, 390 e 430 px: sbordava a tutte e tre. */
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,max(25%,420px)),1fr));gap:0 12px;align-items:start}
       .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
@@ -4935,7 +5173,7 @@ window.Comanda = (function () {
          la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
 .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
   display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
-      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-item.sel{border-color:var(--c-gold);background:#fdfaf3}
       .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
@@ -4945,7 +5183,12 @@ window.Comanda = (function () {
          stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
          spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
          128 px accanto a una da 58. Le due regole ora sono una sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+/* DUE RIGHE SEMPRE, anche quando il nome ne occupa una. Il tetto c era gia; mancava il
+         PAVIMENTO, e le schede venivano alte 58 px o 68 a seconda della lunghezza del nome:
+         scorrendo un listino, prezzo e tasti ballavano su e giu di dieci pixel. Lo spazio si
+         riserva, non si concede. In em e non in pixel, cosi segue il corpo del testo quando
+         il socio lo ingrandisce dai comandi di accessibilita. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;min-height:2.5em;color:var(--c-navy)}
       /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
          prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
       .cmd-fermo{cursor:default}
@@ -5313,7 +5556,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.52.0';
+const VERSIONE_APP = '6.57.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -5972,7 +6215,7 @@ function renderDom(dom) {
   // La scelta della disciplina sta in una combo: con dieci sport le linguette non ci stavano.
   const head = \`<div class="row" style="align-items:center; gap:10px; margin:6px 2px 12px">
       <h2 class="serif" style="color:var(--navy); font-size:1.5rem; margin:0; flex:0 0 auto">\${dom==='sport'?T('Sport & Tornei'):T('Giochi da Tavolo')}</h2>
-      <select class="discsel" data-domsel="\${dom}" aria-label="\${T('Scegli la disciplina')}" style="flex:1; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; font-weight:700; color:var(--navy)">
+      <select class="discsel" data-domsel="\${dom}" aria-label="\${T('Scegli la disciplina')}" style="flex:1; min-width:0; padding:8px 10px; border:1px solid var(--tratto); border-radius:10px; background:#fff; font-weight:700; color:var(--navy)">
         \${list.map((d,i)=>\`<option value="\${i}" \${i===D.cur?'selected':''}>\${esc(d.name)}</option>\`).join('')}
       </select></div>\`;
   el.innerHTML = head + disc + personal + gironi + next + res + note;
@@ -6410,6 +6653,7 @@ async function mostraMiePrenotazioni() {
       <div class="cr"><b>\${esc(v.titolo)}</b>
         <span>\${esc(v.quando)}\${v.dettaglio ? ' \\u00b7 ' + esc(v.dettaglio) : ''}\${v.importo > 0 ? ' \\u00b7 ' + eur(v.importo) : ''}</span>
         \${v.avviso ? \`<em>\${esc(v.avviso)}</em>\` : ''}</div>
+      \${v.ticket ? \`<button class="btn gold sm" data-ticket="\${v.prenotazione_id}">\${T('Il tuo ticket')}</button>\` : ''}
       \${v.annulla ? \`<button class="btn ghost sm" data-annullapren="\${esc(v.annulla.rotta)}">\${T('Disdici')}</button>\` : ''}
     </div>\`;
   box.innerHTML = \`<div class="blocco">
@@ -6418,6 +6662,7 @@ async function mostraMiePrenotazioni() {
     \${nascoste > 0 || aperto ? \`<button class="btn ghost block" style="margin:8px 13px 13px;width:calc(100% - 26px)" data-mietutte>\${
       aperto ? T('Mostra solo le prossime') : \`\${T('Vedi tutte')} (\${d.voci.length})\`}</button>\` : ''}
   </div>\`;
+  box.querySelectorAll('[data-ticket]').forEach(b => b.onclick = () => openTicketSerata(b.dataset.ticket));
   const bt = box.querySelector('[data-mietutte]');
   if (bt) bt.onclick = () => { window.__mieAperte = !window.__mieAperte; mostraMiePrenotazioni(); };
   box.querySelectorAll('[data-annullapren]').forEach(b => b.onclick = async () => {
@@ -6446,10 +6691,10 @@ async function openSpese() {
   let d;
   try { d = await api('/estratto-conto?tessera_code=' + encodeURIComponent(state.tessera)); }
   catch (e) { okThen(e.message, false); return; }
-  const perServizio = (d.per_servizio || []).map(x => \`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)">
+  const perServizio = (d.per_servizio || []).map(x => \`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--tratto)">
       <span>\${esc(x.servizio)} <span class="muted">\xB7 \${x.volte} \${x.volte === 1 ? T('volta') : T('volte')}</span></span>
       <b>\${x.speso > 0 ? eur(x.speso) : \`<span style="color:#2e6b45">\${T('compreso')}</span>\`}</b></div>\`).join('');
-  const voci = (d.voci || []).slice(0, 40).map(v => \`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--line);font-size:.88rem">
+  const voci = (d.voci || []).slice(0, 40).map(v => \`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--tratto);font-size:.88rem">
       <div style="flex:1"><b>\${esc(v.cosa)}</b><div class="ct">\${esc(v.data)} \xB7 \${esc(v.servizio)}</div></div>
       <span>\${v.importo > 0 ? eur(v.importo) : \`<span class="muted">\${T('gratis')}</span>\`}</span></div>\`).join('');
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--teal)">\${T('La tua tessera')}</div>
@@ -6560,7 +6805,8 @@ function openSerateSpeciali() {
   const riga = (s) => \`<div class="matchrow"><div style="flex:1">
       <b style="font-size:.92rem">\${esc(s.titolo)}</b>
       <div class="ct">\${esc(s.quando || '')} \xB7 \u20AC \${esc(String(s.quota))} \${T('a persona')}\${s.posti_liberi != null ? \` \xB7 \${s.posti_liberi} \${T('posti liberi')}\` : ''}</div>
-      \${s.descrizione ? \`<div class="ct">\${esc(s.descrizione)}</div>\` : ''}</div>
+      \${s.descrizione ? \`<div class="ct">\${esc(s.descrizione)}</div>\` : ''}
+      \${s.mancano > 0 ? \`<div class="ct" style="color:var(--coral)">\${T('Servono')} \${s.minimo} \${T('persone')} \xB7 \${T('mancano')} \${s.mancano}</div>\` : ''}</div>
     \${minorenne() ? '' : \`<button class="btn gold sm" data-serata="\${s.id}">\${T('Prenota')}</button>\`}</div>\`;
   setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Su prenotazione')}</div>
     <h2>\${T('Le serate speciali')}</h2>
@@ -7327,8 +7573,11 @@ async function openTessera() {
       if (cs.length) convHtml = \`<div class="sect-title" style="margin-top:12px">\${T('Le tue convocazioni')}</div><div class="card" style="padding:4px 14px">\${cs.map(c => \`<div class="matchrow"><div style="flex:1"><b style="font-size:.85rem">\${esc(c.disciplina)}</b><div class="ct">\${esc(c.match_label || '')}</div></div><div style="display:flex; gap:6px"><button class="btn gold sm" data-convrisp="\${c.id}|disponibile">\${T('Ci sono')}</button><button class="btn ghost sm" data-convrisp="\${c.id}|non_disponibile">\${T('No')}</button></div></div>\`).join('')}</div>\`;
     } catch {}
   }
+  // Il segno si mette sulla tessera, non addosso a chi ordina: chi consegna lo legge in un
+  // colpo d'occhio e non deve chiedere niente a nessuno.
+  const min = minorenne();
   setSheet(\`<div class="grab"></div>
-    <div class="tessera"><div class="lab">BUSSOLA RESIDENCE</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||T('Socio'))} \xB7 \${T('Casata')} \${esc(s.casata||'')}</div>
+    <div class="tessera\${min ? ' ragazzi' : ''}">\${min ? \`<div class="eta18">\${T('UNDER 18')}</div>\` : ''}<div class="lab">BUSSOLA RESIDENCE</div><h2 class="serif" style="color:#fff">\${esc(s.nome)} \${esc(s.cognome||'')}</h2><div class="role">\${esc(s.ruolo||T('Socio'))} \xB7 \${T('Casata')} \${esc(s.casata||'')}</div>
       <div class="qr">\${qrSvg(s.tessera_code)}</div>
       <div class="foot"><span class="tiny" style="opacity:.85">\${T('Tessera')} \${esc(s.tessera_code)}</span><span class="tiny" style="opacity:.85">\${T('Valida fino al')} \${esc((s.valida_fino||'').split('-').reverse().join('/'))}</span></div></div>
     <div class="row" style="gap:8px; margin-top:10px">
@@ -7685,7 +7934,7 @@ const UI_HOST = {
 };
 
 // --- Traduzioni stringhe v4.20\u2192v4.36 (registrazione, host, onboarding, self-order, comanda, eventi) ---
-const UI_EXTRA = {"en": {"112 e il tuo contatto di emergenza": "112 and your emergency contact", "112 \xB7 emergenze": "112 \xB7 emergencies", "A quale casa lo colleghi?": "Which house do you link them to?", "Abbiamo avvisato": "We've notified", "Accetto il trattamento dei dati (privacy)": "I accept the processing of my data (privacy)", "Aggiungi": "Add", "Aggiungi alla Home": "Add to Home", "Aggiungi alla schermata Home": "Add to Home screen", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "Add your holiday home: you'll be able to welcome visitors.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "Add your home first, then confirm the guest.", "Aggiungi struttura": "Add property", "Aggiungi un giocatore": "Add a player", "Al tavolo servono almeno": "The table needs at least", "Ancora niente da mostrare.": "Nothing to show yet.", "Annullare questa prenotazione?": "Cancel this booking?", "Apri ai soci": "Open to members", "Apri la partita di": "Open the game of", "Area fitness": "Fitness area", "Attenzione: mancano meno di": "Careful: there are less than", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, kitchen and meeting point", "Benvenuto nella casata": "Welcome to the house", "Benvenuto!": "Welcome!", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "There's room", "CAPITANO": "CAPTAIN", "Cambia casata": "Change house", "Campo impegnato": "Court in use", "Campo riservato": "Reserved court", "Capitani": "Captains", "Casa di Carta": "Casa di Carta", "Casa mia": "My Home", "Case vacanza": "Holiday homes", "Cena": "Dinner", "Cena al tavolo": "Dinner at the table", "Cena confermata, ma i posti davanti al palco sono esauriti": "Dinner confirmed, but the seats in front of the stage are sold out", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Search for who's hosting you: they'll get a notification and, if they confirm, you'll see \\"My Home\\".", "Cerco la posizione\u2026": "Finding your location\u2026", "Chat della casata": "House chat", "Chat non disponibile": "Chat not available", "Chi gioca": "Who plays", "Chi gioca con te": "Who is playing with you", "Chi sei?": "Who are you?", "Chi ti ospita?": "Who is hosting you?", "Chi vuoi chiamare": "Who do you want to call", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Whoever wants to be your guest registers and searches for you by name: here you confirm and link them to the home.", "Chiama": "Call", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "This order contains alcohol: you may be asked for ID on collection. Not served under 18.", "Codice di accesso": "Access code", "Cognome": "Surname", "Collega": "Link", "Collega la tua casa": "Link your home", "Comanda": "Order", "Come arrivare": "Getting there", "Come raggiungere la casa e le regole del soggiorno.": "How to reach the house and the rules of your stay.", "Come va la Coppa": "How the Cup is going", "Conferimento rifiuti": "Waste collection", "Conferma": "Confirm", "Conosci il tuo host?": "Do you know your host?", "Consenti le finestre per salvare la rassegna.": "Allow pop-ups to save the film season.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "This way it stays on your phone with its icon, no need to look for it each time.", "Crea profilo": "Create profile", "Dati della struttura non disponibili": "Property details not available", "Disattiva": "Turn off", "Disattivare la gestione delle case vacanza?": "Turn off holiday home management?", "Disdetta non riuscita": "Cancellation failed", "Disdici": "Cancel", "Disdire l\u2019iscrizione a questa lezione?": "Cancel your booking for this class?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "Cancel this booking? The court goes back to free and whoever was going to play with you needs to be told.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "After that the class is still owed: the instructor has already arrived and the spot cannot be resold.", "Dove mi trovo": "Where I am", "Dove si trova": "Where it is", "Durata": "Duration", "E": "And", "Elenco non disponibile": "List not available", "Fatto": "Done", "Fino ai 18 anni le prenota un adulto per te.": "Under 18, an adult books them for you.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Under 18, paid bookings are made by an adult for you.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Camera not available: open your phone's camera and scan the QR on the table.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "Manage the holiday homes you host in the residence.", "Giocare": "Play", "Giochi da tavolo": "Board games", "Giornata libera": "Free day", "Gruppo capitani": "Captains' group", "Guida": "Guide", "Hai anche": "You also have", "Hai diritto alla prima fila": "You're entitled to the front row", "Hai esaurito le prenotazioni di questa settimana su questo campo": "You've used up this week's bookings on this court", "Ho gi\xE0 un account": "I already have an account", "Home": "Home", "I film che proponiamo per la stagione.": "The films we're showing this season.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "The season's films. Screening dates are in the app, Stage section: they can change.", "I miei posti": "My seats", "I miei visitatori": "My visitors", "I tuoi dati": "Your details", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "112 is the single emergency number. The residence is not a rescue service: these are only the numbers that actually answer, within reach.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "An adult books the court: you join the game and play.", "Il campo \xE8 al completo.": "The court is full.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "The code is on the table. From there the order starts with the right number already.", "Il consenso privacy \xE8 necessario per registrarsi": "Privacy consent is required to register", "Il mio contatto": "My contact", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "We assign the table. If you're more or fewer, just tell the staff.", "Il tavolo si prenota a turni.": "The table is booked in sessions.", "Il telefono non sa dirmi dove sei.": "Your phone can't tell me where you are.", "Il tuo codice di accesso": "Your access code", "Il tuo host": "Your host", "Il tuo posto": "Your seat", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Your profile is active. Keep your code to log in even without e-mail:", "Il tuo soggiorno": "Your stay", "In attesa di conferma": "Awaiting confirmation", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Tell us who's hosting you to see stay directions and rules.", "Indietro": "Back", "Informazioni utili": "Useful information", "Ingresso libero": "Free entry", "Inizia": "Start", "Inquadra il QR del tavolo": "Scan the table's QR code", "Installa l\u2019app": "Install the app", "Invia": "Send", "Invia ordine": "Send order", "Iscritto": "Signed up", "Iscriviti": "Sign up", "Iscrizione annullata": "Booking cancelled", "Iscrizione confermata": "Sign-up confirmed", "Iscrizione non riuscita": "Sign-up failed", "Isolato": "Block", "La chat della casata": "The house chat", "La chat interna alla casata arriver\xE0 in una prossima versione.": "The house's internal chat is coming in a future version.", "La cucina consegna dalle": "The kitchen serves from", "La mia casata": "My house", "La settimana": "The week", "La tua postazione": "Your desk", "La tua prenotazione": "Your booking", "La tua tessera": "Your card", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Dates aren't listed: a special evening or bad weather can move a screening. You'll find the exact day under <b>Stage</b>, where seats are booked.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "The information is encrypted: visible only to you and your linked guests.", "Le mie case": "My homes", "Le mie lezioni": "My classes", "Le mie postazioni": "My desks", "Le mie prenotazioni": "My bookings", "Le mie spese": "My spending", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Paid bookings \u2014 dinner, bar, classes and evenings \u2014 are made by an adult for you: under 18 you can't commit to spending on your own.", "Le serate con quota le prenota un adulto per te.": "Evenings with a fee are booked by an adult for you.", "Le serate speciali": "Special evenings", "Le tue strutture": "Your properties", "Le ultime": "Most recent", "Leggi questi numeri all'operatore": "Read these numbers to the operator", "Lezione al completo.": "Class is full.", "Lezioni con istruttore": "Classes with an instructor", "Lezioni non disponibili": "Classes not available", "Men\xF9 non disponibile": "Menu not available", "Migliore casata": "Best house", "Modifica": "Edit", "Mostra solo le prossime": "Show only the next ones", "NON PRENOTABILE": "NOT BOOKABLE", "Nessun host trovato con questo nome.": "No host found with this name.", "Nessun iscritto a questa casata.": "No members in this house.", "Nessun messaggio. Comincia tu.": "No messages. Start the conversation.", "Nessun turno di coworking.": "No coworking sessions.", "Nessun visitatore collegato.": "No visitor linked.", "Nessuna lezione in programma.": "No classes scheduled.", "Nessuna serata su prenotazione al momento.": "No bookable evenings at the moment.", "Nessuno spettacolo in programma.": "No shows scheduled.", "Nome": "Name", "Nome e cognome obbligatori": "Name and surname required", "Nome o cognome dell'host": "Host's first or last name", "Nome struttura": "Property name", "Nome, oppure tessera BR-\u2026": "Name, or card BR-\u2026", "Non hai ancora aggiunto strutture.": "You haven't added any properties yet.", "Non hai postazioni prenotate.": "You have no desks booked.", "Non lo conosco ora \xB7 salta": "I don't know it now \xB7 skip", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "I can't get your location. Tell the operator the name of the residence and the villa number.", "Numeri rapidi": "Quick numbers", "Numero": "Number", "Oggi al residence": "Today at the residence", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Each house holds up to 12 members. If it's full, choose another.", "Orario di check-out": "Check-out time", "Ordina e ritira al banco": "Order and collect at the counter", "Ordine inviato": "Order sent", "Ore di silenzio": "Quiet hours", "Ospite collegato": "Guest linked", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Temporary guest: you link to your host's home.", "Passa alla versione completa": "Switch to the full version", "Per confermare la lezione": "To confirm the class", "Per gli altri giorni usa la sezione Eventi.": "For other days use the Events section.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "The bar, dinner and evening events need an adult: under 18 you can't book paid things on your own.", "Per servizio": "By service", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "For a large group we put tables together: tell us how many you really are.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "For a meeting you can take the whole room: choose how many desks you need.", "Pi\xF9 tardi": "Later", "Portami l\xEC": "Take me there", "Postazione al tavolo": "Desk at the table", "Posti": "Places", "Precisione": "Accuracy", "Prenota la cena": "Book dinner", "Prenotazione disdetta: il campo \xE8 tornato libero.": "Booking cancelled: the court is free again.", "Prenotazione non disponibile.": "Booking not available.", "Prenoti": "Booking", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "You always book as the holder. With <b>Open to members</b> others join up to", "Prezzo": "Price", "Programma non disponibile": "Programme not available", "Puoi aggiungere le tue case e accogliere i visitatori.": "You can add your homes and welcome visitors.", "Qualcosa non ha funzionato nel caricamento.": "Something went wrong while loading.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "When they confirm, \\"My Home\\" will appear with all the property's directions.", "Quante persone siete?": "How many of you are there?", "Quante persone?": "How many people?", "Quante postazioni": "How many desks", "Questa casata non ha ancora un capitano.": "This house doesn't have a captain yet.", "Questo codice non \xE8 il QR di un tavolo.": "This code isn't a table QR code.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "This phone can't read codes from the app: open your phone's camera and scan the QR on the table.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "This only covers what you did with your card: at the Bar and Garden you can be served without it, and those items don\u2019t appear here.", "Rassegna": "Film season", "Rassegna cinematografica": "Film season", "Rassegna non ancora pubblicata.": "Film season not published yet.", "Rassegna non disponibile": "Film season not available", "Registrati": "Sign up", "Registrazione non riuscita": "Registration failed", "Regole della casa": "House rules", "Richiesta inviata": "Request sent", "Richieste in attesa": "Pending requests", "Riprova": "Try again", "Riservata": "Reserved", "Rispondi e l'app trova il profilo giusto per te.": "Answer and the app finds the right profile for you.", "Sala non disponibile": "Room not available", "Salva": "Save", "Salva la tua tessera (immagine)": "Save your card (image)", "Salva o stampa la rassegna": "Save or print the film season", "Salva tessera": "Save card", "Scegli": "Choose", "Scegli la casata": "Choose the house", "Scegli la disciplina": "Choose the discipline", "Scegli la tua casata": "Choose your house", "Scollega": "Unlink", "Scollegare questo visitatore dalla casa?": "Unlink this visitor from the home?", "Scopri le nostre serate speciali": "Discover our special evenings", "Scrivi il nome di chi gioca, oppure la sua tessera.": "Write the name of who plays, or their card.", "Scrivi qui\u2026": "Write here\u2026", "Segnala": "Report", "Serve l'accesso con la tessera": "Card access is required", "Serve la tessera di un socio per iscriverti": "A member's card is needed to sign up", "Serve la tessera di un socio per prenotare": "A member's card is needed to book", "Serve la tessera per vedere le tue spese": "You need your card to see your spending", "Serve per accedere di nuovo con un codice via e-mail.": "It's used to log in again with a code via e-mail.", "Servono": "Needs", "Settimana": "Week", "Si disdice senza pagare fino a": "Free cancellation up to", "Si gioca: numero minimo raggiunto": "The match is on: minimum reached", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "You take a chair, not a table: you can work in a shared room too.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "You pay per class, in cash at the end. Below the minimum sign-ups the class doesn't run.", "Soggiorno dal": "Stay from", "Solo io": "Just me", "Sono in vacanza (visitatore)": "I'm on holiday (visitor)", "Sono residente": "I'm a resident", "Sono socio": "I'm a member", "Sono socio e residente": "I'm a member and resident", "Spettacolo": "Show", "Stage": "Stage", "Stai prenotando per stasera": "You're booking for tonight", "Stasera": "Tonight", "Stasera alle": "Tonight at", "Stasera il Garden non prende prenotazioni.": "The Garden isn't taking bookings tonight.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "On Android (Chrome): tap the menu (\u22EE) at the top right, then \\"Add to Home screen\\" / \\"Install app\\".", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "On iPhone/iPad (Safari): tap Share (\u2B06\uFE0F) at the bottom, then \\"Add to Home\\".", "Su prenotazione": "By reservation", "Tavolo": "Table", "Tavolo da gioco": "Games table", "Tavolo per 4 persone": "Table for 4", "Tessera salvata nelle immagini": "Card saved to your photos", "Tesserato: casata, Coppa, inviti.": "Member: house, Cup, invitations.", "Ti hanno convocato": "You've been called up", "Ti restano": "You have left", "Tieni l\u2019app a portata di mano": "Keep the app within reach", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Tap a class to sign up. The colour is the discipline.", "Tocca una serata per i dettagli.": "Tap an evening for details.", "Togli questo avviso": "Dismiss this notice", "Totale speso": "Total spent", "Turni": "Sessions", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Everything a member has (house, Cup) + I manage holiday homes.", "Tutto pronto": "All set", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "A member is added with their card, so Cup points count for them. A guest is added by name: they play all the same, but it stays written who was on court.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "A visitor has indicated you as host: confirm to link them to the home.", "Vai alla Coppa": "Go to the Cup", "Vedi tutte": "See all", "Versione completa": "Full version", "Versione semplice": "Simple version", "Vivo nel residence; posso gestire case vacanza.": "I live in the residence; I can manage holiday homes.", "a pari merito": "tied", "al": "to", "al completo": "full", "alla Casa di Carta": "at the Casa di Carta", "alle": "at", "cena e tavolo": "dinner and table", "classifica e prossime partite": "standings and upcoming matches", "compreso": "included", "consumazione obbligatoria": "one drink included", "coperti prenotati": "covers booked", "dal": "from", "di": "by", "di pi\xF9\u2026": "more\u2026", "dice di essere tuo ospite": "says they're your guest", "e capitani": "and captains", "entro le": "by", "es. Chiara": "e.g. Chiara", "fasce": "slots", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "slots from today have already gone by and cannot be booked.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "slot from today has already gone by and cannot be booked.", "film": "films", "giocatori": "players", "giocatori: da soli non si occupa un tavolo.": "players: you don't take a table on your own.", "giocatori: ne mancano": "players: still missing", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "players; with <b>Just me</b> the slot stays reserved. The courts are free.", "gratis": "free", "in corso: chiedila al banco": "in progress: ask at the counter", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "your location stays on your phone, it isn't sent to anyone", "la rassegna": "the film season", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "we keep it for over-70s, while seats last. We assign it to you ourselves.", "la tua": "yours", "lezioni con istruttore": "classes with an instructor", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "minutes to the start, so the class is owed even if you cancel. Go ahead?", "minuti prima": "minutes before", "nessun posto libero": "no seats available", "nessun tavolo libero": "no free tables", "nessuna postazione libera": "no desks available", "orari, rifiuti, numeri": "hours, waste, numbers", "ordina e ritira": "order and collect", "organizzatevi fra voi": "organise among yourselves", "ospite senza tessera": "guest without card", "partita da confermare": "match to confirm", "partite da confermare": "matches to confirm", "per confermare la lezione": "to confirm the class", "per stasera, tavolo da 4": "for tonight, table for 4", "persone": "people", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "the grill and fryer need to heat up. Your order has already been taken.", "posizione": "position", "postazioni": "desks", "postazioni libere": "desks available", "posti davanti al palco": "seats in front of the stage", "posti liberi": "seats available", "posto allo spettacolo": "a seat at the show", "prodotti": "items", "restano solo i posti in fondo": "only seats at the back are left", "segnalato": "reported", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "pay at the till. We'll let you know when it's ready.", "soci": "members", "socio": "member", "solo per te? Nessun altro potr\xE0 unirsi.": "just for yourself? No one else will be able to join.", "su": "of", "su questo campo": "on this court", "tavoli liberi": "tables free", "tavolo": "table", "tavolo da gioco": "games table", "titolare": "holder", "unisciti a chi sta giocando": "join those already playing", "volta": "time", "volta in cui non hai pagato niente: \xE8 compreso.": "time you paid nothing: it\u2019s included.", "volte": "times", "volte in cui non hai pagato niente: \xE8 compreso.": "times you paid nothing: it\u2019s included.", "\xC8 fatta": "All done", "\xC8 lui/lei": "That's them"}, "fr": {"112 e il tuo contatto di emergenza": "112 et votre contact d\u2019urgence", "112 \xB7 emergenze": "112 \xB7 urgences", "A quale casa lo colleghi?": "\xC0 quelle maison le rattaches-tu ?", "Abbiamo avvisato": "Nous avons pr\xE9venu", "Accetto il trattamento dei dati (privacy)": "J'accepte le traitement de mes donn\xE9es (confidentialit\xE9)", "Aggiungi": "Ajouter", "Aggiungi alla Home": "Ajouter \xE0 l'accueil", "Aggiungi alla schermata Home": "Ajouter \xE0 l'\xE9cran d'accueil", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "Ajoute ta maison de vacances : tu pourras accueillir des visiteurs.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "Ajoute d'abord ta maison, puis confirme l'invit\xE9.", "Aggiungi struttura": "Ajouter un logement", "Aggiungi un giocatore": "Ajouter un joueur", "Al tavolo servono almeno": "\xC0 la table il faut au moins", "Ancora niente da mostrare.": "Rien \xE0 montrer pour l\u2019instant.", "Annullare questa prenotazione?": "Annuler cette r\xE9servation ?", "Apri ai soci": "Ouvrir aux membres", "Apri la partita di": "Ouvrir la partie de", "Area fitness": "Espace fitness", "Attenzione: mancano meno di": "Attention : il reste moins de", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, cuisine et point de rencontre", "Benvenuto nella casata": "Bienvenue dans la maison", "Benvenuto!": "Bienvenue !", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "Il y a de la place", "CAPITANO": "CAPITAINE", "Cambia casata": "Changer de maison", "Campo impegnato": "Terrain occup\xE9", "Campo riservato": "Terrain r\xE9serv\xE9", "Capitani": "Capitaines", "Casa di Carta": "Casa di Carta", "Casa mia": "Chez moi", "Case vacanza": "Locations de vacances", "Cena": "D\xEEner", "Cena al tavolo": "D\xEEner \xE0 table", "Cena confermata, ma i posti davanti al palco sono esauriti": "D\xEEner confirm\xE9, mais les places devant la sc\xE8ne sont \xE9puis\xE9es", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Cherche qui t'h\xE9berge : la personne recevra une notification et, si elle confirme, tu verras \xAB Ma maison \xBB.", "Cerco la posizione\u2026": "Recherche de la position\u2026", "Chat della casata": "Chat de la maison", "Chat non disponibile": "Chat indisponible", "Chi gioca": "Qui joue", "Chi gioca con te": "Qui joue avec vous", "Chi sei?": "Qui es-tu ?", "Chi ti ospita?": "Qui t'h\xE9berge ?", "Chi vuoi chiamare": "Qui voulez-vous appeler", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Celui qui veut \xEAtre ton invit\xE9 s'inscrit et te cherche par nom : ici tu confirmes et le rattaches \xE0 la maison.", "Chiama": "Appeler", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "Cette commande contient de l'alcool : une pi\xE8ce d'identit\xE9 peut vous \xEAtre demand\xE9e au retrait. Pas de service avant 18 ans.", "Codice di accesso": "Code d'acc\xE8s", "Cognome": "Nom", "Collega": "Rattacher", "Collega la tua casa": "Rattache ta maison", "Comanda": "Commande", "Come arrivare": "Comment venir", "Come raggiungere la casa e le regole del soggiorno.": "Comment rejoindre la maison et les r\xE8gles du s\xE9jour.", "Come va la Coppa": "O\xF9 en est la Coupe", "Conferimento rifiuti": "D\xE9p\xF4t des d\xE9chets", "Conferma": "Confirmer", "Conosci il tuo host?": "Connais-tu ton h\xF4te ?", "Consenti le finestre per salvare la rassegna.": "Autorisez les fen\xEAtres pour enregistrer le cycle.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "Ainsi elle reste sur ton t\xE9l\xE9phone avec son ic\xF4ne, sans la chercher \xE0 chaque fois.", "Crea profilo": "Cr\xE9er un profil", "Dati della struttura non disponibili": "Donn\xE9es du logement indisponibles", "Disattiva": "D\xE9sactiver", "Disattivare la gestione delle case vacanza?": "D\xE9sactiver la gestion des locations ?", "Disdetta non riuscita": "Annulation impossible", "Disdici": "Annuler", "Disdire l\u2019iscrizione a questa lezione?": "Annuler votre inscription \xE0 ce cours ?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "Annuler cette r\xE9servation ? Le terrain redevient libre et il faut pr\xE9venir ceux qui devaient jouer avec vous.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "Apr\xE8s, le cours reste d\xFB : le moniteur est d\xE9j\xE0 arriv\xE9 et la place ne se revend plus.", "Dove mi trovo": "O\xF9 je suis", "Dove si trova": "O\xF9 \xE7a se trouve", "Durata": "Dur\xE9e", "E": "Et", "Elenco non disponibile": "Liste indisponible", "Fatto": "Termin\xE9", "Fino ai 18 anni le prenota un adulto per te.": "Avant 18 ans, un adulte r\xE9serve pour vous.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Avant 18 ans, les r\xE9servations payantes sont faites par un adulte pour vous.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Appareil photo indisponible : ouvrez l'appareil photo du t\xE9l\xE9phone et scannez le QR sur la table.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "G\xE9rez les maisons de vacances que vous accueillez dans la r\xE9sidence.", "Giocare": "Jouer", "Giochi da tavolo": "Jeux de soci\xE9t\xE9", "Giornata libera": "Journ\xE9e libre", "Gruppo capitani": "Groupe des capitaines", "Guida": "Guide", "Hai anche": "Vous avez aussi", "Hai diritto alla prima fila": "Vous avez droit au premier rang", "Hai esaurito le prenotazioni di questa settimana su questo campo": "Vous avez \xE9puis\xE9 vos r\xE9servations de la semaine sur ce terrain", "Ho gi\xE0 un account": "J'ai d\xE9j\xE0 un compte", "Home": "Accueil", "I film che proponiamo per la stagione.": "Les films que nous proposons pour la saison.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "Les films de la saison. Les dates des projections sont dans l'app, section Sc\xE8ne : elles peuvent changer.", "I miei posti": "Mes places", "I miei visitatori": "Mes visiteurs", "I tuoi dati": "Tes informations", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "Le 112 est le num\xE9ro unique d'urgence. La r\xE9sidence n'est pas un service de secours : ce sont seulement les num\xE9ros auxquels on r\xE9pond, \xE0 port\xE9e de doigt.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "Un adulte r\xE9serve le terrain : vous rejoignez la partie et vous jouez.", "Il campo \xE8 al completo.": "Le terrain est complet.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "Le code est sur la table. De l\xE0, la commande part d\xE9j\xE0 avec le bon num\xE9ro.", "Il consenso privacy \xE8 necessario per registrarsi": "Le consentement \xE0 la confidentialit\xE9 est n\xE9cessaire pour s'inscrire", "Il mio contatto": "Mon contact", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "C'est nous qui attribuons la table. Si vous \xEAtes plus ou moins nombreux, dites-le au personnel.", "Il tavolo si prenota a turni.": "La table se r\xE9serve par cr\xE9neaux.", "Il telefono non sa dirmi dove sei.": "Le t\xE9l\xE9phone ne peut pas me dire o\xF9 vous \xEAtes.", "Il tuo codice di accesso": "Ton code d'acc\xE8s", "Il tuo host": "Ton h\xF4te", "Il tuo posto": "Votre place", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Ton profil est actif. Conserve ton code pour te connecter m\xEAme sans e-mail :", "Il tuo soggiorno": "Votre s\xE9jour", "In attesa di conferma": "En attente de confirmation", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Indique qui t'h\xE9berge pour voir les indications et r\xE8gles du s\xE9jour.", "Indietro": "Retour", "Informazioni utili": "Informations utiles", "Ingresso libero": "Entr\xE9e libre", "Inizia": "Commencer", "Inquadra il QR del tavolo": "Scannez le QR de la table", "Installa l\u2019app": "Installer l'appli", "Invia": "Envoyer", "Invia ordine": "Envoyer la commande", "Iscritto": "Inscrit", "Iscriviti": "S'inscrire", "Iscrizione annullata": "Inscription annul\xE9e", "Iscrizione confermata": "Inscription confirm\xE9e", "Iscrizione non riuscita": "Inscription \xE9chou\xE9e", "Isolato": "\xCElot", "La chat della casata": "Le chat de la maison", "La chat interna alla casata arriver\xE0 in una prossima versione.": "Le chat interne \xE0 la maison arrivera dans une prochaine version.", "La cucina consegna dalle": "La cuisine sert \xE0 partir de", "La mia casata": "Ma maison", "La settimana": "La semaine", "La tua postazione": "Votre poste", "La tua prenotazione": "Votre r\xE9servation", "La tua tessera": "Votre carte", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Les dates ne sont pas indiqu\xE9es : une soir\xE9e sp\xE9ciale ou le mauvais temps peuvent d\xE9placer une projection. Le jour exact se trouve dans <b>Sc\xE8ne</b>, o\xF9 l'on r\xE9serve sa place.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "Les informations sont chiffr\xE9es : visibles seulement par vous et vos invit\xE9s li\xE9s.", "Le mie case": "Mes maisons", "Le mie lezioni": "Mes cours", "Le mie postazioni": "Mes postes", "Le mie prenotazioni": "Mes r\xE9servations", "Le mie spese": "Mes d\xE9penses", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Les r\xE9servations payantes \u2014 d\xEEner, bar, cours et soir\xE9es \u2014 sont faites par un adulte pour vous : avant 18 ans on ne s'engage pas seul sur une d\xE9pense.", "Le serate con quota le prenota un adulto per te.": "Les soir\xE9es payantes sont r\xE9serv\xE9es par un adulte pour vous.", "Le serate speciali": "Les soir\xE9es sp\xE9ciales", "Le tue strutture": "Vos logements", "Le ultime": "Les derni\xE8res", "Leggi questi numeri all'operatore": "Lisez ces chiffres \xE0 l'op\xE9rateur", "Lezione al completo.": "Cours complet.", "Lezioni con istruttore": "Cours avec moniteur", "Lezioni non disponibili": "Cours indisponibles", "Men\xF9 non disponibile": "Menu non disponible", "Migliore casata": "Meilleure maison", "Modifica": "Modifier", "Mostra solo le prossime": "Afficher seulement les prochaines", "NON PRENOTABILE": "NON R\xC9SERVABLE", "Nessun host trovato con questo nome.": "Aucun h\xF4te trouv\xE9 avec ce nom.", "Nessun iscritto a questa casata.": "Aucun inscrit dans cette maison.", "Nessun messaggio. Comincia tu.": "Aucun message. Lancez-vous.", "Nessun turno di coworking.": "Aucun cr\xE9neau de coworking.", "Nessun visitatore collegato.": "Aucun visiteur rattach\xE9.", "Nessuna lezione in programma.": "Aucun cours au programme.", "Nessuna serata su prenotazione al momento.": "Aucune soir\xE9e sur r\xE9servation pour le moment.", "Nessuno spettacolo in programma.": "Aucun spectacle au programme.", "Nome": "Pr\xE9nom", "Nome e cognome obbligatori": "Pr\xE9nom et nom obligatoires", "Nome o cognome dell'host": "Pr\xE9nom ou nom de l'h\xF4te", "Nome struttura": "Nom du logement", "Nome, oppure tessera BR-\u2026": "Nom, ou carte BR-\u2026", "Non hai ancora aggiunto strutture.": "Vous n'avez pas encore ajout\xE9 de logement.", "Non hai postazioni prenotate.": "Vous n'avez aucun poste r\xE9serv\xE9.", "Non lo conosco ora \xB7 salta": "Je ne le connais pas maintenant \xB7 passer", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "Impossible d'obtenir la position. Dites \xE0 l'op\xE9rateur le nom de la r\xE9sidence et le num\xE9ro de la villa.", "Numeri rapidi": "Num\xE9ros rapides", "Numero": "Num\xE9ro", "Oggi al residence": "Aujourd'hui \xE0 la r\xE9sidence", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Chaque maison accueille jusqu'\xE0 12 membres. Si elle est compl\xE8te, choisis-en une autre.", "Orario di check-out": "Heure de d\xE9part", "Ordina e ritira al banco": "Commander et retirer au comptoir", "Ordine inviato": "Commande envoy\xE9e", "Ore di silenzio": "Heures de silence", "Ospite collegato": "Invit\xE9 rattach\xE9", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Invit\xE9 temporaire : tu te rattaches \xE0 la maison de ton h\xF4te.", "Passa alla versione completa": "Passer \xE0 la version compl\xE8te", "Per confermare la lezione": "Pour confirmer le cours", "Per gli altri giorni usa la sezione Eventi.": "Pour les autres jours, utilisez la section \xC9v\xE9nements.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "Le bar, le d\xEEner et les soir\xE9es demandent un adulte : avant 18 ans on ne r\xE9serve pas seul ce qui est payant.", "Per servizio": "Par service", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "Pour un grand groupe nous rapprochons plusieurs tables : indiquez combien vous \xEAtes vraiment.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "Pour une r\xE9union vous pouvez prendre toute la salle : choisissez le nombre de postes n\xE9cessaires.", "Pi\xF9 tardi": "Plus tard", "Portami l\xEC": "M'y emmener", "Postazione al tavolo": "Poste \xE0 la table", "Posti": "Places", "Precisione": "Pr\xE9cision", "Prenota la cena": "R\xE9server le d\xEEner", "Prenotazione disdetta: il campo \xE8 tornato libero.": "R\xE9servation annul\xE9e : le terrain est de nouveau libre.", "Prenotazione non disponibile.": "R\xE9servation indisponible.", "Prenoti": "Vous r\xE9servez", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "Vous r\xE9servez toujours en tant que titulaire. Avec <b>Ouvrir aux membres</b>, les autres se joignent jusqu'\xE0", "Prezzo": "Prix", "Programma non disponibile": "Programme indisponible", "Puoi aggiungere le tue case e accogliere i visitatori.": "Vous pouvez ajouter vos logements et accueillir des visiteurs.", "Qualcosa non ha funzionato nel caricamento.": "Un probl\xE8me est survenu au chargement.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "Quand la personne confirmera, \xAB Ma maison \xBB appara\xEEtra avec toutes les indications du logement.", "Quante persone siete?": "Combien \xEAtes-vous ?", "Quante persone?": "Combien de personnes ?", "Quante postazioni": "Combien de postes", "Questa casata non ha ancora un capitano.": "Cette maison n'a pas encore de capitaine.", "Questo codice non \xE8 il QR di un tavolo.": "Ce code n'est pas le QR d'une table.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Ce t\xE9l\xE9phone ne lit pas les codes depuis l'app : ouvrez l'appareil photo du t\xE9l\xE9phone et scannez le QR sur la table.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "Ici il n\u2019y a que ce que vous avez fait avec la carte : au Bar et au Garden on est servi m\xEAme sans, et ces consommations n\u2019apparaissent pas.", "Rassegna": "Cycle", "Rassegna cinematografica": "Cycle de cin\xE9ma", "Rassegna non ancora pubblicata.": "Cycle pas encore publi\xE9.", "Rassegna non disponibile": "Cycle indisponible", "Registrati": "S'inscrire", "Registrazione non riuscita": "\xC9chec de l'inscription", "Regole della casa": "R\xE8gles de la maison", "Richiesta inviata": "Demande envoy\xE9e", "Richieste in attesa": "Demandes en attente", "Riprova": "R\xE9essayer", "Riservata": "R\xE9serv\xE9e", "Rispondi e l'app trova il profilo giusto per te.": "R\xE9ponds et l'appli trouve le profil qui te convient.", "Sala non disponibile": "Salle indisponible", "Salva": "Enregistrer", "Salva la tua tessera (immagine)": "Enregistre ta carte (image)", "Salva o stampa la rassegna": "Enregistrer ou imprimer le cycle", "Salva tessera": "Enregistrer la carte", "Scegli": "Choisir", "Scegli la casata": "Choisis la maison", "Scegli la disciplina": "Choisissez la discipline", "Scegli la tua casata": "Choisis ta maison", "Scollega": "D\xE9tacher", "Scollegare questo visitatore dalla casa?": "D\xE9tacher ce visiteur de la maison ?", "Scopri le nostre serate speciali": "D\xE9couvrez nos soir\xE9es sp\xE9ciales", "Scrivi il nome di chi gioca, oppure la sua tessera.": "\xC9crivez le nom de qui joue, ou sa carte.", "Scrivi qui\u2026": "\xC9crivez ici\u2026", "Segnala": "Signaler", "Serve l'accesso con la tessera": "L'acc\xE8s avec la carte est n\xE9cessaire", "Serve la tessera di un socio per iscriverti": "Il faut la carte d'un membre pour s'inscrire", "Serve la tessera di un socio per prenotare": "Il faut la carte d'un membre pour r\xE9server", "Serve la tessera per vedere le tue spese": "Il faut votre carte pour voir vos d\xE9penses", "Serve per accedere di nuovo con un codice via e-mail.": "Il sert \xE0 te reconnecter avec un code par e-mail.", "Servono": "Il faut", "Settimana": "Semaine", "Si disdice senza pagare fino a": "Annulation gratuite jusqu\u2019\xE0", "Si gioca: numero minimo raggiunto": "Le match aura lieu : minimum atteint", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "On occupe une chaise, pas une table : on travaille aussi dans une salle partag\xE9e.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "On paie le cours \xE0 l'unit\xE9, en esp\xE8ces \xE0 la fin. En dessous du minimum d'inscrits, le cours n'a pas lieu.", "Soggiorno dal": "S\xE9jour du", "Solo io": "Moi seul", "Sono in vacanza (visitatore)": "Je suis en vacances (visiteur)", "Sono residente": "Je suis r\xE9sident", "Sono socio": "Je suis membre", "Sono socio e residente": "Je suis membre et r\xE9sident", "Spettacolo": "Spectacle", "Stage": "Sc\xE8ne", "Stai prenotando per stasera": "Vous r\xE9servez pour ce soir", "Stasera": "Ce soir", "Stasera alle": "Ce soir \xE0", "Stasera il Garden non prende prenotazioni.": "Ce soir le Garden ne prend pas de r\xE9servations.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "Sur Android (Chrome) : touche le menu (\u22EE) en haut \xE0 droite, puis \xAB Ajouter \xE0 l'\xE9cran d'accueil \xBB / \xAB Installer l'appli \xBB.", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "Sur iPhone/iPad (Safari) : touche Partager (\u2B06\uFE0F) en bas, puis \xAB Sur l'\xE9cran d'accueil \xBB.", "Su prenotazione": "Sur r\xE9servation", "Tavolo": "Table", "Tavolo da gioco": "Table de jeu", "Tavolo per 4 persone": "Table pour 4 personnes", "Tessera salvata nelle immagini": "Carte enregistr\xE9e dans les photos", "Tesserato: casata, Coppa, inviti.": "Membre : maison, Coupe, invitations.", "Ti hanno convocato": "On vous a convoqu\xE9", "Ti restano": "Il vous reste", "Tieni l\u2019app a portata di mano": "Garde l'appli \xE0 port\xE9e de main", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Touchez un cours pour vous inscrire. La couleur indique la discipline.", "Tocca una serata per i dettagli.": "Touchez une soir\xE9e pour les d\xE9tails.", "Togli questo avviso": "Retirer cet avis", "Totale speso": "Total d\xE9pens\xE9", "Turni": "Cr\xE9neaux", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Tout du membre (maison, Coupe) + je g\xE8re des maisons de vacances.", "Tutto pronto": "Tout est pr\xEAt", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "Un membre s'ajoute avec sa carte, et les points de la Coupe lui sont compt\xE9s. Un invit\xE9 s'ajoute par son nom : il joue quand m\xEAme, mais on garde trace de qui \xE9tait sur le terrain.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "Un visiteur t'a indiqu\xE9 comme h\xF4te : confirme pour le rattacher \xE0 la maison.", "Vai alla Coppa": "Aller \xE0 la Coupe", "Vedi tutte": "Voir toutes", "Versione completa": "Version compl\xE8te", "Versione semplice": "Version simple", "Vivo nel residence; posso gestire case vacanza.": "Je vis dans la r\xE9sidence ; je peux g\xE9rer des maisons de vacances.", "a pari merito": "\xE0 \xE9galit\xE9", "al": "au", "al completo": "complet", "alla Casa di Carta": "\xE0 la Casa di Carta", "alle": "\xE0", "cena e tavolo": "d\xEEner et table", "classifica e prossime partite": "classement et prochains matchs", "compreso": "compris", "consumazione obbligatoria": "consommation obligatoire", "coperti prenotati": "couverts r\xE9serv\xE9s", "dal": "du", "di": "de", "di pi\xF9\u2026": "plus\u2026", "dice di essere tuo ospite": "dit \xEAtre ton invit\xE9", "e capitani": "et capitaines", "entro le": "avant", "es. Chiara": "ex. Chiara", "fasce": "cr\xE9neaux", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "cr\xE9neaux d'aujourd'hui sont d\xE9j\xE0 pass\xE9s et ne peuvent pas \xEAtre r\xE9serv\xE9s.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "cr\xE9neau d'aujourd'hui est d\xE9j\xE0 pass\xE9 et ne peut pas \xEAtre r\xE9serv\xE9.", "film": "films", "giocatori": "joueurs", "giocatori: da soli non si occupa un tavolo.": "joueurs : on n'occupe pas une table tout seul.", "giocatori: ne mancano": "joueurs : il en manque", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "joueurs ; avec <b>Moi seul</b> le cr\xE9neau reste r\xE9serv\xE9. Les terrains sont gratuits.", "gratis": "gratuit", "in corso: chiedila al banco": "en cours : demandez au comptoir", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "la position reste sur votre t\xE9l\xE9phone, elle n'est envoy\xE9e \xE0 personne", "la rassegna": "le cycle", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "nous la r\xE9servons aux plus de 70 ans, dans la limite des places. Nous vous l'attribuons nous-m\xEAmes.", "la tua": "la tienne", "lezioni con istruttore": "cours avec moniteur", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "minutes avant le d\xE9but, le cours reste donc d\xFB m\xEAme si vous annulez. On continue ?", "minuti prima": "minutes avant", "nessun posto libero": "aucune place libre", "nessun tavolo libero": "aucune table libre", "nessuna postazione libera": "aucun poste libre", "orari, rifiuti, numeri": "horaires, d\xE9chets, num\xE9ros", "ordina e ritira": "commander et retirer", "organizzatevi fra voi": "organisez-vous entre vous", "ospite senza tessera": "invit\xE9 sans carte", "partita da confermare": "match \xE0 confirmer", "partite da confermare": "matchs \xE0 confirmer", "per confermare la lezione": "pour confirmer le cours", "per stasera, tavolo da 4": "pour ce soir, table de 4", "persone": "personnes", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "la plancha et la friteuse doivent chauffer. Votre commande est d\xE9j\xE0 prise.", "posizione": "position", "postazioni": "postes", "postazioni libere": "postes libres", "posti davanti al palco": "places devant la sc\xE8ne", "posti liberi": "places libres", "posto allo spettacolo": "place au spectacle", "prodotti": "produits", "restano solo i posti in fondo": "il ne reste que les places du fond", "segnalato": "signal\xE9", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "paiement \xE0 la caisse. On te pr\xE9vient quand c'est pr\xEAt.", "soci": "membres", "socio": "membre", "solo per te? Nessun altro potr\xE0 unirsi.": "seulement pour vous ? Personne d'autre ne pourra se joindre.", "su": "sur", "su questo campo": "sur ce terrain", "tavoli liberi": "tables libres", "tavolo": "table", "tavolo da gioco": "table de jeu", "titolare": "titulaire", "unisciti a chi sta giocando": "rejoignez ceux qui jouent", "volta": "fois", "volta in cui non hai pagato niente: \xE8 compreso.": "fois o\xF9 vous n\u2019avez rien pay\xE9 : c\u2019est compris.", "volte": "fois", "volte in cui non hai pagato niente: \xE8 compreso.": "fois o\xF9 vous n\u2019avez rien pay\xE9 : c\u2019est compris.", "\xC8 fatta": "C'est fait", "\xC8 lui/lei": "C'est lui/elle"}, "de": {"112 e il tuo contatto di emergenza": "112 und dein Notfallkontakt", "112 \xB7 emergenze": "112 \xB7 Notruf", "A quale casa lo colleghi?": "Welchem Haus ordnest du ihn/sie zu?", "Abbiamo avvisato": "Wir haben benachrichtigt", "Accetto il trattamento dei dati (privacy)": "Ich stimme der Datenverarbeitung zu (Datenschutz)", "Aggiungi": "Hinzuf\xFCgen", "Aggiungi alla Home": "Zum Startbildschirm", "Aggiungi alla schermata Home": "Zum Startbildschirm hinzuf\xFCgen", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "F\xFCge dein Ferienhaus hinzu: Du kannst dann Besucher empfangen.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "F\xFCge zuerst dein Haus hinzu, dann best\xE4tige den Gast.", "Aggiungi struttura": "Objekt hinzuf\xFCgen", "Aggiungi un giocatore": "Spieler hinzuf\xFCgen", "Al tavolo servono almeno": "Am Tisch braucht es mindestens", "Ancora niente da mostrare.": "Noch nichts zu zeigen.", "Annullare questa prenotazione?": "Diese Buchung stornieren?", "Apri ai soci": "F\xFCr Mitglieder \xF6ffnen", "Apri la partita di": "Spiel \xF6ffnen:", "Area fitness": "Fitnessbereich", "Attenzione: mancano meno di": "Achtung: es sind weniger als", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, K\xFCche und Treffpunkt", "Benvenuto nella casata": "Willkommen im Haus", "Benvenuto!": "Willkommen!", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "Es ist Platz", "CAPITANO": "KAPIT\xC4N", "Cambia casata": "Haus wechseln", "Campo impegnato": "Platz belegt", "Campo riservato": "Reservierter Platz", "Capitani": "Kapit\xE4ne", "Casa di Carta": "Casa di Carta", "Casa mia": "Mein Zuhause", "Case vacanza": "Ferienwohnungen", "Cena": "Abendessen", "Cena al tavolo": "Abendessen am Tisch", "Cena confermata, ma i posti davanti al palco sono esauriti": "Abendessen best\xE4tigt, aber die Pl\xE4tze vor der B\xFChne sind ausverkauft", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Suche, wer dich beherbergt: Die Person erh\xE4lt eine Benachrichtigung und, wenn sie best\xE4tigt, siehst du \u201EMein Zuhause\\".", "Cerco la posizione\u2026": "Position wird gesucht\u2026", "Chat della casata": "Haus-Chat", "Chat non disponibile": "Chat nicht verf\xFCgbar", "Chi gioca": "Wer spielt", "Chi gioca con te": "Wer mit dir spielt", "Chi sei?": "Wer bist du?", "Chi ti ospita?": "Wer beherbergt dich?", "Chi vuoi chiamare": "Wen m\xF6chtest du anrufen", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Wer dein Gast sein m\xF6chte, registriert sich und sucht dich per Namen: Hier best\xE4tigst du und verbindest ihn mit dem Haus.", "Chiama": "Anrufen", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "Die Bestellung enth\xE4lt Alkohol: bei der Abholung kann ein Ausweis verlangt werden. Unter 18 wird nicht ausgeschenkt.", "Codice di accesso": "Zugangscode", "Cognome": "Nachname", "Collega": "Verbinden", "Collega la tua casa": "Verbinde dein Haus", "Comanda": "Bestellung", "Come arrivare": "Anfahrt", "Come raggiungere la casa e le regole del soggiorno.": "So erreichst du das Haus, und die Regeln des Aufenthalts.", "Come va la Coppa": "Wie steht der Pokal", "Conferimento rifiuti": "M\xFCllabgabe", "Conferma": "Best\xE4tigen", "Conosci il tuo host?": "Kennst du deinen Gastgeber?", "Consenti le finestre per salvare la rassegna.": "Erlaube Pop-ups, um die Filmreihe zu speichern.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "So bleibt sie mit ihrem Symbol auf dem Telefon, ohne sie jedes Mal zu suchen.", "Crea profilo": "Profil erstellen", "Dati della struttura non disponibili": "Objektdaten nicht verf\xFCgbar", "Disattiva": "Ausschalten", "Disattivare la gestione delle case vacanza?": "Verwaltung der Ferienwohnungen ausschalten?", "Disdetta non riuscita": "Absage fehlgeschlagen", "Disdici": "Absagen", "Disdire l\u2019iscrizione a questa lezione?": "Anmeldung f\xFCr diese Stunde absagen?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "Diese Buchung absagen? Der Platz wird wieder frei, und wer mit dir spielen wollte, muss Bescheid bekommen.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "Danach bleibt die Stunde geschuldet: der Trainer ist schon da und der Platz l\xE4sst sich nicht mehr vergeben.", "Dove mi trovo": "Wo ich bin", "Dove si trova": "Wo es liegt", "Durata": "Dauer", "E": "Und", "Elenco non disponibile": "Liste nicht verf\xFCgbar", "Fatto": "Fertig", "Fino ai 18 anni le prenota un adulto per te.": "Unter 18 bucht ein Erwachsener f\xFCr dich.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Unter 18 macht ein Erwachsener die kostenpflichtigen Buchungen f\xFCr dich.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Kamera nicht verf\xFCgbar: \xF6ffne die Kamera des Telefons und scanne den QR-Code auf dem Tisch.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "Verwalte die Ferienh\xE4user, die du in der Residenz beherbergst.", "Giocare": "Spielen", "Giochi da tavolo": "Brettspiele", "Giornata libera": "Freier Tag", "Gruppo capitani": "Kapit\xE4nsgruppe", "Guida": "Guide", "Hai anche": "Du hast au\xDFerdem", "Hai diritto alla prima fila": "Du hast Anrecht auf die erste Reihe", "Hai esaurito le prenotazioni di questa settimana su questo campo": "Deine Buchungen dieser Woche f\xFCr diesen Platz sind aufgebraucht", "Ho gi\xE0 un account": "Ich habe schon ein Konto", "Home": "Start", "I film che proponiamo per la stagione.": "Die Filme, die wir f\xFCr die Saison zeigen.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "Die Filme der Saison. Die Vorf\xFChrtermine stehen in der App unter B\xFChne: sie k\xF6nnen sich \xE4ndern.", "I miei posti": "Meine Pl\xE4tze", "I miei visitatori": "Meine Besucher", "I tuoi dati": "Deine Daten", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "112 ist die einheitliche Notrufnummer. Die Residenz ist kein Rettungsdienst: das sind nur die Nummern, unter denen wirklich jemand antwortet, griffbereit.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "Ein Erwachsener bucht den Platz: du schlie\xDFt dich dem Spiel an.", "Il campo \xE8 al completo.": "Der Platz ist voll.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "Der Code liegt auf dem Tisch. Von dort startet die Bestellung schon mit der richtigen Nummer.", "Il consenso privacy \xE8 necessario per registrarsi": "Die Datenschutz-Einwilligung ist f\xFCr die Registrierung erforderlich", "Il mio contatto": "Mein Kontakt", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "Den Tisch teilen wir zu. Wenn ihr mehr oder weniger seid, sagt es dem Personal.", "Il tavolo si prenota a turni.": "Der Tisch wird in Schichten gebucht.", "Il telefono non sa dirmi dove sei.": "Das Telefon kann mir nicht sagen, wo du bist.", "Il tuo codice di accesso": "Dein Zugangscode", "Il tuo host": "Dein Gastgeber", "Il tuo posto": "Dein Platz", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Dein Profil ist aktiv. Bewahre deinen Code auf, um dich auch ohne E-Mail anzumelden:", "Il tuo soggiorno": "Dein Aufenthalt", "In attesa di conferma": "Warten auf Best\xE4tigung", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Gib an, wer dich beherbergt, um Hinweise und Regeln des Aufenthalts zu sehen.", "Indietro": "Zur\xFCck", "Informazioni utili": "N\xFCtzliche Infos", "Ingresso libero": "Freier Eintritt", "Inizia": "Starten", "Inquadra il QR del tavolo": "QR-Code des Tisches scannen", "Installa l\u2019app": "App installieren", "Invia": "Senden", "Invia ordine": "Bestellung senden", "Iscritto": "Angemeldet", "Iscriviti": "Anmelden", "Iscrizione annullata": "Anmeldung storniert", "Iscrizione confermata": "Anmeldung best\xE4tigt", "Iscrizione non riuscita": "Anmeldung fehlgeschlagen", "Isolato": "Block", "La chat della casata": "Der Haus-Chat", "La chat interna alla casata arriver\xE0 in una prossima versione.": "Der hausinterne Chat kommt in einer sp\xE4teren Version.", "La cucina consegna dalle": "Die K\xFCche liefert ab", "La mia casata": "Mein Haus", "La settimana": "Die Woche", "La tua postazione": "Dein Arbeitsplatz", "La tua prenotazione": "Deine Buchung", "La tua tessera": "Deine Karte", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Termine sind nicht angegeben: ein besonderer Abend oder schlechtes Wetter k\xF6nnen eine Vorf\xFChrung verschieben. Den genauen Tag findest du unter <b>B\xFChne</b>, wo der Platz gebucht wird.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "Die Angaben sind verschl\xFCsselt: sichtbar nur f\xFCr dich und deine verkn\xFCpften G\xE4ste.", "Le mie case": "Meine H\xE4user", "Le mie lezioni": "Meine Kurse", "Le mie postazioni": "Meine Arbeitspl\xE4tze", "Le mie prenotazioni": "Meine Buchungen", "Le mie spese": "Meine Ausgaben", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Kostenpflichtige Buchungen \u2014 Abendessen, Bar, Kurse und Abende \u2014 macht ein Erwachsener f\xFCr dich: unter 18 kann man keine Ausgaben allein eingehen.", "Le serate con quota le prenota un adulto per te.": "Abende mit Beitrag bucht ein Erwachsener f\xFCr dich.", "Le serate speciali": "Die besonderen Abende", "Le tue strutture": "Deine Objekte", "Le ultime": "Die letzten", "Leggi questi numeri all'operatore": "Lies diese Zahlen dem Notrufdienst vor", "Lezione al completo.": "Kurs ist ausgebucht.", "Lezioni con istruttore": "Kurse mit Trainer", "Lezioni non disponibili": "Kurse nicht verf\xFCgbar", "Men\xF9 non disponibile": "Men\xFC nicht verf\xFCgbar", "Migliore casata": "Bestes Haus", "Modifica": "Bearbeiten", "Mostra solo le prossime": "Nur die n\xE4chsten zeigen", "NON PRENOTABILE": "NICHT BUCHBAR", "Nessun host trovato con questo nome.": "Kein Gastgeber mit diesem Namen gefunden.", "Nessun iscritto a questa casata.": "Keine Mitglieder in diesem Haus.", "Nessun messaggio. Comincia tu.": "Keine Nachrichten. Fang du an.", "Nessun turno di coworking.": "Keine Coworking-Zeiten.", "Nessun visitatore collegato.": "Kein Besucher verbunden.", "Nessuna lezione in programma.": "Keine Kurse geplant.", "Nessuna serata su prenotazione al momento.": "Zurzeit keine Abende mit Reservierung.", "Nessuno spettacolo in programma.": "Keine Vorstellungen geplant.", "Nome": "Vorname", "Nome e cognome obbligatori": "Vor- und Nachname erforderlich", "Nome o cognome dell'host": "Vor- oder Nachname des Gastgebers", "Nome struttura": "Name des Objekts", "Nome, oppure tessera BR-\u2026": "Name oder Karte BR-\u2026", "Non hai ancora aggiunto strutture.": "Du hast noch keine Objekte hinzugef\xFCgt.", "Non hai postazioni prenotate.": "Du hast keine Arbeitspl\xE4tze gebucht.", "Non lo conosco ora \xB7 salta": "Ich kenne ihn jetzt nicht \xB7 \xFCberspringen", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "Ich kann die Position nicht ermitteln. Nenne dem Notrufdienst den Namen der Residenz und die Nummer der Villa.", "Numeri rapidi": "Schnellwahl", "Numero": "Nummer", "Oggi al residence": "Heute in der Residenz", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Jedes Haus nimmt bis zu 12 Mitglieder auf. Wenn es voll ist, w\xE4hle ein anderes.", "Orario di check-out": "Check-out-Zeit", "Ordina e ritira al banco": "Bestellen und an der Theke abholen", "Ordine inviato": "Bestellung gesendet", "Ore di silenzio": "Ruhezeiten", "Ospite collegato": "Gast verbunden", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Vor\xFCbergehender Gast: Du verbindest dich mit dem Haus deines Gastgebers.", "Passa alla versione completa": "Zur Vollversion wechseln", "Per confermare la lezione": "Um den Kurs zu best\xE4tigen", "Per gli altri giorni usa la sezione Eventi.": "F\xFCr andere Tage nutze den Bereich Veranstaltungen.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "F\xFCr Bar, Abendessen und Abendveranstaltungen braucht es einen Erwachsenen: unter 18 kann man kostenpflichtige Angebote nicht allein buchen.", "Per servizio": "Nach Bereich", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "F\xFCr eine gro\xDFe Gruppe stellen wir Tische zusammen: sag uns, wie viele ihr wirklich seid.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "F\xFCr ein Meeting kannst du den ganzen Raum nehmen: w\xE4hle die Zahl der Arbeitspl\xE4tze.", "Pi\xF9 tardi": "Sp\xE4ter", "Portami l\xEC": "Hinbringen", "Postazione al tavolo": "Platz am Tisch", "Posti": "Pl\xE4tze", "Precisione": "Genauigkeit", "Prenota la cena": "Abendessen buchen", "Prenotazione disdetta: il campo \xE8 tornato libero.": "Buchung abgesagt: der Platz ist wieder frei.", "Prenotazione non disponibile.": "Buchung nicht verf\xFCgbar.", "Prenoti": "Du buchst", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "Du buchst immer als Inhaber. Mit <b>F\xFCr Mitglieder \xF6ffnen</b> kommen andere dazu, bis zu", "Prezzo": "Preis", "Programma non disponibile": "Programm nicht verf\xFCgbar", "Puoi aggiungere le tue case e accogliere i visitatori.": "Du kannst deine Wohnungen eintragen und G\xE4ste empfangen.", "Qualcosa non ha funzionato nel caricamento.": "Beim Laden ist etwas schiefgegangen.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "Sobald best\xE4tigt wird, erscheint \u201EMein Zuhause\\" mit allen Hinweisen zur Unterkunft.", "Quante persone siete?": "Wie viele seid ihr?", "Quante persone?": "Wie viele Personen?", "Quante postazioni": "Wie viele Arbeitspl\xE4tze", "Questa casata non ha ancora un capitano.": "Dieses Haus hat noch keinen Kapit\xE4n.", "Questo codice non \xE8 il QR di un tavolo.": "Dieser Code ist kein Tisch-QR-Code.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Dieses Telefon liest keine Codes aus der App: \xF6ffne die Kamera des Telefons und scanne den QR-Code auf dem Tisch.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "Hier steht nur, was du mit der Karte gemacht hast: an der Bar und im Garden wird man auch ohne bedient, und das taucht hier nicht auf.", "Rassegna": "Filmreihe", "Rassegna cinematografica": "Filmreihe", "Rassegna non ancora pubblicata.": "Filmreihe noch nicht ver\xF6ffentlicht.", "Rassegna non disponibile": "Filmreihe nicht verf\xFCgbar", "Registrati": "Registrieren", "Registrazione non riuscita": "Registrierung fehlgeschlagen", "Regole della casa": "Hausordnung", "Richiesta inviata": "Anfrage gesendet", "Richieste in attesa": "Ausstehende Anfragen", "Riprova": "Erneut versuchen", "Riservata": "Reserviert", "Rispondi e l'app trova il profilo giusto per te.": "Antworte und die App findet das passende Profil f\xFCr dich.", "Sala non disponibile": "Raum nicht verf\xFCgbar", "Salva": "Speichern", "Salva la tua tessera (immagine)": "Speichere deinen Ausweis (Bild)", "Salva o stampa la rassegna": "Filmreihe speichern oder drucken", "Salva tessera": "Ausweis speichern", "Scegli": "W\xE4hlen", "Scegli la casata": "W\xE4hle das Haus", "Scegli la disciplina": "Disziplin w\xE4hlen", "Scegli la tua casata": "W\xE4hle dein Haus", "Scollega": "Trennen", "Scollegare questo visitatore dalla casa?": "Diesen Besucher vom Haus trennen?", "Scopri le nostre serate speciali": "Entdecke unsere besonderen Abende", "Scrivi il nome di chi gioca, oppure la sua tessera.": "Schreib den Namen des Spielers oder seine Karte.", "Scrivi qui\u2026": "Hier schreiben\u2026", "Segnala": "Melden", "Serve l'accesso con la tessera": "Zugang mit Karte erforderlich", "Serve la tessera di un socio per iscriverti": "Zur Anmeldung wird eine Mitgliedskarte ben\xF6tigt", "Serve la tessera di un socio per prenotare": "Zum Buchen wird eine Mitgliedskarte ben\xF6tigt", "Serve la tessera per vedere le tue spese": "F\xFCr deine Ausgaben brauchst du deine Karte", "Serve per accedere di nuovo con un codice via e-mail.": "Er dient dazu, dich erneut mit einem Code per E-Mail anzumelden.", "Servono": "Es braucht", "Settimana": "Woche", "Si disdice senza pagare fino a": "Kostenlos stornierbar bis", "Si gioca: numero minimo raggiunto": "Das Spiel findet statt: Mindestzahl erreicht", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "Man belegt einen Stuhl, keinen Tisch: man arbeitet auch in einem geteilten Raum.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "Bezahlt wird pro Kurs, bar am Ende. Unter der Mindestzahl an Anmeldungen findet der Kurs nicht statt.", "Soggiorno dal": "Aufenthalt ab", "Solo io": "Nur ich", "Sono in vacanza (visitatore)": "Ich bin im Urlaub (Besucher)", "Sono residente": "Ich bin Anwohner", "Sono socio": "Ich bin Mitglied", "Sono socio e residente": "Ich bin Mitglied und Anwohner", "Spettacolo": "Vorstellung", "Stage": "B\xFChne", "Stai prenotando per stasera": "Du buchst f\xFCr heute Abend", "Stasera": "Heute Abend", "Stasera alle": "Heute Abend um", "Stasera il Garden non prende prenotazioni.": "Heute Abend nimmt der Garden keine Reservierungen an.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "Auf Android (Chrome): Tippe oben rechts auf das Men\xFC (\u22EE), dann \u201EZum Startbildschirm hinzuf\xFCgen\\" / \u201EApp installieren\\".", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "Auf iPhone/iPad (Safari): Tippe unten auf Teilen (\u2B06\uFE0F), dann \u201EZum Home-Bildschirm\\".", "Su prenotazione": "Nur mit Reservierung", "Tavolo": "Tisch", "Tavolo da gioco": "Spieltisch", "Tavolo per 4 persone": "Tisch f\xFCr 4 Personen", "Tessera salvata nelle immagini": "Ausweis in den Fotos gespeichert", "Tesserato: casata, Coppa, inviti.": "Mitglied: Haus, Pokal, Einladungen.", "Ti hanno convocato": "Du wurdest aufgestellt", "Ti restano": "Dir bleiben", "Tieni l\u2019app a portata di mano": "Halte die App griffbereit", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Tippe auf einen Kurs, um dich anzumelden. Die Farbe steht f\xFCr die Disziplin.", "Tocca una serata per i dettagli.": "Tippe auf einen Abend f\xFCr Details.", "Togli questo avviso": "Diesen Hinweis entfernen", "Totale speso": "Insgesamt ausgegeben", "Turni": "Schichten", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Alles vom Mitglied (Haus, Pokal) + ich verwalte Ferienh\xE4user.", "Tutto pronto": "Alles bereit", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "Ein Mitglied wird mit der Karte hinzugef\xFCgt, so z\xE4hlen die Pokalpunkte. Ein Gast wird mit dem Namen hinzugef\xFCgt: er spielt trotzdem, aber es bleibt festgehalten, wer auf dem Platz war.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "Ein Besucher hat dich als Gastgeber angegeben: Best\xE4tige, um ihn mit dem Haus zu verbinden.", "Vai alla Coppa": "Zum Pokal", "Vedi tutte": "Alle anzeigen", "Versione completa": "Vollversion", "Versione semplice": "Einfache Version", "Vivo nel residence; posso gestire case vacanza.": "Ich wohne in der Residenz; ich kann Ferienh\xE4user verwalten.", "a pari merito": "punktgleich", "al": "bis", "al completo": "voll", "alla Casa di Carta": "im Casa di Carta", "alle": "um", "cena e tavolo": "Abendessen und Tisch", "classifica e prossime partite": "Tabelle und n\xE4chste Spiele", "compreso": "inbegriffen", "consumazione obbligatoria": "Verzehrpflicht", "coperti prenotati": "reservierte Gedecke", "dal": "vom", "di": "von", "di pi\xF9\u2026": "mehr\u2026", "dice di essere tuo ospite": "gibt an, dein Gast zu sein", "e capitani": "und Kapit\xE4ne", "entro le": "bis", "es. Chiara": "z. B. Chiara", "fasce": "Zeitfenster", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "Zeitfenster von heute sind schon vorbei und nicht mehr buchbar.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "Zeitfenster von heute ist schon vorbei und nicht mehr buchbar.", "film": "Filme", "giocatori": "Spieler", "giocatori: da soli non si occupa un tavolo.": "Spieler: allein belegt man keinen Tisch.", "giocatori: ne mancano": "Spieler: es fehlen noch", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "Spielern; mit <b>Nur ich</b> bleibt der Slot reserviert. Die Pl\xE4tze sind kostenlos.", "gratis": "gratis", "in corso: chiedila al banco": "l\xE4uft gerade: frag an der Theke", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "die Position bleibt auf deinem Telefon, sie wird an niemanden gesendet", "la rassegna": "die Filmreihe", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "wir halten sie f\xFCr \xFCber 70-J\xE4hrige frei, solange Pl\xE4tze da sind. Wir weisen sie dir selbst zu.", "la tua": "deine", "lezioni con istruttore": "Kurse mit Trainer", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "Minuten bis zum Beginn, die Stunde bleibt also auch bei Absage geschuldet. Fortfahren?", "minuti prima": "Minuten vorher", "nessun posto libero": "kein Platz frei", "nessun tavolo libero": "kein Tisch frei", "nessuna postazione libera": "kein Arbeitsplatz frei", "orari, rifiuti, numeri": "Zeiten, M\xFCll, Nummern", "ordina e ritira": "bestellen und abholen", "organizzatevi fra voi": "organisiert euch untereinander", "ospite senza tessera": "Gast ohne Karte", "partita da confermare": "Spiel zu best\xE4tigen", "partite da confermare": "Spiele zu best\xE4tigen", "per confermare la lezione": "um den Kurs zu best\xE4tigen", "per stasera, tavolo da 4": "f\xFCr heute Abend, Tisch f\xFCr 4", "persone": "Personen", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "Grillplatte und Fritteuse m\xFCssen aufheizen. Deine Bestellung ist schon aufgenommen.", "posizione": "Platz", "postazioni": "Arbeitspl\xE4tze", "postazioni libere": "freie Arbeitspl\xE4tze", "posti davanti al palco": "Pl\xE4tze vor der B\xFChne", "posti liberi": "freie Pl\xE4tze", "posto allo spettacolo": "Platz bei der Vorstellung", "prodotti": "Artikel", "restano solo i posti in fondo": "nur noch Pl\xE4tze hinten frei", "segnalato": "gemeldet", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "Zahlung an der Kasse. Wir sagen Bescheid, wenn es fertig ist.", "soci": "Mitglieder", "socio": "Mitglied", "solo per te? Nessun altro potr\xE0 unirsi.": "nur f\xFCr dich? Niemand sonst kann dazukommen.", "su": "von", "su questo campo": "auf diesem Platz", "tavoli liberi": "freie Tische", "tavolo": "Tisch", "tavolo da gioco": "Spieltisch", "titolare": "Inhaber", "unisciti a chi sta giocando": "schlie\xDF dich den Spielenden an", "volta": "Mal", "volta in cui non hai pagato niente: \xE8 compreso.": "Mal hast du nichts bezahlt: es ist inbegriffen.", "volte": "Mal", "volte in cui non hai pagato niente: \xE8 compreso.": "Mal hast du nichts bezahlt: es ist inbegriffen.", "\xC8 fatta": "Erledigt", "\xC8 lui/lei": "Das ist er/sie"}, "es": {"112 e il tuo contatto di emergenza": "112 y tu contacto de emergencia", "112 \xB7 emergenze": "112 \xB7 emergencias", "A quale casa lo colleghi?": "\xBFA qu\xE9 casa lo vinculas?", "Abbiamo avvisato": "Hemos avisado", "Accetto il trattamento dei dati (privacy)": "Acepto el tratamiento de mis datos (privacidad)", "Aggiungi": "A\xF1adir", "Aggiungi alla Home": "A\xF1adir al inicio", "Aggiungi alla schermata Home": "A\xF1adir a la pantalla de inicio", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "A\xF1ade tu casa de vacaciones: podr\xE1s acoger a los visitantes.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "A\xF1ade primero tu casa y luego confirma al hu\xE9sped.", "Aggiungi struttura": "A\xF1adir alojamiento", "Aggiungi un giocatore": "A\xF1adir un jugador", "Al tavolo servono almeno": "En la mesa hacen falta al menos", "Ancora niente da mostrare.": "Todav\xEDa no hay nada que mostrar.", "Annullare questa prenotazione?": "\xBFAnular esta reserva?", "Apri ai soci": "Abrir a los socios", "Apri la partita di": "Abrir el partido de", "Area fitness": "Zona fitness", "Attenzione: mancano meno di": "Atenci\xF3n: faltan menos de", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, cocina y punto de encuentro", "Benvenuto nella casata": "Bienvenido a la casa", "Benvenuto!": "\xA1Bienvenido!", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "Hay sitio", "CAPITANO": "CAPIT\xC1N", "Cambia casata": "Cambiar de casa", "Campo impegnato": "Pista ocupada", "Campo riservato": "Pista reservada", "Capitani": "Capitanes", "Casa di Carta": "Casa di Carta", "Casa mia": "Mi casa", "Case vacanza": "Casas vacacionales", "Cena": "Cena", "Cena al tavolo": "Cena en la mesa", "Cena confermata, ma i posti davanti al palco sono esauriti": "Cena confirmada, pero los asientos delante del escenario est\xE1n agotados", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Busca a quien te aloja: recibir\xE1 una notificaci\xF3n y, si confirma, ver\xE1s \\"Mi casa\\".", "Cerco la posizione\u2026": "Buscando la ubicaci\xF3n\u2026", "Chat della casata": "Chat de la casa", "Chat non disponibile": "Chat no disponible", "Chi gioca": "Qui\xE9n juega", "Chi gioca con te": "Qui\xE9n juega contigo", "Chi sei?": "\xBFQui\xE9n eres?", "Chi ti ospita?": "\xBFQui\xE9n te aloja?", "Chi vuoi chiamare": "A qui\xE9n quieres llamar", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Quien quiera ser tu hu\xE9sped se registra y te busca por nombre: aqu\xED lo confirmas y lo vinculas a la casa.", "Chiama": "Llamar", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "Hay alcohol en el pedido: al recogerlo pueden pedirte un documento. No se sirve a menores de 18 a\xF1os.", "Codice di accesso": "C\xF3digo de acceso", "Cognome": "Apellido", "Collega": "Vincular", "Collega la tua casa": "Vincula tu casa", "Comanda": "Comanda", "Come arrivare": "C\xF3mo llegar", "Come raggiungere la casa e le regole del soggiorno.": "C\xF3mo llegar a la casa y las normas de la estancia.", "Come va la Coppa": "C\xF3mo va la Copa", "Conferimento rifiuti": "Dep\xF3sito de residuos", "Conferma": "Confirmar", "Conosci il tuo host?": "\xBFConoces a tu anfitri\xF3n?", "Consenti le finestre per salvare la rassegna.": "Permite las ventanas emergentes para guardar el ciclo.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "As\xED se queda en el tel\xE9fono con su icono, sin buscarla cada vez.", "Crea profilo": "Crear perfil", "Dati della struttura non disponibili": "Datos del alojamiento no disponibles", "Disattiva": "Desactivar", "Disattivare la gestione delle case vacanza?": "\xBFDesactivar la gesti\xF3n de casas vacacionales?", "Disdetta non riuscita": "No se ha podido anular", "Disdici": "Anular", "Disdire l\u2019iscrizione a questa lezione?": "\xBFAnular tu inscripci\xF3n a esta clase?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "\xBFAnular esta reserva? La pista vuelve a estar libre y hay que avisar a quien iba a jugar contigo.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "Despu\xE9s la clase se debe igualmente: el instructor ya ha llegado y la plaza no se revende.", "Dove mi trovo": "D\xF3nde estoy", "Dove si trova": "D\xF3nde est\xE1", "Durata": "Duraci\xF3n", "E": "Y", "Elenco non disponibile": "Lista no disponible", "Fatto": "Hecho", "Fino ai 18 anni le prenota un adulto per te.": "Hasta los 18 a\xF1os las reserva un adulto por ti.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Hasta los 18 a\xF1os, las reservas de pago las hace un adulto por ti.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "C\xE1mara no disponible: abre la c\xE1mara del tel\xE9fono y escanea el QR de la mesa.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "Gestiona las casas de vacaciones que acoges en el residence.", "Giocare": "Jugar", "Giochi da tavolo": "Juegos de mesa", "Giornata libera": "D\xEDa libre", "Gruppo capitani": "Grupo de capitanes", "Guida": "Gu\xEDa", "Hai anche": "Tambi\xE9n tienes", "Hai diritto alla prima fila": "Tienes derecho a la primera fila", "Hai esaurito le prenotazioni di questa settimana su questo campo": "Has agotado las reservas de esta semana en esta pista", "Ho gi\xE0 un account": "Ya tengo una cuenta", "Home": "Inicio", "I film che proponiamo per la stagione.": "Las pel\xEDculas que proponemos para la temporada.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "Las pel\xEDculas de la temporada. Las fechas de las proyecciones est\xE1n en la app, secci\xF3n Escenario: pueden cambiar.", "I miei posti": "Mis asientos", "I miei visitatori": "Mis visitantes", "I tuoi dati": "Tus datos", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "El 112 es el n\xFAmero \xFAnico de emergencias. El residence no es un servicio de rescate: estos son solo los n\xFAmeros que de verdad contestan, a mano.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "Un adulto reserva la pista: t\xFA te unes al partido y juegas.", "Il campo \xE8 al completo.": "La pista est\xE1 completa.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "El c\xF3digo est\xE1 en la mesa. Desde ah\xED el pedido sale ya con el n\xFAmero correcto.", "Il consenso privacy \xE8 necessario per registrarsi": "El consentimiento de privacidad es necesario para registrarse", "Il mio contatto": "Mi contacto", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "La mesa la asignamos nosotros. Si sois m\xE1s o menos, dec\xEDdselo al personal.", "Il tavolo si prenota a turni.": "La mesa se reserva por turnos.", "Il telefono non sa dirmi dove sei.": "El tel\xE9fono no puede decirme d\xF3nde est\xE1s.", "Il tuo codice di accesso": "Tu c\xF3digo de acceso", "Il tuo host": "Tu anfitri\xF3n", "Il tuo posto": "Tu asiento", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Tu perfil est\xE1 activo. Guarda tu c\xF3digo para acceder incluso sin correo:", "Il tuo soggiorno": "Tu estancia", "In attesa di conferma": "A la espera de confirmaci\xF3n", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Indica qui\xE9n te aloja para ver las indicaciones y normas de la estancia.", "Indietro": "Atr\xE1s", "Informazioni utili": "Informaci\xF3n \xFAtil", "Ingresso libero": "Entrada libre", "Inizia": "Empezar", "Inquadra il QR del tavolo": "Escanea el QR de la mesa", "Installa l\u2019app": "Instala la app", "Invia": "Enviar", "Invia ordine": "Enviar pedido", "Iscritto": "Inscrito", "Iscriviti": "Inscribirse", "Iscrizione annullata": "Inscripci\xF3n anulada", "Iscrizione confermata": "Inscripci\xF3n confirmada", "Iscrizione non riuscita": "Inscripci\xF3n fallida", "Isolato": "Manzana", "La chat della casata": "El chat de la casa", "La chat interna alla casata arriver\xE0 in una prossima versione.": "El chat interno de la casa llegar\xE1 en una pr\xF3xima versi\xF3n.", "La cucina consegna dalle": "La cocina sirve desde las", "La mia casata": "Mi casa", "La settimana": "La semana", "La tua postazione": "Tu puesto", "La tua prenotazione": "Tu reserva", "La tua tessera": "Tu tarjeta", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Las fechas no se indican: una velada especial o el mal tiempo pueden mover una proyecci\xF3n. El d\xEDa exacto est\xE1 en <b>Escenario</b>, donde se reserva el asiento.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "La informaci\xF3n est\xE1 cifrada: solo la ves t\xFA y tus hu\xE9spedes vinculados.", "Le mie case": "Mis casas", "Le mie lezioni": "Mis clases", "Le mie postazioni": "Mis puestos", "Le mie prenotazioni": "Mis reservas", "Le mie spese": "Mis gastos", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Las reservas de pago \u2014 cena, bar, clases y veladas \u2014 las hace un adulto por ti: hasta los 18 a\xF1os no se asumen gastos por cuenta propia.", "Le serate con quota le prenota un adulto per te.": "Las veladas con cuota las reserva un adulto por ti.", "Le serate speciali": "Las veladas especiales", "Le tue strutture": "Tus alojamientos", "Le ultime": "Los \xFAltimos", "Leggi questi numeri all'operatore": "Lee estos n\xFAmeros al operador", "Lezione al completo.": "Clase completa.", "Lezioni con istruttore": "Clases con instructor", "Lezioni non disponibili": "Clases no disponibles", "Men\xF9 non disponibile": "Men\xFA no disponible", "Migliore casata": "Mejor casa", "Modifica": "Editar", "Mostra solo le prossime": "Mostrar solo las pr\xF3ximas", "NON PRENOTABILE": "NO RESERVABLE", "Nessun host trovato con questo nome.": "No se encontr\xF3 ning\xFAn anfitri\xF3n con este nombre.", "Nessun iscritto a questa casata.": "Nadie inscrito en esta casa.", "Nessun messaggio. Comincia tu.": "Ning\xFAn mensaje. Empieza t\xFA.", "Nessun turno di coworking.": "Ning\xFAn turno de coworking.", "Nessun visitatore collegato.": "Ning\xFAn visitante vinculado.", "Nessuna lezione in programma.": "Ninguna clase programada.", "Nessuna serata su prenotazione al momento.": "Ninguna velada con reserva por ahora.", "Nessuno spettacolo in programma.": "Ning\xFAn espect\xE1culo programado.", "Nome": "Nombre", "Nome e cognome obbligatori": "Nombre y apellido obligatorios", "Nome o cognome dell'host": "Nombre o apellido del anfitri\xF3n", "Nome struttura": "Nombre del alojamiento", "Nome, oppure tessera BR-\u2026": "Nombre o tarjeta BR-\u2026", "Non hai ancora aggiunto strutture.": "A\xFAn no has a\xF1adido alojamientos.", "Non hai postazioni prenotate.": "No tienes puestos reservados.", "Non lo conosco ora \xB7 salta": "No lo s\xE9 ahora \xB7 omitir", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "No consigo la ubicaci\xF3n. Dile al operador el nombre del residence y el n\xFAmero de la villa.", "Numeri rapidi": "N\xFAmeros r\xE1pidos", "Numero": "N\xFAmero", "Oggi al residence": "Hoy en el residence", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Cada casa acoge hasta 12 socios. Si est\xE1 completa, elige otra.", "Orario di check-out": "Hora de salida", "Ordina e ritira al banco": "Pide y recoge en la barra", "Ordine inviato": "Pedido enviado", "Ore di silenzio": "Horas de silencio", "Ospite collegato": "Hu\xE9sped vinculado", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Hu\xE9sped temporal: te vinculas a la casa de tu anfitri\xF3n.", "Passa alla versione completa": "Cambiar a la versi\xF3n completa", "Per confermare la lezione": "Para confirmar la clase", "Per gli altri giorni usa la sezione Eventi.": "Para los dem\xE1s d\xEDas usa la secci\xF3n Eventos.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "Para el bar, la cena y las veladas hace falta un adulto: hasta los 18 a\xF1os no se reservan cosas de pago por tu cuenta.", "Per servizio": "Por servicio", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "Para un grupo numeroso juntamos varias mesas: indica cu\xE1ntos sois realmente.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "Para una reuni\xF3n puedes tomar toda la sala: elige cu\xE1ntos puestos necesitas.", "Pi\xF9 tardi": "M\xE1s tarde", "Portami l\xEC": "Ll\xE9vame all\xED", "Postazione al tavolo": "Puesto en la mesa", "Posti": "Plazas", "Precisione": "Precisi\xF3n", "Prenota la cena": "Reservar la cena", "Prenotazione disdetta: il campo \xE8 tornato libero.": "Reserva anulada: la pista vuelve a estar libre.", "Prenotazione non disponibile.": "Reserva no disponible.", "Prenoti": "Reservas", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "Siempre reservas t\xFA, como titular. Con <b>Abrir a los socios</b> los dem\xE1s se unen hasta", "Prezzo": "Precio", "Programma non disponibile": "Programa no disponible", "Puoi aggiungere le tue case e accogliere i visitatori.": "Puedes a\xF1adir tus casas y acoger a los visitantes.", "Qualcosa non ha funzionato nel caricamento.": "Algo no funcion\xF3 al cargar.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "Cuando confirme, aparecer\xE1 \\"Mi casa\\" con todas las indicaciones del alojamiento.", "Quante persone siete?": "\xBFCu\xE1ntos sois?", "Quante persone?": "\xBFCu\xE1ntas personas?", "Quante postazioni": "Cu\xE1ntos puestos", "Questa casata non ha ancora un capitano.": "Esta casa a\xFAn no tiene capit\xE1n.", "Questo codice non \xE8 il QR di un tavolo.": "Este c\xF3digo no es el QR de una mesa.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Este tel\xE9fono no lee c\xF3digos desde la app: abre la c\xE1mara del tel\xE9fono y escanea el QR de la mesa.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "Aqu\xED solo est\xE1 lo que has hecho con la tarjeta: en el Bar y en el Garden se sirve tambi\xE9n sin ella, y esas consumiciones no aparecen.", "Rassegna": "Ciclo", "Rassegna cinematografica": "Ciclo de cine", "Rassegna non ancora pubblicata.": "Ciclo a\xFAn no publicado.", "Rassegna non disponibile": "Ciclo no disponible", "Registrati": "Reg\xEDstrate", "Registrazione non riuscita": "Registro fallido", "Regole della casa": "Normas de la casa", "Richiesta inviata": "Solicitud enviada", "Richieste in attesa": "Solicitudes pendientes", "Riprova": "Reintentar", "Riservata": "Reservada", "Rispondi e l'app trova il profilo giusto per te.": "Responde y la app encuentra el perfil adecuado para ti.", "Sala non disponibile": "Sala no disponible", "Salva": "Guardar", "Salva la tua tessera (immagine)": "Guarda tu tarjeta (imagen)", "Salva o stampa la rassegna": "Guardar o imprimir el ciclo", "Salva tessera": "Guardar tarjeta", "Scegli": "Elegir", "Scegli la casata": "Elige la casa", "Scegli la disciplina": "Elige la disciplina", "Scegli la tua casata": "Elige tu casa", "Scollega": "Desvincular", "Scollegare questo visitatore dalla casa?": "\xBFDesvincular a este visitante de la casa?", "Scopri le nostre serate speciali": "Descubre nuestras veladas especiales", "Scrivi il nome di chi gioca, oppure la sua tessera.": "Escribe el nombre de quien juega, o su tarjeta.", "Scrivi qui\u2026": "Escribe aqu\xED\u2026", "Segnala": "Denunciar", "Serve l'accesso con la tessera": "Se requiere acceso con la tarjeta", "Serve la tessera di un socio per iscriverti": "Se necesita la tarjeta de un socio para inscribirse", "Serve la tessera di un socio per prenotare": "Se necesita la tarjeta de un socio para reservar", "Serve la tessera per vedere le tue spese": "Necesitas tu tarjeta para ver tus gastos", "Serve per accedere di nuovo con un codice via e-mail.": "Sirve para acceder de nuevo con un c\xF3digo por correo.", "Servono": "Hacen falta", "Settimana": "Semana", "Si disdice senza pagare fino a": "Se anula sin pagar hasta", "Si gioca: numero minimo raggiunto": "Se juega: m\xEDnimo alcanzado", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "Se ocupa una silla, no una mesa: tambi\xE9n se trabaja en una sala compartida.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "Se paga cada clase, en efectivo al final. Por debajo del m\xEDnimo de inscritos la clase no se hace.", "Soggiorno dal": "Estancia desde", "Solo io": "Solo yo", "Sono in vacanza (visitatore)": "Estoy de vacaciones (visitante)", "Sono residente": "Soy residente", "Sono socio": "Soy socio", "Sono socio e residente": "Soy socio y residente", "Spettacolo": "Espect\xE1culo", "Stage": "Escenario", "Stai prenotando per stasera": "Est\xE1s reservando para esta noche", "Stasera": "Esta noche", "Stasera alle": "Esta noche a las", "Stasera il Garden non prende prenotazioni.": "Esta noche el Garden no acepta reservas.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "En Android (Chrome): toca el men\xFA (\u22EE) arriba a la derecha y luego \\"A\xF1adir a la pantalla de inicio\\" / \\"Instalar app\\".", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "En iPhone/iPad (Safari): toca Compartir (\u2B06\uFE0F) abajo y luego \\"A\xF1adir a inicio\\".", "Su prenotazione": "Con reserva", "Tavolo": "Mesa", "Tavolo da gioco": "Mesa de juego", "Tavolo per 4 persone": "Mesa para 4 personas", "Tessera salvata nelle immagini": "Tarjeta guardada en las fotos", "Tesserato: casata, Coppa, inviti.": "Socio: casa, Copa, invitaciones.", "Ti hanno convocato": "Te han convocado", "Ti restano": "Te quedan", "Tieni l\u2019app a portata di mano": "Ten la app a mano", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Toca una clase para inscribirte. El color es la disciplina.", "Tocca una serata per i dettagli.": "Toca una velada para ver los detalles.", "Togli questo avviso": "Quitar este aviso", "Totale speso": "Total gastado", "Turni": "Turnos", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Todo lo del socio (casa, Copa) + gestiono casas de vacaciones.", "Tutto pronto": "Todo listo", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "Un socio se a\xF1ade con su tarjeta y los puntos de la Copa le cuentan. Un invitado se a\xF1ade con el nombre: juega igual, pero queda escrito qui\xE9n estaba en la pista.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "Un visitante te ha indicado como anfitri\xF3n: confirma para vincularlo a la casa.", "Vai alla Coppa": "Ir a la Copa", "Vedi tutte": "Ver todas", "Versione completa": "Versi\xF3n completa", "Versione semplice": "Versi\xF3n sencilla", "Vivo nel residence; posso gestire case vacanza.": "Vivo en el residence; puedo gestionar casas de vacaciones.", "a pari merito": "empatados", "al": "al", "al completo": "completo", "alla Casa di Carta": "en la Casa di Carta", "alle": "a las", "cena e tavolo": "cena y mesa", "classifica e prossime partite": "clasificaci\xF3n y pr\xF3ximos partidos", "compreso": "incluido", "consumazione obbligatoria": "consumici\xF3n obligatoria", "coperti prenotati": "cubiertos reservados", "dal": "del", "di": "de", "di pi\xF9\u2026": "m\xE1s\u2026", "dice di essere tuo ospite": "dice ser tu hu\xE9sped", "e capitani": "y capitanes", "entro le": "antes de las", "es. Chiara": "p. ej. Chiara", "fasce": "franjas", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "franjas de hoy ya han pasado y no se pueden reservar.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "franja de hoy ya ha pasado y no se puede reservar.", "film": "pel\xEDculas", "giocatori": "jugadores", "giocatori: da soli non si occupa un tavolo.": "jugadores: solo no se ocupa una mesa.", "giocatori: ne mancano": "jugadores: faltan", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "jugadores; con <b>Solo yo</b> la franja queda reservada. Las pistas son gratuitas.", "gratis": "gratis", "in corso: chiedila al banco": "en curso: p\xEDdela en la barra", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "la ubicaci\xF3n se queda en tu tel\xE9fono, no se env\xEDa a nadie", "la rassegna": "el ciclo", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "la reservamos para los mayores de 70 a\xF1os, hasta agotarse. Te la asignamos nosotros.", "la tua": "la tuya", "lezioni con istruttore": "clases con instructor", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "minutos para el inicio, as\xED que la clase se debe aunque la anules. \xBFContin\xFAo?", "minuti prima": "minutos antes", "nessun posto libero": "ninguna plaza libre", "nessun tavolo libero": "ninguna mesa libre", "nessuna postazione libera": "ning\xFAn puesto libre", "orari, rifiuti, numeri": "horarios, residuos, n\xFAmeros", "ordina e ritira": "pide y recoge", "organizzatevi fra voi": "organizaos entre vosotros", "ospite senza tessera": "invitado sin tarjeta", "partita da confermare": "partido por confirmar", "partite da confermare": "partidos por confirmar", "per confermare la lezione": "para confirmar la clase", "per stasera, tavolo da 4": "para esta noche, mesa para 4", "persone": "personas", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "la plancha y la freidora deben calentarse. Tu pedido ya est\xE1 tomado.", "posizione": "posici\xF3n", "postazioni": "puestos", "postazioni libere": "puestos libres", "posti davanti al palco": "asientos delante del escenario", "posti liberi": "plazas libres", "posto allo spettacolo": "asiento en el espect\xE1culo", "prodotti": "productos", "restano solo i posti in fondo": "solo quedan asientos al fondo", "segnalato": "denunciado", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "se paga en caja. Te avisamos cuando est\xE9 listo.", "soci": "socios", "socio": "socio", "solo per te? Nessun altro potr\xE0 unirsi.": "\xBFsolo para ti? Nadie m\xE1s podr\xE1 unirse.", "su": "de", "su questo campo": "en esta pista", "tavoli liberi": "mesas libres", "tavolo": "mesa", "tavolo da gioco": "mesa de juego", "titolare": "titular", "unisciti a chi sta giocando": "\xFAnete a quienes ya juegan", "volta": "vez", "volta in cui non hai pagato niente: \xE8 compreso.": "vez en que no has pagado nada: est\xE1 incluido.", "volte": "veces", "volte in cui non hai pagato niente: \xE8 compreso.": "veces en que no has pagado nada: est\xE1 incluido.", "\xC8 fatta": "Hecho", "\xC8 lui/lei": "Es \xE9l/ella"}};
+const UI_EXTRA = {"en": {"112 e il tuo contatto di emergenza": "112 and your emergency contact", "112 \xB7 emergenze": "112 \xB7 emergencies", "A quale casa lo colleghi?": "Which house do you link them to?", "Abbiamo avvisato": "We've notified", "Accetto il trattamento dei dati (privacy)": "I accept the processing of my data (privacy)", "Aggiungi": "Add", "Aggiungi alla Home": "Add to Home", "Aggiungi alla schermata Home": "Add to Home screen", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "Add your holiday home: you'll be able to welcome visitors.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "Add your home first, then confirm the guest.", "Aggiungi struttura": "Add property", "Aggiungi un giocatore": "Add a player", "Al tavolo servono almeno": "The table needs at least", "Ancora niente da mostrare.": "Nothing to show yet.", "Annullare questa prenotazione?": "Cancel this booking?", "Apri ai soci": "Open to members", "Apri la partita di": "Open the game of", "Area fitness": "Fitness area", "Attenzione: mancano meno di": "Careful: there are less than", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, kitchen and meeting point", "Benvenuto nella casata": "Welcome to the house", "Benvenuto!": "Welcome!", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "There's room", "CAPITANO": "CAPTAIN", "Cambia casata": "Change house", "Campo impegnato": "Court in use", "Campo riservato": "Reserved court", "Capitani": "Captains", "Casa di Carta": "Casa di Carta", "Casa mia": "My Home", "Case vacanza": "Holiday homes", "Cena": "Dinner", "Cena al tavolo": "Dinner at the table", "Cena confermata, ma i posti davanti al palco sono esauriti": "Dinner confirmed, but the seats in front of the stage are sold out", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Search for who's hosting you: they'll get a notification and, if they confirm, you'll see \\"My Home\\".", "Cerco la posizione\u2026": "Finding your location\u2026", "Chat della casata": "House chat", "Chat non disponibile": "Chat not available", "Chi gioca": "Who plays", "Chi gioca con te": "Who is playing with you", "Chi sei?": "Who are you?", "Chi ti ospita?": "Who is hosting you?", "Chi vuoi chiamare": "Who do you want to call", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Whoever wants to be your guest registers and searches for you by name: here you confirm and link them to the home.", "Chiama": "Call", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "This order contains alcohol: you may be asked for ID on collection. Not served under 18.", "Codice di accesso": "Access code", "Cognome": "Surname", "Collega": "Link", "Collega la tua casa": "Link your home", "Comanda": "Order", "Come arrivare": "Getting there", "Come raggiungere la casa e le regole del soggiorno.": "How to reach the house and the rules of your stay.", "Come va la Coppa": "How the Cup is going", "Conferimento rifiuti": "Waste collection", "Conferma": "Confirm", "Conosci il tuo host?": "Do you know your host?", "Consenti le finestre per salvare la rassegna.": "Allow pop-ups to save the film season.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "This way it stays on your phone with its icon, no need to look for it each time.", "Crea profilo": "Create profile", "Dati della struttura non disponibili": "Property details not available", "Disattiva": "Turn off", "Disattivare la gestione delle case vacanza?": "Turn off holiday home management?", "Disdetta non riuscita": "Cancellation failed", "Disdici": "Cancel", "Disdire l\u2019iscrizione a questa lezione?": "Cancel your booking for this class?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "Cancel this booking? The court goes back to free and whoever was going to play with you needs to be told.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "After that the class is still owed: the instructor has already arrived and the spot cannot be resold.", "Dove mi trovo": "Where I am", "Dove si trova": "Where it is", "Durata": "Duration", "E": "And", "Elenco non disponibile": "List not available", "Fatto": "Done", "Fino ai 18 anni le prenota un adulto per te.": "Under 18, an adult books them for you.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Under 18, paid bookings are made by an adult for you.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Camera not available: open your phone's camera and scan the QR on the table.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "Manage the holiday homes you host in the residence.", "Giocare": "Play", "Giochi da tavolo": "Board games", "Giornata libera": "Free day", "Gruppo capitani": "Captains' group", "Guida": "Guide", "Hai anche": "You also have", "Hai diritto alla prima fila": "You're entitled to the front row", "Hai esaurito le prenotazioni di questa settimana su questo campo": "You've used up this week's bookings on this court", "Ho gi\xE0 un account": "I already have an account", "Home": "Home", "I film che proponiamo per la stagione.": "The films we're showing this season.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "The season's films. Screening dates are in the app, Stage section: they can change.", "I miei posti": "My seats", "I miei visitatori": "My visitors", "I tuoi dati": "Your details", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "112 is the single emergency number. The residence is not a rescue service: these are only the numbers that actually answer, within reach.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "An adult books the court: you join the game and play.", "Il campo \xE8 al completo.": "The court is full.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "The code is on the table. From there the order starts with the right number already.", "Il consenso privacy \xE8 necessario per registrarsi": "Privacy consent is required to register", "Il mio contatto": "My contact", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "We assign the table. If you're more or fewer, just tell the staff.", "Il tavolo si prenota a turni.": "The table is booked in sessions.", "Il telefono non sa dirmi dove sei.": "Your phone can't tell me where you are.", "Il tuo codice di accesso": "Your access code", "Il tuo host": "Your host", "Il tuo posto": "Your seat", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Your profile is active. Keep your code to log in even without e-mail:", "Il tuo soggiorno": "Your stay", "In attesa di conferma": "Awaiting confirmation", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Tell us who's hosting you to see stay directions and rules.", "Indietro": "Back", "Informazioni utili": "Useful information", "Ingresso libero": "Free entry", "Inizia": "Start", "Inquadra il QR del tavolo": "Scan the table's QR code", "Installa l\u2019app": "Install the app", "Invia": "Send", "Invia ordine": "Send order", "Iscritto": "Signed up", "Iscriviti": "Sign up", "Iscrizione annullata": "Booking cancelled", "Iscrizione confermata": "Sign-up confirmed", "Iscrizione non riuscita": "Sign-up failed", "Isolato": "Block", "La chat della casata": "The house chat", "La chat interna alla casata arriver\xE0 in una prossima versione.": "The house's internal chat is coming in a future version.", "La cucina consegna dalle": "The kitchen serves from", "La mia casata": "My house", "La settimana": "The week", "La tua postazione": "Your desk", "La tua prenotazione": "Your booking", "La tua tessera": "Your card", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Dates aren't listed: a special evening or bad weather can move a screening. You'll find the exact day under <b>Stage</b>, where seats are booked.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "The information is encrypted: visible only to you and your linked guests.", "Le mie case": "My homes", "Le mie lezioni": "My classes", "Le mie postazioni": "My desks", "Le mie prenotazioni": "My bookings", "Le mie spese": "My spending", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Paid bookings \u2014 dinner, bar, classes and evenings \u2014 are made by an adult for you: under 18 you can't commit to spending on your own.", "Le serate con quota le prenota un adulto per te.": "Evenings with a fee are booked by an adult for you.", "Le serate speciali": "Special evenings", "Le tue strutture": "Your properties", "Le ultime": "Most recent", "Leggi questi numeri all'operatore": "Read these numbers to the operator", "Lezione al completo.": "Class is full.", "Lezioni con istruttore": "Classes with an instructor", "Lezioni non disponibili": "Classes not available", "Men\xF9 non disponibile": "Menu not available", "Migliore casata": "Best house", "Modifica": "Edit", "Mostra solo le prossime": "Show only the next ones", "NON PRENOTABILE": "NOT BOOKABLE", "Nessun host trovato con questo nome.": "No host found with this name.", "Nessun iscritto a questa casata.": "No members in this house.", "Nessun messaggio. Comincia tu.": "No messages. Start the conversation.", "Nessun turno di coworking.": "No coworking sessions.", "Nessun visitatore collegato.": "No visitor linked.", "Nessuna lezione in programma.": "No classes scheduled.", "Nessuna serata su prenotazione al momento.": "No bookable evenings at the moment.", "Nessuno spettacolo in programma.": "No shows scheduled.", "Nome": "Name", "Nome e cognome obbligatori": "Name and surname required", "Nome o cognome dell'host": "Host's first or last name", "Nome struttura": "Property name", "Nome, oppure tessera BR-\u2026": "Name, or card BR-\u2026", "Non hai ancora aggiunto strutture.": "You haven't added any properties yet.", "Non hai postazioni prenotate.": "You have no desks booked.", "Non lo conosco ora \xB7 salta": "I don't know it now \xB7 skip", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "I can't get your location. Tell the operator the name of the residence and the villa number.", "Numeri rapidi": "Quick numbers", "Numero": "Number", "Oggi al residence": "Today at the residence", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Each house holds up to 12 members. If it's full, choose another.", "Orario di check-out": "Check-out time", "Ordina e ritira al banco": "Order and collect at the counter", "Ordine inviato": "Order sent", "Ore di silenzio": "Quiet hours", "Ospite collegato": "Guest linked", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Temporary guest: you link to your host's home.", "Passa alla versione completa": "Switch to the full version", "Per confermare la lezione": "To confirm the class", "Per gli altri giorni usa la sezione Eventi.": "For other days use the Events section.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "The bar, dinner and evening events need an adult: under 18 you can't book paid things on your own.", "Per servizio": "By service", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "For a large group we put tables together: tell us how many you really are.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "For a meeting you can take the whole room: choose how many desks you need.", "Pi\xF9 tardi": "Later", "Portami l\xEC": "Take me there", "Postazione al tavolo": "Desk at the table", "Posti": "Places", "Precisione": "Accuracy", "Prenota la cena": "Book dinner", "Prenotazione disdetta: il campo \xE8 tornato libero.": "Booking cancelled: the court is free again.", "Prenotazione non disponibile.": "Booking not available.", "Prenoti": "Booking", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "You always book as the holder. With <b>Open to members</b> others join up to", "Prezzo": "Price", "Programma non disponibile": "Programme not available", "Puoi aggiungere le tue case e accogliere i visitatori.": "You can add your homes and welcome visitors.", "Qualcosa non ha funzionato nel caricamento.": "Something went wrong while loading.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "When they confirm, \\"My Home\\" will appear with all the property's directions.", "Quante persone siete?": "How many of you are there?", "Quante persone?": "How many people?", "Quante postazioni": "How many desks", "Questa casata non ha ancora un capitano.": "This house doesn't have a captain yet.", "Questo codice non \xE8 il QR di un tavolo.": "This code isn't a table QR code.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "This phone can't read codes from the app: open your phone's camera and scan the QR on the table.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "This only covers what you did with your card: at the Bar and Garden you can be served without it, and those items don\u2019t appear here.", "Rassegna": "Film season", "Rassegna cinematografica": "Film season", "Rassegna non ancora pubblicata.": "Film season not published yet.", "Rassegna non disponibile": "Film season not available", "Registrati": "Sign up", "Registrazione non riuscita": "Registration failed", "Regole della casa": "House rules", "Richiesta inviata": "Request sent", "Richieste in attesa": "Pending requests", "Riprova": "Try again", "Riservata": "Reserved", "Rispondi e l'app trova il profilo giusto per te.": "Answer and the app finds the right profile for you.", "Sala non disponibile": "Room not available", "Salva": "Save", "Salva la tua tessera (immagine)": "Save your card (image)", "Salva o stampa la rassegna": "Save or print the film season", "Salva tessera": "Save card", "Scegli": "Choose", "Scegli la casata": "Choose the house", "Scegli la disciplina": "Choose the discipline", "Scegli la tua casata": "Choose your house", "Scollega": "Unlink", "Scollegare questo visitatore dalla casa?": "Unlink this visitor from the home?", "Scopri le nostre serate speciali": "Discover our special evenings", "Scrivi il nome di chi gioca, oppure la sua tessera.": "Write the name of who plays, or their card.", "Scrivi qui\u2026": "Write here\u2026", "Segnala": "Report", "Serve l'accesso con la tessera": "Card access is required", "Serve la tessera di un socio per iscriverti": "A member's card is needed to sign up", "Serve la tessera di un socio per prenotare": "A member's card is needed to book", "Serve la tessera per vedere le tue spese": "You need your card to see your spending", "Serve per accedere di nuovo con un codice via e-mail.": "It's used to log in again with a code via e-mail.", "Servono": "Needs", "Settimana": "Week", "Si disdice senza pagare fino a": "Free cancellation up to", "Si gioca: numero minimo raggiunto": "The match is on: minimum reached", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "You take a chair, not a table: you can work in a shared room too.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "You pay per class, in cash at the end. Below the minimum sign-ups the class doesn't run.", "Soggiorno dal": "Stay from", "Solo io": "Just me", "Sono in vacanza (visitatore)": "I'm on holiday (visitor)", "Sono residente": "I'm a resident", "Sono socio": "I'm a member", "Sono socio e residente": "I'm a member and resident", "Spettacolo": "Show", "Stage": "Stage", "Stai prenotando per stasera": "You're booking for tonight", "Stasera": "Tonight", "Stasera alle": "Tonight at", "Stasera il Garden non prende prenotazioni.": "The Garden isn't taking bookings tonight.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "On Android (Chrome): tap the menu (\u22EE) at the top right, then \\"Add to Home screen\\" / \\"Install app\\".", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "On iPhone/iPad (Safari): tap Share (\u2B06\uFE0F) at the bottom, then \\"Add to Home\\".", "Su prenotazione": "By reservation", "Tavolo": "Table", "Tavolo da gioco": "Games table", "Tavolo per 4 persone": "Table for 4", "Tessera salvata nelle immagini": "Card saved to your photos", "Tesserato: casata, Coppa, inviti.": "Member: house, Cup, invitations.", "Ti hanno convocato": "You've been called up", "Ti restano": "You have left", "Tieni l\u2019app a portata di mano": "Keep the app within reach", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Tap a class to sign up. The colour is the discipline.", "Tocca una serata per i dettagli.": "Tap an evening for details.", "Togli questo avviso": "Dismiss this notice", "Totale speso": "Total spent", "Turni": "Sessions", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Everything a member has (house, Cup) + I manage holiday homes.", "Tutto pronto": "All set", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "A member is added with their card, so Cup points count for them. A guest is added by name: they play all the same, but it stays written who was on court.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "A visitor has indicated you as host: confirm to link them to the home.", "Vai alla Coppa": "Go to the Cup", "Vedi tutte": "See all", "Versione completa": "Full version", "Versione semplice": "Simple version", "Vivo nel residence; posso gestire case vacanza.": "I live in the residence; I can manage holiday homes.", "a pari merito": "tied", "al": "to", "al completo": "full", "alla Casa di Carta": "at the Casa di Carta", "alle": "at", "cena e tavolo": "dinner and table", "classifica e prossime partite": "standings and upcoming matches", "compreso": "included", "consumazione obbligatoria": "one drink included", "coperti prenotati": "covers booked", "dal": "from", "di": "by", "di pi\xF9\u2026": "more\u2026", "dice di essere tuo ospite": "says they're your guest", "e capitani": "and captains", "entro le": "by", "es. Chiara": "e.g. Chiara", "fasce": "slots", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "slots from today have already gone by and cannot be booked.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "slot from today has already gone by and cannot be booked.", "film": "films", "giocatori": "players", "giocatori: da soli non si occupa un tavolo.": "players: you don't take a table on your own.", "giocatori: ne mancano": "players: still missing", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "players; with <b>Just me</b> the slot stays reserved. The courts are free.", "gratis": "free", "in corso: chiedila al banco": "in progress: ask at the counter", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "your location stays on your phone, it isn't sent to anyone", "la rassegna": "the film season", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "we keep it for over-70s, while seats last. We assign it to you ourselves.", "la tua": "yours", "lezioni con istruttore": "classes with an instructor", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "minutes to the start, so the class is owed even if you cancel. Go ahead?", "minuti prima": "minutes before", "nessun posto libero": "no seats available", "nessun tavolo libero": "no free tables", "nessuna postazione libera": "no desks available", "orari, rifiuti, numeri": "hours, waste, numbers", "ordina e ritira": "order and collect", "organizzatevi fra voi": "organise among yourselves", "ospite senza tessera": "guest without card", "partita da confermare": "match to confirm", "partite da confermare": "matches to confirm", "per confermare la lezione": "to confirm the class", "per stasera, tavolo da 4": "for tonight, table for 4", "persone": "people", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "the grill and fryer need to heat up. Your order has already been taken.", "posizione": "position", "postazioni": "desks", "postazioni libere": "desks available", "posti davanti al palco": "seats in front of the stage", "posti liberi": "seats available", "posto allo spettacolo": "a seat at the show", "prodotti": "items", "restano solo i posti in fondo": "only seats at the back are left", "segnalato": "reported", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "pay at the till. We'll let you know when it's ready.", "soci": "members", "socio": "member", "solo per te? Nessun altro potr\xE0 unirsi.": "just for yourself? No one else will be able to join.", "su": "of", "su questo campo": "on this court", "tavoli liberi": "tables free", "tavolo": "table", "tavolo da gioco": "games table", "titolare": "holder", "unisciti a chi sta giocando": "join those already playing", "volta": "time", "volta in cui non hai pagato niente: \xE8 compreso.": "time you paid nothing: it\u2019s included.", "volte": "times", "volte in cui non hai pagato niente: \xE8 compreso.": "times you paid nothing: it\u2019s included.", "\xC8 fatta": "All done", "\xC8 lui/lei": "That's them", "UNDER 18": "UNDER 18", "persona": "person", "Il tuo ticket": "Your ticket", "Se la fotocamera non lo legge, detta il codice al banco.": "If the camera can't read it, read the code out at the counter."}, "fr": {"112 e il tuo contatto di emergenza": "112 et votre contact d\u2019urgence", "112 \xB7 emergenze": "112 \xB7 urgences", "A quale casa lo colleghi?": "\xC0 quelle maison le rattaches-tu ?", "Abbiamo avvisato": "Nous avons pr\xE9venu", "Accetto il trattamento dei dati (privacy)": "J'accepte le traitement de mes donn\xE9es (confidentialit\xE9)", "Aggiungi": "Ajouter", "Aggiungi alla Home": "Ajouter \xE0 l'accueil", "Aggiungi alla schermata Home": "Ajouter \xE0 l'\xE9cran d'accueil", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "Ajoute ta maison de vacances : tu pourras accueillir des visiteurs.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "Ajoute d'abord ta maison, puis confirme l'invit\xE9.", "Aggiungi struttura": "Ajouter un logement", "Aggiungi un giocatore": "Ajouter un joueur", "Al tavolo servono almeno": "\xC0 la table il faut au moins", "Ancora niente da mostrare.": "Rien \xE0 montrer pour l\u2019instant.", "Annullare questa prenotazione?": "Annuler cette r\xE9servation ?", "Apri ai soci": "Ouvrir aux membres", "Apri la partita di": "Ouvrir la partie de", "Area fitness": "Espace fitness", "Attenzione: mancano meno di": "Attention : il reste moins de", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, cuisine et point de rencontre", "Benvenuto nella casata": "Bienvenue dans la maison", "Benvenuto!": "Bienvenue !", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "Il y a de la place", "CAPITANO": "CAPITAINE", "Cambia casata": "Changer de maison", "Campo impegnato": "Terrain occup\xE9", "Campo riservato": "Terrain r\xE9serv\xE9", "Capitani": "Capitaines", "Casa di Carta": "Casa di Carta", "Casa mia": "Chez moi", "Case vacanza": "Locations de vacances", "Cena": "D\xEEner", "Cena al tavolo": "D\xEEner \xE0 table", "Cena confermata, ma i posti davanti al palco sono esauriti": "D\xEEner confirm\xE9, mais les places devant la sc\xE8ne sont \xE9puis\xE9es", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Cherche qui t'h\xE9berge : la personne recevra une notification et, si elle confirme, tu verras \xAB Ma maison \xBB.", "Cerco la posizione\u2026": "Recherche de la position\u2026", "Chat della casata": "Chat de la maison", "Chat non disponibile": "Chat indisponible", "Chi gioca": "Qui joue", "Chi gioca con te": "Qui joue avec vous", "Chi sei?": "Qui es-tu ?", "Chi ti ospita?": "Qui t'h\xE9berge ?", "Chi vuoi chiamare": "Qui voulez-vous appeler", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Celui qui veut \xEAtre ton invit\xE9 s'inscrit et te cherche par nom : ici tu confirmes et le rattaches \xE0 la maison.", "Chiama": "Appeler", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "Cette commande contient de l'alcool : une pi\xE8ce d'identit\xE9 peut vous \xEAtre demand\xE9e au retrait. Pas de service avant 18 ans.", "Codice di accesso": "Code d'acc\xE8s", "Cognome": "Nom", "Collega": "Rattacher", "Collega la tua casa": "Rattache ta maison", "Comanda": "Commande", "Come arrivare": "Comment venir", "Come raggiungere la casa e le regole del soggiorno.": "Comment rejoindre la maison et les r\xE8gles du s\xE9jour.", "Come va la Coppa": "O\xF9 en est la Coupe", "Conferimento rifiuti": "D\xE9p\xF4t des d\xE9chets", "Conferma": "Confirmer", "Conosci il tuo host?": "Connais-tu ton h\xF4te ?", "Consenti le finestre per salvare la rassegna.": "Autorisez les fen\xEAtres pour enregistrer le cycle.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "Ainsi elle reste sur ton t\xE9l\xE9phone avec son ic\xF4ne, sans la chercher \xE0 chaque fois.", "Crea profilo": "Cr\xE9er un profil", "Dati della struttura non disponibili": "Donn\xE9es du logement indisponibles", "Disattiva": "D\xE9sactiver", "Disattivare la gestione delle case vacanza?": "D\xE9sactiver la gestion des locations ?", "Disdetta non riuscita": "Annulation impossible", "Disdici": "Annuler", "Disdire l\u2019iscrizione a questa lezione?": "Annuler votre inscription \xE0 ce cours ?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "Annuler cette r\xE9servation ? Le terrain redevient libre et il faut pr\xE9venir ceux qui devaient jouer avec vous.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "Apr\xE8s, le cours reste d\xFB : le moniteur est d\xE9j\xE0 arriv\xE9 et la place ne se revend plus.", "Dove mi trovo": "O\xF9 je suis", "Dove si trova": "O\xF9 \xE7a se trouve", "Durata": "Dur\xE9e", "E": "Et", "Elenco non disponibile": "Liste indisponible", "Fatto": "Termin\xE9", "Fino ai 18 anni le prenota un adulto per te.": "Avant 18 ans, un adulte r\xE9serve pour vous.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Avant 18 ans, les r\xE9servations payantes sont faites par un adulte pour vous.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Appareil photo indisponible : ouvrez l'appareil photo du t\xE9l\xE9phone et scannez le QR sur la table.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "G\xE9rez les maisons de vacances que vous accueillez dans la r\xE9sidence.", "Giocare": "Jouer", "Giochi da tavolo": "Jeux de soci\xE9t\xE9", "Giornata libera": "Journ\xE9e libre", "Gruppo capitani": "Groupe des capitaines", "Guida": "Guide", "Hai anche": "Vous avez aussi", "Hai diritto alla prima fila": "Vous avez droit au premier rang", "Hai esaurito le prenotazioni di questa settimana su questo campo": "Vous avez \xE9puis\xE9 vos r\xE9servations de la semaine sur ce terrain", "Ho gi\xE0 un account": "J'ai d\xE9j\xE0 un compte", "Home": "Accueil", "I film che proponiamo per la stagione.": "Les films que nous proposons pour la saison.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "Les films de la saison. Les dates des projections sont dans l'app, section Sc\xE8ne : elles peuvent changer.", "I miei posti": "Mes places", "I miei visitatori": "Mes visiteurs", "I tuoi dati": "Tes informations", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "Le 112 est le num\xE9ro unique d'urgence. La r\xE9sidence n'est pas un service de secours : ce sont seulement les num\xE9ros auxquels on r\xE9pond, \xE0 port\xE9e de doigt.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "Un adulte r\xE9serve le terrain : vous rejoignez la partie et vous jouez.", "Il campo \xE8 al completo.": "Le terrain est complet.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "Le code est sur la table. De l\xE0, la commande part d\xE9j\xE0 avec le bon num\xE9ro.", "Il consenso privacy \xE8 necessario per registrarsi": "Le consentement \xE0 la confidentialit\xE9 est n\xE9cessaire pour s'inscrire", "Il mio contatto": "Mon contact", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "C'est nous qui attribuons la table. Si vous \xEAtes plus ou moins nombreux, dites-le au personnel.", "Il tavolo si prenota a turni.": "La table se r\xE9serve par cr\xE9neaux.", "Il telefono non sa dirmi dove sei.": "Le t\xE9l\xE9phone ne peut pas me dire o\xF9 vous \xEAtes.", "Il tuo codice di accesso": "Ton code d'acc\xE8s", "Il tuo host": "Ton h\xF4te", "Il tuo posto": "Votre place", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Ton profil est actif. Conserve ton code pour te connecter m\xEAme sans e-mail :", "Il tuo soggiorno": "Votre s\xE9jour", "In attesa di conferma": "En attente de confirmation", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Indique qui t'h\xE9berge pour voir les indications et r\xE8gles du s\xE9jour.", "Indietro": "Retour", "Informazioni utili": "Informations utiles", "Ingresso libero": "Entr\xE9e libre", "Inizia": "Commencer", "Inquadra il QR del tavolo": "Scannez le QR de la table", "Installa l\u2019app": "Installer l'appli", "Invia": "Envoyer", "Invia ordine": "Envoyer la commande", "Iscritto": "Inscrit", "Iscriviti": "S'inscrire", "Iscrizione annullata": "Inscription annul\xE9e", "Iscrizione confermata": "Inscription confirm\xE9e", "Iscrizione non riuscita": "Inscription \xE9chou\xE9e", "Isolato": "\xCElot", "La chat della casata": "Le chat de la maison", "La chat interna alla casata arriver\xE0 in una prossima versione.": "Le chat interne \xE0 la maison arrivera dans une prochaine version.", "La cucina consegna dalle": "La cuisine sert \xE0 partir de", "La mia casata": "Ma maison", "La settimana": "La semaine", "La tua postazione": "Votre poste", "La tua prenotazione": "Votre r\xE9servation", "La tua tessera": "Votre carte", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Les dates ne sont pas indiqu\xE9es : une soir\xE9e sp\xE9ciale ou le mauvais temps peuvent d\xE9placer une projection. Le jour exact se trouve dans <b>Sc\xE8ne</b>, o\xF9 l'on r\xE9serve sa place.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "Les informations sont chiffr\xE9es : visibles seulement par vous et vos invit\xE9s li\xE9s.", "Le mie case": "Mes maisons", "Le mie lezioni": "Mes cours", "Le mie postazioni": "Mes postes", "Le mie prenotazioni": "Mes r\xE9servations", "Le mie spese": "Mes d\xE9penses", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Les r\xE9servations payantes \u2014 d\xEEner, bar, cours et soir\xE9es \u2014 sont faites par un adulte pour vous : avant 18 ans on ne s'engage pas seul sur une d\xE9pense.", "Le serate con quota le prenota un adulto per te.": "Les soir\xE9es payantes sont r\xE9serv\xE9es par un adulte pour vous.", "Le serate speciali": "Les soir\xE9es sp\xE9ciales", "Le tue strutture": "Vos logements", "Le ultime": "Les derni\xE8res", "Leggi questi numeri all'operatore": "Lisez ces chiffres \xE0 l'op\xE9rateur", "Lezione al completo.": "Cours complet.", "Lezioni con istruttore": "Cours avec moniteur", "Lezioni non disponibili": "Cours indisponibles", "Men\xF9 non disponibile": "Menu non disponible", "Migliore casata": "Meilleure maison", "Modifica": "Modifier", "Mostra solo le prossime": "Afficher seulement les prochaines", "NON PRENOTABILE": "NON R\xC9SERVABLE", "Nessun host trovato con questo nome.": "Aucun h\xF4te trouv\xE9 avec ce nom.", "Nessun iscritto a questa casata.": "Aucun inscrit dans cette maison.", "Nessun messaggio. Comincia tu.": "Aucun message. Lancez-vous.", "Nessun turno di coworking.": "Aucun cr\xE9neau de coworking.", "Nessun visitatore collegato.": "Aucun visiteur rattach\xE9.", "Nessuna lezione in programma.": "Aucun cours au programme.", "Nessuna serata su prenotazione al momento.": "Aucune soir\xE9e sur r\xE9servation pour le moment.", "Nessuno spettacolo in programma.": "Aucun spectacle au programme.", "Nome": "Pr\xE9nom", "Nome e cognome obbligatori": "Pr\xE9nom et nom obligatoires", "Nome o cognome dell'host": "Pr\xE9nom ou nom de l'h\xF4te", "Nome struttura": "Nom du logement", "Nome, oppure tessera BR-\u2026": "Nom, ou carte BR-\u2026", "Non hai ancora aggiunto strutture.": "Vous n'avez pas encore ajout\xE9 de logement.", "Non hai postazioni prenotate.": "Vous n'avez aucun poste r\xE9serv\xE9.", "Non lo conosco ora \xB7 salta": "Je ne le connais pas maintenant \xB7 passer", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "Impossible d'obtenir la position. Dites \xE0 l'op\xE9rateur le nom de la r\xE9sidence et le num\xE9ro de la villa.", "Numeri rapidi": "Num\xE9ros rapides", "Numero": "Num\xE9ro", "Oggi al residence": "Aujourd'hui \xE0 la r\xE9sidence", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Chaque maison accueille jusqu'\xE0 12 membres. Si elle est compl\xE8te, choisis-en une autre.", "Orario di check-out": "Heure de d\xE9part", "Ordina e ritira al banco": "Commander et retirer au comptoir", "Ordine inviato": "Commande envoy\xE9e", "Ore di silenzio": "Heures de silence", "Ospite collegato": "Invit\xE9 rattach\xE9", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Invit\xE9 temporaire : tu te rattaches \xE0 la maison de ton h\xF4te.", "Passa alla versione completa": "Passer \xE0 la version compl\xE8te", "Per confermare la lezione": "Pour confirmer le cours", "Per gli altri giorni usa la sezione Eventi.": "Pour les autres jours, utilisez la section \xC9v\xE9nements.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "Le bar, le d\xEEner et les soir\xE9es demandent un adulte : avant 18 ans on ne r\xE9serve pas seul ce qui est payant.", "Per servizio": "Par service", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "Pour un grand groupe nous rapprochons plusieurs tables : indiquez combien vous \xEAtes vraiment.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "Pour une r\xE9union vous pouvez prendre toute la salle : choisissez le nombre de postes n\xE9cessaires.", "Pi\xF9 tardi": "Plus tard", "Portami l\xEC": "M'y emmener", "Postazione al tavolo": "Poste \xE0 la table", "Posti": "Places", "Precisione": "Pr\xE9cision", "Prenota la cena": "R\xE9server le d\xEEner", "Prenotazione disdetta: il campo \xE8 tornato libero.": "R\xE9servation annul\xE9e : le terrain est de nouveau libre.", "Prenotazione non disponibile.": "R\xE9servation indisponible.", "Prenoti": "Vous r\xE9servez", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "Vous r\xE9servez toujours en tant que titulaire. Avec <b>Ouvrir aux membres</b>, les autres se joignent jusqu'\xE0", "Prezzo": "Prix", "Programma non disponibile": "Programme indisponible", "Puoi aggiungere le tue case e accogliere i visitatori.": "Vous pouvez ajouter vos logements et accueillir des visiteurs.", "Qualcosa non ha funzionato nel caricamento.": "Un probl\xE8me est survenu au chargement.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "Quand la personne confirmera, \xAB Ma maison \xBB appara\xEEtra avec toutes les indications du logement.", "Quante persone siete?": "Combien \xEAtes-vous ?", "Quante persone?": "Combien de personnes ?", "Quante postazioni": "Combien de postes", "Questa casata non ha ancora un capitano.": "Cette maison n'a pas encore de capitaine.", "Questo codice non \xE8 il QR di un tavolo.": "Ce code n'est pas le QR d'une table.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Ce t\xE9l\xE9phone ne lit pas les codes depuis l'app : ouvrez l'appareil photo du t\xE9l\xE9phone et scannez le QR sur la table.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "Ici il n\u2019y a que ce que vous avez fait avec la carte : au Bar et au Garden on est servi m\xEAme sans, et ces consommations n\u2019apparaissent pas.", "Rassegna": "Cycle", "Rassegna cinematografica": "Cycle de cin\xE9ma", "Rassegna non ancora pubblicata.": "Cycle pas encore publi\xE9.", "Rassegna non disponibile": "Cycle indisponible", "Registrati": "S'inscrire", "Registrazione non riuscita": "\xC9chec de l'inscription", "Regole della casa": "R\xE8gles de la maison", "Richiesta inviata": "Demande envoy\xE9e", "Richieste in attesa": "Demandes en attente", "Riprova": "R\xE9essayer", "Riservata": "R\xE9serv\xE9e", "Rispondi e l'app trova il profilo giusto per te.": "R\xE9ponds et l'appli trouve le profil qui te convient.", "Sala non disponibile": "Salle indisponible", "Salva": "Enregistrer", "Salva la tua tessera (immagine)": "Enregistre ta carte (image)", "Salva o stampa la rassegna": "Enregistrer ou imprimer le cycle", "Salva tessera": "Enregistrer la carte", "Scegli": "Choisir", "Scegli la casata": "Choisis la maison", "Scegli la disciplina": "Choisissez la discipline", "Scegli la tua casata": "Choisis ta maison", "Scollega": "D\xE9tacher", "Scollegare questo visitatore dalla casa?": "D\xE9tacher ce visiteur de la maison ?", "Scopri le nostre serate speciali": "D\xE9couvrez nos soir\xE9es sp\xE9ciales", "Scrivi il nome di chi gioca, oppure la sua tessera.": "\xC9crivez le nom de qui joue, ou sa carte.", "Scrivi qui\u2026": "\xC9crivez ici\u2026", "Segnala": "Signaler", "Serve l'accesso con la tessera": "L'acc\xE8s avec la carte est n\xE9cessaire", "Serve la tessera di un socio per iscriverti": "Il faut la carte d'un membre pour s'inscrire", "Serve la tessera di un socio per prenotare": "Il faut la carte d'un membre pour r\xE9server", "Serve la tessera per vedere le tue spese": "Il faut votre carte pour voir vos d\xE9penses", "Serve per accedere di nuovo con un codice via e-mail.": "Il sert \xE0 te reconnecter avec un code par e-mail.", "Servono": "Il faut", "Settimana": "Semaine", "Si disdice senza pagare fino a": "Annulation gratuite jusqu\u2019\xE0", "Si gioca: numero minimo raggiunto": "Le match aura lieu : minimum atteint", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "On occupe une chaise, pas une table : on travaille aussi dans une salle partag\xE9e.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "On paie le cours \xE0 l'unit\xE9, en esp\xE8ces \xE0 la fin. En dessous du minimum d'inscrits, le cours n'a pas lieu.", "Soggiorno dal": "S\xE9jour du", "Solo io": "Moi seul", "Sono in vacanza (visitatore)": "Je suis en vacances (visiteur)", "Sono residente": "Je suis r\xE9sident", "Sono socio": "Je suis membre", "Sono socio e residente": "Je suis membre et r\xE9sident", "Spettacolo": "Spectacle", "Stage": "Sc\xE8ne", "Stai prenotando per stasera": "Vous r\xE9servez pour ce soir", "Stasera": "Ce soir", "Stasera alle": "Ce soir \xE0", "Stasera il Garden non prende prenotazioni.": "Ce soir le Garden ne prend pas de r\xE9servations.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "Sur Android (Chrome) : touche le menu (\u22EE) en haut \xE0 droite, puis \xAB Ajouter \xE0 l'\xE9cran d'accueil \xBB / \xAB Installer l'appli \xBB.", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "Sur iPhone/iPad (Safari) : touche Partager (\u2B06\uFE0F) en bas, puis \xAB Sur l'\xE9cran d'accueil \xBB.", "Su prenotazione": "Sur r\xE9servation", "Tavolo": "Table", "Tavolo da gioco": "Table de jeu", "Tavolo per 4 persone": "Table pour 4 personnes", "Tessera salvata nelle immagini": "Carte enregistr\xE9e dans les photos", "Tesserato: casata, Coppa, inviti.": "Membre : maison, Coupe, invitations.", "Ti hanno convocato": "On vous a convoqu\xE9", "Ti restano": "Il vous reste", "Tieni l\u2019app a portata di mano": "Garde l'appli \xE0 port\xE9e de main", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Touchez un cours pour vous inscrire. La couleur indique la discipline.", "Tocca una serata per i dettagli.": "Touchez une soir\xE9e pour les d\xE9tails.", "Togli questo avviso": "Retirer cet avis", "Totale speso": "Total d\xE9pens\xE9", "Turni": "Cr\xE9neaux", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Tout du membre (maison, Coupe) + je g\xE8re des maisons de vacances.", "Tutto pronto": "Tout est pr\xEAt", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "Un membre s'ajoute avec sa carte, et les points de la Coupe lui sont compt\xE9s. Un invit\xE9 s'ajoute par son nom : il joue quand m\xEAme, mais on garde trace de qui \xE9tait sur le terrain.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "Un visiteur t'a indiqu\xE9 comme h\xF4te : confirme pour le rattacher \xE0 la maison.", "Vai alla Coppa": "Aller \xE0 la Coupe", "Vedi tutte": "Voir toutes", "Versione completa": "Version compl\xE8te", "Versione semplice": "Version simple", "Vivo nel residence; posso gestire case vacanza.": "Je vis dans la r\xE9sidence ; je peux g\xE9rer des maisons de vacances.", "a pari merito": "\xE0 \xE9galit\xE9", "al": "au", "al completo": "complet", "alla Casa di Carta": "\xE0 la Casa di Carta", "alle": "\xE0", "cena e tavolo": "d\xEEner et table", "classifica e prossime partite": "classement et prochains matchs", "compreso": "compris", "consumazione obbligatoria": "consommation obligatoire", "coperti prenotati": "couverts r\xE9serv\xE9s", "dal": "du", "di": "de", "di pi\xF9\u2026": "plus\u2026", "dice di essere tuo ospite": "dit \xEAtre ton invit\xE9", "e capitani": "et capitaines", "entro le": "avant", "es. Chiara": "ex. Chiara", "fasce": "cr\xE9neaux", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "cr\xE9neaux d'aujourd'hui sont d\xE9j\xE0 pass\xE9s et ne peuvent pas \xEAtre r\xE9serv\xE9s.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "cr\xE9neau d'aujourd'hui est d\xE9j\xE0 pass\xE9 et ne peut pas \xEAtre r\xE9serv\xE9.", "film": "films", "giocatori": "joueurs", "giocatori: da soli non si occupa un tavolo.": "joueurs : on n'occupe pas une table tout seul.", "giocatori: ne mancano": "joueurs : il en manque", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "joueurs ; avec <b>Moi seul</b> le cr\xE9neau reste r\xE9serv\xE9. Les terrains sont gratuits.", "gratis": "gratuit", "in corso: chiedila al banco": "en cours : demandez au comptoir", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "la position reste sur votre t\xE9l\xE9phone, elle n'est envoy\xE9e \xE0 personne", "la rassegna": "le cycle", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "nous la r\xE9servons aux plus de 70 ans, dans la limite des places. Nous vous l'attribuons nous-m\xEAmes.", "la tua": "la tienne", "lezioni con istruttore": "cours avec moniteur", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "minutes avant le d\xE9but, le cours reste donc d\xFB m\xEAme si vous annulez. On continue ?", "minuti prima": "minutes avant", "nessun posto libero": "aucune place libre", "nessun tavolo libero": "aucune table libre", "nessuna postazione libera": "aucun poste libre", "orari, rifiuti, numeri": "horaires, d\xE9chets, num\xE9ros", "ordina e ritira": "commander et retirer", "organizzatevi fra voi": "organisez-vous entre vous", "ospite senza tessera": "invit\xE9 sans carte", "partita da confermare": "match \xE0 confirmer", "partite da confermare": "matchs \xE0 confirmer", "per confermare la lezione": "pour confirmer le cours", "per stasera, tavolo da 4": "pour ce soir, table de 4", "persone": "personnes", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "la plancha et la friteuse doivent chauffer. Votre commande est d\xE9j\xE0 prise.", "posizione": "position", "postazioni": "postes", "postazioni libere": "postes libres", "posti davanti al palco": "places devant la sc\xE8ne", "posti liberi": "places libres", "posto allo spettacolo": "place au spectacle", "prodotti": "produits", "restano solo i posti in fondo": "il ne reste que les places du fond", "segnalato": "signal\xE9", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "paiement \xE0 la caisse. On te pr\xE9vient quand c'est pr\xEAt.", "soci": "membres", "socio": "membre", "solo per te? Nessun altro potr\xE0 unirsi.": "seulement pour vous ? Personne d'autre ne pourra se joindre.", "su": "sur", "su questo campo": "sur ce terrain", "tavoli liberi": "tables libres", "tavolo": "table", "tavolo da gioco": "table de jeu", "titolare": "titulaire", "unisciti a chi sta giocando": "rejoignez ceux qui jouent", "volta": "fois", "volta in cui non hai pagato niente: \xE8 compreso.": "fois o\xF9 vous n\u2019avez rien pay\xE9 : c\u2019est compris.", "volte": "fois", "volte in cui non hai pagato niente: \xE8 compreso.": "fois o\xF9 vous n\u2019avez rien pay\xE9 : c\u2019est compris.", "\xC8 fatta": "C'est fait", "\xC8 lui/lei": "C'est lui/elle", "UNDER 18": "MOINS DE 18 ANS", "persona": "personne", "Il tuo ticket": "Votre billet", "Se la fotocamera non lo legge, detta il codice al banco.": "Si la cam\xE9ra ne le lit pas, dictez le code au comptoir."}, "de": {"112 e il tuo contatto di emergenza": "112 und dein Notfallkontakt", "112 \xB7 emergenze": "112 \xB7 Notruf", "A quale casa lo colleghi?": "Welchem Haus ordnest du ihn/sie zu?", "Abbiamo avvisato": "Wir haben benachrichtigt", "Accetto il trattamento dei dati (privacy)": "Ich stimme der Datenverarbeitung zu (Datenschutz)", "Aggiungi": "Hinzuf\xFCgen", "Aggiungi alla Home": "Zum Startbildschirm", "Aggiungi alla schermata Home": "Zum Startbildschirm hinzuf\xFCgen", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "F\xFCge dein Ferienhaus hinzu: Du kannst dann Besucher empfangen.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "F\xFCge zuerst dein Haus hinzu, dann best\xE4tige den Gast.", "Aggiungi struttura": "Objekt hinzuf\xFCgen", "Aggiungi un giocatore": "Spieler hinzuf\xFCgen", "Al tavolo servono almeno": "Am Tisch braucht es mindestens", "Ancora niente da mostrare.": "Noch nichts zu zeigen.", "Annullare questa prenotazione?": "Diese Buchung stornieren?", "Apri ai soci": "F\xFCr Mitglieder \xF6ffnen", "Apri la partita di": "Spiel \xF6ffnen:", "Area fitness": "Fitnessbereich", "Attenzione: mancano meno di": "Achtung: es sind weniger als", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, K\xFCche und Treffpunkt", "Benvenuto nella casata": "Willkommen im Haus", "Benvenuto!": "Willkommen!", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "Es ist Platz", "CAPITANO": "KAPIT\xC4N", "Cambia casata": "Haus wechseln", "Campo impegnato": "Platz belegt", "Campo riservato": "Reservierter Platz", "Capitani": "Kapit\xE4ne", "Casa di Carta": "Casa di Carta", "Casa mia": "Mein Zuhause", "Case vacanza": "Ferienwohnungen", "Cena": "Abendessen", "Cena al tavolo": "Abendessen am Tisch", "Cena confermata, ma i posti davanti al palco sono esauriti": "Abendessen best\xE4tigt, aber die Pl\xE4tze vor der B\xFChne sind ausverkauft", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Suche, wer dich beherbergt: Die Person erh\xE4lt eine Benachrichtigung und, wenn sie best\xE4tigt, siehst du \u201EMein Zuhause\\".", "Cerco la posizione\u2026": "Position wird gesucht\u2026", "Chat della casata": "Haus-Chat", "Chat non disponibile": "Chat nicht verf\xFCgbar", "Chi gioca": "Wer spielt", "Chi gioca con te": "Wer mit dir spielt", "Chi sei?": "Wer bist du?", "Chi ti ospita?": "Wer beherbergt dich?", "Chi vuoi chiamare": "Wen m\xF6chtest du anrufen", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Wer dein Gast sein m\xF6chte, registriert sich und sucht dich per Namen: Hier best\xE4tigst du und verbindest ihn mit dem Haus.", "Chiama": "Anrufen", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "Die Bestellung enth\xE4lt Alkohol: bei der Abholung kann ein Ausweis verlangt werden. Unter 18 wird nicht ausgeschenkt.", "Codice di accesso": "Zugangscode", "Cognome": "Nachname", "Collega": "Verbinden", "Collega la tua casa": "Verbinde dein Haus", "Comanda": "Bestellung", "Come arrivare": "Anfahrt", "Come raggiungere la casa e le regole del soggiorno.": "So erreichst du das Haus, und die Regeln des Aufenthalts.", "Come va la Coppa": "Wie steht der Pokal", "Conferimento rifiuti": "M\xFCllabgabe", "Conferma": "Best\xE4tigen", "Conosci il tuo host?": "Kennst du deinen Gastgeber?", "Consenti le finestre per salvare la rassegna.": "Erlaube Pop-ups, um die Filmreihe zu speichern.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "So bleibt sie mit ihrem Symbol auf dem Telefon, ohne sie jedes Mal zu suchen.", "Crea profilo": "Profil erstellen", "Dati della struttura non disponibili": "Objektdaten nicht verf\xFCgbar", "Disattiva": "Ausschalten", "Disattivare la gestione delle case vacanza?": "Verwaltung der Ferienwohnungen ausschalten?", "Disdetta non riuscita": "Absage fehlgeschlagen", "Disdici": "Absagen", "Disdire l\u2019iscrizione a questa lezione?": "Anmeldung f\xFCr diese Stunde absagen?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "Diese Buchung absagen? Der Platz wird wieder frei, und wer mit dir spielen wollte, muss Bescheid bekommen.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "Danach bleibt die Stunde geschuldet: der Trainer ist schon da und der Platz l\xE4sst sich nicht mehr vergeben.", "Dove mi trovo": "Wo ich bin", "Dove si trova": "Wo es liegt", "Durata": "Dauer", "E": "Und", "Elenco non disponibile": "Liste nicht verf\xFCgbar", "Fatto": "Fertig", "Fino ai 18 anni le prenota un adulto per te.": "Unter 18 bucht ein Erwachsener f\xFCr dich.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Unter 18 macht ein Erwachsener die kostenpflichtigen Buchungen f\xFCr dich.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Kamera nicht verf\xFCgbar: \xF6ffne die Kamera des Telefons und scanne den QR-Code auf dem Tisch.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "Verwalte die Ferienh\xE4user, die du in der Residenz beherbergst.", "Giocare": "Spielen", "Giochi da tavolo": "Brettspiele", "Giornata libera": "Freier Tag", "Gruppo capitani": "Kapit\xE4nsgruppe", "Guida": "Guide", "Hai anche": "Du hast au\xDFerdem", "Hai diritto alla prima fila": "Du hast Anrecht auf die erste Reihe", "Hai esaurito le prenotazioni di questa settimana su questo campo": "Deine Buchungen dieser Woche f\xFCr diesen Platz sind aufgebraucht", "Ho gi\xE0 un account": "Ich habe schon ein Konto", "Home": "Start", "I film che proponiamo per la stagione.": "Die Filme, die wir f\xFCr die Saison zeigen.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "Die Filme der Saison. Die Vorf\xFChrtermine stehen in der App unter B\xFChne: sie k\xF6nnen sich \xE4ndern.", "I miei posti": "Meine Pl\xE4tze", "I miei visitatori": "Meine Besucher", "I tuoi dati": "Deine Daten", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "112 ist die einheitliche Notrufnummer. Die Residenz ist kein Rettungsdienst: das sind nur die Nummern, unter denen wirklich jemand antwortet, griffbereit.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "Ein Erwachsener bucht den Platz: du schlie\xDFt dich dem Spiel an.", "Il campo \xE8 al completo.": "Der Platz ist voll.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "Der Code liegt auf dem Tisch. Von dort startet die Bestellung schon mit der richtigen Nummer.", "Il consenso privacy \xE8 necessario per registrarsi": "Die Datenschutz-Einwilligung ist f\xFCr die Registrierung erforderlich", "Il mio contatto": "Mein Kontakt", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "Den Tisch teilen wir zu. Wenn ihr mehr oder weniger seid, sagt es dem Personal.", "Il tavolo si prenota a turni.": "Der Tisch wird in Schichten gebucht.", "Il telefono non sa dirmi dove sei.": "Das Telefon kann mir nicht sagen, wo du bist.", "Il tuo codice di accesso": "Dein Zugangscode", "Il tuo host": "Dein Gastgeber", "Il tuo posto": "Dein Platz", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Dein Profil ist aktiv. Bewahre deinen Code auf, um dich auch ohne E-Mail anzumelden:", "Il tuo soggiorno": "Dein Aufenthalt", "In attesa di conferma": "Warten auf Best\xE4tigung", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Gib an, wer dich beherbergt, um Hinweise und Regeln des Aufenthalts zu sehen.", "Indietro": "Zur\xFCck", "Informazioni utili": "N\xFCtzliche Infos", "Ingresso libero": "Freier Eintritt", "Inizia": "Starten", "Inquadra il QR del tavolo": "QR-Code des Tisches scannen", "Installa l\u2019app": "App installieren", "Invia": "Senden", "Invia ordine": "Bestellung senden", "Iscritto": "Angemeldet", "Iscriviti": "Anmelden", "Iscrizione annullata": "Anmeldung storniert", "Iscrizione confermata": "Anmeldung best\xE4tigt", "Iscrizione non riuscita": "Anmeldung fehlgeschlagen", "Isolato": "Block", "La chat della casata": "Der Haus-Chat", "La chat interna alla casata arriver\xE0 in una prossima versione.": "Der hausinterne Chat kommt in einer sp\xE4teren Version.", "La cucina consegna dalle": "Die K\xFCche liefert ab", "La mia casata": "Mein Haus", "La settimana": "Die Woche", "La tua postazione": "Dein Arbeitsplatz", "La tua prenotazione": "Deine Buchung", "La tua tessera": "Deine Karte", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Termine sind nicht angegeben: ein besonderer Abend oder schlechtes Wetter k\xF6nnen eine Vorf\xFChrung verschieben. Den genauen Tag findest du unter <b>B\xFChne</b>, wo der Platz gebucht wird.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "Die Angaben sind verschl\xFCsselt: sichtbar nur f\xFCr dich und deine verkn\xFCpften G\xE4ste.", "Le mie case": "Meine H\xE4user", "Le mie lezioni": "Meine Kurse", "Le mie postazioni": "Meine Arbeitspl\xE4tze", "Le mie prenotazioni": "Meine Buchungen", "Le mie spese": "Meine Ausgaben", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Kostenpflichtige Buchungen \u2014 Abendessen, Bar, Kurse und Abende \u2014 macht ein Erwachsener f\xFCr dich: unter 18 kann man keine Ausgaben allein eingehen.", "Le serate con quota le prenota un adulto per te.": "Abende mit Beitrag bucht ein Erwachsener f\xFCr dich.", "Le serate speciali": "Die besonderen Abende", "Le tue strutture": "Deine Objekte", "Le ultime": "Die letzten", "Leggi questi numeri all'operatore": "Lies diese Zahlen dem Notrufdienst vor", "Lezione al completo.": "Kurs ist ausgebucht.", "Lezioni con istruttore": "Kurse mit Trainer", "Lezioni non disponibili": "Kurse nicht verf\xFCgbar", "Men\xF9 non disponibile": "Men\xFC nicht verf\xFCgbar", "Migliore casata": "Bestes Haus", "Modifica": "Bearbeiten", "Mostra solo le prossime": "Nur die n\xE4chsten zeigen", "NON PRENOTABILE": "NICHT BUCHBAR", "Nessun host trovato con questo nome.": "Kein Gastgeber mit diesem Namen gefunden.", "Nessun iscritto a questa casata.": "Keine Mitglieder in diesem Haus.", "Nessun messaggio. Comincia tu.": "Keine Nachrichten. Fang du an.", "Nessun turno di coworking.": "Keine Coworking-Zeiten.", "Nessun visitatore collegato.": "Kein Besucher verbunden.", "Nessuna lezione in programma.": "Keine Kurse geplant.", "Nessuna serata su prenotazione al momento.": "Zurzeit keine Abende mit Reservierung.", "Nessuno spettacolo in programma.": "Keine Vorstellungen geplant.", "Nome": "Vorname", "Nome e cognome obbligatori": "Vor- und Nachname erforderlich", "Nome o cognome dell'host": "Vor- oder Nachname des Gastgebers", "Nome struttura": "Name des Objekts", "Nome, oppure tessera BR-\u2026": "Name oder Karte BR-\u2026", "Non hai ancora aggiunto strutture.": "Du hast noch keine Objekte hinzugef\xFCgt.", "Non hai postazioni prenotate.": "Du hast keine Arbeitspl\xE4tze gebucht.", "Non lo conosco ora \xB7 salta": "Ich kenne ihn jetzt nicht \xB7 \xFCberspringen", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "Ich kann die Position nicht ermitteln. Nenne dem Notrufdienst den Namen der Residenz und die Nummer der Villa.", "Numeri rapidi": "Schnellwahl", "Numero": "Nummer", "Oggi al residence": "Heute in der Residenz", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Jedes Haus nimmt bis zu 12 Mitglieder auf. Wenn es voll ist, w\xE4hle ein anderes.", "Orario di check-out": "Check-out-Zeit", "Ordina e ritira al banco": "Bestellen und an der Theke abholen", "Ordine inviato": "Bestellung gesendet", "Ore di silenzio": "Ruhezeiten", "Ospite collegato": "Gast verbunden", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Vor\xFCbergehender Gast: Du verbindest dich mit dem Haus deines Gastgebers.", "Passa alla versione completa": "Zur Vollversion wechseln", "Per confermare la lezione": "Um den Kurs zu best\xE4tigen", "Per gli altri giorni usa la sezione Eventi.": "F\xFCr andere Tage nutze den Bereich Veranstaltungen.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "F\xFCr Bar, Abendessen und Abendveranstaltungen braucht es einen Erwachsenen: unter 18 kann man kostenpflichtige Angebote nicht allein buchen.", "Per servizio": "Nach Bereich", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "F\xFCr eine gro\xDFe Gruppe stellen wir Tische zusammen: sag uns, wie viele ihr wirklich seid.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "F\xFCr ein Meeting kannst du den ganzen Raum nehmen: w\xE4hle die Zahl der Arbeitspl\xE4tze.", "Pi\xF9 tardi": "Sp\xE4ter", "Portami l\xEC": "Hinbringen", "Postazione al tavolo": "Platz am Tisch", "Posti": "Pl\xE4tze", "Precisione": "Genauigkeit", "Prenota la cena": "Abendessen buchen", "Prenotazione disdetta: il campo \xE8 tornato libero.": "Buchung abgesagt: der Platz ist wieder frei.", "Prenotazione non disponibile.": "Buchung nicht verf\xFCgbar.", "Prenoti": "Du buchst", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "Du buchst immer als Inhaber. Mit <b>F\xFCr Mitglieder \xF6ffnen</b> kommen andere dazu, bis zu", "Prezzo": "Preis", "Programma non disponibile": "Programm nicht verf\xFCgbar", "Puoi aggiungere le tue case e accogliere i visitatori.": "Du kannst deine Wohnungen eintragen und G\xE4ste empfangen.", "Qualcosa non ha funzionato nel caricamento.": "Beim Laden ist etwas schiefgegangen.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "Sobald best\xE4tigt wird, erscheint \u201EMein Zuhause\\" mit allen Hinweisen zur Unterkunft.", "Quante persone siete?": "Wie viele seid ihr?", "Quante persone?": "Wie viele Personen?", "Quante postazioni": "Wie viele Arbeitspl\xE4tze", "Questa casata non ha ancora un capitano.": "Dieses Haus hat noch keinen Kapit\xE4n.", "Questo codice non \xE8 il QR di un tavolo.": "Dieser Code ist kein Tisch-QR-Code.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Dieses Telefon liest keine Codes aus der App: \xF6ffne die Kamera des Telefons und scanne den QR-Code auf dem Tisch.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "Hier steht nur, was du mit der Karte gemacht hast: an der Bar und im Garden wird man auch ohne bedient, und das taucht hier nicht auf.", "Rassegna": "Filmreihe", "Rassegna cinematografica": "Filmreihe", "Rassegna non ancora pubblicata.": "Filmreihe noch nicht ver\xF6ffentlicht.", "Rassegna non disponibile": "Filmreihe nicht verf\xFCgbar", "Registrati": "Registrieren", "Registrazione non riuscita": "Registrierung fehlgeschlagen", "Regole della casa": "Hausordnung", "Richiesta inviata": "Anfrage gesendet", "Richieste in attesa": "Ausstehende Anfragen", "Riprova": "Erneut versuchen", "Riservata": "Reserviert", "Rispondi e l'app trova il profilo giusto per te.": "Antworte und die App findet das passende Profil f\xFCr dich.", "Sala non disponibile": "Raum nicht verf\xFCgbar", "Salva": "Speichern", "Salva la tua tessera (immagine)": "Speichere deinen Ausweis (Bild)", "Salva o stampa la rassegna": "Filmreihe speichern oder drucken", "Salva tessera": "Ausweis speichern", "Scegli": "W\xE4hlen", "Scegli la casata": "W\xE4hle das Haus", "Scegli la disciplina": "Disziplin w\xE4hlen", "Scegli la tua casata": "W\xE4hle dein Haus", "Scollega": "Trennen", "Scollegare questo visitatore dalla casa?": "Diesen Besucher vom Haus trennen?", "Scopri le nostre serate speciali": "Entdecke unsere besonderen Abende", "Scrivi il nome di chi gioca, oppure la sua tessera.": "Schreib den Namen des Spielers oder seine Karte.", "Scrivi qui\u2026": "Hier schreiben\u2026", "Segnala": "Melden", "Serve l'accesso con la tessera": "Zugang mit Karte erforderlich", "Serve la tessera di un socio per iscriverti": "Zur Anmeldung wird eine Mitgliedskarte ben\xF6tigt", "Serve la tessera di un socio per prenotare": "Zum Buchen wird eine Mitgliedskarte ben\xF6tigt", "Serve la tessera per vedere le tue spese": "F\xFCr deine Ausgaben brauchst du deine Karte", "Serve per accedere di nuovo con un codice via e-mail.": "Er dient dazu, dich erneut mit einem Code per E-Mail anzumelden.", "Servono": "Es braucht", "Settimana": "Woche", "Si disdice senza pagare fino a": "Kostenlos stornierbar bis", "Si gioca: numero minimo raggiunto": "Das Spiel findet statt: Mindestzahl erreicht", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "Man belegt einen Stuhl, keinen Tisch: man arbeitet auch in einem geteilten Raum.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "Bezahlt wird pro Kurs, bar am Ende. Unter der Mindestzahl an Anmeldungen findet der Kurs nicht statt.", "Soggiorno dal": "Aufenthalt ab", "Solo io": "Nur ich", "Sono in vacanza (visitatore)": "Ich bin im Urlaub (Besucher)", "Sono residente": "Ich bin Anwohner", "Sono socio": "Ich bin Mitglied", "Sono socio e residente": "Ich bin Mitglied und Anwohner", "Spettacolo": "Vorstellung", "Stage": "B\xFChne", "Stai prenotando per stasera": "Du buchst f\xFCr heute Abend", "Stasera": "Heute Abend", "Stasera alle": "Heute Abend um", "Stasera il Garden non prende prenotazioni.": "Heute Abend nimmt der Garden keine Reservierungen an.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "Auf Android (Chrome): Tippe oben rechts auf das Men\xFC (\u22EE), dann \u201EZum Startbildschirm hinzuf\xFCgen\\" / \u201EApp installieren\\".", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "Auf iPhone/iPad (Safari): Tippe unten auf Teilen (\u2B06\uFE0F), dann \u201EZum Home-Bildschirm\\".", "Su prenotazione": "Nur mit Reservierung", "Tavolo": "Tisch", "Tavolo da gioco": "Spieltisch", "Tavolo per 4 persone": "Tisch f\xFCr 4 Personen", "Tessera salvata nelle immagini": "Ausweis in den Fotos gespeichert", "Tesserato: casata, Coppa, inviti.": "Mitglied: Haus, Pokal, Einladungen.", "Ti hanno convocato": "Du wurdest aufgestellt", "Ti restano": "Dir bleiben", "Tieni l\u2019app a portata di mano": "Halte die App griffbereit", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Tippe auf einen Kurs, um dich anzumelden. Die Farbe steht f\xFCr die Disziplin.", "Tocca una serata per i dettagli.": "Tippe auf einen Abend f\xFCr Details.", "Togli questo avviso": "Diesen Hinweis entfernen", "Totale speso": "Insgesamt ausgegeben", "Turni": "Schichten", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Alles vom Mitglied (Haus, Pokal) + ich verwalte Ferienh\xE4user.", "Tutto pronto": "Alles bereit", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "Ein Mitglied wird mit der Karte hinzugef\xFCgt, so z\xE4hlen die Pokalpunkte. Ein Gast wird mit dem Namen hinzugef\xFCgt: er spielt trotzdem, aber es bleibt festgehalten, wer auf dem Platz war.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "Ein Besucher hat dich als Gastgeber angegeben: Best\xE4tige, um ihn mit dem Haus zu verbinden.", "Vai alla Coppa": "Zum Pokal", "Vedi tutte": "Alle anzeigen", "Versione completa": "Vollversion", "Versione semplice": "Einfache Version", "Vivo nel residence; posso gestire case vacanza.": "Ich wohne in der Residenz; ich kann Ferienh\xE4user verwalten.", "a pari merito": "punktgleich", "al": "bis", "al completo": "voll", "alla Casa di Carta": "im Casa di Carta", "alle": "um", "cena e tavolo": "Abendessen und Tisch", "classifica e prossime partite": "Tabelle und n\xE4chste Spiele", "compreso": "inbegriffen", "consumazione obbligatoria": "Verzehrpflicht", "coperti prenotati": "reservierte Gedecke", "dal": "vom", "di": "von", "di pi\xF9\u2026": "mehr\u2026", "dice di essere tuo ospite": "gibt an, dein Gast zu sein", "e capitani": "und Kapit\xE4ne", "entro le": "bis", "es. Chiara": "z. B. Chiara", "fasce": "Zeitfenster", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "Zeitfenster von heute sind schon vorbei und nicht mehr buchbar.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "Zeitfenster von heute ist schon vorbei und nicht mehr buchbar.", "film": "Filme", "giocatori": "Spieler", "giocatori: da soli non si occupa un tavolo.": "Spieler: allein belegt man keinen Tisch.", "giocatori: ne mancano": "Spieler: es fehlen noch", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "Spielern; mit <b>Nur ich</b> bleibt der Slot reserviert. Die Pl\xE4tze sind kostenlos.", "gratis": "gratis", "in corso: chiedila al banco": "l\xE4uft gerade: frag an der Theke", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "die Position bleibt auf deinem Telefon, sie wird an niemanden gesendet", "la rassegna": "die Filmreihe", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "wir halten sie f\xFCr \xFCber 70-J\xE4hrige frei, solange Pl\xE4tze da sind. Wir weisen sie dir selbst zu.", "la tua": "deine", "lezioni con istruttore": "Kurse mit Trainer", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "Minuten bis zum Beginn, die Stunde bleibt also auch bei Absage geschuldet. Fortfahren?", "minuti prima": "Minuten vorher", "nessun posto libero": "kein Platz frei", "nessun tavolo libero": "kein Tisch frei", "nessuna postazione libera": "kein Arbeitsplatz frei", "orari, rifiuti, numeri": "Zeiten, M\xFCll, Nummern", "ordina e ritira": "bestellen und abholen", "organizzatevi fra voi": "organisiert euch untereinander", "ospite senza tessera": "Gast ohne Karte", "partita da confermare": "Spiel zu best\xE4tigen", "partite da confermare": "Spiele zu best\xE4tigen", "per confermare la lezione": "um den Kurs zu best\xE4tigen", "per stasera, tavolo da 4": "f\xFCr heute Abend, Tisch f\xFCr 4", "persone": "Personen", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "Grillplatte und Fritteuse m\xFCssen aufheizen. Deine Bestellung ist schon aufgenommen.", "posizione": "Platz", "postazioni": "Arbeitspl\xE4tze", "postazioni libere": "freie Arbeitspl\xE4tze", "posti davanti al palco": "Pl\xE4tze vor der B\xFChne", "posti liberi": "freie Pl\xE4tze", "posto allo spettacolo": "Platz bei der Vorstellung", "prodotti": "Artikel", "restano solo i posti in fondo": "nur noch Pl\xE4tze hinten frei", "segnalato": "gemeldet", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "Zahlung an der Kasse. Wir sagen Bescheid, wenn es fertig ist.", "soci": "Mitglieder", "socio": "Mitglied", "solo per te? Nessun altro potr\xE0 unirsi.": "nur f\xFCr dich? Niemand sonst kann dazukommen.", "su": "von", "su questo campo": "auf diesem Platz", "tavoli liberi": "freie Tische", "tavolo": "Tisch", "tavolo da gioco": "Spieltisch", "titolare": "Inhaber", "unisciti a chi sta giocando": "schlie\xDF dich den Spielenden an", "volta": "Mal", "volta in cui non hai pagato niente: \xE8 compreso.": "Mal hast du nichts bezahlt: es ist inbegriffen.", "volte": "Mal", "volte in cui non hai pagato niente: \xE8 compreso.": "Mal hast du nichts bezahlt: es ist inbegriffen.", "\xC8 fatta": "Erledigt", "\xC8 lui/lei": "Das ist er/sie", "UNDER 18": "UNTER 18", "persona": "Person", "Il tuo ticket": "Dein Ticket", "Se la fotocamera non lo legge, detta il codice al banco.": "Wenn die Kamera ihn nicht liest, sag den Code an der Theke an."}, "es": {"112 e il tuo contatto di emergenza": "112 y tu contacto de emergencia", "112 \xB7 emergenze": "112 \xB7 emergencias", "A quale casa lo colleghi?": "\xBFA qu\xE9 casa lo vinculas?", "Abbiamo avvisato": "Hemos avisado", "Accetto il trattamento dei dati (privacy)": "Acepto el tratamiento de mis datos (privacidad)", "Aggiungi": "A\xF1adir", "Aggiungi alla Home": "A\xF1adir al inicio", "Aggiungi alla schermata Home": "A\xF1adir a la pantalla de inicio", "Aggiungi la tua casa vacanza: potrai accogliere i visitatori.": "A\xF1ade tu casa de vacaciones: podr\xE1s acoger a los visitantes.", "Aggiungi prima la tua casa, poi conferma l'ospite.": "A\xF1ade primero tu casa y luego confirma al hu\xE9sped.", "Aggiungi struttura": "A\xF1adir alojamiento", "Aggiungi un giocatore": "A\xF1adir un jugador", "Al tavolo servono almeno": "En la mesa hacen falta al menos", "Ancora niente da mostrare.": "Todav\xEDa no hay nada que mostrar.", "Annullare questa prenotazione?": "\xBFAnular esta reserva?", "Apri ai soci": "Abrir a los socios", "Apri la partita di": "Abrir el partido de", "Area fitness": "Zona fitness", "Attenzione: mancano meno di": "Atenci\xF3n: faltan menos de", "Bar": "Bar", "Bar, cucina e ritrovo": "Bar, cocina y punto de encuentro", "Benvenuto nella casata": "Bienvenido a la casa", "Benvenuto!": "\xA1Bienvenido!", "Bussola Bar": "Bussola Bar", "Bussola Garden": "Bussola Garden", "Bussola Stage": "Bussola Stage", "C'\xE8 posto": "Hay sitio", "CAPITANO": "CAPIT\xC1N", "Cambia casata": "Cambiar de casa", "Campo impegnato": "Pista ocupada", "Campo riservato": "Pista reservada", "Capitani": "Capitanes", "Casa di Carta": "Casa di Carta", "Casa mia": "Mi casa", "Case vacanza": "Casas vacacionales", "Cena": "Cena", "Cena al tavolo": "Cena en la mesa", "Cena confermata, ma i posti davanti al palco sono esauriti": "Cena confirmada, pero los asientos delante del escenario est\xE1n agotados", "Cerca chi ti ospita: ricever\xE0 una notifica e, se conferma, vedrai \\"Casa mia\\".": "Busca a quien te aloja: recibir\xE1 una notificaci\xF3n y, si confirma, ver\xE1s \\"Mi casa\\".", "Cerco la posizione\u2026": "Buscando la ubicaci\xF3n\u2026", "Chat della casata": "Chat de la casa", "Chat non disponibile": "Chat no disponible", "Chi gioca": "Qui\xE9n juega", "Chi gioca con te": "Qui\xE9n juega contigo", "Chi sei?": "\xBFQui\xE9n eres?", "Chi ti ospita?": "\xBFQui\xE9n te aloja?", "Chi vuoi chiamare": "A qui\xE9n quieres llamar", "Chi vuole essere tuo ospite si registra e ti cerca per nome: qui confermi e lo colleghi alla casa.": "Quien quiera ser tu hu\xE9sped se registra y te busca por nombre: aqu\xED lo confirmas y lo vinculas a la casa.", "Chiama": "Llamar", "Ci sono alcolici: al ritiro pu\xF2 esserti chiesto un documento. Sotto i 18 anni non si servono.": "Hay alcohol en el pedido: al recogerlo pueden pedirte un documento. No se sirve a menores de 18 a\xF1os.", "Codice di accesso": "C\xF3digo de acceso", "Cognome": "Apellido", "Collega": "Vincular", "Collega la tua casa": "Vincula tu casa", "Comanda": "Comanda", "Come arrivare": "C\xF3mo llegar", "Come raggiungere la casa e le regole del soggiorno.": "C\xF3mo llegar a la casa y las normas de la estancia.", "Come va la Coppa": "C\xF3mo va la Copa", "Conferimento rifiuti": "Dep\xF3sito de residuos", "Conferma": "Confirmar", "Conosci il tuo host?": "\xBFConoces a tu anfitri\xF3n?", "Consenti le finestre per salvare la rassegna.": "Permite las ventanas emergentes para guardar el ciclo.", "Cos\xEC resta sul telefono con la sua icona, senza cercarla ogni volta.": "As\xED se queda en el tel\xE9fono con su icono, sin buscarla cada vez.", "Crea profilo": "Crear perfil", "Dati della struttura non disponibili": "Datos del alojamiento no disponibles", "Disattiva": "Desactivar", "Disattivare la gestione delle case vacanza?": "\xBFDesactivar la gesti\xF3n de casas vacacionales?", "Disdetta non riuscita": "No se ha podido anular", "Disdici": "Anular", "Disdire l\u2019iscrizione a questa lezione?": "\xBFAnular tu inscripci\xF3n a esta clase?", "Disdire questa prenotazione? Il campo torna libero e chi doveva giocare con te va avvisato.": "\xBFAnular esta reserva? La pista vuelve a estar libre y hay que avisar a quien iba a jugar contigo.", "Dopo, la lezione resta dovuta: l\u2019istruttore \xE8 gi\xE0 arrivato e il posto non si rivende.": "Despu\xE9s la clase se debe igualmente: el instructor ya ha llegado y la plaza no se revende.", "Dove mi trovo": "D\xF3nde estoy", "Dove si trova": "D\xF3nde est\xE1", "Durata": "Duraci\xF3n", "E": "Y", "Elenco non disponibile": "Lista no disponible", "Fatto": "Hecho", "Fino ai 18 anni le prenota un adulto per te.": "Hasta los 18 a\xF1os las reserva un adulto por ti.", "Fino ai 18 anni le prenotazioni a pagamento le fa un adulto per te.": "Hasta los 18 a\xF1os, las reservas de pago las hace un adulto por ti.", "Fitness": "Fitness", "Fotocamera non disponibile: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "C\xE1mara no disponible: abre la c\xE1mara del tel\xE9fono y escanea el QR de la mesa.", "Garden": "Garden", "Gestisci le case vacanza che ospiti nel residence.": "Gestiona las casas de vacaciones que acoges en el residence.", "Giocare": "Jugar", "Giochi da tavolo": "Juegos de mesa", "Giornata libera": "D\xEDa libre", "Gruppo capitani": "Grupo de capitanes", "Guida": "Gu\xEDa", "Hai anche": "Tambi\xE9n tienes", "Hai diritto alla prima fila": "Tienes derecho a la primera fila", "Hai esaurito le prenotazioni di questa settimana su questo campo": "Has agotado las reservas de esta semana en esta pista", "Ho gi\xE0 un account": "Ya tengo una cuenta", "Home": "Inicio", "I film che proponiamo per la stagione.": "Las pel\xEDculas que proponemos para la temporada.", "I film della stagione. Le date delle proiezioni si trovano nell'app, sezione Stage: possono cambiare.": "Las pel\xEDculas de la temporada. Las fechas de las proyecciones est\xE1n en la app, secci\xF3n Escenario: pueden cambiar.", "I miei posti": "Mis asientos", "I miei visitatori": "Mis visitantes", "I tuoi dati": "Tus datos", "Il 112 \xE8 il numero unico delle emergenze. Il residence non \xE8 un servizio di soccorso: qui ci sono solo i numeri che rispondono davvero, a portata di dito.": "El 112 es el n\xFAmero \xFAnico de emergencias. El residence no es un servicio de rescate: estos son solo los n\xFAmeros que de verdad contestan, a mano.", "Il campo lo prenota un adulto: tu ti unisci alla partita e giochi.": "Un adulto reserva la pista: t\xFA te unes al partido y juegas.", "Il campo \xE8 al completo.": "La pista est\xE1 completa.", "Il codice \xE8 sul tavolo. Da l\xEC l\u2019ordine parte gi\xE0 con il numero giusto.": "El c\xF3digo est\xE1 en la mesa. Desde ah\xED el pedido sale ya con el n\xFAmero correcto.", "Il consenso privacy \xE8 necessario per registrarsi": "El consentimiento de privacidad es necesario para registrarse", "Il mio contatto": "Mi contacto", "Il tavolo lo assegniamo noi. Se siete di pi\xF9 o di meno, lo dite al personale.": "La mesa la asignamos nosotros. Si sois m\xE1s o menos, dec\xEDdselo al personal.", "Il tavolo si prenota a turni.": "La mesa se reserva por turnos.", "Il telefono non sa dirmi dove sei.": "El tel\xE9fono no puede decirme d\xF3nde est\xE1s.", "Il tuo codice di accesso": "Tu c\xF3digo de acceso", "Il tuo host": "Tu anfitri\xF3n", "Il tuo posto": "Tu asiento", "Il tuo profilo \xE8 attivo. Conserva il tuo codice per accedere anche senza e-mail:": "Tu perfil est\xE1 activo. Guarda tu c\xF3digo para acceder incluso sin correo:", "Il tuo soggiorno": "Tu estancia", "In attesa di conferma": "A la espera de confirmaci\xF3n", "Indica chi ti ospita per vedere indicazioni e regole del soggiorno.": "Indica qui\xE9n te aloja para ver las indicaciones y normas de la estancia.", "Indietro": "Atr\xE1s", "Informazioni utili": "Informaci\xF3n \xFAtil", "Ingresso libero": "Entrada libre", "Inizia": "Empezar", "Inquadra il QR del tavolo": "Escanea el QR de la mesa", "Installa l\u2019app": "Instala la app", "Invia": "Enviar", "Invia ordine": "Enviar pedido", "Iscritto": "Inscrito", "Iscriviti": "Inscribirse", "Iscrizione annullata": "Inscripci\xF3n anulada", "Iscrizione confermata": "Inscripci\xF3n confirmada", "Iscrizione non riuscita": "Inscripci\xF3n fallida", "Isolato": "Manzana", "La chat della casata": "El chat de la casa", "La chat interna alla casata arriver\xE0 in una prossima versione.": "El chat interno de la casa llegar\xE1 en una pr\xF3xima versi\xF3n.", "La cucina consegna dalle": "La cocina sirve desde las", "La mia casata": "Mi casa", "La settimana": "La semana", "La tua postazione": "Tu puesto", "La tua prenotazione": "Tu reserva", "La tua tessera": "Tu tarjeta", "Le date non sono indicate: una serata speciale o il maltempo possono spostare una proiezione. Il giorno esatto lo trovi in <b>Stage</b>, dove si prenota il posto.": "Las fechas no se indican: una velada especial o el mal tiempo pueden mover una proyecci\xF3n. El d\xEDa exacto est\xE1 en <b>Escenario</b>, donde se reserva el asiento.", "Le informazioni sono cifrate: visibili solo a te e ai tuoi ospiti collegati.": "La informaci\xF3n est\xE1 cifrada: solo la ves t\xFA y tus hu\xE9spedes vinculados.", "Le mie case": "Mis casas", "Le mie lezioni": "Mis clases", "Le mie postazioni": "Mis puestos", "Le mie prenotazioni": "Mis reservas", "Le mie spese": "Mis gastos", "Le prenotazioni a pagamento \u2014 cena, bar, lezioni e serate \u2014 le fa un adulto per te: fino ai 18 anni non si possono prendere impegni di spesa da soli.": "Las reservas de pago \u2014 cena, bar, clases y veladas \u2014 las hace un adulto por ti: hasta los 18 a\xF1os no se asumen gastos por cuenta propia.", "Le serate con quota le prenota un adulto per te.": "Las veladas con cuota las reserva un adulto por ti.", "Le serate speciali": "Las veladas especiales", "Le tue strutture": "Tus alojamientos", "Le ultime": "Los \xFAltimos", "Leggi questi numeri all'operatore": "Lee estos n\xFAmeros al operador", "Lezione al completo.": "Clase completa.", "Lezioni con istruttore": "Clases con instructor", "Lezioni non disponibili": "Clases no disponibles", "Men\xF9 non disponibile": "Men\xFA no disponible", "Migliore casata": "Mejor casa", "Modifica": "Editar", "Mostra solo le prossime": "Mostrar solo las pr\xF3ximas", "NON PRENOTABILE": "NO RESERVABLE", "Nessun host trovato con questo nome.": "No se encontr\xF3 ning\xFAn anfitri\xF3n con este nombre.", "Nessun iscritto a questa casata.": "Nadie inscrito en esta casa.", "Nessun messaggio. Comincia tu.": "Ning\xFAn mensaje. Empieza t\xFA.", "Nessun turno di coworking.": "Ning\xFAn turno de coworking.", "Nessun visitatore collegato.": "Ning\xFAn visitante vinculado.", "Nessuna lezione in programma.": "Ninguna clase programada.", "Nessuna serata su prenotazione al momento.": "Ninguna velada con reserva por ahora.", "Nessuno spettacolo in programma.": "Ning\xFAn espect\xE1culo programado.", "Nome": "Nombre", "Nome e cognome obbligatori": "Nombre y apellido obligatorios", "Nome o cognome dell'host": "Nombre o apellido del anfitri\xF3n", "Nome struttura": "Nombre del alojamiento", "Nome, oppure tessera BR-\u2026": "Nombre o tarjeta BR-\u2026", "Non hai ancora aggiunto strutture.": "A\xFAn no has a\xF1adido alojamientos.", "Non hai postazioni prenotate.": "No tienes puestos reservados.", "Non lo conosco ora \xB7 salta": "No lo s\xE9 ahora \xB7 omitir", "Non riesco a ottenere la posizione. Di' all'operatore il nome del residence e il numero della villa.": "No consigo la ubicaci\xF3n. Dile al operador el nombre del residence y el n\xFAmero de la villa.", "Numeri rapidi": "N\xFAmeros r\xE1pidos", "Numero": "N\xFAmero", "Oggi al residence": "Hoy en el residence", "Ogni casata accoglie fino a 12 soci. Se \xE8 al completo, scegline un\u2019altra.": "Cada casa acoge hasta 12 socios. Si est\xE1 completa, elige otra.", "Orario di check-out": "Hora de salida", "Ordina e ritira al banco": "Pide y recoge en la barra", "Ordine inviato": "Pedido enviado", "Ore di silenzio": "Horas de silencio", "Ospite collegato": "Hu\xE9sped vinculado", "Ospite temporaneo: ti colleghi alla casa del tuo host.": "Hu\xE9sped temporal: te vinculas a la casa de tu anfitri\xF3n.", "Passa alla versione completa": "Cambiar a la versi\xF3n completa", "Per confermare la lezione": "Para confirmar la clase", "Per gli altri giorni usa la sezione Eventi.": "Para los dem\xE1s d\xEDas usa la secci\xF3n Eventos.", "Per il bar, la cena e le serate serve un adulto: fino ai 18 anni non si prenotano cose a pagamento da soli.": "Para el bar, la cena y las veladas hace falta un adulto: hasta los 18 a\xF1os no se reservan cosas de pago por tu cuenta.", "Per servizio": "Por servicio", "Per un gruppo numeroso accostiamo pi\xF9 tavoli: indica quante persone siete davvero.": "Para un grupo numeroso juntamos varias mesas: indica cu\xE1ntos sois realmente.", "Per una riunione puoi prendere tutta la sala: scegli il numero di postazioni che ti serve.": "Para una reuni\xF3n puedes tomar toda la sala: elige cu\xE1ntos puestos necesitas.", "Pi\xF9 tardi": "M\xE1s tarde", "Portami l\xEC": "Ll\xE9vame all\xED", "Postazione al tavolo": "Puesto en la mesa", "Posti": "Plazas", "Precisione": "Precisi\xF3n", "Prenota la cena": "Reservar la cena", "Prenotazione disdetta: il campo \xE8 tornato libero.": "Reserva anulada: la pista vuelve a estar libre.", "Prenotazione non disponibile.": "Reserva no disponible.", "Prenoti": "Reservas", "Prenoti sempre tu, come titolare. Con <b>Apri ai soci</b> gli altri si uniscono fino a": "Siempre reservas t\xFA, como titular. Con <b>Abrir a los socios</b> los dem\xE1s se unen hasta", "Prezzo": "Precio", "Programma non disponibile": "Programa no disponible", "Puoi aggiungere le tue case e accogliere i visitatori.": "Puedes a\xF1adir tus casas y acoger a los visitantes.", "Qualcosa non ha funzionato nel caricamento.": "Algo no funcion\xF3 al cargar.", "Quando confermer\xE0, comparir\xE0 \\"Casa mia\\" con tutte le indicazioni della struttura.": "Cuando confirme, aparecer\xE1 \\"Mi casa\\" con todas las indicaciones del alojamiento.", "Quante persone siete?": "\xBFCu\xE1ntos sois?", "Quante persone?": "\xBFCu\xE1ntas personas?", "Quante postazioni": "Cu\xE1ntos puestos", "Questa casata non ha ancora un capitano.": "Esta casa a\xFAn no tiene capit\xE1n.", "Questo codice non \xE8 il QR di un tavolo.": "Este c\xF3digo no es el QR de una mesa.", "Questo telefono non legge i codici dall\u2019app: apri la fotocamera del telefono e inquadra il QR sul tavolo.": "Este tel\xE9fono no lee c\xF3digos desde la app: abre la c\xE1mara del tel\xE9fono y escanea el QR de la mesa.", "Qui c\u2019\xE8 solo quello che hai fatto con la tessera: al Bar e al Garden si \xE8 serviti anche senza, e quelle consumazioni non compaiono.": "Aqu\xED solo est\xE1 lo que has hecho con la tarjeta: en el Bar y en el Garden se sirve tambi\xE9n sin ella, y esas consumiciones no aparecen.", "Rassegna": "Ciclo", "Rassegna cinematografica": "Ciclo de cine", "Rassegna non ancora pubblicata.": "Ciclo a\xFAn no publicado.", "Rassegna non disponibile": "Ciclo no disponible", "Registrati": "Reg\xEDstrate", "Registrazione non riuscita": "Registro fallido", "Regole della casa": "Normas de la casa", "Richiesta inviata": "Solicitud enviada", "Richieste in attesa": "Solicitudes pendientes", "Riprova": "Reintentar", "Riservata": "Reservada", "Rispondi e l'app trova il profilo giusto per te.": "Responde y la app encuentra el perfil adecuado para ti.", "Sala non disponibile": "Sala no disponible", "Salva": "Guardar", "Salva la tua tessera (immagine)": "Guarda tu tarjeta (imagen)", "Salva o stampa la rassegna": "Guardar o imprimir el ciclo", "Salva tessera": "Guardar tarjeta", "Scegli": "Elegir", "Scegli la casata": "Elige la casa", "Scegli la disciplina": "Elige la disciplina", "Scegli la tua casata": "Elige tu casa", "Scollega": "Desvincular", "Scollegare questo visitatore dalla casa?": "\xBFDesvincular a este visitante de la casa?", "Scopri le nostre serate speciali": "Descubre nuestras veladas especiales", "Scrivi il nome di chi gioca, oppure la sua tessera.": "Escribe el nombre de quien juega, o su tarjeta.", "Scrivi qui\u2026": "Escribe aqu\xED\u2026", "Segnala": "Denunciar", "Serve l'accesso con la tessera": "Se requiere acceso con la tarjeta", "Serve la tessera di un socio per iscriverti": "Se necesita la tarjeta de un socio para inscribirse", "Serve la tessera di un socio per prenotare": "Se necesita la tarjeta de un socio para reservar", "Serve la tessera per vedere le tue spese": "Necesitas tu tarjeta para ver tus gastos", "Serve per accedere di nuovo con un codice via e-mail.": "Sirve para acceder de nuevo con un c\xF3digo por correo.", "Servono": "Hacen falta", "Settimana": "Semana", "Si disdice senza pagare fino a": "Se anula sin pagar hasta", "Si gioca: numero minimo raggiunto": "Se juega: m\xEDnimo alcanzado", "Si occupa una sedia, non un tavolo: si lavora anche in una sala condivisa.": "Se ocupa una silla, no una mesa: tambi\xE9n se trabaja en una sala compartida.", "Si paga la singola lezione, in contanti a fine lezione. Sotto il minimo di iscritti la lezione non parte.": "Se paga cada clase, en efectivo al final. Por debajo del m\xEDnimo de inscritos la clase no se hace.", "Soggiorno dal": "Estancia desde", "Solo io": "Solo yo", "Sono in vacanza (visitatore)": "Estoy de vacaciones (visitante)", "Sono residente": "Soy residente", "Sono socio": "Soy socio", "Sono socio e residente": "Soy socio y residente", "Spettacolo": "Espect\xE1culo", "Stage": "Escenario", "Stai prenotando per stasera": "Est\xE1s reservando para esta noche", "Stasera": "Esta noche", "Stasera alle": "Esta noche a las", "Stasera il Garden non prende prenotazioni.": "Esta noche el Garden no acepta reservas.", "Su Android (Chrome): tocca il menu (\u22EE) in alto a destra, poi \u201CAggiungi a schermata Home\u201D / \u201CInstalla app\u201D.": "En Android (Chrome): toca el men\xFA (\u22EE) arriba a la derecha y luego \\"A\xF1adir a la pantalla de inicio\\" / \\"Instalar app\\".", "Su iPhone/iPad (Safari): tocca Condividi (\u2B06\uFE0F) in basso, poi \u201CAggiungi a Home\u201D.": "En iPhone/iPad (Safari): toca Compartir (\u2B06\uFE0F) abajo y luego \\"A\xF1adir a inicio\\".", "Su prenotazione": "Con reserva", "Tavolo": "Mesa", "Tavolo da gioco": "Mesa de juego", "Tavolo per 4 persone": "Mesa para 4 personas", "Tessera salvata nelle immagini": "Tarjeta guardada en las fotos", "Tesserato: casata, Coppa, inviti.": "Socio: casa, Copa, invitaciones.", "Ti hanno convocato": "Te han convocado", "Ti restano": "Te quedan", "Tieni l\u2019app a portata di mano": "Ten la app a mano", "Tocca una lezione per iscriverti. Il colore \xE8 la disciplina.": "Toca una clase para inscribirte. El color es la disciplina.", "Tocca una serata per i dettagli.": "Toca una velada para ver los detalles.", "Togli questo avviso": "Quitar este aviso", "Totale speso": "Total gastado", "Turni": "Turnos", "Tutto del socio (casata, Coppa) + gestisco case vacanza.": "Todo lo del socio (casa, Copa) + gestiono casas de vacaciones.", "Tutto pronto": "Todo listo", "Un socio si aggiunge con la tessera e i punti della Coppa gli vengono conteggiati. Un ospite si aggiunge col nome: gioca lo stesso, ma resta scritto chi era in campo.": "Un socio se a\xF1ade con su tarjeta y los puntos de la Copa le cuentan. Un invitado se a\xF1ade con el nombre: juega igual, pero queda escrito qui\xE9n estaba en la pista.", "Un visitatore ti ha indicato come host: conferma per agganciarlo alla casa.": "Un visitante te ha indicado como anfitri\xF3n: confirma para vincularlo a la casa.", "Vai alla Coppa": "Ir a la Copa", "Vedi tutte": "Ver todas", "Versione completa": "Versi\xF3n completa", "Versione semplice": "Versi\xF3n sencilla", "Vivo nel residence; posso gestire case vacanza.": "Vivo en el residence; puedo gestionar casas de vacaciones.", "a pari merito": "empatados", "al": "al", "al completo": "completo", "alla Casa di Carta": "en la Casa di Carta", "alle": "a las", "cena e tavolo": "cena y mesa", "classifica e prossime partite": "clasificaci\xF3n y pr\xF3ximos partidos", "compreso": "incluido", "consumazione obbligatoria": "consumici\xF3n obligatoria", "coperti prenotati": "cubiertos reservados", "dal": "del", "di": "de", "di pi\xF9\u2026": "m\xE1s\u2026", "dice di essere tuo ospite": "dice ser tu hu\xE9sped", "e capitani": "y capitanes", "entro le": "antes de las", "es. Chiara": "p. ej. Chiara", "fasce": "franjas", "fasce di oggi sono gi\xE0 passate e non si possono prenotare.": "franjas de hoy ya han pasado y no se pueden reservar.", "fascia di oggi \xE8 gi\xE0 passata e non si pu\xF2 prenotare.": "franja de hoy ya ha pasado y no se puede reservar.", "film": "pel\xEDculas", "giocatori": "jugadores", "giocatori: da soli non si occupa un tavolo.": "jugadores: solo no se ocupa una mesa.", "giocatori: ne mancano": "jugadores: faltan", "giocatori; con <b>Solo io</b> lo slot resta riservato. I campi sono gratuiti.": "jugadores; con <b>Solo yo</b> la franja queda reservada. Las pistas son gratuitas.", "gratis": "gratis", "in corso: chiedila al banco": "en curso: p\xEDdela en la barra", "la posizione resta sul tuo telefono, non viene inviata a nessuno": "la ubicaci\xF3n se queda en tu tel\xE9fono, no se env\xEDa a nadie", "la rassegna": "el ciclo", "la teniamo per chi ha pi\xF9 di 70 anni, fino a esaurimento. Te la assegniamo da soli.": "la reservamos para los mayores de 70 a\xF1os, hasta agotarse. Te la asignamos nosotros.", "la tua": "la tuya", "lezioni con istruttore": "clases con instructor", "minuti all\u2019inizio, quindi la lezione resta dovuta anche se disdici. Procedo?": "minutos para el inicio, as\xED que la clase se debe aunque la anules. \xBFContin\xFAo?", "minuti prima": "minutos antes", "nessun posto libero": "ninguna plaza libre", "nessun tavolo libero": "ninguna mesa libre", "nessuna postazione libera": "ning\xFAn puesto libre", "orari, rifiuti, numeri": "horarios, residuos, n\xFAmeros", "ordina e ritira": "pide y recoge", "organizzatevi fra voi": "organizaos entre vosotros", "ospite senza tessera": "invitado sin tarjeta", "partita da confermare": "partido por confirmar", "partite da confermare": "partidos por confirmar", "per confermare la lezione": "para confirmar la clase", "per stasera, tavolo da 4": "para esta noche, mesa para 4", "persone": "personas", "piastra e friggitrice devono scaldarsi. L\u2019ordine \xE8 gi\xE0 preso.": "la plancha y la freidora deben calentarse. Tu pedido ya est\xE1 tomado.", "posizione": "posici\xF3n", "postazioni": "puestos", "postazioni libere": "puestos libres", "posti davanti al palco": "asientos delante del escenario", "posti liberi": "plazas libres", "posto allo spettacolo": "asiento en el espect\xE1culo", "prodotti": "productos", "restano solo i posti in fondo": "solo quedan asientos al fondo", "segnalato": "denunciado", "si paga in cassa. Ti avvisiamo quando \xE8 pronto.": "se paga en caja. Te avisamos cuando est\xE9 listo.", "soci": "socios", "socio": "socio", "solo per te? Nessun altro potr\xE0 unirsi.": "\xBFsolo para ti? Nadie m\xE1s podr\xE1 unirse.", "su": "de", "su questo campo": "en esta pista", "tavoli liberi": "mesas libres", "tavolo": "mesa", "tavolo da gioco": "mesa de juego", "titolare": "titular", "unisciti a chi sta giocando": "\xFAnete a quienes ya juegan", "volta": "vez", "volta in cui non hai pagato niente: \xE8 compreso.": "vez en que no has pagado nada: est\xE1 incluido.", "volte": "veces", "volte in cui non hai pagato niente: \xE8 compreso.": "veces en que no has pagado nada: est\xE1 incluido.", "\xC8 fatta": "Hecho", "\xC8 lui/lei": "Es \xE9l/ella", "UNDER 18": "MENOR DE 18", "persona": "persona", "Il tuo ticket": "Tu entrada", "Se la fotocamera non lo legge, detta il codice al banco.": "Si la c\xE1mara no lo lee, dicta el c\xF3digo en la barra."}};
 for (const _l of ['en','fr','de','es']) { UI[_l] = Object.assign(UI[_l] || {}, UI_EXTRA[_l]); }
 // TRADURRE I DATI, NON SOLO L'INTERFACCIA.
 //
@@ -7927,7 +8176,7 @@ function openCapMembri(idx) {
     const badge = m.stato === 'disponibile' ? \`<span style="color:var(--sage); font-weight:700">\${T('disponibile')}</span>\`
       : m.stato === 'non_disponibile' ? \`<span style="color:var(--coral)">\${T('non disp.')}</span>\`
       : conv ? \`<span class="muted">\${T('in attesa')}</span>\` : '';
-    return \`<label style="display:flex; gap:10px; align-items:center; padding:9px 2px; border-bottom:1px solid var(--line)">
+    return \`<label style="display:flex; gap:10px; align-items:center; padding:9px 2px; border-bottom:1px solid var(--tratto)">
       <input type="checkbox" data-capchk value="\${m.id}" \${conv ? 'disabled checked' : ''} style="width:auto; transform:scale(1.3)">
       <span style="flex:1">\${esc(m.nome)}</span>\${badge}</label>\`;
   }).join('');
@@ -8066,6 +8315,26 @@ async function prenotaSerata(id) {
     okThen(T('Prenotazione non riuscita: riprova'), false);
   }
 }
+/* IL TICKET, RILEGGIBILE E DA INQUADRARE.
+   Prima arrivava solo come notifica push: chi la cancellava, o cambiava telefono, all'ingresso
+   non aveva piu' niente. E al banco il ticket si INQUADRA \u2014 il codice a mano e' il ripiego \u2014
+   quindi non basta scriverlo: il QR lo fa il server, con lo stesso generatore dei tavoli.
+   Il codice resta scritto sotto, grande: se la fotocamera non lo prende si detta. */
+async function openTicketSerata(id) {
+  let d;
+  try { d = await api(\`/serate/prenotazioni/\${id}/ticket?tessera_code=\` + encodeURIComponent(state.tessera || '')); }
+  catch (e) { okThen(e.message, false); return; }
+  setSheet(\`<div class="grab"></div><div class="eyebrow" style="color:var(--coral)">\${T('Il tuo ticket')}</div>
+    <h2>\${esc(d.titolo)}</h2>
+    <p class="sub">\${esc(d.quando || d.data)} \xB7 \${d.persone} \${d.persone === 1 ? T('persona') : T('persone')}</p>
+    \${d.qr ? \`<div style="width:240px;max-width:66vw;margin:12px auto 6px">\${d.qr}</div>
+      <div style="text-align:center;font-size:1.15rem;font-weight:800;letter-spacing:.06em">\${esc(d.ticket)}</div>
+      <p class="ct" style="text-align:center;margin-top:4px">\${T('Se la fotocamera non lo legge, detta il codice al banco.')}</p>\` : ''}
+    <div class="note" style="margin-top:12px">\${esc(d.messaggio)}</div>
+    <button class="btn ghost block" style="margin-top:10px" data-close>\${T('Chiudi')}</button>\`);
+  showOv();
+}
+
 async function doProposta(tipo) {
   const titolo = $('#in1')?.value || '';
   const dettaglio = tipo==='vinile' ? [$('#in2')?.value, $('#in3')?.value].filter(Boolean).join(' \u2014 ') : ($('[data-group="tipo"] .sel')?.textContent || '');
@@ -8254,9 +8523,134 @@ var admin_default = `<!DOCTYPE html>
 <title>Bussola Residence \u2014 Back office</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
-  :root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--mute:#49525A;--riga:#E3E1D6; --line:var(--riga);--bg:#f4f2ea;--card:#fff;}
+/* ==============================================================================================
+   I TOKEN \u2014 un nome, un valore, un posto solo.
+   ==============================================================================================
+
+   Questo file lo includono tutti e quattro i front-end. Da qui in poi un colore non si scrive
+   piu' a mano dentro un \`:root\`: si prende da qui, o non esiste.
+
+   PERCHE'. Prima ogni front-end dichiarava la propria palette. Non era una scelta: era che
+   nessuno aveva un posto dove metterla in comune, quindi si copiava \u2014 e a ogni copia qualcosa
+   restava indietro. Il conto misurato, non guardato:
+
+     \xB7 il back office e il Crew avevano DUE \`:root\` nello stesso foglio. Il secondo vinceva e il
+       primo era morto, ma nessuno lo aveva tolto: chi apriva il file leggeva \`--navy:#12324F\`
+       e ci credeva, mentre il browser calcolava #102A43. Meta' delle divergenze che avevamo
+       messo a verbale erano di questo tipo: non esistevano sullo schermo.
+     \xB7 cinque nomi erano USATI e mai dichiarati \u2014 \`--danger\` cinque volte nel back office,
+       \`--muted\` quattro, \`--ok\` tre, \`--paper\` una, \`--verde\` una nel Crew. Una regola che
+       nomina una variabile inesistente non da' errore: diventa invalida e il colore lo eredita
+       dal genitore. La riga che doveva essere rossa non era rossa, e nessuno se n'era accorto.
+     \xB7 \`--line\` valeva il tratto nero (#101418) in tre front-end e un grigio azzurro (#cbd2d8)
+       nel quarto: lo stesso nome per due mestieri opposti. Quel nome qui non c'e' piu'.
+       Il bordo strutturale e' \`--tratto\`, la riga che separa e' \`--riga\`.
+
+   COME SI AGGIUNGE UN COLORE. Si aggiunge QUI, con un nome che dice il mestiere e non la tinta,
+   e si misura prima: \`node scripts/palette.mjs --proposta '#XXXXXX'\`. Se il valore esiste gia'
+   sotto un altro nome, si usa \`var()\` invece di riscrivere il numero \u2014 cosi' il legame resta
+   visibile e non si perde alla prima modifica.
+
+   LA MISURA. Il contrasto e' un rapporto (WCAG): 4.5 e' il minimo di legge, 7 la soglia che ci
+   siamo dati, perche' questa roba si guarda in spiaggia col sole in faccia e lo schermo al
+   minimo. I numeri qui sotto sono il rapporto con il BIANCO sopra.
+   ============================================================================================== */
+
+:root {
+  /* --- I fondi ------------------------------------------------------------------------------
+     La carta e' una sola. Prima erano tre creme quasi uguali con tre nomi diversi
+     (--paper #F4F1E9, --bg #f4f2ea nel back office, --bg #f3efe6 al tavolo): nessuno le
+     distingueva a occhio, e proprio per questo nessuno si accorgeva che erano diverse. */
+  --paper:#F4F1E9;
+  --card:#FFFFFF;
+
+  /* --- L'inchiostro e i grigi ---------------------------------------------------------------
+     --ink   il testo (18.5)
+     --mute  il testo secondario (9.13). Si chiamava anche \`--muted\` nel Crew, con un valore
+             diverso (#49525A, 7.96): due nomi per lo stesso mestiere sono gia' una divergenza,
+             perche' chi ne cambia uno non sa che esiste l'altro. Resta il piu' scuro. */
+  --ink:#101418;
+  --mute:#3c4a54;
+
+  /* --- I due tratti, che NON sono la stessa cosa --------------------------------------------
+     --tratto  il bordo che delimita un blocco: nero pieno, si vede controluce.
+     --riga    la riga che separa dentro un blocco: non taglia, accompagna.
+     --riga2   il filetto piu' chiaro, dentro le liste fitte.
+     Distinguerli e' il motivo per cui \`--line\` non esiste piu'. */
+  --tratto:#101418;
+  --riga:#E3E1D6;
+  --riga2:#DBD8D0;
+
+  /* --- I colori che dicono qualcosa ---------------------------------------------------------
+     --navy   l'azione. Blocchi pieni con testo bianco: 14.64.
+     --gold   l'accento e il bordo. NON e' un fondo con testo bianco sopra: 5.91 sta sotto la
+              soglia che ci siamo dati. Al tavolo era #C9A227 e ci stava scritto sopra in
+              bianco: 2.42, cioe' si indovinava. Adesso i pulsanti li' sono blocchi navy come
+              nelle altre tre app.
+     --teal   il servizio (campi, fitness): 8.99. Nel Crew era #256B65 (6.23).
+     --coral  il rifiuto, il negativo: 7.45. Non e' il rosso d'allarme.
+     --plum, --sage  le casate e le categorie.
+     --ok     il buon esito. */
+  --navy:#102A43;
+  --gold:#8a5a12;
+  --teal:#12524C;
+  --coral:#9E2B20;
+  --plum:#4b3d7a;
+  --sage:#2f5a2d;
+  --ok:#2e6b45;
+
+  /* --- Il rosso, che fa due mestieri e vuole due valori --------------------------------------
+     --rosso    IDENTITA': l'occhiello "STASERA", i filetti, i titoletti sul nero. Non ci va
+                mai testo bianco sopra: bianco su questo misura 4.20.
+     --rosso-b  AZIONE: il pulsante pieno. E' il piu' chiaro della stessa tinta che arriva a
+                7.33 col bianco sopra. A occhio e' lo stesso rosso; al sole e' la differenza
+                fra leggere e indovinare.
+     E la regola che vale piu' di entrambi: il rosso d'allarme non e' mai un colore d'azione.
+     Se il rosso vuol dire "questo tavolo ha bisogno di te" in una schermata e "premi qui" in
+     quella accanto, in sala piena si preme la cosa sbagliata. */
+  --rosso:#EC3013;
+  --rosso-b:#A81F0A;
+
+  /* --- Gli alias, dichiarati e non ricopiati -------------------------------------------------
+     Questi nomi esistevano gia' nel Crew e nel back office e valevano lo stesso colore di uno
+     qui sopra \u2014 scritto un'altra volta a mano. Scritti come \`var()\` il legame resta visibile:
+     cambiando il colore sopra cambiano anche loro, che e' quello che ci si aspetta. */
+  --accent:var(--navy);
+  --mid:var(--gold);
+  --no:var(--coral);
+  --danger:var(--coral);
+  --verde:var(--ok);
+
+  /* --- Le misure ----------------------------------------------------------------------------
+     --tap    l'area minima di tocco: 56 px e' la misura di un polpastrello. Al sole e con le
+              mani bagnate serve larga. Nel Crew non era dichiarata e ogni \`min-height:var(--tap)\`
+              era una regola senza effetto.
+     --r      il raggio. Squadrato, non tondo.
+     --bordo  il bordo strutturale: spesso, delimita davvero anche controluce.
+     --focus  l'anello di messa a fuoco, per chi naviga da tastiera. */
+  --tap:56px;
+  --r:4px;
+  --bordo:2px;
+  --focus:#0a66c2;
+}
+
+/* ==============================================================================================
+   QUELLO CHE QUESTO FILE NON HA ANCORA SISTEMATO, misurato.
+
+   I RAGGI scritti a mano, contati nei quattro fogli:
+     app soci   20 valori distinti (2px, 3px, 6px, 10px, 12px, 13px, 14px, 15px, 16px, 18px,
+                20px, 22px, 40px, 50%, 999px, piu' cinque forme composte)
+     Crew       11    back office  9    QR al tavolo  4
+   Collassarli su una scala di quattro voci sposta dei pixel in una quarantina di punti: e' un
+   lavoro con la sua misura prima e dopo, e non si fa insieme ai colori. Nel Crew e nel back
+   office, per giunta, buona parte di quei valori e' gia' morta \u2014 una regola con \`!important\`
+   li riporta tutti a \`var(--r)\`, e chi legge il foglio non lo vede.
+
+   LE SPAZIATURE non sono ancora una scala. Stesso discorso: prima si contano, poi si sposta.
+   ============================================================================================== */
+  /* La palette viene dai token condivisi. Anche qui c'erano due \`:root\`: questo era il morto. */
   *{box-sizing:border-box;margin:0;padding:0;}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:15px;}
   a{color:var(--navy);}
   /* Login */
   #login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(900px 600px at 50% -10%,#1c3e5c,#0a1a2b);}
@@ -8264,11 +8658,11 @@ var admin_default = `<!DOCTYPE html>
   #login h1{font-family:Georgia,serif;color:var(--navy);font-size:22px;margin-bottom:4px;}
   #login p{color:var(--mute);font-size:13px;margin-bottom:18px;}
   label{display:block;font-size:13px;font-weight:700;color:var(--navy);margin:12px 0 5px;}
-  input,select,textarea{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;font-size:14px;font-family:inherit;}
+  input,select,textarea{width:100%;padding:10px 12px;border:1.5px solid var(--tratto);border-radius:10px;font-size:14px;font-family:inherit;}
   button{cursor:pointer;font-family:inherit;}
   .btn{background:var(--navy);color:#fff;border:none;border-radius:10px;padding:11px 16px;font-weight:700;font-size:14px;}
   .btn.gold{background:var(--gold);} .btn.sm{padding:7px 11px;font-size:13px;border-radius:8px;}
-  .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--line);}
+  .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--tratto);}
   .btn.danger{background:var(--coral);}
   .err{color:var(--coral);font-size:13px;margin-top:10px;min-height:18px;}
   /* App shell */
@@ -8286,14 +8680,14 @@ var admin_default = `<!DOCTYPE html>
   .top h2{font-family:Georgia,serif;color:var(--navy);font-size:24px;}
   .who{font-size:13px;color:var(--mute);}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px;}
-  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;}
+  .stat{background:var(--card);border:1px solid var(--tratto);border-radius:14px;padding:16px;}
   .stat .n{font-family:Georgia,serif;font-size:30px;color:var(--navy);font-weight:700;}
   .stat .l{font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;}
-  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:18px;}
+  .panel{background:var(--card);border:1px solid var(--tratto);border-radius:14px;padding:18px;margin-bottom:18px;}
   .panel h3{font-family:Georgia,serif;color:var(--navy);font-size:17px;margin-bottom:12px;}
   table{width:100%;border-collapse:collapse;}
-  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);padding:8px 8px;border-bottom:2px solid var(--line);}
-  td{padding:9px 8px;border-bottom:1px solid var(--line);font-size:14px;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);padding:8px 8px;border-bottom:2px solid var(--tratto);}
+  td{padding:9px 8px;border-bottom:1px solid var(--tratto);font-size:14px;}
   tr:hover td{background:#faf8f1;}
   .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;}
   .tag.ok{background:#e2f0e0;color:#3f6b3d;} .tag.no{background:#f7e0da;color:#9c3f2c;} .tag.mid{background:#f3ead6;color:#6b5a33;}
@@ -8381,15 +8775,15 @@ var admin_default = `<!DOCTYPE html>
    Il ROSSO resta agli avvisi (tavolo oltre i dieci minuti, ombrellone non reso): le azioni
    sono blocchi pieni scuri con testo bianco, misurati a 14.6 di contrasto contro il 5.9 del
    pulsante oro di prima. */
-:root{--navy:#102A43;--gold:#8a5a12;--coral:#9E2B20;--ink:#101418;--line:#101418;--r:4px;--bordo:2px;}
+/* I colori e le misure stanno nei token condivisi (shared/tokens.css). */
 .card,.panel,.btn,.tag,input,select,textarea,.box{border-radius:var(--r) !important;box-shadow:none !important;}
-.card,.panel{border:var(--bordo) solid var(--line) !important;}
-.btn{border:var(--bordo) solid var(--line);font-weight:800;min-height:44px;}
+.card,.panel{border:var(--bordo) solid var(--tratto) !important;}
+.btn{border:var(--bordo) solid var(--tratto);font-weight:800;min-height:44px;}
 .btn.gold,.btn.navy{background:var(--navy);color:#fff;border-color:var(--navy);}
-.btn.ghost{background:#fff;color:var(--ink);border-color:var(--line);}
+.btn.ghost{background:#fff;color:var(--ink);border-color:var(--tratto);}
 .btn.danger{background:var(--coral);color:#fff;border-color:var(--coral);}
 .btn.sm{min-height:34px;}
-input,select,textarea{border:var(--bordo) solid var(--line) !important;}
+input,select,textarea{border:var(--bordo) solid var(--tratto) !important;}
 </style>
 </head>
 <body>
@@ -8502,7 +8896,14 @@ window.Comanda = (function () {
     if (document.getElementById('cmd-css')) return;
     const st = document.createElement('style'); st.id = 'cmd-css';
     st.textContent = \`
-      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      /* LA QUINTA PALETTE, quella che nessuno aveva contato. Questo pezzo di comanda gira in
+         TRE app, e si portava dietro tre colori suoi: un ripiego navy #12324F e uno oro
+         #C9A227 (i valori vecchi del QR al tavolo, non quelli di nessuna app viva) e una riga
+         #cbd2d8 scritta a mano, senza nemmeno la variabile. Il ripiego e la parte peggiore:
+         non scatta mai finche tutto va bene, e quando scatta nessuno lo collega a qui.
+         Adesso i tre nomi sono legami, non copie.
+         (Niente apostrofi in questo commento: sta dentro una stringa a backtick.) */
+      .cmd{--c-navy:var(--navy);--c-gold:var(--gold);--c-line:var(--riga)}
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
@@ -8522,7 +8923,11 @@ window.Comanda = (function () {
          usano TRE app: cambiato guardando solo il Crew.
          auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* IL PAVIMENTO DELLA COLONNA NON PUO ESSERE PIU LARGO DELLA STANZA. Un minimo scritto in
+         pixel e ASSOLUTO: dentro un contenitore da 290 px una colonna col minimo a 300 resta 300
+         e sborda, portandosi dietro il prezzo e i tasti. Con min(100%, 300px) il minimo si
+         arrende alla larghezza vera del posto in cui si trova. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
          Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
@@ -8533,7 +8938,12 @@ window.Comanda = (function () {
          sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
          quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
       .cmd-larghi{grid-column:1/-1}
-      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      /* Stessa cosa, e qui faceva danno vero: 420 px di minimo dentro la lista di un telefono, che
+         al massimo ne ha 332. Le schede dei panini uscivano di 88 px dallo schermo e con loro il
+         prezzo e il piu; le bibite, che stanno in un altro blocco, restavano dentro. Risultato:
+         due colonne di prezzi a due altezze diverse nella stessa schermata, e i tasti dei panini
+         mezzi fuori. Misurato a 360, 390 e 430 px: sbordava a tutte e tre. */
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,max(25%,420px)),1fr));gap:0 12px;align-items:start}
       .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
@@ -8547,7 +8957,7 @@ window.Comanda = (function () {
          la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
 .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
   display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
-      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-item.sel{border-color:var(--c-gold);background:#fdfaf3}
       .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
@@ -8557,7 +8967,12 @@ window.Comanda = (function () {
          stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
          spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
          128 px accanto a una da 58. Le due regole ora sono una sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+/* DUE RIGHE SEMPRE, anche quando il nome ne occupa una. Il tetto c era gia; mancava il
+         PAVIMENTO, e le schede venivano alte 58 px o 68 a seconda della lunghezza del nome:
+         scorrendo un listino, prezzo e tasti ballavano su e giu di dieci pixel. Lo spazio si
+         riserva, non si concede. In em e non in pixel, cosi segue il corpo del testo quando
+         il socio lo ingrandisce dai comandi di accessibilita. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;min-height:2.5em;color:var(--c-navy)}
       /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
          prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
       .cmd-fermo{cursor:default}
@@ -9031,7 +9446,7 @@ VIEWS.dashboard = async () => {
 
   const avvisi = c.attenzione.length
     ? \`<div class="panel" style="border-left:4px solid var(--gold)"><h3>\u26A0\uFE0F Richiede una mano</h3>
-        \${c.attenzione.map(a => \`<div class="row" style="justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">
+        \${c.attenzione.map(a => \`<div class="row" style="justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--tratto)">
           <span>\${esc(a.testo)}</span>
           \${a.vai === 'chiosco' ? \`<a class="btn ghost sm" href="\${CREW}" target="_blank">Apri il Crew \u2197</a>\`
             : \`<button class="btn ghost sm" data-vai="\${esc(a.vai)}">Vai</button>\`}
@@ -9039,7 +9454,7 @@ VIEWS.dashboard = async () => {
       </div>\`
     : \`<div class="panel"><h3>\u2705 Tutto in ordine</h3><p class="muted">Nessuna comanda in ritardo, nessun articolo sotto scorta, niente in attesa di risposta.</p></div>\`;
 
-  const riga = (etichetta, valore, nota) => \`<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">
+  const riga = (etichetta, valore, nota) => \`<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--tratto)">
       <span>\${etichetta}</span><span><b>\${valore}</b>\${nota ? \` <span class="muted">\${nota}</span>\` : ''}</span></div>\`;
 
   const lez = g.lezioni.map(l => \`<div class="row" style="justify-content:space-between;padding:5px 0">
@@ -9051,7 +9466,7 @@ VIEWS.dashboard = async () => {
   // Il cartellone della Coppa non sta piu' qui: si guarda in "Casate & punti". Al suo posto
   // cio' che serve a chi apre il servizio: chi e' atteso, dove, e cosa e' rimasto indietro.
   const listaOspiti = (arr) => arr.length
-    ? arr.map(o => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)">
+    ? arr.map(o => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--tratto)">
         <span><b>\${esc(o.nome || '\u2014')}</b> <span class="muted">\xB7 \${o.persone} p</span></span>
         <span class="muted">\${(o.tavoli || []).length ? 'tav. ' + o.tavoli.join(', ') : ''}</span></div>\`).join('')
     : '<p class="muted">Nessuno atteso.</p>';
@@ -9272,7 +9687,21 @@ function openOperatore(o, caps) {
 VIEWS.soci = async () => {
   const render = async (q = '') => {
     const list = await api('/soci?q=' + encodeURIComponent(q));
+    /* LA SPIA DELLE DATE DI NASCITA.
+       Non e' un dettaglio anagrafico: e' il dato che decide se al banco verra' chiesto un
+       documento. Il sistema tratta l'eta' mancante come SCONOSCIUTA \u2014 non come maggiorenne \u2014
+       quindi ogni ordine di alcolici da una tessera senza data fa scattare la verifica.
+       E' il comportamento giusto, ma se le date mancano su tutti la verifica scatta sempre, e
+       un avviso che scatta sempre si smette di leggere entro una settimana.
+       La legge lo dice meglio di noi: il documento si chiede in caso di dubbio, non a chi ha
+       la maggiore eta' manifesta. Togliere il dubbio si fa QUI, una volta, quando il socio e'
+       davanti al banco a fare la tessera \u2014 non ogni volta che ordina una birra. */
+    const senzaData = list.filter(s => !s.data_nascita && s.attivo);
     $('#view').innerHTML = \`
+      \${senzaData.length ? \`<div class="panel" style="border-left:4px solid var(--coral)">
+        <b>\${senzaData.length} \${senzaData.length === 1 ? 'tessera attiva non ha' : 'tessere attive non hanno'} la data di nascita.</b>
+        <p class="muted" style="margin-top:4px">Finche' manca, l'eta' risulta sconosciuta e al ritiro degli alcolici la crew chiedera' un documento. Si compila una volta sola, qui: \${senzaData.slice(0, 8).map(x => \`<a href="#" data-fixnasc="\${x.id}">\${esc(x.nome)} \${esc(x.cognome)}</a>\`).join(' \xB7 ')}\${senzaData.length > 8 ? \` e altri \${senzaData.length - 8}\` : ''}</p>
+      </div>\` : ''}
       <div class="row"><input id="q" placeholder="Cerca nome, email, tessera\u2026" style="max-width:280px" value="\${esc(q)}"><button class="btn ghost sm" id="search">Cerca</button>\${can('utenti_ins') ? '<button class="btn gold sm" id="new">+ Nuovo utente</button>' : ''}</div>
       <div class="panel"><table><thead><tr><th>Tessera</th><th>Nome</th><th>Casata</th><th>Ruolo</th><th>Consensi</th><th>Stato</th><th></th></tr></thead><tbody>
         \${list.map(s => \`<tr>
@@ -9288,6 +9717,7 @@ VIEWS.soci = async () => {
     if ($('#new')) $('#new').onclick = () => editSocio(null, list);
     document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editSocio(list.find(x => x.id == b.dataset.edit), list));
     document.querySelectorAll('[data-exp]').forEach(b => b.onclick = () => exportSocio(b.dataset.exp));
+    document.querySelectorAll('[data-fixnasc]').forEach(b => b.onclick = (e) => { e.preventDefault(); editSocio(list.find(x => x.id == b.dataset.fixnasc), list); });
     document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delSocio(b.dataset.del, render));
   };
   await render();
@@ -9454,7 +9884,7 @@ VIEWS.casate = async () => {
     // Moderazione della chat: si vede cio' che e' stato segnalato, con il contesto attorno.
     api('/chat/segnalati').then((ch2) => {
       const box = $('#ca_chat'); if (!box) return;
-      const righe = (ch2.segnalati || []).map(m => \`<div style="border:1px solid var(--line);border-left:4px solid \${m.nascosto ? '#999' : 'var(--danger)'};border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">
+      const righe = (ch2.segnalati || []).map(m => \`<div style="border:1px solid var(--tratto);border-left:4px solid \${m.nascosto ? '#999' : 'var(--danger)'};border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fff">
         <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <span><b>\${esc(m.nome)}</b> <span class="muted">\xB7 \${esc(m.casata)} \xB7 \${esc(String(m.created_at || '').slice(0, 16))}</span>
             \${m.motivo ? \`<div class="muted" style="font-size:13px">segnalato da \${esc(m.segnalato_da || '')}: \u201C\${esc(m.motivo)}\u201D</div>\` : ''}</div>
@@ -9463,7 +9893,7 @@ VIEWS.casate = async () => {
                          : \`<button class="btn danger sm" data-chatnas="\${m.id}">Nascondi</button><button class="btn ghost sm" data-chatok="\${m.id}">Va bene</button>\`}
           </div></div>
         <div style="margin-top:8px;background:#faf7f0;border-radius:8px;padding:8px 10px">
-          \${(m.contesto || []).map(c => \`<div style="font-size:13px;padding:2px 0;\${c.id === m.id ? 'font-weight:700;color:var(--danger)' : 'color:var(--muted)'}"><b>\${esc(c.nome)}:</b> \${esc(c.testo)}</div>\`).join('')}
+          \${(m.contesto || []).map(c => \`<div style="font-size:13px;padding:2px 0;\${c.id === m.id ? 'font-weight:700;color:var(--danger)' : 'color:var(--mute)'}"><b>\${esc(c.nome)}:</b> \${esc(c.testo)}</div>\`).join('')}
         </div></div>\`).join('');
       box.innerHTML = \`<div class="panel"><h3>\u{1F4AC} Chat delle casate \xB7 moderazione</h3>
         <p class="muted">Non leggi tutta la chat: leggi <b>ci\xF2 che viene segnalato</b>, con i messaggi immediatamente attorno perch\xE9 una frase isolata spesso non si capisce. Nelle casate ci sono minorenni, e ai soci \xE8 scritto in chiaro che la chat non \xE8 privata.<br>
@@ -9845,7 +10275,7 @@ VIEWS.campi = async () => {
       <!-- La riga per il nuovo campo sta DENTRO la tabella: ogni casella cade sotto la sua
            intestazione, e si capisce cosa si sta scrivendo senza doverlo indovinare. Prima era
            una fila di caselle sotto la tabella, senza nomi. -->
-      <tr style="background:#faf7f0;border-top:2px solid var(--line)">
+      <tr style="background:#faf7f0;border-top:2px solid var(--tratto)">
         <td><input id="cp_new_n" placeholder="es. Campo Tennis" style="width:100%"></td>
         <td><select id="cp_new_sp" style="width:100%">\${sportOpts('tennis')}</select></td>
         <td><input id="cp_new_ap" value="16:00" style="width:100%"></td>
@@ -10113,12 +10543,12 @@ VIEWS.bussola = async () => {
     <div class="row" style="margin-top:10px"><input id="rt_new_n" placeholder="Nuovo tipo (es. Organico)" style="max-width:220px"><input type="color" id="rt_new_c" value="#7A8790"><button class="btn gold sm" id="rt_add">+ Aggiungi</button></div></div>\`;
   const periodBlocks = rif.calendari.map(c => {
     const matrix = rif.tipi.length ? \`<table class="rc_matrix" style="width:100%;border-collapse:collapse;margin-top:4px">
-      <thead><tr><th style="text-align:left;padding:4px 8px;font-size:.72rem;color:var(--muted)">Rifiuto</th>\${RIF_DAYS.map(([, l]) => \`<th style="text-align:center;padding:4px 2px;font-size:.72rem;color:var(--muted)">\${l}</th>\`).join('')}</tr></thead>
+      <thead><tr><th style="text-align:left;padding:4px 8px;font-size:.72rem;color:var(--mute)">Rifiuto</th>\${RIF_DAYS.map(([, l]) => \`<th style="text-align:center;padding:4px 2px;font-size:.72rem;color:var(--mute)">\${l}</th>\`).join('')}</tr></thead>
       <tbody>\${rif.tipi.map(t => \`<tr>
         <td style="padding:5px 8px;white-space:nowrap"><span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:\${esc(t.colore)};vertical-align:middle;margin-right:7px;border:1px solid rgba(0,0,0,.12)"></span><b style="font-size:.82rem">\${esc(t.nome)}</b></td>
         \${RIF_DAYS.map(([d]) => { const on = rifNorm((c.giorni || {})[d]).includes(t.nome); return \`<td style="text-align:center;padding:3px"><button type="button" class="rc_tog\${on ? ' active' : ''}" data-per="\${esc(c.periodo)}" data-day="\${d}" data-tipo="\${esc(t.nome)}" data-col="\${esc(t.colore)}" aria-pressed="\${on}" title="\${esc(t.nome)} \xB7 \${d}" style="width:26px;height:26px;border-radius:7px;cursor:pointer;font-size:.8rem;font-weight:800;line-height:1;padding:0">\${on ? '\u2713' : ''}</button></td>\`; }).join('')}
       </tr>\`).join('')}</tbody></table>\` : \`<p class="muted" style="font-size:.8rem">Prima aggiungi almeno un tipo di rifiuto nella legenda qui sopra.</p>\`;
-    return \`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px">
+    return \`<div style="border:1px solid var(--tratto);border-radius:12px;padding:12px 14px;margin-bottom:14px">
       <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
         <label class="check" style="margin:0" title="Solo i periodi accesi si vedono nell'app dei soci"><input type="checkbox" id="rc_on_\${esc(c.periodo)}" \${c.attivo === false ? '' : 'checked'}> <b style="font-size:1rem;color:var(--navy)">\${esc(c.periodo)}</b></label>
         \${c.attivo === false ? '<span class="tag">non in corso</span>' : '<span class="tag ok">in corso</span>'}
@@ -10142,7 +10572,7 @@ VIEWS.bussola = async () => {
   const scheda = (b) => {
     const geo = b.lat != null && b.lng != null;
     const orari = b.sezione === 'orari';
-    return \`<div style="border:1px solid var(--line);border-left:4px solid \${geo || orari ? 'var(--ok)' : 'var(--gold)'};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#fff">
+    return \`<div style="border:1px solid var(--tratto);border-left:4px solid \${geo || orari ? 'var(--ok)' : 'var(--gold)'};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#fff">
       <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
         <span class="tag">\${esc(b.sezione)}</span>
         <input id="bv_t_\${b.id}" value="\${esc(b.titolo)}" style="min-width:180px;font-weight:700">
@@ -10165,7 +10595,7 @@ VIEWS.bussola = async () => {
       <div class="row" style="gap:8px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
         <label class="muted" style="flex:1;min-width:260px;font-size:.78rem">Codice mappa di Google <i>(Condividi \u2192 Incorpora una mappa \u2192 Copia HTML)</i>
           <textarea id="bv_emb_\${b.id}" rows="2" placeholder="&lt;iframe src=&quot;https://www.google.com/maps/embed?pb=\u2026&quot;&gt;&lt;/iframe&gt;" style="width:100%;font-family:monospace;font-size:11px">\${esc(b.mappa_embed || '')}</textarea></label>
-        \${b.mappa_embed ? \`<div style="flex:0 0 220px"><iframe src="\${esc(b.mappa_embed)}" style="width:220px;height:130px;border:1px solid var(--line);border-radius:8px" loading="lazy"></iframe>
+        \${b.mappa_embed ? \`<div style="flex:0 0 220px"><iframe src="\${esc(b.mappa_embed)}" style="width:220px;height:130px;border:1px solid var(--tratto);border-radius:8px" loading="lazy"></iframe>
           <div class="muted" style="font-size:.72rem;text-align:center">mappa impostata</div></div>\` : ''}
       </div>\`}
     </div>\`;
@@ -10312,7 +10742,7 @@ VIEWS.luoghi = async () => {
     <div class="panel"><h3>Punti "Siamo qui" \u2014 coordinate</h3>
       <p class="muted" style="margin-bottom:12px">Si impostano <b>come le voci della Guida</b>: coordinate decimali, gradi copiati da Google, link incollato, oppure il <b>codice della mappa</b> (Condividi \u2192 Incorpora una mappa \u2192 Copia HTML), da cui le coordinate si ricavano da sole.<br>
       Nell'app il socio tocca la voce e la mappa si apre <b>dentro l'applicazione</b>, con il tasto per farsi accompagnare.</p>
-      \${list.map(l => \`<div class="card" style="border:1px solid var(--line);padding:14px;margin-bottom:12px">
+      \${list.map(l => \`<div class="card" style="border:1px solid var(--tratto);padding:14px;margin-bottom:12px">
         <div class="row" style="margin-bottom:8px"><b style="color:var(--navy)">\${esc(l.chiave === 'chiosco' ? '\u{1F4CD}' : '\u267B\uFE0F')} \${esc(l.nome)}</b></div>
         <div class="grid2">
           <div><label>Nome</label><input id="n_\${l.id}" value="\${esc(l.nome)}"></div>
@@ -10323,7 +10753,7 @@ VIEWS.luoghi = async () => {
         <div class="row" style="gap:8px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
           <label class="muted" style="flex:1;min-width:260px;font-size:.78rem">Codice mappa di Google <i>(Condividi \u2192 Incorpora una mappa \u2192 Copia HTML)</i>
             <textarea id="emb_\${l.id}" rows="2" placeholder="&lt;iframe src=&quot;https://www.google.com/maps/embed?pb=\u2026&quot;&gt;&lt;/iframe&gt;" style="width:100%;font-family:monospace;font-size:11px">\${esc(l.mappa_embed || '')}</textarea></label>
-          \${l.mappa_embed ? \`<div style="flex:0 0 200px"><iframe src="\${esc(l.mappa_embed)}" style="width:200px;height:120px;border:1px solid var(--line);border-radius:8px" loading="lazy"></iframe>
+          \${l.mappa_embed ? \`<div style="flex:0 0 200px"><iframe src="\${esc(l.mappa_embed)}" style="width:200px;height:120px;border:1px solid var(--tratto);border-radius:8px" loading="lazy"></iframe>
             <div class="muted" style="font-size:.72rem;text-align:center">mappa impostata</div></div>\` : ''}
         </div>
         <div class="row" style="margin-top:10px;align-items:center">
@@ -10535,7 +10965,7 @@ function bloccoParametri(list, gruppi) {
     return \`<select class="p_in" data-pk="\${esc(p.chiave)}" data-pt="scelta">\${(p.opzioni || []).map(o => \`<option value="\${esc(o.valore)}" \${o.valore === (p.valore ?? p.predefinito) ? 'selected' : ''}>\${esc(o.etichetta)}</option>\`).join('')}</select>\`;
   };
   return gruppi.map(g => \`<div class="panel"><h3>\${esc(g)}</h3>
-    \${list.filter(p => p.gruppo === g).map(p => \`<div style="display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line);\${p.attivo ? '' : 'opacity:.45'}">
+    \${list.filter(p => p.gruppo === g).map(p => \`<div style="display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--tratto);\${p.attivo ? '' : 'opacity:.45'}">
       <div style="flex:1">
         <b style="font-size:.95rem">\${p.dipende_da ? '\u21B3 ' : ''}\${esc(p.etichetta)}</b>
         \${p.personalizzato ? '' : '<span class="tag mid" style="margin-left:6px">predefinito</span>'}
@@ -10760,7 +11190,7 @@ VIEWS.fitness = async () => {
   const GG = ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'];
   const griglia = FIT_SETT ? \`<table class="fit" style="table-layout:fixed"><thead><tr><th style="width:56px"></th>
       \${giorniSett.map((g, i) => \`<th style="text-align:center">\${GG[i]}<div class="muted" style="font-weight:400">\${g.slice(8)}/\${g.slice(5, 7)}</div></th>\`).join('')}</tr></thead>
-    <tbody>\${oreUsate.map(o => \`<tr><td style="vertical-align:top;font-weight:700;color:var(--muted);font-size:12px">\${esc(o)}</td>\${giorniSett.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>\`
+    <tbody>\${oreUsate.map(o => \`<tr><td style="vertical-align:top;font-weight:700;color:var(--mute);font-size:12px">\${esc(o)}</td>\${giorniSett.map(g => cella(g, o)).join('')}</tr>\`).join('')}</tbody></table>\`
     : '<p class="muted">Nessuna lezione in programma.</p>';
   const navSett = settimane.map(w => \`<button class="btn \${w === FIT_SETT ? 'gold' : 'ghost'} sm" data-fitsett="\${w}">\${w.slice(8)}/\${w.slice(5, 7)}</button>\`).join('');
 
@@ -11136,6 +11566,140 @@ function downloadB64(filename, mime, b64) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 async function esporta(path) { try { const d = await api(path); downloadB64(d.filename, d.mime, d.b64); } catch (e) { alert('Export non riuscito: ' + (e.message || '')); } }
+/* IL CARTELLO DEL DIVIETO, da stampare e da appendere.
+   E' un obbligo del locale, non dell'applicazione: la legge chiede che l'avviso sia ESPOSTO,
+   e nessuna schermata sostituisce un foglio dietro al banco. L'applicazione fa l'unica cosa
+   utile che puo' fare \u2014 generarlo giusto, con i riferimenti esatti e nelle lingue di chi passa
+   di qui \u2014 e poi tocca appenderlo.
+   Il testo e i riferimenti vanno fatti leggere a un legale prima di stamparlo: e' l'unica cosa
+   di tutto il sistema che finisce davanti a un controllo, ed e' scritta qui dentro.
+   Formato A5 verticale: sta dietro al banco e all'ingresso senza coprire mezzo muro. */
+const CARTELLO_LINGUE = [
+  ['en', 'It is forbidden to sell and serve alcoholic beverages to persons under 18 years of age.',
+    'Our staff is required to ask for an identity document whenever the customer is not manifestly of age.'],
+  ['fr', 'Il est interdit de vendre et de servir des boissons alcoolis\\u00e9es aux personnes de moins de 18 ans.',
+    'Notre personnel est tenu de demander une pi\\u00e8ce d\\u2019identit\\u00e9 lorsque la majorit\\u00e9 du client n\\u2019est pas manifeste.'],
+  ['de', 'Der Verkauf und Ausschank alkoholischer Getr\\u00e4nke an Personen unter 18 Jahren ist verboten.',
+    'Unser Personal ist verpflichtet, einen Ausweis zu verlangen, wenn die Volnj\\u00e4hrigkeit nicht offensichtlich ist.'],
+  ['es', 'Est\\u00e1 prohibida la venta y el suministro de bebidas alcoh\\u00f3licas a menores de 18 a\\u00f1os.',
+    'Nuestro personal tiene la obligaci\\u00f3n de pedir un documento de identidad cuando la mayor\\u00eda de edad no sea manifiesta.'],
+];
+/* IL FOGLIO DA APPENDERE: la cornice e' una sola per tutti i cartelli.
+   Tre cartelli con tre impaginazioni scritte a mano diventerebbero tre cose che divergono alla
+   prima modifica. Qui la carta, i margini e il piede stanno in un posto solo. */
+function stampaFoglio(titolo, corpo, formato = 'A5') {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Il browser ha bloccato la finestra di stampa.'); return; }
+  w.document.write(\`<html><head><title>\${esc(titolo)}</title><style>
+    @page{size:\${formato};margin:12mm}
+    html,body{background:#fff}
+    body{font-family:Arial,Helvetica,sans-serif;color:#101418;margin:0}
+    h1{font-size:1.05rem;letter-spacing:.06em;margin:0 0 12px;color:#7C1405;text-align:center}
+    .principale{font-size:1.3rem;font-weight:900;line-height:1.3;margin:0 0 12px;text-align:center}
+    .norme{font-size:.66rem;color:#3c4a54;line-height:1.45;margin:0 0 14px;text-align:center}
+    .doc{font-size:.84rem;font-weight:bold;line-height:1.4;border:2px solid #101418;padding:9px 10px;margin:0 0 14px;text-align:center}
+    .lingua{font-size:.72rem;color:#3c4a54;line-height:1.4;margin-top:9px}
+    .lingua b{color:#101418;text-transform:uppercase;font-size:.62rem;letter-spacing:.08em}
+    table{width:100%;border-collapse:collapse;font-size:.72rem}
+    th,td{border-bottom:1px solid #ddd;padding:4px 5px;text-align:left;vertical-align:top}
+    th{background:#f2efe6;font-size:.66rem;text-transform:uppercase;letter-spacing:.06em}
+    h2{font-size:.86rem;margin:14px 0 4px;color:#12324F;break-after:avoid}
+    tr,section{break-inside:avoid;page-break-inside:avoid}
+    .verificare{color:#A81F0A;font-weight:bold}
+    footer{margin-top:16px;font-size:.6rem;color:#8a8a8a;text-align:center}
+  </style></head><body>\${corpo}
+    <footer>Bussola Residence \\u00b7 Fontane Bianche \\u00b7 stampato il \${new Date().toLocaleDateString('it-IT')}</footer>
+    <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
+  </body></html>\`);
+  w.document.close();
+}
+
+/* IL CARTELLO DEGLI ORARI. Va sulla porta, e deve dire tre cose: quando si apre, quando si
+   chiude e qual e' il riposo settimanale. "Nessuno" si scrive, non si lascia in bianco: un
+   cartello che tace su un punto obbligatorio e' un cartello incompleto. */
+function stampaCartelloOrari(par) {
+  const ap = par.orario_apertura || '16:00', ch = par.orario_chiusura || '23:30';
+  const rip = String(par.giorno_riposo || '').trim();
+  stampaFoglio('Orario di apertura', \`
+    <h1>ORARIO DI APERTURA</h1>
+    <p class="principale" style="font-size:2.2rem;letter-spacing:.04em">\${esc(ap)} \\u2013 \${esc(ch)}</p>
+    <p class="doc">\${rip ? 'Giorno di riposo settimanale: <b>' + esc(rip) + '</b>' : 'Aperto tutti i giorni \\u00b7 nessun giorno di riposo settimanale'}</p>
+    <div class="lingua"><b>en</b> \\u00b7 Opening hours \${esc(ap)}\\u2013\${esc(ch)}. \${rip ? 'Weekly closing day: ' + esc(rip) + '.' : 'Open every day.'}</div>
+    <div class="lingua"><b>fr</b> \\u00b7 Horaires \${esc(ap)}\\u2013\${esc(ch)}. \${rip ? 'Jour de fermeture : ' + esc(rip) + '.' : 'Ouvert tous les jours.'}</div>
+    <div class="lingua"><b>de</b> \\u00b7 \\u00d6ffnungszeiten \${esc(ap)}\\u2013\${esc(ch)}. \${rip ? 'Ruhetag: ' + esc(rip) + '.' : 'T\\u00e4glich ge\\u00f6ffnet.'}</div>\`);
+}
+
+/* IL REGISTRO DEGLI ALLERGENI. Lo costruisce il menu, non una copia a mano: il Reg. UE
+   1169/2011 chiede che l'informazione sia disponibile per OGNI alimento somministrato, e una
+   copia a mano invecchia il giorno in cui si cambia una ricetta.
+
+   LA RIGA CHE CONTA: dove l'allergene non e' stato dichiarato si scrive DA VERIFICARE, mai
+   "nessuno". Sono due cose diversissime, e la differenza la paga una persona allergica: nel
+   listino caricato il 3 settembre dieci voci su settantasei avevano la casella vuota, e fra
+   quelle c'era un tagliere di formaggi e salumi. Un registro che stampa "nessun allergene"
+   accanto a un tagliere di formaggi non e' un registro incompleto: e' un documento che dice il
+   falso, e sarebbe stato peggio che non averlo. */
+const ALLERGENI_UE = ['glutine', 'crostacei', 'uova', 'pesce', 'arachidi', 'soia', 'latte',
+  'frutta a guscio', 'sedano', 'senape', 'sesamo', 'solfiti', 'lupini', 'molluschi'];
+function stampaRegistroAllergeni(menu) {
+  const vivi = menu.filter(a => a.attivo);
+  const cat = {};
+  for (const a of vivi) (cat[a.categoria || 'Altro'] ||= []).push(a);
+  const cella = (a) => {
+    const t = String(a.allergeni ?? '').trim();
+    if (!t) return '<span class="verificare">DA VERIFICARE</span>';
+    if (t === '-') return '<span style="color:#2e6b45">nessuno dei 14</span>';
+    return esc(t);
+  };
+  const daVerificare = vivi.filter(a => !String(a.allergeni ?? '').trim()).length;
+  stampaFoglio('Registro delle informazioni sugli allergeni', \`
+    <h1>REGISTRO DELLE INFORMAZIONI SUGLI ALLERGENI</h1>
+    <p class="norme">Reg. (UE) 1169/2011 \\u00b7 allegato II. Il presente registro \\u00e8 a disposizione della clientela.
+      In caso di allergia o intolleranza, informare il personale <b>prima</b> di ordinare.</p>
+    \${daVerificare ? \`<p class="doc verificare">Attenzione: \${daVerificare} voci non hanno l\\u2019informazione sugli allergeni.
+      Finch\\u00e9 sono marcate DA VERIFICARE il registro non \\u00e8 completo e non va esposto.</p>\` : ''}
+    \${Object.entries(cat).map(([c, vv]) => \`<section><h2>\${esc(c)}</h2>
+      <table><thead><tr><th style="width:44%">Prodotto</th><th>Allergeni presenti</th></tr></thead><tbody>
+      \${vv.map(a => \`<tr><td>\${esc(a.nome)}</td><td>\${cella(a)}</td></tr>\`).join('')}
+      </tbody></table></section>\`).join('')}
+    <h2>I quattordici allergeni dell\\u2019allegato II</h2>
+    <p style="font-size:.68rem;color:#3c4a54">\${ALLERGENI_UE.join(' \\u00b7 ')}</p>\`, 'A4');
+}
+
+function stampaCartelloAlcolici(lingue) {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Il browser ha bloccato la finestra di stampa.'); return; }
+  const altre = CARTELLO_LINGUE.filter(l => lingue.includes(l[0]));
+  w.document.write(\`<html><head><title>Divieto di somministrazione ai minori</title><style>
+    @page{size:A5;margin:12mm}
+    html,body{background:#fff}
+    body{font-family:Arial,Helvetica,sans-serif;color:#101418;margin:0;text-align:center}
+    .bollo{width:96px;height:96px;border:9px solid #C0392B;border-radius:50%;margin:0 auto 14px;
+      display:flex;align-items:center;justify-content:center;font-size:2.1rem;font-weight:900;color:#C0392B;position:relative}
+    .bollo:after{content:'';position:absolute;left:-2px;right:-2px;top:42px;height:9px;background:#C0392B;transform:rotate(-45deg)}
+    h1{font-size:1.05rem;letter-spacing:.06em;margin:0 0 12px;color:#7C1405}
+    .principale{font-size:1.3rem;font-weight:900;line-height:1.3;margin:0 0 12px}
+    .norme{font-size:.66rem;color:#3c4a54;line-height:1.45;margin:0 0 14px}
+    .doc{font-size:.84rem;font-weight:bold;line-height:1.4;border:2px solid #101418;padding:9px 10px;margin:0 0 14px}
+    .lingua{font-size:.72rem;color:#3c4a54;line-height:1.4;margin-top:9px;text-align:left}
+    .lingua b{color:#101418;text-transform:uppercase;font-size:.62rem;letter-spacing:.08em}
+    footer{margin-top:16px;font-size:.6rem;color:#8a8a8a}
+  </style></head><body>
+    <div class="bollo">18</div>
+    <h1>AVVISO AI GENTILI CLIENTI</h1>
+    <p class="principale">\\u00c8 VIETATA LA VENDITA E LA SOMMINISTRAZIONE DI BEVANDE ALCOLICHE E SUPERALCOLICHE AI MINORI DI 18 ANNI</p>
+    <p class="norme">Art. 14-ter Legge 30 marzo 2001 n. 125, come modificato dall\\u2019art. 7 d.l. 13 settembre 2012 n. 158
+      (conv. Legge 8 novembre 2012 n. 189) e dall\\u2019art. 12 d.l. 20 febbraio 2017 n. 14 (conv. Legge 18 aprile 2017 n. 48).<br>
+      La somministrazione di bevande alcoliche a minori di anni 14 costituisce reato ai sensi dell\\u2019art. 689 del Codice Penale.</p>
+    <p class="doc">Il personale di questo esercizio ha l\\u2019obbligo di richiedere l\\u2019esibizione di un documento di identit\\u00e0
+      nei casi in cui la maggiore et\\u00e0 del cliente non sia manifesta. In mancanza di documento la somministrazione sar\\u00e0 rifiutata.</p>
+    \${altre.map(([c, t1, t2]) => \`<div class="lingua"><b>\${c}</b> \\u00b7 \${esc(t1)} \${esc(t2)}</div>\`).join('')}
+    <footer>Bussola Residence \\u00b7 Fontane Bianche</footer>
+    <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script>
+  </body></html>\`);
+  w.document.close();
+}
+
 function stampaMenuPDF(menu, punto, qr, zona) {
   const attivi = (menu || []).filter(m => m.attivo);
   // Stesso raggruppamento e ordine della comanda: un solo vettore, niente "scalini" tra PDF e ordini.
@@ -11270,6 +11834,31 @@ VIEWS.menu = async () => {
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Colonne riconosciute (in qualsiasi ordine): <b>nome</b>, <b>prezzo</b>, <b>stazione</b> (cucina/bar), <b>punto</b>, <b>categoria</b>, <b>descrizione</b>, <b>allergeni</b>, <b>attivo</b>, <b>alcolico</b>, <b>condimenti</b>, <b>complemento</b> (questi quattro come s\\u00ec/no). L'intestazione pu\\u00f2 essere scritta come viene: \\u201cPrezzo (\\u20ac)\\u201d o \\u201cPREZZO unitario\\u201d vanno bene. \\u00c8 lo stesso foglio che esce da <b>Esporta men\\u00f9</b>: si corregge nel foglio e si rimette dentro. Puoi caricare un file solo-prezzi o solo-allergeni: i campi mancanti non vengono sovrascritti.</p>
       <div class="row"><input type="file" id="imp_file" accept=".xlsx,.xls,.csv"><button class="btn ghost sm" id="imp_tpl">\u2193 Scarica modello CSV</button><button class="btn ghost sm" id="menu_exp">\u2B07\uFE0F Esporta men\xF9 (Excel)</button></div>
       <div id="imp_prev" style="margin-top:10px"></div></div>
+    <div class="panel"><h3>\\ud83d\\udccb I cartelli obbligatori</h3>
+      <p class="muted" style="font-size:.82rem;margin-bottom:10px">Vanno <b>esposti</b>, non solo scritti nell\\u2019app. Qui si stampano quelli che il sistema puo\\u2019 comporre con i dati che ha.</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn ghost sm" id="cart_orari">\\ud83d\\udd52 Orari \\u00b7 stampa</button>
+        <button class="btn ghost sm" id="cart_allerg">\\ud83c\\udf3e Registro allergeni \\u00b7 stampa</button>
+      </div>
+      <p class="muted" style="font-size:.78rem;margin-top:8px">Gli orari si cambiano in <b>Parametri \\u2192 Cartelli obbligatori</b>: il cartello li prende da li\\u2019, cosi\\u2019 cambiando l\\u2019orario non resta appeso quello vecchio.</p>
+      <div id="allerg_spia" style="margin-top:10px"></div>
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--riga)">
+        <b style="font-size:.86rem">\\ud83c\\udf7a Le due tabelle alcolemiche</b>
+        <p class="muted" style="font-size:.8rem;margin:4px 0 6px">Obbligatorie se si somministra alcol e si resta aperti oltre la mezzanotte, da esporre <b>all\\u2019ingresso, all\\u2019interno e all\\u2019uscita</b>. Sono due: i <i>sintomi</i> per livello di alcolemia (allegato 1) e la <i>stima delle quantit\\u00e0</i> che fanno superare 0,5 g/l (allegato 2), D.M. 30 luglio 2008.</p>
+        <p class="muted" style="font-size:.8rem;margin:0 0 6px"><b>Queste il sistema non le genera, e non \\u00e8 una mancanza.</b> Sono tabelle ministeriali: devono riprodurre il contenuto ufficiale, e una nostra versione ricopiata a mano aggiungerebbe solo il rischio di sbagliare un numero \\u2014 un numero che qualcuno usa per decidere se mettersi alla guida. Si scaricano dal Ministero e si stampano cos\\u00ec come sono.</p>
+        <p style="font-size:.8rem;margin:0"><a href="https://www.epicentro.iss.it/alcol/apd2010/Allegati/Alcol%20e%20sicurezza%20stradale/tabella_quantita.pdf" target="_blank" rel="noopener">Tabella delle quantit\\u00e0 (allegato 2) \\u2014 ISS/EpiCentro</a><br>
+        <a href="https://www.epicentro.iss.it/alcol/apd2017/poster%20fronte%20retro%20tabella%20livelli%20alcolemia%20e%20principali%20sintomi.pdf" target="_blank" rel="noopener">Livelli di alcolemia e principali sintomi (allegato 1) \\u2014 ISS/EpiCentro</a></p>
+        <p class="muted" style="font-size:.78rem;margin-top:6px">Oltre la mezzanotte serve anche un <b>etilometro a disposizione dei clienti</b>, anche monouso: \\u00e8 un acquisto, non una schermata.</p>
+      </div>
+    </div>
+    <div class="panel"><h3>\\ud83d\\udd1e Cartello del divieto ai minori</h3>
+      <p class="muted" style="font-size:.82rem;margin-bottom:8px">Va <b>esposto</b>, non solo scritto nell\\u2019app: la legge chiede l\\u2019avviso in luogo ben visibile, tipicamente dietro al banco della mescita e all\\u2019ingresso. Formato A5. Spunta le lingue dei tuoi ospiti: nelle localit\\u00e0 turistiche l\\u2019inglese \\u00e8 il minimo.</p>
+      <div class="row" style="align-items:center;gap:14px;flex-wrap:wrap">
+        \${CARTELLO_LINGUE.map(([c]) => \`<label style="margin:0;display:flex;gap:5px;align-items:center;font-weight:600"><input type="checkbox" class="cart_l" value="\${c}" \${c === 'en' ? 'checked' : ''}> \${c.toUpperCase()}</label>\`).join('')}
+        <button class="btn gold sm" id="cart_print">\\ud83d\\udda8\\ufe0f Stampa / salva PDF</button>
+      </div>
+      <p class="muted" style="font-size:.78rem;margin-top:8px">Il testo e i riferimenti di legge vanno fatti leggere al tuo consulente prima di stampare: \\u00e8 l\\u2019unica pagina di tutto il sistema che finisce davanti a un controllo.</p>
+    </div>
     <div class="panel"><h3>\u{1F5A8}\uFE0F Stampa men\xF9 (PDF)</h3>
       <p class="muted" style="font-size:.82rem;margin-bottom:8px">Genera un men\xF9 stampabile (o \u201CSalva come PDF\u201D) con il logo della Bussola, categorie, descrizione/composizione e allergeni. Include solo gli articoli attivi. Stampa e comanda usano lo <b>stesso</b> raggruppamento. In fondo viene stampato il QR del punto scelto qui sotto.</p>
       <div class="row" style="align-items:center;gap:8px"><label style="margin:0">Punto di stampa</label>
@@ -11387,6 +11976,25 @@ VIEWS.menu = async () => {
       closeModal(); show('menu');
     };
   };
+  // I parametri arrivano come ELENCO di righe, non come dizionario: leggerli come oggetto
+  // dava tre \`undefined\` e il cartello stampava gli orari di ripiego invece dei suoi.
+  $('#cart_orari').onclick = async () => {
+    const righe = await api('/parametri');
+    const par = {}; for (const r of righe) par[r.chiave] = r.valore;
+    stampaCartelloOrari(par);
+  };
+  $('#cart_allerg').onclick = () => stampaRegistroAllergeni(menu);
+  {
+    // LA SPIA DEGLI ALLERGENI MANCANTI, con gli stessi criteri della spia delle date di nascita:
+    // una cosa che non si vede non si compila, e qui la paga una persona allergica.
+    const senza = menu.filter(a => a.attivo && !String(a.allergeni ?? '').trim());
+    $('#allerg_spia').innerHTML = senza.length
+      ? \`<div style="border-left:4px solid var(--coral);padding:8px 10px;background:#fff"><b>\${senza.length} prodotti attivi non hanno l\\u2019informazione sugli allergeni.</b>
+         <p class="muted" style="margin-top:3px;font-size:.8rem">Casella vuota non vuol dire \\u201cnessun allergene\\u201d: vuol dire che non lo sappiamo. Il registro li stampa come DA VERIFICARE e non va esposto finch\\u00e9 ce ne sono. \${senza.slice(0, 6).map(x => esc(x.nome)).join(' \\u00b7 ')}\${senza.length > 6 ? \` e altri \${senza.length - 6}\` : ''}</p></div>\`
+      : '<p class="muted" style="font-size:.8rem">\\u2714 Tutti i prodotti attivi hanno l\\u2019informazione sugli allergeni.</p>';
+  }
+  $('#cart_print').onclick = () => stampaCartelloAlcolici(
+    [...document.querySelectorAll('.cart_l')].filter(c => c.checked).map(c => c.value));
   $('#menu_pdf').onclick = async () => {
     // Nel Crew il punto veniva dalla postazione. Qui la postazione non c'e': chi tiene il
     // listino stampa per il Bar o per il Garden, e lo dice.
@@ -11410,7 +12018,7 @@ VIEWS.menu = async () => {
   // La diagnosi legge i dati veri e dice cosa non torna, invece di lasciare indovinare.
   $('#menu_diag').onclick = async () => {
     const d = await api('/menu/diagnosi');
-    const riga = (k, v) => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>\${k}</span><b>\${v}</b></div>\`;
+    const riga = (k, v) => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--tratto)"><span>\${k}</span><b>\${v}</b></div>\`;
     const verdetto = d.problemi.length
       ? \`<div style="background:#fdf1e7;border-left:4px solid #C0553F;padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:10px">\${d.problemi.map(p => \`<div>\\u26a0\\ufe0f \${esc(p)}</div>\`).join('')}</div>\`
       : \`<div style="background:#eaf3ec;border-left:4px solid #2e6b45;padding:10px 12px;border-radius:0 8px 8px 0;margin-bottom:10px">\\u2705 Il men\\u00f9 \\u00e8 a posto: i condimenti si spuntano dentro i piatti e i piatti si ordinano da tutti e due i punti.</div>\`;
@@ -11519,32 +12127,144 @@ var chiosco_default = `<!DOCTYPE html>
 <title>Bussola Crew</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
-:root{--navy:#12324F;--gold:#8a5a12;--teal:#256b65;--coral:#b14a35;--ink:#17242c;--paper:#F4F1E9;--riga:#E3E1D6; --line:var(--riga);
-  /* Il tratto strutturale del Crew: il bordo netto dei blocchi, che non e' la riga di
-     separazione. Stessa distinzione dell'app soci (--tratto / --riga). */
-  /* Lo stesso valore dell'app soci: un nome deve valere un colore solo, altrimenti fra le due
-     schermate lo stesso bordo si vede diverso e nessuno sa quale sia quello giusto. */
+/* ==============================================================================================
+   I TOKEN \u2014 un nome, un valore, un posto solo.
+   ==============================================================================================
+
+   Questo file lo includono tutti e quattro i front-end. Da qui in poi un colore non si scrive
+   piu' a mano dentro un \`:root\`: si prende da qui, o non esiste.
+
+   PERCHE'. Prima ogni front-end dichiarava la propria palette. Non era una scelta: era che
+   nessuno aveva un posto dove metterla in comune, quindi si copiava \u2014 e a ogni copia qualcosa
+   restava indietro. Il conto misurato, non guardato:
+
+     \xB7 il back office e il Crew avevano DUE \`:root\` nello stesso foglio. Il secondo vinceva e il
+       primo era morto, ma nessuno lo aveva tolto: chi apriva il file leggeva \`--navy:#12324F\`
+       e ci credeva, mentre il browser calcolava #102A43. Meta' delle divergenze che avevamo
+       messo a verbale erano di questo tipo: non esistevano sullo schermo.
+     \xB7 cinque nomi erano USATI e mai dichiarati \u2014 \`--danger\` cinque volte nel back office,
+       \`--muted\` quattro, \`--ok\` tre, \`--paper\` una, \`--verde\` una nel Crew. Una regola che
+       nomina una variabile inesistente non da' errore: diventa invalida e il colore lo eredita
+       dal genitore. La riga che doveva essere rossa non era rossa, e nessuno se n'era accorto.
+     \xB7 \`--line\` valeva il tratto nero (#101418) in tre front-end e un grigio azzurro (#cbd2d8)
+       nel quarto: lo stesso nome per due mestieri opposti. Quel nome qui non c'e' piu'.
+       Il bordo strutturale e' \`--tratto\`, la riga che separa e' \`--riga\`.
+
+   COME SI AGGIUNGE UN COLORE. Si aggiunge QUI, con un nome che dice il mestiere e non la tinta,
+   e si misura prima: \`node scripts/palette.mjs --proposta '#XXXXXX'\`. Se il valore esiste gia'
+   sotto un altro nome, si usa \`var()\` invece di riscrivere il numero \u2014 cosi' il legame resta
+   visibile e non si perde alla prima modifica.
+
+   LA MISURA. Il contrasto e' un rapporto (WCAG): 4.5 e' il minimo di legge, 7 la soglia che ci
+   siamo dati, perche' questa roba si guarda in spiaggia col sole in faccia e lo schermo al
+   minimo. I numeri qui sotto sono il rapporto con il BIANCO sopra.
+   ============================================================================================== */
+
+:root {
+  /* --- I fondi ------------------------------------------------------------------------------
+     La carta e' una sola. Prima erano tre creme quasi uguali con tre nomi diversi
+     (--paper #F4F1E9, --bg #f4f2ea nel back office, --bg #f3efe6 al tavolo): nessuno le
+     distingueva a occhio, e proprio per questo nessuno si accorgeva che erano diverse. */
+  --paper:#F4F1E9;
+  --card:#FFFFFF;
+
+  /* --- L'inchiostro e i grigi ---------------------------------------------------------------
+     --ink   il testo (18.5)
+     --mute  il testo secondario (9.13). Si chiamava anche \`--muted\` nel Crew, con un valore
+             diverso (#49525A, 7.96): due nomi per lo stesso mestiere sono gia' una divergenza,
+             perche' chi ne cambia uno non sa che esiste l'altro. Resta il piu' scuro. */
+  --ink:#101418;
+  --mute:#3c4a54;
+
+  /* --- I due tratti, che NON sono la stessa cosa --------------------------------------------
+     --tratto  il bordo che delimita un blocco: nero pieno, si vede controluce.
+     --riga    la riga che separa dentro un blocco: non taglia, accompagna.
+     --riga2   il filetto piu' chiaro, dentro le liste fitte.
+     Distinguerli e' il motivo per cui \`--line\` non esiste piu'. */
   --tratto:#101418;
-  /* L'AREA MINIMA DI TOCCO. Non era dichiarata nel Crew, e ogni \`min-height:var(--tap)\` che ho
-     scritto \u2014 la barra dei moduli, la tastiera del PIN, le righe della cucina \u2014 era una regola
-     senza effetto: i tasti restavano dell'altezza del loro contenuto. Nell'app dei soci c'era
-     da sempre, qui no. 56 px e' la misura di un polpastrello, ed e' la stessa. */
+  --riga:#E3E1D6;
+  --riga2:#DBD8D0;
+
+  /* --- I colori che dicono qualcosa ---------------------------------------------------------
+     --navy   l'azione. Blocchi pieni con testo bianco: 14.64.
+     --gold   l'accento e il bordo. NON e' un fondo con testo bianco sopra: 5.91 sta sotto la
+              soglia che ci siamo dati. Al tavolo era #C9A227 e ci stava scritto sopra in
+              bianco: 2.42, cioe' si indovinava. Adesso i pulsanti li' sono blocchi navy come
+              nelle altre tre app.
+     --teal   il servizio (campi, fitness): 8.99. Nel Crew era #256B65 (6.23).
+     --coral  il rifiuto, il negativo: 7.45. Non e' il rosso d'allarme.
+     --plum, --sage  le casate e le categorie.
+     --ok     il buon esito. */
+  --navy:#102A43;
+  --gold:#8a5a12;
+  --teal:#12524C;
+  --coral:#9E2B20;
+  --plum:#4b3d7a;
+  --sage:#2f5a2d;
+  --ok:#2e6b45;
+
+  /* --- Il rosso, che fa due mestieri e vuole due valori --------------------------------------
+     --rosso    IDENTITA': l'occhiello "STASERA", i filetti, i titoletti sul nero. Non ci va
+                mai testo bianco sopra: bianco su questo misura 4.20.
+     --rosso-b  AZIONE: il pulsante pieno. E' il piu' chiaro della stessa tinta che arriva a
+                7.33 col bianco sopra. A occhio e' lo stesso rosso; al sole e' la differenza
+                fra leggere e indovinare.
+     E la regola che vale piu' di entrambi: il rosso d'allarme non e' mai un colore d'azione.
+     Se il rosso vuol dire "questo tavolo ha bisogno di te" in una schermata e "premi qui" in
+     quella accanto, in sala piena si preme la cosa sbagliata. */
+  --rosso:#EC3013;
+  --rosso-b:#A81F0A;
+
+  /* --- Gli alias, dichiarati e non ricopiati -------------------------------------------------
+     Questi nomi esistevano gia' nel Crew e nel back office e valevano lo stesso colore di uno
+     qui sopra \u2014 scritto un'altra volta a mano. Scritti come \`var()\` il legame resta visibile:
+     cambiando il colore sopra cambiano anche loro, che e' quello che ci si aspetta. */
+  --accent:var(--navy);
+  --mid:var(--gold);
+  --no:var(--coral);
+  --danger:var(--coral);
+  --verde:var(--ok);
+
+  /* --- Le misure ----------------------------------------------------------------------------
+     --tap    l'area minima di tocco: 56 px e' la misura di un polpastrello. Al sole e con le
+              mani bagnate serve larga. Nel Crew non era dichiarata e ogni \`min-height:var(--tap)\`
+              era una regola senza effetto.
+     --r      il raggio. Squadrato, non tondo.
+     --bordo  il bordo strutturale: spesso, delimita davvero anche controluce.
+     --focus  l'anello di messa a fuoco, per chi naviga da tastiera. */
   --tap:56px;
-  /* Il fondo dei blocchi. Era usato in sei regole \u2014 la barra dei moduli, le schede della
-     cucina, le griglie \u2014 e non era dichiarato da nessuna parte: quei fondi restavano
-     trasparenti, sopra la carta. Si vede solo guardando, non da' nessun errore.
-     Bianco, come le schede dell'app dei soci: sulla carta stacca, e i bordi si leggono. */
-  --card:#FFFFFF;--muted:#49525A;--ok:#2e6b45;--mid:#8a5a12;--no:#b14a35;--accent:#12324F;}
+  --r:4px;
+  --bordo:2px;
+  --focus:#0a66c2;
+}
+
+/* ==============================================================================================
+   QUELLO CHE QUESTO FILE NON HA ANCORA SISTEMATO, misurato.
+
+   I RAGGI scritti a mano, contati nei quattro fogli:
+     app soci   20 valori distinti (2px, 3px, 6px, 10px, 12px, 13px, 14px, 15px, 16px, 18px,
+                20px, 22px, 40px, 50%, 999px, piu' cinque forme composte)
+     Crew       11    back office  9    QR al tavolo  4
+   Collassarli su una scala di quattro voci sposta dei pixel in una quarantina di punti: e' un
+   lavoro con la sua misura prima e dopo, e non si fa insieme ai colori. Nel Crew e nel back
+   office, per giunta, buona parte di quei valori e' gia' morta \u2014 una regola con \`!important\`
+   li riporta tutti a \`var(--r)\`, e chi legge il foglio non lo vede.
+
+   LE SPAZIATURE non sono ancora una scala. Stesso discorso: prima si contano, poi si sposta.
+   ============================================================================================== */
+/* La palette viene dai token condivisi. Qui restava ricopiata, e con due \`:root\` nello stesso
+   foglio: il secondo (piu' in basso) vinceva e questo era morto da versioni. Chi lo leggeva
+   credeva che il Crew fosse #12324F. Il browser calcolava #102A43. */
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--paper);color:var(--ink);font-size:16px}
 input,select,button{font-family:inherit;font-size:1rem}
-input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;background:#fff}
+input,select{padding:8px 10px;border:1px solid var(--riga);border-radius:9px;background:#fff}
 .btn{border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;background:#e9e6dc;color:var(--ink)}
-.btn.gold{background:var(--gold);color:#fff}.btn.ghost{background:#fff;border:1.5px solid #cbd2d8}.btn.danger{background:var(--coral);color:#fff}
+.btn.gold{background:var(--gold);color:#fff}.btn.ghost{background:#fff;border:1.5px solid var(--riga)}.btn.danger{background:var(--coral);color:#fff}
 .btn.sm{padding:6px 10px;font-size:.85rem;border-radius:8px}
-.tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.4px;background:#e9e6dc;color:var(--muted)}
+.tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.4px;background:#e9e6dc;color:var(--mute)}
 .tag.ok{background:#e6f2ea;color:var(--ok)}.tag.mid{background:#f6e9cf;color:var(--mid)}.tag.no{background:#f6e0da;color:var(--no)}
-.muted{color:var(--muted)}
+.muted{color:var(--mute)}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .panel[data-fold] > .fold-testa{display:flex;align-items:center;gap:8px;}
 .panel[data-fold] > .fold-testa > h3::before, .panel[data-fold] > b.fold-testa::before{content:'\u25BE';font-size:.8em;opacity:.5;transition:transform .15s;display:inline-block;margin-right:6px;}
@@ -11557,15 +12277,15 @@ input,select{padding:8px 10px;border:1px solid #cbd2d8;border-radius:9px;backgro
 .panel{background:#fff;border:var(--bordo) solid var(--tratto);border-radius:var(--r);padding:10px 12px;margin-bottom:10px}
 /* Il titolo del pannello non compete piu' con quello della schermata: e' un'etichetta in
    maiuscoletto, non un secondo titolo. */
-.panel h3{color:var(--muted);font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;margin:0 0 8px}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
+.panel h3{color:var(--mute);font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;margin:0 0 8px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0efe8;font-size:.9rem}th{color:var(--mute);font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
 /* topbar */
 #top{background:linear-gradient(135deg,#12324F,#1c4a6e);color:#fff;padding:calc(12px + env(safe-area-inset-top)) 16px 0;position:sticky;top:0;z-index:5}
 #top .brand{font-weight:800;letter-spacing:.5px;font-size:1.05rem}
 #top .who{font-size:.75rem;opacity:.85}
 /* Alto contrasto: l'app del socio ce l'aveva gia', il Crew no \u2014 ed era il Crew a lavorare al
    sole, con le mani occupate e senza poter cambiare posto. La scelta si ricorda sul dispositivo. */
-body.hc{--muted:#31383E; --riga:#B9B6A8; --paper:#FBF9F2}
+body.hc{--mute:#31383E; --riga:#B9B6A8; --paper:#FBF9F2}
 body.hc .panel{border-color:#8F8B7C}
 #tabs{display:flex;gap:6px;margin:0 0 12px;overflow-x:auto;padding-bottom:2px}
 /* La barra dei moduli. Su schermo largo sta a sinistra e non si muove; sotto i 900 px diventa
@@ -11589,7 +12309,7 @@ body.hc .panel{border-color:#8F8B7C}
 #moduli{flex:0 0 214px;position:sticky;top:var(--h-top,56px);align-self:flex-start;
   max-height:calc(100vh - var(--h-top,56px));overflow:auto;
   background:var(--card);border-right:var(--bordo) solid var(--tratto);padding:8px;display:flex;flex-direction:column;gap:6px}
-#moduli .grp{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);padding:12px 4px 2px;font-weight:800}
+#moduli .grp{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;color:var(--mute);padding:12px 4px 2px;font-weight:800}
 #moduli button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
   background:var(--card);border:var(--bordo) solid var(--tratto);border-radius:var(--r);
   color:var(--ink);font-weight:800;text-align:left;padding:12px 13px;min-height:var(--tap);
@@ -11603,7 +12323,7 @@ body.hc .panel{border-color:#8F8B7C}
 #moduli button .n:empty{display:none}
 #moduli #chiSono{overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;line-height:1.35}
 #moduli button.urge .n{background:var(--coral);border-color:var(--coral);color:#fff}
-#moduli #chiSono{margin-top:auto;padding:10px 4px 2px;border-top:var(--bordo) solid var(--riga);font-size:.78rem;color:var(--muted);line-height:1.4}
+#moduli #chiSono{margin-top:auto;padding:10px 4px 2px;border-top:var(--bordo) solid var(--riga);font-size:.78rem;color:var(--mute);line-height:1.4}
 /* LO SPAZIO FRA LA BARRA E IL LAVORO.
    L'area di lavoro cominciava esattamente dove finisce la barra dei moduli: zero pixel di
    distanza. Misurato. Non e' una sovrapposizione, ma a occhio lo sembra \u2014 il riquadro bianco
@@ -11617,9 +12337,9 @@ body.hc .panel{border-color:#8F8B7C}
 #lavoro{flex:1;min-width:0;padding-left:16px;max-width:1180px}
 #capo{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;
   padding:10px 0 12px;border-bottom:var(--bordo) solid var(--ink);margin-bottom:12px}
-#capo .occh{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;font-weight:800;color:var(--muted)}
+#capo .occh{font-size:.62rem;letter-spacing:.18em;text-transform:uppercase;font-weight:800;color:var(--mute)}
 #capo h1{margin:2px 0 0;font-size:1.55rem;line-height:1.05;font-weight:800;color:var(--ink)}
-#capo .dx{text-align:right;font-size:.72rem;line-height:1.3;color:var(--muted)}
+#capo .dx{text-align:right;font-size:.72rem;line-height:1.3;color:var(--mute)}
 #capo .dx b{display:block;color:var(--ink);font-size:.86rem}
 #capo .et{font-size:.6rem;letter-spacing:.16em;text-transform:uppercase;font-weight:800}
 @media (max-width:560px){ #capo h1{font-size:1.25rem} #capo .dx{font-size:.68rem} }
@@ -11632,7 +12352,7 @@ body.hc .panel{border-color:#8F8B7C}
    telefono si staccano e restano fissi in basso, sopra il pollice, mentre il menu' scorre. */
 .co-invio{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
 .co-invio #co_tot{font-weight:800;line-height:1.2;min-width:0}
-.co-invio #co_tot .q{display:block;font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);font-weight:800}
+.co-invio #co_tot .q{display:block;font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--mute);font-weight:800}
 .co-invio #co_tot .e{display:block;font-size:1.2rem}
 .co-invio .btn{flex:0 0 auto}
 @media (max-width:900px){
@@ -11666,19 +12386,19 @@ body.hc .panel{border-color:#8F8B7C}
    tennis lasciava etichette e campi a scaletta, uno sotto l'altro sfalsati. */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid2 label{display:flex;flex-direction:column;gap:4px;font-size:.66rem;letter-spacing:.12em;
-  text-transform:uppercase;font-weight:800;color:var(--muted)}
+  text-transform:uppercase;font-weight:800;color:var(--mute)}
 .grid2 label input,.grid2 label select{font-size:.95rem;text-transform:none;letter-spacing:0;color:var(--ink);font-weight:600}
 @media (max-width:560px){ .grid2{grid-template-columns:1fr} }
 .block{display:block;width:100%}
 .wrap{display:flex;flex-wrap:wrap;gap:8px}
 .sep{height:1px;background:var(--riga);margin:10px 0}
 .err{color:var(--coral);font-size:.8rem;min-height:16px}
-.meta{font-size:.78rem;color:var(--muted)}
+.meta{font-size:.78rem;color:var(--mute)}
 .data{font-weight:800}
 .capobar{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .mrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--riga)}
 .gir{border:var(--bordo) solid var(--tratto);border-radius:var(--r);padding:10px;background:var(--card)}
-.giohd{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:6px}
+.giohd{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--mute);margin-bottom:6px}
 .gio{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--riga)}
 
 /* GLI OMBRELLONI. Stessa forma delle sedute della platea: caselle piccole, il colore DENTRO,
@@ -11696,7 +12416,7 @@ body.hc .panel{border-color:#8F8B7C}
 .omb.u-seconda_meta{background:#e5d3bd;border-color:#8a5a2b}
 .omb.u-in_scadenza,.omb.u-scaduto{background:#f3c9c2;border-color:#b14a35}
 .omb.u-occupato{background:#e5d3bd;border-color:#8a5a2b}
-.omb.u-bloccato{background:var(--riga);border-color:var(--muted);opacity:.6}
+.omb.u-bloccato{background:var(--riga);border-color:var(--mute);opacity:.6}
 .omb.allarme{background:var(--coral);border-color:var(--coral);color:#fff}
 .omb:hover{outline:2px solid var(--ink)}
 
@@ -11708,8 +12428,8 @@ body.hc .panel{border-color:#8F8B7C}
   min-height:var(--tap);display:inline-flex;align-items:center;font-family:inherit}
 .chip.sel{background:var(--ink);color:#fff;border-color:var(--ink)}
 .field{margin-top:12px}
-.field label{display:block;font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-bottom:6px}
-.sect-title{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--muted);margin:16px 0 6px}
+.field label{display:block;font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--mute);margin-bottom:6px}
+.sect-title{font-size:.66rem;letter-spacing:.15em;text-transform:uppercase;font-weight:800;color:var(--mute);margin:16px 0 6px}
 
 /* LA PLATEA.
    Il palco in alto, le file allineate su una griglia unica, il corridoio nel mezzo. Il colore
@@ -11725,7 +12445,7 @@ body.hc .panel{border-color:#8F8B7C}
    il suo unico vantaggio sull'elenco. La griglia si centra e resta della sua misura. */
 .fila{display:grid;grid-template-columns:26px repeat(var(--meta),40px) 18px repeat(var(--resto),40px);
   gap:5px;align-items:center;margin-bottom:5px;justify-content:center}
-.fila .etf{font-size:.7rem;font-weight:800;color:var(--muted);text-align:right;padding-right:4px}
+.fila .etf{font-size:.7rem;font-weight:800;color:var(--mute);text-align:right;padding-right:4px}
 .fila .corridoio{}
 .sed{height:40px;border-radius:var(--r);border:1.5px solid transparent;
   font-weight:800;font-size:.76rem;font-family:inherit;cursor:pointer;padding:0;color:var(--ink)}
@@ -11752,6 +12472,12 @@ body.hc .panel{border-color:#8F8B7C}
 .kcard.rosso{border-color:var(--coral)} .kcard.rosso>header{background:var(--coral)}
 .kcard.giallo{border-color:#b08b3e} .kcard.giallo>header{background:#b08b3e}
 .kcard .kavv{padding:6px 11px;background:#FFF2EF;color:#7C1405;font-size:.78rem;font-weight:700}
+/* PER CHI E' LA COMANDA. Riga informativa, non un allarme: fondo neutro e inchiostro normale.
+   Se avesse la forma dell'avviso rosso, dopo tre giorni nessuno distinguerebbe piu' "per Marco
+   V." da "verificare la maggiore eta'", e il rosso perderebbe il suo significato. Un colore,
+   un mestiere. */
+.kcard .kper{padding:5px 11px;background:var(--paper);color:var(--mute);font-size:.78rem}
+.kcard .kper b{color:var(--ink)}
 .kcard .krighe{flex:1}
 /* La riga E' il bersaglio: si tocca per segnarla pronta. Prima ogni riga aveva quattro tasti,
    e con tre piatti erano dodici bersagli su una scheda \u2014 con le mani sporche se ne sbaglia uno. */
@@ -11763,7 +12489,7 @@ body.hc .panel{border-color:#8F8B7C}
 .kcard .kr[data-fatta] .n{text-decoration:line-through}
 .kcard .kr .q{font-weight:800;min-width:16px}
 .kcard .kr .n{flex:1}
-.kcard .kr .n i{display:block;font-style:normal;font-size:.76rem;color:var(--muted);margin-top:1px}
+.kcard .kr .n i{display:block;font-style:normal;font-size:.76rem;color:var(--mute);margin-top:1px}
 .kcard .kr .n i.nota{color:#8a5a12;font-weight:700}
 .kcard .kr .ok{font-weight:800}
 .kcard>footer{display:flex;border-top:var(--bordo) solid var(--ink)}
@@ -11792,9 +12518,9 @@ body.hc .panel{border-color:#8F8B7C}
 .riq .cap{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .riq .num{font-weight:800;font-size:1.15rem;line-height:1}
 .riq .st{font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;font-weight:800}
-.riq .det{font-size:.82rem;color:var(--muted);line-height:1.35}
+.riq .det{font-size:.82rem;color:var(--mute);line-height:1.35}
 .riq .azioni{margin-top:auto;display:flex;gap:6px;flex-wrap:wrap;padding-top:8px}
-.riq.libero{border-color:var(--riga)} .riq.libero .num,.riq.libero .st{color:var(--muted)}
+.riq.libero{border-color:var(--riga)} .riq.libero .num,.riq.libero .st{color:var(--mute)}
 .riq.attesa{border-color:var(--ink)}
 .riq.chiama{border-color:var(--coral)} .riq.chiama .st{color:var(--coral)}
 .riq.fatto{background:var(--ink);color:#fff;border-color:var(--ink)} .riq.fatto .det{color:#cfd6dc}
@@ -11862,7 +12588,7 @@ body:not(.aiuti) .aiuto{display:none}
 #login{position:fixed;inset:0;background:radial-gradient(1200px 800px at 50% -10%,#1c3e5c,#0d2137);display:flex;align-items:center;justify-content:center;padding:20px;z-index:20}
 #login .card{background:#fff;border-radius:18px;padding:26px;max-width:360px;width:100%}
 #login h1{color:var(--navy);font-size:1.3rem;margin-bottom:2px}
-#login .sub{color:var(--muted);font-size:.85rem;margin-bottom:16px}
+#login .sub{color:var(--mute);font-size:.85rem;margin-bottom:16px}
 #login label{display:block;font-weight:700;font-size:.8rem;margin:10px 0 4px;color:var(--navy)}
 #login input{width:100%}
 #loginErr{color:var(--coral);font-size:.85rem;margin-top:8px;min-height:1em}
@@ -11878,10 +12604,10 @@ body:not(.aiuti) .aiuto{display:none}
    destro allineato ai pannelli sopra e sotto. */
 .board{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(23%,210px),1fr));gap:12px;align-items:start}
 .fitgrid{width:100%;border-collapse:collapse;table-layout:fixed}
-.fitgrid th{font-size:.72rem;color:var(--muted);font-weight:700;padding:2px 0;text-align:center}
+.fitgrid th{font-size:.72rem;color:var(--mute);font-weight:700;padding:2px 0;text-align:center}
 .fitgrid th span{display:block;font-weight:400;font-size:.66rem}
-.fitgrid th.ora{width:34px;color:var(--muted);font-size:.68rem;vertical-align:top;padding-top:6px}
-.fitgrid td.fitv{padding:1px;vertical-align:top;border-top:1px solid var(--line);height:40px}
+.fitgrid th.ora{width:34px;color:var(--mute);font-size:.68rem;vertical-align:top;padding-top:6px}
+.fitgrid td.fitv{padding:1px;vertical-align:top;border-top:1px solid var(--tratto);height:40px}
 .fitq{display:block;width:100%;border:0;border-left:4px solid transparent;border-radius:6px;
   color:#fff;padding:4px 4px;margin-bottom:2px;cursor:pointer;line-height:1.1;font:inherit;text-align:left}
 .fitq b{display:block;font-size:.68rem;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -11909,7 +12635,7 @@ body:not(.aiuti) .aiuto{display:none}
 .mbox{position:relative;background:#fff;border-radius:18px;max-width:520px;width:100%;max-height:86vh;overflow:auto;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
 .mbox h3{color:var(--accent);margin-bottom:2px}
 .split>section>.board{overflow:auto;align-content:start;padding-bottom:4px}
-.split .divider{height:2px;background:repeating-linear-gradient(90deg,var(--line) 0 12px,transparent 12px 20px)}
+.split .divider{height:2px;background:repeating-linear-gradient(90deg,var(--tratto) 0 12px,transparent 12px 20px)}
 
 /* ---- FORMA E COLORE, come nell'app dei soci ------------------------------------------------
    Stessi criteri: squadrato, bordi spessi, niente ombre, contrasto alto. Il Crew si usa al
@@ -11919,15 +12645,15 @@ body:not(.aiuti) .aiuto{display:none}
    Il ROSSO resta agli avvisi (tavolo oltre i dieci minuti, ombrellone non reso): le azioni
    sono blocchi pieni scuri con testo bianco, misurati a 14.6 di contrasto contro il 5.9 del
    pulsante oro di prima. */
-:root{--navy:#102A43;--gold:#8a5a12;--coral:#9E2B20;--ink:#101418;--line:#101418;--r:4px;--bordo:2px;}
+/* I colori e le misure stanno nei token condivisi (shared/tokens.css). */
 .card,.panel,.btn,.tag,input,select,textarea,.box{border-radius:var(--r) !important;box-shadow:none !important;}
-.card,.panel{border:var(--bordo) solid var(--line) !important;}
-.btn{border:var(--bordo) solid var(--line);font-weight:800;min-height:44px;}
+.card,.panel{border:var(--bordo) solid var(--tratto) !important;}
+.btn{border:var(--bordo) solid var(--tratto);font-weight:800;min-height:44px;}
 .btn.gold,.btn.navy{background:var(--navy);color:#fff;border-color:var(--navy);}
-.btn.ghost{background:#fff;color:var(--ink);border-color:var(--line);}
+.btn.ghost{background:#fff;color:var(--ink);border-color:var(--tratto);}
 .btn.danger{background:var(--coral);color:#fff;border-color:var(--coral);}
 .btn.sm{min-height:34px;}
-input,select,textarea{border:var(--bordo) solid var(--line) !important;}
+input,select,textarea{border:var(--bordo) solid var(--tratto) !important;}
 </style>
 </head>
 <body>
@@ -12205,7 +12931,14 @@ window.Comanda = (function () {
     if (document.getElementById('cmd-css')) return;
     const st = document.createElement('style'); st.id = 'cmd-css';
     st.textContent = \`
-      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      /* LA QUINTA PALETTE, quella che nessuno aveva contato. Questo pezzo di comanda gira in
+         TRE app, e si portava dietro tre colori suoi: un ripiego navy #12324F e uno oro
+         #C9A227 (i valori vecchi del QR al tavolo, non quelli di nessuna app viva) e una riga
+         #cbd2d8 scritta a mano, senza nemmeno la variabile. Il ripiego e la parte peggiore:
+         non scatta mai finche tutto va bene, e quando scatta nessuno lo collega a qui.
+         Adesso i tre nomi sono legami, non copie.
+         (Niente apostrofi in questo commento: sta dentro una stringa a backtick.) */
+      .cmd{--c-navy:var(--navy);--c-gold:var(--gold);--c-line:var(--riga)}
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
@@ -12225,7 +12958,11 @@ window.Comanda = (function () {
          usano TRE app: cambiato guardando solo il Crew.
          auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* IL PAVIMENTO DELLA COLONNA NON PUO ESSERE PIU LARGO DELLA STANZA. Un minimo scritto in
+         pixel e ASSOLUTO: dentro un contenitore da 290 px una colonna col minimo a 300 resta 300
+         e sborda, portandosi dietro il prezzo e i tasti. Con min(100%, 300px) il minimo si
+         arrende alla larghezza vera del posto in cui si trova. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
          Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
@@ -12236,7 +12973,12 @@ window.Comanda = (function () {
          sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
          quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
       .cmd-larghi{grid-column:1/-1}
-      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      /* Stessa cosa, e qui faceva danno vero: 420 px di minimo dentro la lista di un telefono, che
+         al massimo ne ha 332. Le schede dei panini uscivano di 88 px dallo schermo e con loro il
+         prezzo e il piu; le bibite, che stanno in un altro blocco, restavano dentro. Risultato:
+         due colonne di prezzi a due altezze diverse nella stessa schermata, e i tasti dei panini
+         mezzi fuori. Misurato a 360, 390 e 430 px: sbordava a tutte e tre. */
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,max(25%,420px)),1fr));gap:0 12px;align-items:start}
       .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
@@ -12250,7 +12992,7 @@ window.Comanda = (function () {
          la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
 .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
   display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
-      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-item.sel{border-color:var(--c-gold);background:#fdfaf3}
       .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
@@ -12260,7 +13002,12 @@ window.Comanda = (function () {
          stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
          spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
          128 px accanto a una da 58. Le due regole ora sono una sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+/* DUE RIGHE SEMPRE, anche quando il nome ne occupa una. Il tetto c era gia; mancava il
+         PAVIMENTO, e le schede venivano alte 58 px o 68 a seconda della lunghezza del nome:
+         scorrendo un listino, prezzo e tasti ballavano su e giu di dieci pixel. Lo spazio si
+         riserva, non si concede. In em e non in pixel, cosi segue il corpo del testo quando
+         il socio lo ingrandisce dai comandi di accessibilita. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;min-height:2.5em;color:var(--c-navy)}
       /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
          prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
       .cmd-fermo{cursor:default}
@@ -12675,7 +13422,18 @@ async function api(path, opts = {}) {
      E' successo: l'occhio degli incassi del tennis rispondeva 401 a chi sbagliava a digitare,
      e l'operatore veniva buttato fuori invece di rileggere l'avviso. */
   if (r.status === 401) { logout(); throw new Error('non autorizzato'); }
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  /* L'ERRORE SI PORTA DIETRO IL CORPO. Prima restava solo \`message\`: tutto il resto di quello
+     che il server aveva detto \u2014 perche' si e' fermato, e cosa serve per andare avanti \u2014 veniva
+     buttato via nel punto esatto in cui serve. Chiudendo un torneo con due in testa il server
+     risponde con l'elenco di chi e' a pari merito, e la schermata non lo vedeva: mostrava un
+     avviso e nessuna via d'uscita. */
+  if (!r.ok) {
+    const corpo = await r.json().catch(() => ({}));
+    const e = new Error(corpo.error || r.status);
+    Object.assign(e, corpo);
+    e.stato = r.status;
+    throw e;
+  }
   return r.json();
 }
 
@@ -13182,7 +13940,7 @@ function pannelloSelfOrder(so) {
         </div>\` : '<span class="muted" style="font-size:.76rem">La sospensione la decide il manager.</span>'}
       </div>
       <div class="muted aiuto" style="font-size:.78rem;margin-top:4px">Pressione: \${pressSpieg}\${cfg.press_auto ? ' \u2192 sospensione automatica' : ' \u2192 solo avviso'}.</div>
-      <div id="so_cfgbox" class="hide" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+      <div id="so_cfgbox" class="hide" style="margin-top:12px;border-top:1px solid var(--tratto);padding-top:12px">
         <div class="row" style="gap:16px;align-items:flex-start;flex-wrap:wrap">
           <div style="min-width:230px">
             <b style="color:var(--navy);font-size:.9rem">\u{1F525} Pressione cucina</b>
@@ -13395,10 +14153,16 @@ function tavoloCard(tb) {
   const items = tb.cs.flatMap(x => x.righe || []).map(r => \`\${r.qta}\xD7 \${esc(r.nome)}\`);
   const libero = tb.st.key === 'arancio' && !tb.cs.length;
   const pay = tb.st.key === 'verde' ? \`<button class="btn gold sm" data-tpay="\${tb.st.delivered.map(x => x.id).join(',')}" style="margin-top:8px;width:100%">\u{1F4B6} Incassa</button>\` : '';
+  /* L'AVVISO SULL'ETA' DEVE STARE DOVE SI CONSEGNA. Compariva solo nella scheda della Cucina;
+     ma chi porta il bicchiere al tavolo guarda la Sala, e li' non c'era scritto niente.
+     Un avviso che sta su una schermata diversa da quella di chi compie il gesto e' come non
+     averlo: l'ultimo anello del controllo sull'eta' e' una persona, e va avvisata li'. */
+  const eta = (tb.cs || []).some(x => Number(x.verifica_eta) === 1);
   return \`<div class="tcard clic\${libero ? ' libero' : ''}" data-tdetail="\${tb.t}" style="border-color:\${c.bd};background:\${c.bg}">
     <div class="zacc" style="background:\${ACC_GARDEN}"></div>
     <div class="thd" style="margin-top:2px"><span class="row" style="gap:8px"><span class="tref" style="background:\${c.bd}">\${tb.t}</span><span class="tsub" style="color:\${c.tx}">Tavolo\${(tb.uniti && tb.uniti.length) ? ' + ' + tb.uniti.join(' + ') : ''}\${tb.posti ? ' \xB7 ' + tb.posti + ' p' : ''}</span></span>\${chipOf(tb.st)}</div>
     <div class="tst" style="color:\${c.tx}">\${c.lb}\${tb.st.since ? ' \xB7 ' + hhmmOf(tb.st.since) : ''}</div>
+    \${eta ? '<div class="kavv" style="margin-top:6px">\\ud83d\\udd1e alcolici \\u00b7 verificare la maggiore et\\u00e0</div>' : ''}
     \${items.length ? \`<div style="margin-top:8px;font-size:.82rem;color:#2a2a2a;line-height:1.45">\${items.slice(0, 5).join('<br>')}\${items.length > 5 ? \`<br><span class="muted">+\${items.length - 5} \u2026</span>\` : ''}</div>\` : (libero ? '<div class="muted" style="margin-top:8px;font-size:.78rem">\u2014 libero \u2014</div>' : '')}
     \${pay}</div>\`;
 }
@@ -13430,7 +14194,20 @@ function cucinaCard(g) {
     </button>\`;
   }).join('');
   const attesa = g.comande.map(cm => cm.non_prima).filter(Boolean).sort().pop();
-  const eta = g.comande.some(cm => Number(cm.verifica_eta) === 1);
+  /* NON UN ALLARME: UN NOME. La riga dice per chi e' e cosa sappiamo della sua eta', come lo
+     schermo di cassa di una nave. Chi consegna non deve fare domande a nessuno: legge.
+       maggiorenne accertato  \u2192 si scrive il nome e basta, nessun avviso: un avviso che si
+                                accende sempre e' un avviso che si smette di leggere, e la
+                                legge stessa non lo vuole quando la maggiore eta' e' manifesta;
+       eta' sconosciuta       \u2192 si dice che manca il dato e si chiede il documento, come per
+                                chi ordina senza tessera;
+       minorenne              \u2192 l'ordine non arriva nemmeno qui, e' rifiutato all'origine. */
+  const conAlcol = g.comande.some(cm => Number(cm.verifica_eta) === 1);
+  const cmSocio = g.comande.find(cm => cm.socio_nome);
+  const cmEta = g.comande.find(cm => Number(cm.verifica_eta) === 1);
+  const perChi = cmSocio ? cmSocio.socio_nome : null;
+  const etaNota = cmSocio && cmSocio.eta === 'maggiorenne';
+  const eta = conAlcol && !etaNota;
   const daFare = madri.filter(({ r }) => r.stato === 'in_coda').map(({ cm, r }) => cm.id + '|' + r.id).join(',');
   return \`<div class="kcard \${g.st.key}">
     <header data-kdetail="\${g.zona}|\${esc(g.rif)}">
@@ -13438,7 +14215,13 @@ function cucinaCard(g) {
       <span>\${esc(c.lb)}\${g.st.mins != null ? ' \\u00b7 ' + g.st.mins + '\\u2032' : ''}</span>
     </header>
     \${attesa ? \`<div class="kavv">\\ud83d\\udd25 non prima delle \${esc(attesa)}</div>\` : ''}
-    \${eta ? '<div class="kavv">\\ud83d\\udd1e alcolici \\u00b7 verificare la maggiore et\\u00e0</div>' : ''}
+    \${perChi ? \`<div class="kper">per <b>\${esc(perChi)}</b>\${etaNota ? '' : ' \\u00b7 et\\u00e0 non registrata'}</div>\` : ''}
+    \${eta && cmEta && !cmEta.eta_esito ? \`<div class="kavv">\\ud83d\\udd1e alcolici \\u00b7 \${perChi ? 'chiedi un documento se non dimostra 18 anni' : 'ordine senza tessera \\u00b7 verificare la maggiore et\\u00e0'}
+      <div class="row" style="gap:6px;margin-top:6px">
+        <button class="btn ghost sm" data-eta="\${cmEta.id}|documento">Documento visto</button>
+        <button class="btn danger sm" data-eta="\${cmEta.id}|rifiutato">Rifiutato</button>
+      </div></div>\` : ''}
+    \${cmEta && cmEta.eta_esito ? \`<div class="kper">\${cmEta.eta_esito === 'documento' ? '\\u2714 documento verificato' : '\\u2716 servizio rifiutato'} \\u00b7 \${esc(cmEta.eta_operatore || '')}</div>\` : ''}
     <div class="krighe">\${righe}</div>
     <footer>
       <button class="kact primaria" data-ktutte="\${daFare}" \${daFare ? '' : 'disabled'}>Pronto</button>
@@ -13528,7 +14311,7 @@ const griglia = (riquadri, vuoto) => riquadri.length
 const legendaColori = (voci) => \`<div class="rifleg" style="margin-top:8px">\`
   + voci.map(([c, l]) => \`<span><i style="background:\${c}"></i>\${esc(l)}</span>\`).join('')
   + \`</div>\`;
-const legenda = (voci) => \`<div class="row" style="gap:14px;flex-wrap:wrap;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:var(--muted);margin-top:8px">\`
+const legenda = (voci) => \`<div class="row" style="gap:14px;flex-wrap:wrap;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800;color:var(--mute);margin-top:8px">\`
   + voci.map(([t, l]) => \`<span><span style="display:inline-block;width:11px;height:11px;border:2px solid \${t === 'chiama' ? 'var(--coral)' : t === 'libero' ? 'var(--riga)' : 'var(--ink)'};background:\${t === 'fatto' ? 'var(--ink)' : 'transparent'};vertical-align:-1px;margin-right:5px;border-radius:2px"></span>\${esc(l)}</span>\`).join('')
   + \`</div>\`;
 
@@ -13677,6 +14460,17 @@ VIEWS.kds = async () => {
     document.querySelectorAll('[data-kr]').forEach(b => b.onclick = async () => { const [cid, rid, st] = b.dataset.kr.split('|'); await api('/comande/' + cid + '/riga/' + rid + '/stato', { method: 'PUT', body: JSON.stringify({ stato: st }) }); render(); });
     // "Pronto" chiude la scheda intera: quando il piatto esce, escono tutti insieme. Segnarli
     // uno per uno resta possibile toccando la riga, ma non e' il gesto normale.
+    /* L'ESITO SI REGISTRA CON UN TOCCO, e non si torna indietro: un esito modificabile non e'
+       una traccia. Il rifiuto chiede conferma perche' e' un no detto a una persona che sta
+       aspettando, e non deve partire per un dito storto. */
+    document.querySelectorAll('[data-eta]').forEach(b => b.onclick = async () => {
+      const [cid, esito] = (b.dataset.eta || '').split('|');
+      if (esito === 'rifiutato' && !confirm('Registrare il RIFIUTO del servizio? Non si potra\\u2019 correggere.')) return;
+      b.disabled = true;
+      try { await api('/comande/' + cid + '/eta', { method: 'PUT', body: JSON.stringify({ esito }) }); }
+      catch (e) { alert(e.message); b.disabled = false; return; }
+      render();
+    });
     document.querySelectorAll('[data-ktutte]').forEach(b => b.onclick = async () => {
       const righe = (b.dataset.ktutte || '').split(',').filter(Boolean);
       if (!righe.length) return;
@@ -13941,7 +14735,7 @@ VIEWS.sport = async () => {
     const pari = !!label && giocata && p.gol_a != null && p.gol_a === p.gol_b;
     const acc = pari ? 'var(--coral)' : giocata ? 'var(--ok)' : 'var(--gold)';
     return \`<div class="mrow" style="border-left:3px solid \${acc};background:#fff;border-radius:10px;padding:8px 10px;margin-bottom:6px">
-      \${label ? \`<div style="font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">\${esc(label)}\${pari ? ' \xB7 \u26A0\uFE0F serve un vincitore' : ''}</div>\` : ''}
+      \${label ? \`<div style="font-size:.66rem;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">\${esc(label)}\${pari ? ' \xB7 \u26A0\uFE0F serve un vincitore' : ''}</div>\` : ''}
       <div class="row" style="gap:6px;align-items:center">
         <span style="flex:1;font-weight:700;font-size:.86rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${esc(p.casa_a)}</span>
         <input id="ga_\${p.id}" type="number" min="0" inputmode="numeric" value="\${p.gol_a != null ? esc(String(p.gol_a)) : ''}" style="width:42px;text-align:center;padding:4px">
@@ -13960,7 +14754,7 @@ VIEWS.sport = async () => {
   // --- un girone: classifica compatta + le sue 3 giornate, ognuna con la data
   const gironeCol = (g) => {
     const cls = (g.classifica || []).map((c, i) => \`<tr>
-      <td style="text-align:center;width:18px;color:var(--muted)">\${i + 1}</td>
+      <td style="text-align:center;width:18px;color:var(--mute)">\${i + 1}</td>
       <td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${spDot(c.colore)}<b style="font-size:.84rem">\${esc(c.nome)}</b></td>
       <td style="text-align:center;width:26px">\${esc(String(c.pg || 0))}</td>
       <td style="text-align:center;width:46px;font-size:.8rem">\${esc(String(c.gf || 0))}-\${esc(String(c.gs || 0))}</td>
@@ -13970,7 +14764,7 @@ VIEWS.sport = async () => {
       const ps = g.partite.filter(p => p.giornata === n);
       const data = (ps.find(p => p.quando) || {}).quando || '';
       const fatte = ps.filter(p => p.stato === 'giocata').length;
-      return \`<div style="border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:#fbfaf6">
+      return \`<div style="border:1px solid var(--tratto);border-radius:12px;padding:10px;margin-bottom:10px;background:#fbfaf6">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
           <b style="font-size:.8rem;color:var(--accent)">Giornata \${n}<span class="muted" style="font-weight:400"> \xB7 \${fatte}/\${ps.length}</span></b>
           <input type="date" value="\${esc(data)}" data-sp-data="\${g.id}|\${n}" style="padding:3px 6px;font-size:.78rem" title="Data della giornata">
@@ -14001,8 +14795,8 @@ VIEWS.sport = async () => {
   const cella = (s2) => s2.provvisorio
     ? \`<b style="font-size:.86rem">\${esc(s2.provvisorio)}</b> <span class="muted aiuto" style="font-size:.68rem">(\${esc(s2.etichetta)})</span>\`
     : \`<span class="muted" style="font-size:.82rem;font-style:italic">\${esc(s2.etichetta)}</span>\`;
-  const scontro = (x, titolo) => \`<div style="border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
-      <div style="font-size:.66rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">\${esc(titolo)}</div>
+  const scontro = (x, titolo) => \`<div style="border:1px solid var(--tratto);border-left:3px solid var(--mute);border-radius:10px;padding:8px 10px;margin-bottom:6px;background:#fff">
+      <div style="font-size:.66rem;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.4px">\${esc(titolo)}</div>
       <div style="margin-top:3px">\${cella(x.a)}</div>
       <div class="muted" style="font-size:.7rem;margin:1px 0">contro</div>
       <div>\${cella(x.b)}</div></div>\`;
@@ -14012,7 +14806,7 @@ VIEWS.sport = async () => {
       <div><div style="font-weight:800;color:var(--accent);font-size:.8rem;margin-bottom:6px">Semifinali</div>\${st.semifinali.map(q => scontro(q, 'Semifinale ' + q.slot)).join('')}</div>
       <div><div style="font-weight:800;color:var(--accent);font-size:.8rem;margin-bottom:6px">Finali</div>\${scontro(st.finale1, 'Finale 1\xBA/2\xBA')}\${scontro(st.finale3, 'Finale 3\xBA/4\xBA')}</div>
     </div>\` : '';
-  const avviso = t.hasFinale ? '' : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--muted);border-radius:12px;padding:10px;margin-bottom:10px">
+  const avviso = t.hasFinale ? '' : \`<div class="row" style="gap:8px;align-items:center;background:#fff;border:1px dashed var(--mute);border-radius:12px;padding:10px;margin-bottom:10px">
         <div style="font-size:1.3rem">\u23F3</div>
         <div><b style="font-size:.9rem">Non ancora sbloccata.</b> <span class="muted" style="font-size:.8rem">\${gironiMancanti > 0 ? \`Mancano <b>\${gironiMancanti}</b> partite su \${gironiTot} nei gironi; gli accoppiamenti qui sotto sono quelli che risulterebbero con la classifica di adesso.\` : 'Gironi completati: la fase finale si sta generando, riapri la scheda.'}</span></div></div>\`;
   const statoFinale = (t.hasFinale && blocks) ? (schema + '<div style="margin-top:10px">' + blocks + '</div>') : (avviso + schema);
@@ -14144,8 +14938,8 @@ async function magQuadratura() {
   const rows = (data.articoli || []).map(a => \`<tr>
     <td><b>\${esc(a.nome)}</b> \${magZonaBadge(a.zona)}</td>
     <td style="text-align:center">\${a.giacenza_iniziale == null ? '\u2014' : esc(String(a.giacenza_iniziale))}</td>
-    <td style="text-align:center;color:\${a.carico ? 'var(--teal)' : 'var(--muted)'}">\${esc(String(a.carico))}</td>
-    <td style="text-align:center;color:\${a.scarico ? 'var(--coral)' : 'var(--muted)'}">\${esc(String(a.scarico))}</td>
+    <td style="text-align:center;color:\${a.carico ? 'var(--teal)' : 'var(--mute)'}">\${esc(String(a.carico))}</td>
+    <td style="text-align:center;color:\${a.scarico ? 'var(--coral)' : 'var(--mute)'}">\${esc(String(a.scarico))}</td>
     <td style="text-align:center" class="muted">\${esc(String(a.scarico_bar))} / \${esc(String(a.scarico_garden))}</td>
     <td style="text-align:center"><b>\${esc(String(a.giacenza_finale))}</b></td>
     <td style="text-align:center">\${a.atteso == null ? '\u2014' : esc(String(a.atteso))}</td>
@@ -14305,7 +15099,7 @@ async function magCentrale() {
   const perArea = areeOrdine.map(area => {
     const arts = (data.articoli || []).filter(a => a.area === area); if (!arts.length) return '';
     const rows = arts.map(a => \`<tr>
-      <td><b>\${esc(a.nome)}</b></td><td>\${magZonaBadge(a.zona)}</td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno || 0))}</td><td style="text-align:center"><b>\${esc(String(a.giacenza_effettiva))}</b></td><td>\${magBadge(a.stato)}</td>
+      <td><b>\${esc(a.nome)}</b></td><td>\${magZonaBadge(a.zona)}</td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno ? 'var(--gold)' : 'var(--mute)'}">\${esc(String(a.impegno || 0))}</td><td style="text-align:center"><b>\${esc(String(a.giacenza_effettiva))}</b></td><td>\${magBadge(a.stato)}</td>
       <td class="row"><input id="mq_\${a.id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn gold sm" data-mv="\${a.id}|carico">+ Carico</button><button class="btn ghost sm" data-mv="\${a.id}|scarico">\u2212 Scarico</button><button class="btn ghost sm" data-mv="\${a.id}|rettifica">= Rettifica</button></td>
     </tr>\`).join('');
     return \`<div class="panel"><h3>\${esc(magAreaLabel(area))}</h3><table><thead><tr><th>Articolo</th><th>Zona</th><th>Unit\xE0</th><th>Giac.</th><th>Imp.</th><th>Eff.</th><th>Stato</th><th>Movimento</th></tr></thead><tbody>\${rows}</tbody></table></div>\`;
@@ -14355,9 +15149,9 @@ async function magHubZona(zona) {
   // a tutte le zone: e' roba di appoggio, non il cuore di questo punto.
   const core = arts.filter(a => (a.zona_art || a.zona) !== 'comune');
   const comuni = arts.filter(a => (a.zona_art || a.zona) === 'comune');
-  const riga = (a) => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td><td>\${magBadge(a.stato)}</td></tr>\`;
+  const riga = (a) => \`<tr><td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td><td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--mute)'}">\${esc(String(a.impegno_zona || 0))}</td><td>\${magBadge(a.stato)}</td></tr>\`;
   const separatore = (core.length && comuni.length)
-    ? \`<tr><td colspan="5" style="border-top:2px solid var(--accent);padding-top:8px;font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Comune a tutte le zone</td></tr>\`
+    ? \`<tr><td colspan="5" style="border-top:2px solid var(--accent);padding-top:8px;font-size:.72rem;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.5px">Comune a tutte le zone</td></tr>\`
     : '';
   const rows = core.map(riga).join('') + separatore + comuni.map(riga).join('');
   const ZLAB = { bar: '\u{1F378} Bar', garden: '\u{1F33F} Garden', carta: '\u{1F4DA} Casa di Carta' };
@@ -14381,9 +15175,9 @@ VIEWS.scorte = async () => {
     // Prima i prodotti core della zona, poi \u2014 sotto una linea \u2014 la merce comune.
     const ordinati = [...arts.filter(a => (a.zona_art || a.zona) !== 'comune'), ...arts.filter(a => (a.zona_art || a.zona) === 'comune')];
     const primoComune = arts.filter(a => (a.zona_art || a.zona) !== 'comune').length;
-    const rows = ordinati.map((a, i) => \`\${(i === primoComune && primoComune > 0 && i < ordinati.length) ? \`<tr><td colspan="6" style="border-top:2px solid var(--accent);padding-top:8px;font-size:.72rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Comune a tutte le zone</td></tr>\` : ''}<tr>
+    const rows = ordinati.map((a, i) => \`\${(i === primoComune && primoComune > 0 && i < ordinati.length) ? \`<tr><td colspan="6" style="border-top:2px solid var(--accent);padding-top:8px;font-size:.72rem;font-weight:800;color:var(--mute);text-transform:uppercase;letter-spacing:.5px">Comune a tutte le zone</td></tr>\` : ''}<tr>
       <td><b>\${esc(a.nome)}</b></td><td>\${esc(a.unita)}</td><td style="text-align:center"><b>\${esc(String(a.giacenza))}</b></td>
-      <td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--muted)'}">\${esc(String(a.impegno_zona || 0))}</td>
+      <td style="text-align:center;color:\${a.impegno_zona ? 'var(--gold)' : 'var(--mute)'}">\${esc(String(a.impegno_zona || 0))}</td>
       <td>\${magBadge(a.stato)}</td>
       <td class="row"><input id="gq_\${a.articolo_id}" type="number" placeholder="q.t\xE0" style="width:64px"><button class="btn ghost sm" data-gsc="\${a.articolo_id}">\u2212 Scarico</button><button class="btn gold sm" data-grc="\${a.articolo_id}">\u{1F4CC} Impegna</button></td>
     </tr>\`).join('');
@@ -14526,7 +15320,7 @@ VIEWS.tennis = async () => {
         <select id="tb_m"><option value="manutenzione">manutenzione</option><option value="torneo">torneo</option><option value="lezioni">lezioni</option><option value="chiuso">chiuso</option></select>
         \${supervisore() ? '<button class="btn gold sm" id="ten_blocca">+ Blocca</button>' : ''}
       </div>
-      \${(blocchi || []).length ? (blocchi || []).map(b => \`<div class="row" style="justify-content:space-between;font-size:.85rem;padding:4px 0;border-bottom:1px solid var(--line)">
+      \${(blocchi || []).length ? (blocchi || []).map(b => \`<div class="row" style="justify-content:space-between;font-size:.85rem;padding:4px 0;border-bottom:1px solid var(--tratto)">
         <span>\${esc(b.campo)} \xB7 \${esc(b.dalle)}\u2013\${esc(b.alle)} \xB7 \${esc(b.motivo || '')}</span>
         <button class="btn ghost sm" data-tenblkdel="\${b.id}">\u2715</button></div>\`).join('')
         : '<p class="muted" style="font-size:.82rem;margin-top:6px">Nessun blocco per questa data.</p>'}
@@ -14878,7 +15672,7 @@ VIEWS.tornei = async () => {
   const apertoId = window.__torneoAperto || (lista[0] && lista[0].id);
   const tab = apertoId ? await api('/tornei/' + apertoId).catch(() => null) : null;
 
-  const partita = (p) => \`<div class="row" style="justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)">
+  const partita = (p) => \`<div class="row" style="justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--tratto)">
       <div style="flex:1;font-size:.9rem">
         \${p.a_nome ? \`<b\${p.vincitore === p.a_nome ? '' : ' style="font-weight:400"'}>\${esc(p.a_nome)}</b>\` : '<span class="muted">\u2014 in attesa \u2014</span>'}
         <span class="muted"> vs </span>
@@ -14894,12 +15688,89 @@ VIEWS.tornei = async () => {
         : p.vincitore ? \`<span class="tag ok">passa \${esc(p.vincitore)}</span>\` : ''}
     </div>\`;
 
+  /* LE DUE FORME NUOVE. La classifica non ha un tabellone: ha righe di punti che si sommano.
+     I gironi ne hanno uno, ma dopo \u2014 e finche' i gironi girano si guardano le classifiche. */
+  let vistaFormato = '';
+  if (tab && tab.torneo.formato === 'classifica') {
+    const cl = (await api('/tornei/' + apertoId + '/classifica').catch(() => ({}))).classifica || [];
+    const chiuso = tab.torneo.stato === 'concluso';
+    vistaFormato = \`<div style="margin-top:12px">
+      <b style="color:var(--navy)">Classifica</b>
+      <p class="muted" style="font-size:.82rem">Si aggiungono punti quando serve, senza un numero di giornate. Per correggere un errore si aggiunge una riga <b>negativa</b>: la storia resta.</p>
+      \${cl.length ? cl.map(r => \`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--tratto)">
+          <div><b>\${r.posizione}.</b> \${esc(r.nome)} <span class="muted" style="font-size:.8rem">\xB7 \${r.inserimenti} \${r.inserimenti === 1 ? 'inserimento' : 'inserimenti'}</span></div>
+          <div><b>\${r.punti}</b> <span class="muted">punti</span></div>
+        </div>\`).join('') : '<p class="muted">Nessun iscritto.</p>'}
+      \${!chiuso && cl.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <select id="cp_chi">\${cl.map(r => \`<option value="\${r.iscritto_id}">\${esc(r.nome)}</option>\`).join('')}</select>
+        <input id="cp_pt" type="number" step="0.5" placeholder="punti" style="width:90px">
+        <input id="cp_nota" placeholder="Nota (facoltativa)" style="min-width:150px">
+        <button class="btn ghost sm" id="cp_add">+ Aggiungi punti</button>
+        \${supervisore() ? '<button class="btn gold sm" id="cp_chiudi">\u{1F3C1} Chiudi il torneo</button>' : ''}
+      </div>\` : ''}
+      \${window.__torneoPari && String(window.__torneoPari.id) === String(apertoId) ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
+        <b>\${esc(window.__torneoPari.testo)}</b>
+        <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+          \${window.__torneoPari.chi.map(n => \`<button class="btn gold sm" data-tvinc="\${esc(n)}">Ha vinto \${esc(n)}</button>\`).join('')}
+        </div>
+      </div>\` : ''}
+    </div>\`;
+  }
+  if (tab && tab.torneo.formato === 'gironi') {
+    const g = await api('/tornei/' + apertoId + '/gironi').catch(() => ({ gironi: [] }));
+    const q = g.qualificazione;
+    /* LA DICHIARAZIONE DEI QUALIFICATI, come il pari merito della classifica: la scelta torna
+       nella schermata come tasti, uno per giocatore, con accanto i numeri su cui si decide \u2014
+       girone, punti, partite, media. Non un prompt() e non un nome digitato a memoria. */
+    const amm = window.__torneoAmmessi && String(window.__torneoAmmessi.id) === String(apertoId) ? window.__torneoAmmessi : null;
+    vistaFormato = \`<div style="margin-top:12px">
+      \${tab.torneo.stato === 'iscrizioni' && supervisore() ? \`<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="muted" style="font-size:.85rem">Quanti gironi?</span>
+        <select id="gg_n">\${[2,3,4,5,6,7,8].map(n => \`<option>\${n}</option>\`).join('')}</select>
+        <button class="btn gold sm" id="gg_crea">Forma i gironi</button>
+        <span class="muted" style="font-size:.8rem">Con \${tab.iscritti.length} iscritti.</span>
+      </div>\` : ''}
+      \${(g.gironi || []).map(gr => \`<div style="margin-top:12px">
+        <b style="color:var(--navy)">Girone \${esc(gr.girone)}</b>
+        \${gr.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--tratto);font-size:.9rem">
+            <div><b>\${r.posizione}.</b> \${esc(r.nome)}</div>
+            <div><b>\${r.punti}</b> <span class="muted">p \xB7 \${r.giocate}g \xB7 media \${r.media}</span></div>
+          </div>\`).join('')}
+        \${gr.partite.map(partita).join('')}
+      </div>\`).join('')}
+      \${q ? \`<div class="box" style="margin-top:12px;padding:8px 10px">
+        <b>Se i gironi finissero adesso</b> \u2014 tabellone da \${q.posti}
+        <div class="muted" style="font-size:.84rem;margin-top:3px">Passano: \${(q.serve_dichiarazione ? q.certi : q.diretti).map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ')').join(', ') || '\u2014'}</div>
+        \${q.ripescati.length ? \`<div class="muted" style="font-size:.84rem">Ripescati con la media migliore: \${q.ripescati.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ', media ' + x.media + ')').join(', ')}</div>\` : ''}
+        \${q.contesa ? \`<div class="muted" style="font-size:.84rem">Per \${q.contesa.posti === 1 ? 'l\\u2019ultimo posto' : 'gli ultimi ' + q.contesa.posti + ' posti'} sono a pari merito \${q.contesa.fra.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ', media ' + x.media + ')').join(', ')}: si sorteggia quando parte il tabellone.</div>\` : ''}
+        \${q.serve_dichiarazione ? \`<div class="muted" style="font-size:.84rem">I qualificati sono pi\xF9 dei posti: \${q.da_scegliere === 1 ? 'un posto' : q.da_scegliere + ' posti'} per \${q.in_bilico.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ')').join(', ')}. Sceglie il gestore quando parte il tabellone.</div>\` : ''}
+        \${tab.torneo.stato === 'gironi' && supervisore() ? '<button class="btn gold sm" id="gg_tab" style="margin-top:8px">Avvia il tabellone</button>' : ''}
+      </div>\` : ''}
+      \${amm ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
+        <b>\${esc(amm.testo)}</b>
+        <div class="muted" style="font-size:.82rem;margin-top:4px">Dentro senza discussione: \${amm.certi.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ')').join(', ') || '\u2014'}</div>
+        <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+          \${amm.in_bilico.map(x => \`<button class="btn \${amm.scelti.includes(x.iscritto_id) ? 'gold' : 'ghost'} sm" data-tamm="\${x.iscritto_id}">\${esc(x.nome)} <span class="muted">\${x.girone}\${x.posizione} \xB7 \${x.punti}p \xB7 \${x.giocate}g \xB7 media \${x.media}</span></button>\`).join('')}
+        </div>
+        <div class="row" style="gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+          <span class="muted" style="font-size:.84rem">Scelti \${amm.scelti.length} su \${amm.da_scegliere}.</span>
+          \${amm.scelti.length === amm.da_scegliere ? '<button class="btn gold sm" id="gg_amm_ok">Avvia il tabellone con questi</button>' : ''}
+        </div>
+      </div>\` : ''}
+    </div>\`;
+  }
+
   $('#view').innerHTML = \`
-    <div class="panel"><h3>\u{1F3C6} Tornei a eliminazione diretta</h3>
+    <div class="panel"><h3>\u{1F3C6} Tornei</h3>
       <p class="muted" style="font-size:.82rem">Si gioca una sera: iscrizioni, sorteggio cieco, e avanti fino alla finale. Il tabellone \xE8 da <b>4, 8, 16 o 32</b>: a eliminazione diretta ogni turno dimezza, e con un numero diverso qualcuno passerebbe il turno senza giocare.</p>
       \${supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
         <input id="nt_disc" placeholder="Disciplina" style="width:130px">
+        <select id="nt_form" title="La forma del torneo">
+          <option value="ko">Eliminazione diretta</option>
+          <option value="classifica">Classifica a punti</option>
+          <option value="gironi">Gironi + tabellone</option>
+        </select>
         <select id="nt_posti"><option>4</option><option>8</option><option>16</option><option>32</option></select>
         <input id="nt_data" type="date">
         <button class="btn gold sm" id="nt_crea">+ Crea torneo</button>
@@ -14921,9 +15792,10 @@ VIEWS.tornei = async () => {
           <button class="btn ghost sm" id="ti_add">+ Iscrivi</button>
           \${tab.posti_liberi === 0 ? '<button class="btn gold sm" id="ti_sort">\u{1F3B2} Sorteggia il tabellone</button>' : '<span class="muted" style="font-size:.82rem">Il sorteggio si fa a tabellone pieno.</span>'}
         </div>\` : ''}
-      \${tab.torneo.stato !== 'iscrizioni' ? tab.turni.map(t => \`<div style="margin-top:12px">
+      \${tab.torneo.stato !== 'iscrizioni' && tab.torneo.formato !== 'classifica' ? tab.turni.map(t => \`<div style="margin-top:12px">
         <b style="color:var(--navy)">\${esc(t.nome)}</b>
         \${t.partite.map(partita).join('')}</div>\`).join('') : ''}
+      \${vistaFormato}
     </div>\` : ''}\`;
 
   if ($('#nt_crea')) $('#nt_crea').onclick = async () => {
@@ -14932,6 +15804,7 @@ VIEWS.tornei = async () => {
     try {
       const r = await api('/tornei', { method: 'POST', body: JSON.stringify({
         nome, disciplina: $('#nt_disc').value, posti: Number($('#nt_posti').value),
+        formato: $('#nt_form') ? $('#nt_form').value : 'ko',
         data: $('#nt_data').value, gestione: gest
       }) });
       window.__torneoAperto = r.id;
@@ -14956,6 +15829,82 @@ VIEWS.tornei = async () => {
     try { await api('/tornei/' + apertoId + '/sorteggia', { method: 'POST', body: '{}' }); }
     catch (e) { alert(e.message); return; }
     show('tornei');
+  };
+  if ($('#cp_add')) $('#cp_add').onclick = async () => {
+    const pt = ($('#cp_pt').value || '').trim();
+    if (pt === '') { alert('Scrivi quanti punti.'); return; }
+    try {
+      await api('/tornei/' + apertoId + '/punti', { method: 'POST', body: JSON.stringify({
+        iscritto_id: Number($('#cp_chi').value), punti: Number(pt), nota: $('#cp_nota').value
+      }) });
+    } catch (e) { alert(e.message); return; }
+    show('tornei');
+  };
+  if ($('#cp_chiudi')) $('#cp_chiudi').onclick = async () => {
+    if (!confirm('Chiudere il torneo? Il vincitore viene congelato e la classifica non si tocca piu\\u2019.')) return;
+    try { await api('/tornei/' + apertoId + '/chiudi', { method: 'POST', body: '{}' }); }
+    catch (e) {
+      /* IL PARI MERITO NON LO SCIOGLIE IL SISTEMA, e nemmeno un prompt() del browser: tastiera
+         di sistema, con le mani bagnate, davanti a chi aspetta il premio \u2014 e un nome digitato a
+         memoria si sbaglia. La scelta torna nella schermata, come tasti: uno per ciascuno di
+         quelli in testa. */
+      if (!e.aPariMerito || !e.aPariMerito.length) { alert(e.message); return; }
+      window.__torneoPari = { id: apertoId, chi: e.aPariMerito, testo: e.message };
+      show('tornei'); return;
+    }
+    window.__torneoPari = null;
+    show('tornei');
+  };
+  document.querySelectorAll('[data-tvinc]').forEach(b => b.onclick = async () => {
+    try { await api('/tornei/' + apertoId + '/chiudi', { method: 'POST', body: JSON.stringify({ vincitore: b.dataset.tvinc }) }); }
+    catch (e) { alert(e.message); return; }
+    window.__torneoPari = null;
+    show('tornei');
+  });
+  if ($('#gg_crea')) $('#gg_crea').onclick = async () => {
+    const n = Number($('#gg_n').value);
+    if (!confirm('Formare ' + n + ' gironi? Il calendario si genera una volta sola.')) return;
+    try { await api('/tornei/' + apertoId + '/gironi', { method: 'POST', body: JSON.stringify({ quanti: n }) }); }
+    catch (e) { alert(e.message); return; }
+    show('tornei');
+  };
+  /* L'esito dell'avvio si racconta per intero: il sorteggio con chi era in gara e chi e'
+     uscito, la dichiarazione con i nomi, e gli avvisi. Un sorteggio che nessuno vede e'
+     indistinguibile da un ordinamento nascosto. */
+  const avviaConAmmessi = async (ammessi) => {
+    if (!confirm('Avviare il tabellone? I gironi si chiudono qui: i risultati non si riscrivono piu\\u2019.')) return false;
+    try {
+      const r = await api('/tornei/' + apertoId + '/tabellone', {
+        method: 'POST', body: JSON.stringify(ammessi ? { ammessi } : {})
+      });
+      const righe = [];
+      if (r.sorteggio) righe.push('\\uD83C\\uDFB2 Sorteggio (' + r.sorteggio.motivo + '): fra ' + r.sorteggio.fra.join(', ') + ' \\u2192 ' + r.sorteggio.estratti.join(', '));
+      if (r.dichiarati) righe.push('Ammessi per dichiarazione: ' + r.dichiarati.join(', '));
+      if (r.avvisi && r.avvisi.length) righe.push(...r.avvisi);
+      if (righe.length) alert(righe.join('\\n'));
+      window.__torneoAmmessi = null;
+      return true;
+    } catch (e) {
+      if (!e.serve_dichiarazione || !e.in_bilico) { alert(e.message); return false; }
+      window.__torneoAmmessi = {
+        id: apertoId, testo: e.message, certi: e.certi || [],
+        in_bilico: e.in_bilico, da_scegliere: e.da_scegliere, scelti: []
+      };
+      return true;
+    }
+  };
+  if ($('#gg_tab')) $('#gg_tab').onclick = async () => { if (await avviaConAmmessi(null)) show('tornei'); };
+  document.querySelectorAll('[data-tamm]').forEach(b => b.onclick = () => {
+    const id = Number(b.dataset.tamm), s = window.__torneoAmmessi;
+    if (!s) return;
+    // Il tetto e' quanti posti ci sono: il tasto in piu' non si accende invece di far scegliere
+    // troppi e rifiutare dopo.
+    if (s.scelti.includes(id)) s.scelti = s.scelti.filter(x => x !== id);
+    else if (s.scelti.length < s.da_scegliere) s.scelti.push(id);
+    show('tornei');
+  });
+  if ($('#gg_amm_ok')) $('#gg_amm_ok').onclick = async () => {
+    if (await avviaConAmmessi(window.__torneoAmmessi.scelti)) show('tornei');
   };
   document.querySelectorAll('[data-vince]').forEach(b => b.onclick = async () => {
     const i = b.dataset.vince.indexOf('|');
@@ -15190,7 +16139,7 @@ VIEWS.campi = async () => {
       ])
     });
   });
-  const bl = blocchi.map(b => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+  const bl = blocchi.map(b => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--tratto)">
       <span>\u{1F6A7} <b>\${esc(b.campo_nome)}</b> \${esc(b.slot_da)}\u2013\${esc(b.slot_a)} <span class="muted">\${esc(b.motivo)}</span></span>
       <button class="btn danger sm" data-cbldel="\${b.id}">\u{1F5D1}</button></div>\`).join('');
   // Sette giorni come nell'app del socio: oggi, domani, poi giorno e mese. Non una tendina:
@@ -15792,7 +16741,7 @@ VIEWS.pianta = async () => {
   }).join('');
 
   const prenBox = \`<div class="panel"><b style="color:var(--navy)">Prenotazioni del turno</b>
-      <div style="margin-top:8px">\${(turnoDati.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+      <div style="margin-top:8px">\${(turnoDati.prenotazioni || []).map(p => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--tratto)">
         <span><b>\${esc(p.nome || '\u2014')}</b> <span class="muted">\xB7 \${p.persone}p \xB7 tavoli \${p.tavoli.join(', ')} \xB7 \${p.origine === 'crew' ? 'al banco' : 'app'}</span></span>
         <button class="btn ghost sm" data-pann="\${p.id}">Annulla</button></div>\`).join('') || '<p class="muted">Nessuna prenotazione per questo turno.</p>'}</div>
       <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
@@ -15915,7 +16864,7 @@ VIEWS.pianta = async () => {
     ? plateaHTML()
     : PIANTA.modo === 'disposizione'
     ? \`<div class="panel"><div id="p_canvas" style="position:relative;\${propAula}min-height:300px;border-radius:var(--r);
-      background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:var(--bordo) solid var(--line);overflow:hidden">
+      background:repeating-linear-gradient(45deg,#f2efe6,#f2efe6 12px,#eeeade 12px,#eeeade 24px);border:var(--bordo) solid var(--tratto);overflow:hidden">
       <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);font-size:.68rem;color:#9a917c;letter-spacing:2px">INGRESSO</div>
       \${box}
     </div></div>\`
@@ -15966,7 +16915,7 @@ VIEWS.pianta = async () => {
     if (!v) { alert('Verifica non disponibile per questo ambiente.'); return; }
     if (v.misure_mancanti) { alert('Prima scrivi le misure della sala nei parametri: larghezza e profondit\\u00e0 in metri.'); return; }
     const ok = !v.problemi.length;
-    const riga = (et, val) => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)"><span>\${et}</span><b>\${val}</b></div>\`;
+    const riga = (et, val) => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--tratto)"><span>\${et}</span><b>\${val}</b></div>\`;
     openModal(\`<h3 style="margin-top:0">\\ud83d\\udcd0 Ci sta davvero?</h3>
       <div style="background:\${ok ? '#eaf3ec' : '#fdecea'};border-left:5px solid \${ok ? '#2e6b45' : '#b14a35'};border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:10px">
         <b style="color:\${ok ? '#2e6b45' : '#8a2a20'}">\${esc((v.verdetto || '').charAt(0).toUpperCase() + (v.verdetto || '').slice(1))}</b>\${v.cosa_fare ? \`<div style="margin-top:6px">\${esc(v.cosa_fare)}</div>\` : ''}
@@ -16015,13 +16964,13 @@ VIEWS.pianta = async () => {
       // tavolo, da qualunque parte siano arrivate, e si chiudono insieme.
       const totaleTavolo = cs.reduce((t, c) => t + Number(c.totale || 0), 0);
       const daQr = cs.filter(c => c.canale === 'self').length;
-      const comandeHTML = cs.length ? \`<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px">
+      const comandeHTML = cs.length ? \`<div style="border-top:1px solid var(--tratto);padding-top:10px;margin-top:6px">
           <div class="row" style="justify-content:space-between;align-items:baseline">
             <b style="font-size:.86rem">Conto del tavolo</b>
             <b style="font-size:1.05rem;color:var(--navy)">\${eur(totaleTavolo)}</b>
           </div>
           <div class="muted aiuto" style="font-size:.78rem">\${cs.length} \${cs.length === 1 ? 'comanda' : 'comande'}\${daQr ? \` \xB7 \${daQr} dal QR, \${cs.length - daQr} dalla crew\` : ''} \u2014 si pagano insieme.</div>
-          \${cs.map(c => \`<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+          \${cs.map(c => \`<div style="padding:6px 0;border-bottom:1px solid var(--tratto)">
             <div class="row" style="justify-content:space-between"><b>#\${esc(String(c.numero))} \${c.canale === 'self' ? '\u{1F4F1}' : '\u{1F9FE}'}</b><span class="muted">\${esc(c.stato)} \xB7 \${eur(c.totale || 0)}</span></div>
             <div class="muted" style="font-size:.8rem">\${(c.righe || []).map(r => \`\${r.parent_riga_id ? '\u21B3 ' : r.qta + '\xD7 '}\${esc(r.nome)}\`).join(' \xB7 ')}</div>
             <div style="margin-top:4px">\${(c.righe || []).filter(r => !r.parent_riga_id).map(r => r.stato === 'stornata'
@@ -16072,7 +17021,7 @@ VIEWS.pianta = async () => {
                 : '<button class="btn navy sm" id="tv_pren">\u{1F464} Prenota</button>'}
         </div>
         \${comandeHTML}
-        \${stage ? '' : \`<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:6px">
+        \${stage ? '' : \`<div style="border-top:1px solid var(--tratto);padding-top:10px;margin-top:6px">
           <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
             <label class="muted" style="font-size:.8rem">Posti <input id="tv_p" type="number" min="1" value="\${t.posti}" style="width:62px"></label>
             <label class="muted" style="font-size:.8rem">Forma <select id="tv_f">\${forme.map(f => \`<option value="\${f}" \${t.forma === f ? 'selected' : ''}>\${f}</option>\`).join('')}</select></label>
@@ -16449,7 +17398,7 @@ function apriLezione(id) {
   const stato = s.completa ? '<span class="tag no">al completo</span>'
     : s.confermata ? '<span class="tag ok">confermata</span>'
     : \`<span class="tag" style="background:#f4ead6;color:#8a5a12">in attesa \xB7 mancano \${s.mancano}</span>\`;
-  const righe = (s.elenco || []).map(i => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+  const righe = (s.elenco || []).map(i => \`<div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--tratto)">
       <span>\${esc(i.nome || i.tessera_code || '\u2014')}</span>
       <button class="btn \${i.pagato ? 'ghost' : 'gold'} sm" data-fitpag="\${i.id}|\${i.pagato ? 0 : 1}">\${i.pagato ? '\u2713 pagato' : '\u{1F4B6} incassa'}</button>
     </div>\`).join('');
@@ -16732,24 +17681,151 @@ var ordina_default = `<!doctype html>
 <title>Ordina \xB7 Bussola</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2312324F'/%3E%3Cpath d='M16 6 L20 16 L16 26 L12 16 Z' fill='%23F4F1E9'/%3E%3C/svg%3E">
 <style>
-  :root{--navy:#12324F;--gold:#C9A227;--bg:#f3efe6;--line:#cbd2d8}
+/* ==============================================================================================
+   I TOKEN \u2014 un nome, un valore, un posto solo.
+   ==============================================================================================
+
+   Questo file lo includono tutti e quattro i front-end. Da qui in poi un colore non si scrive
+   piu' a mano dentro un \`:root\`: si prende da qui, o non esiste.
+
+   PERCHE'. Prima ogni front-end dichiarava la propria palette. Non era una scelta: era che
+   nessuno aveva un posto dove metterla in comune, quindi si copiava \u2014 e a ogni copia qualcosa
+   restava indietro. Il conto misurato, non guardato:
+
+     \xB7 il back office e il Crew avevano DUE \`:root\` nello stesso foglio. Il secondo vinceva e il
+       primo era morto, ma nessuno lo aveva tolto: chi apriva il file leggeva \`--navy:#12324F\`
+       e ci credeva, mentre il browser calcolava #102A43. Meta' delle divergenze che avevamo
+       messo a verbale erano di questo tipo: non esistevano sullo schermo.
+     \xB7 cinque nomi erano USATI e mai dichiarati \u2014 \`--danger\` cinque volte nel back office,
+       \`--muted\` quattro, \`--ok\` tre, \`--paper\` una, \`--verde\` una nel Crew. Una regola che
+       nomina una variabile inesistente non da' errore: diventa invalida e il colore lo eredita
+       dal genitore. La riga che doveva essere rossa non era rossa, e nessuno se n'era accorto.
+     \xB7 \`--line\` valeva il tratto nero (#101418) in tre front-end e un grigio azzurro (#cbd2d8)
+       nel quarto: lo stesso nome per due mestieri opposti. Quel nome qui non c'e' piu'.
+       Il bordo strutturale e' \`--tratto\`, la riga che separa e' \`--riga\`.
+
+   COME SI AGGIUNGE UN COLORE. Si aggiunge QUI, con un nome che dice il mestiere e non la tinta,
+   e si misura prima: \`node scripts/palette.mjs --proposta '#XXXXXX'\`. Se il valore esiste gia'
+   sotto un altro nome, si usa \`var()\` invece di riscrivere il numero \u2014 cosi' il legame resta
+   visibile e non si perde alla prima modifica.
+
+   LA MISURA. Il contrasto e' un rapporto (WCAG): 4.5 e' il minimo di legge, 7 la soglia che ci
+   siamo dati, perche' questa roba si guarda in spiaggia col sole in faccia e lo schermo al
+   minimo. I numeri qui sotto sono il rapporto con il BIANCO sopra.
+   ============================================================================================== */
+
+:root {
+  /* --- I fondi ------------------------------------------------------------------------------
+     La carta e' una sola. Prima erano tre creme quasi uguali con tre nomi diversi
+     (--paper #F4F1E9, --bg #f4f2ea nel back office, --bg #f3efe6 al tavolo): nessuno le
+     distingueva a occhio, e proprio per questo nessuno si accorgeva che erano diverse. */
+  --paper:#F4F1E9;
+  --card:#FFFFFF;
+
+  /* --- L'inchiostro e i grigi ---------------------------------------------------------------
+     --ink   il testo (18.5)
+     --mute  il testo secondario (9.13). Si chiamava anche \`--muted\` nel Crew, con un valore
+             diverso (#49525A, 7.96): due nomi per lo stesso mestiere sono gia' una divergenza,
+             perche' chi ne cambia uno non sa che esiste l'altro. Resta il piu' scuro. */
+  --ink:#101418;
+  --mute:#3c4a54;
+
+  /* --- I due tratti, che NON sono la stessa cosa --------------------------------------------
+     --tratto  il bordo che delimita un blocco: nero pieno, si vede controluce.
+     --riga    la riga che separa dentro un blocco: non taglia, accompagna.
+     --riga2   il filetto piu' chiaro, dentro le liste fitte.
+     Distinguerli e' il motivo per cui \`--line\` non esiste piu'. */
+  --tratto:#101418;
+  --riga:#E3E1D6;
+  --riga2:#DBD8D0;
+
+  /* --- I colori che dicono qualcosa ---------------------------------------------------------
+     --navy   l'azione. Blocchi pieni con testo bianco: 14.64.
+     --gold   l'accento e il bordo. NON e' un fondo con testo bianco sopra: 5.91 sta sotto la
+              soglia che ci siamo dati. Al tavolo era #C9A227 e ci stava scritto sopra in
+              bianco: 2.42, cioe' si indovinava. Adesso i pulsanti li' sono blocchi navy come
+              nelle altre tre app.
+     --teal   il servizio (campi, fitness): 8.99. Nel Crew era #256B65 (6.23).
+     --coral  il rifiuto, il negativo: 7.45. Non e' il rosso d'allarme.
+     --plum, --sage  le casate e le categorie.
+     --ok     il buon esito. */
+  --navy:#102A43;
+  --gold:#8a5a12;
+  --teal:#12524C;
+  --coral:#9E2B20;
+  --plum:#4b3d7a;
+  --sage:#2f5a2d;
+  --ok:#2e6b45;
+
+  /* --- Il rosso, che fa due mestieri e vuole due valori --------------------------------------
+     --rosso    IDENTITA': l'occhiello "STASERA", i filetti, i titoletti sul nero. Non ci va
+                mai testo bianco sopra: bianco su questo misura 4.20.
+     --rosso-b  AZIONE: il pulsante pieno. E' il piu' chiaro della stessa tinta che arriva a
+                7.33 col bianco sopra. A occhio e' lo stesso rosso; al sole e' la differenza
+                fra leggere e indovinare.
+     E la regola che vale piu' di entrambi: il rosso d'allarme non e' mai un colore d'azione.
+     Se il rosso vuol dire "questo tavolo ha bisogno di te" in una schermata e "premi qui" in
+     quella accanto, in sala piena si preme la cosa sbagliata. */
+  --rosso:#EC3013;
+  --rosso-b:#A81F0A;
+
+  /* --- Gli alias, dichiarati e non ricopiati -------------------------------------------------
+     Questi nomi esistevano gia' nel Crew e nel back office e valevano lo stesso colore di uno
+     qui sopra \u2014 scritto un'altra volta a mano. Scritti come \`var()\` il legame resta visibile:
+     cambiando il colore sopra cambiano anche loro, che e' quello che ci si aspetta. */
+  --accent:var(--navy);
+  --mid:var(--gold);
+  --no:var(--coral);
+  --danger:var(--coral);
+  --verde:var(--ok);
+
+  /* --- Le misure ----------------------------------------------------------------------------
+     --tap    l'area minima di tocco: 56 px e' la misura di un polpastrello. Al sole e con le
+              mani bagnate serve larga. Nel Crew non era dichiarata e ogni \`min-height:var(--tap)\`
+              era una regola senza effetto.
+     --r      il raggio. Squadrato, non tondo.
+     --bordo  il bordo strutturale: spesso, delimita davvero anche controluce.
+     --focus  l'anello di messa a fuoco, per chi naviga da tastiera. */
+  --tap:56px;
+  --r:4px;
+  --bordo:2px;
+  --focus:#0a66c2;
+}
+
+/* ==============================================================================================
+   QUELLO CHE QUESTO FILE NON HA ANCORA SISTEMATO, misurato.
+
+   I RAGGI scritti a mano, contati nei quattro fogli:
+     app soci   20 valori distinti (2px, 3px, 6px, 10px, 12px, 13px, 14px, 15px, 16px, 18px,
+                20px, 22px, 40px, 50%, 999px, piu' cinque forme composte)
+     Crew       11    back office  9    QR al tavolo  4
+   Collassarli su una scala di quattro voci sposta dei pixel in una quarantina di punti: e' un
+   lavoro con la sua misura prima e dopo, e non si fa insieme ai colori. Nel Crew e nel back
+   office, per giunta, buona parte di quei valori e' gia' morta \u2014 una regola con \`!important\`
+   li riporta tutti a \`var(--r)\`, e chi legge il foglio non lo vede.
+
+   LE SPAZIATURE non sono ancora una scala. Stesso discorso: prima si contano, poi si sposta.
+   ============================================================================================== */
+  /* Questa era l'unica delle quattro superfici che non parlava la lingua delle altre: un oro
+     tutto suo (#C9A227) usato come FONDO con scritto sopra in bianco \u2014 2.42 di contrasto, cioe'
+     al sole si indovinava \u2014 e un grigio azzurro al posto della riga. Adesso pesca dai token. */
   *{box-sizing:border-box}
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--navy)}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--paper);color:var(--navy)}
   header{background:linear-gradient(135deg,var(--navy),#1d4a6e);color:#fff;padding:16px 16px 14px;position:sticky;top:0;z-index:5}
   header .br{font-family:Georgia,serif;font-weight:700;font-size:1.2rem;letter-spacing:1px}
   header .sub{font-size:.72rem;letter-spacing:2px;color:#ffe1ac}
   header .punto{margin-top:6px;font-size:.95rem;font-weight:700}
   main{padding:14px 14px 130px;max-width:640px;margin:0 auto}
   .cat{font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--navy);font-size:.82rem;margin:14px 0 6px}
-  .item{background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
+  .item{background:#fff;border:1.5px solid var(--riga);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center}
   .item .info{flex:1}
   .item b{display:block}
   .item .desc{font-size:.78rem;color:#555}
   .item .alg{font-size:.7rem;color:#8a6d1f;font-style:italic}
   .item .pz{color:var(--gold);font-weight:800;white-space:nowrap}
-  .qbtn{border:1.5px solid var(--line);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.1rem;font-weight:800;color:var(--navy)}
+  .qbtn{border:1.5px solid var(--riga);background:#fff;border-radius:9px;width:34px;height:34px;font-size:1.1rem;font-weight:800;color:var(--navy)}
   .qty{min-width:20px;text-align:center;font-weight:800}
-  .cartbar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 14px;display:flex;gap:10px;align-items:center;box-shadow:0 -6px 18px rgba(0,0,0,.08)}
+  .cartbar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--riga);padding:12px 14px;display:flex;gap:10px;align-items:center;box-shadow:0 -6px 18px rgba(0,0,0,.08)}
   .cartbar .tot{flex:1;font-weight:800}
   .btn{border:none;border-radius:12px;padding:12px 16px;font-weight:800;font-size:1rem}
   .btn.gold{background:var(--gold);color:#fff}.btn.gold:disabled{opacity:.5}
@@ -16972,7 +18048,14 @@ window.Comanda = (function () {
     if (document.getElementById('cmd-css')) return;
     const st = document.createElement('style'); st.id = 'cmd-css';
     st.textContent = \`
-      .cmd{--c-navy:var(--navy,#12324F);--c-gold:var(--gold,#C9A227);--c-line:#cbd2d8}
+      /* LA QUINTA PALETTE, quella che nessuno aveva contato. Questo pezzo di comanda gira in
+         TRE app, e si portava dietro tre colori suoi: un ripiego navy #12324F e uno oro
+         #C9A227 (i valori vecchi del QR al tavolo, non quelli di nessuna app viva) e una riga
+         #cbd2d8 scritta a mano, senza nemmeno la variabile. Il ripiego e la parte peggiore:
+         non scatta mai finche tutto va bene, e quando scatta nessuno lo collega a qui.
+         Adesso i tre nomi sono legami, non copie.
+         (Niente apostrofi in questo commento: sta dentro una stringa a backtick.) */
+      .cmd{--c-navy:var(--navy);--c-gold:var(--gold);--c-line:var(--riga)}
       .cmd-tools{display:flex;gap:6px;margin-bottom:8px;align-items:center}
       .cmd-q{flex:1;min-width:140px;padding:9px 11px;border:1.5px solid var(--c-line);border-radius:10px;font-size:1rem}
       .cmd-qx{border:1.5px solid var(--c-line);background:#fff;border-radius:10px;width:38px;height:38px;font-weight:700;color:var(--c-navy)}
@@ -16992,7 +18075,11 @@ window.Comanda = (function () {
          usano TRE app: cambiato guardando solo il Crew.
          auto-fit con una larghezza minima risolve entrambe le cose: dove ci stanno tre colonne
          ne fa tre, dove ne sta una ne fa una, senza sapere niente della finestra. */
-      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 16px;align-items:start}
+      /* IL PAVIMENTO DELLA COLONNA NON PUO ESSERE PIU LARGO DELLA STANZA. Un minimo scritto in
+         pixel e ASSOLUTO: dentro un contenitore da 290 px una colonna col minimo a 300 resta 300
+         e sborda, portandosi dietro il prezzo e i tasti. Con min(100%, 300px) il minimo si
+         arrende alla larghezza vera del posto in cui si trova. */
+      .cmd-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px 16px;align-items:start}
       .cmd-col{min-width:0}
       /* Il blocco che sta sotto le tre colonne e le attraversa tutte.
          Prima era una griglia di CATEGORIE: con una sola categoria \u2014 "panini e fritti" \u2014 usciva
@@ -17003,7 +18090,12 @@ window.Comanda = (function () {
          sole, sopra comanda il 25% e non si passa MAI le quattro colonne. Nessuna media query:
          quel 25% appartiene al riquadro in cui il componente si trova, non alla finestra. */
       .cmd-larghi{grid-column:1/-1}
-      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25%,420px),1fr));gap:0 12px;align-items:start}
+      /* Stessa cosa, e qui faceva danno vero: 420 px di minimo dentro la lista di un telefono, che
+         al massimo ne ha 332. Le schede dei panini uscivano di 88 px dallo schermo e con loro il
+         prezzo e il piu; le bibite, che stanno in un altro blocco, restavano dentro. Risultato:
+         due colonne di prezzi a due altezze diverse nella stessa schermata, e i tasti dei panini
+         mezzi fuori. Misurato a 360, 390 e 430 px: sbordava a tutte e tre. */
+      .cmd-larghi .cmd-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,max(25%,420px)),1fr));gap:0 12px;align-items:start}
       .cmd-larghi .cmd-cat{grid-column:1/-1}
       .cmd-group{break-inside:auto}
       .cmd-group{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;margin-bottom:10px}
@@ -17017,7 +18109,7 @@ window.Comanda = (function () {
          la sola cosa che si allarga; tutto il resto sta sempre allo stesso posto. */
 .cmd-item{background:#fff;border:1.5px solid var(--c-line);border-radius:12px;padding:6px 10px;margin-bottom:8px;
   display:grid;grid-template-columns:1fr auto auto auto;gap:6px 8px;align-items:center}
-      .cmd-item.sel{border-color:var(--c-gold,#8a5f18);background:#fdfaf3}
+      .cmd-item.sel{border-color:var(--c-gold);background:#fdfaf3}
       .cmd-tap{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 2px;text-align:left;cursor:pointer;min-height:44px;font:inherit;color:inherit;min-width:0}
       .cmd-ico{font-size:1.5rem;line-height:1;flex:0 0 auto}
       .cmd-info{min-width:0}
@@ -17027,7 +18119,12 @@ window.Comanda = (function () {
          stessa specificita, e vince chi viene dopo \u2014 il box che regge il conteggio delle righe
          spariva. Misurato: nel blocco largo un panino arrivava a CINQUE righe e una scheda alta
          128 px accanto a una da 58. Le due regole ora sono una sola. */
-.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;color:var(--c-navy)}
+/* DUE RIGHE SEMPRE, anche quando il nome ne occupa una. Il tetto c era gia; mancava il
+         PAVIMENTO, e le schede venivano alte 58 px o 68 a seconda della lunghezza del nome:
+         scorrendo un listino, prezzo e tasti ballavano su e giu di dieci pixel. Lo spazio si
+         riserva, non si concede. In em e non in pixel, cosi segue il corpo del testo quando
+         il socio lo ingrandisce dai comandi di accessibilita. */
+.cmd-info>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;min-height:2.5em;color:var(--c-navy)}
       /* La combo usa la stessa intestazione della riga normale, ma non si aggiunge toccandola:
          prima bisogna scegliere cosa ci va dentro. Stessa forma, senza il gesto. */
       .cmd-fermo{cursor:default}
@@ -17398,6 +18495,9 @@ const TAVOLO = qs.get('t') || '';
 document.getElementById('punto').textContent = '\u{1F354} ' + PUNTO + (TAVOLO ? ' \xB7 Tavolo ' + TAVOLO : '');
 const eur = n => '\u20AC ' + (Number(n) || 0).toFixed(2);
 let COM = null;
+// Il listino resta a portata: serve a sapere se nel carrello c'e' qualcosa di alcolico, e
+// quella e' la sola cosa che cambia il percorso dell'ordine.
+let MENU = [];
 
 function etaLabel(m) { m = Number(m || 0); return m <= 0 ? '' : (m < 60 ? \`~\${m} min\` : \`~\${Math.round(m / 60 * 10) / 10} h\`); }
 function setBanner(html, cls) {
@@ -17436,8 +18536,24 @@ async function load() {
   // Il punto da cui si ordina lo dice il QR: senza, la pagina mostrava tutto il listino, Bar
   // compreso, anche a un tavolo del Garden.
   const zonaQR = /bar/i.test(PUNTO || '') ? 'bar' : 'garden';
-  try { menu = await (await fetch('/api/menu?zona=' + zonaQR)).json(); }
+  try { menu = await (await fetch('/api/menu?zona=' + zonaQR)).json(); MENU = Array.isArray(menu) ? menu : (menu.voci || []); }
   catch (e) { document.getElementById('menu').innerHTML = '<p class="muted">Men\xF9 non disponibile.</p>'; return; }
+  /* IL CARTELLO, DOVE SI ORDINA DAVVERO.
+     Quello di carta va appeso dietro al banco, ed e' un obbligo del locale. Ma chi ordina dal
+     telefono al tavolo il banco non lo guarda mai: l'avviso deve stare anche qui, sotto il
+     listino, dove sta la birra. Non un popup \u2014 un popup si chiude senza leggerlo, e quello che
+     si chiude senza leggere non e' un avviso, e' un fastidio. Compare solo se in questo punto
+     si servono alcolici: dove non ce ne sono, non serve a nessuno. */
+  if (MENU.some((m) => m.alcolico)) {
+    const c = document.createElement('div');
+    c.style.cssText = 'margin:16px 0 0;padding:11px 13px;border:1.5px solid var(--riga);border-radius:10px;background:#fff;font-size:.78rem;color:var(--mute);line-height:1.45';
+    c.innerHTML = '\\ud83d\\udd1e <b style="color:var(--ink)">Vietata la somministrazione di bevande alcoliche ai minori di 18 anni.</b>'
+      + '<br>Al ritiro pu\\u00f2 essere richiesto un documento di identit\\u00e0 se la maggiore et\\u00e0 non \\u00e8 manifesta.'
+      + '<br><span style="font-size:.72rem">Art. 14-ter L. 125/2001 \\u00b7 art. 689 c.p.</span>';
+    const m = document.getElementById('menu');
+    m.parentNode.insertBefore(c, m.nextSibling);
+  }
+
   // Step 0/1: carico il men\xF9 e lo rendo con il componente condiviso (stessa vista dello staff).
   COM = Comanda.create({
     mount: document.getElementById('menu'), menu, search: true,
@@ -17447,15 +18563,64 @@ async function load() {
     }
   });
 }
+/* IL FOGLIO DELLA DICHIARAZIONE. Una schermata sola, che compare solo se nel carrello c'e'
+   qualcosa di alcolico. Chi la annulla non perde l'ordine: torna indietro. Chi salta la
+   dichiarazione ordina lo stesso, e la verifica si fa al ritiro come prima \u2014 non si blocca
+   nessuno, si offre una strada piu' comoda a chi la vuole. */
+function chiediDichiarazione() {
+  return new Promise((risolvi) => {
+    const box = document.createElement('div');
+    box.className = 'ok show';
+    box.innerHTML = \`<div class="okbox" style="text-align:left">
+      <div style="font-size:1.6rem;text-align:center">\\ud83c\\udf7a</div>
+      <h2 style="font-size:1.05rem;margin:6px 0 8px">Ci sono bevande alcoliche</h2>
+      <p class="muted" style="font-size:.86rem;margin-bottom:10px">Non si servono sotto i 18 anni. Se lasci la tua tessera, al tavolo non ti verra\\u2019 chiesto nulla.</p>
+      <input id="dc_tess" placeholder="Numero di tessera" autocapitalize="characters" style="width:100%;padding:10px 12px;border:1.5px solid var(--riga);border-radius:9px;font-size:1rem">
+      <label style="display:flex;gap:9px;align-items:flex-start;margin-top:10px;font-size:.86rem">
+        <input type="checkbox" id="dc_ok" style="width:20px;height:20px;flex:0 0 auto;margin-top:1px">
+        <span id="dc_testo">Dichiaro che le bevande alcoliche di questo ordine sono per persone maggiorenni.</span>
+      </label>
+      <div class="row" style="gap:8px;margin-top:14px">
+        <button class="btn" id="dc_no" style="flex:1;background:#fff;border:1.5px solid var(--riga)">Ordina senza</button>
+        <button class="btn gold" id="dc_si" style="flex:1" disabled>Confermo</button>
+      </div>
+      <p class="muted" style="font-size:.76rem;margin-top:8px">\\u201cOrdina senza\\u201d va bene lo stesso: al ritiro potrebbe esserti chiesto un documento.</p>
+      <button class="btn" id="dc_ann" style="width:100%;margin-top:8px;background:none;color:#666">Torna all\\u2019ordine</button>
+    </div>\`;
+    document.body.appendChild(box);
+    const tess = box.querySelector('#dc_tess'), ok = box.querySelector('#dc_ok'), si = box.querySelector('#dc_si');
+    const agg = () => { si.disabled = !(ok.checked && tess.value.trim().length > 4); };
+    tess.oninput = agg; ok.onchange = agg;
+    const chiudi = (v) => { box.remove(); risolvi(v); };
+    si.onclick = () => chiudi({ tessera: tess.value.trim().toUpperCase(), dichiara: true });
+    box.querySelector('#dc_no').onclick = () => chiudi({ tessera: '', dichiara: false });
+    box.querySelector('#dc_ann').onclick = () => chiudi(null);
+  });
+}
+
 document.getElementById('send').onclick = async () => {
   const righe = COM ? COM.getRighe() : [];
   if (!righe.length) return;
   const tavInput = document.getElementById('so_tav');
   const tavolo = TAVOLO || (tavInput ? tavInput.value.trim() : '');
   if (!tavolo) { alert('Indica il numero del tavolo per inviare l\u2019ordine.'); if (tavInput) tavInput.focus(); return; }
+  const corpo = { punto: PUNTO, tavolo, righe };
+  /* SE CI SONO ALCOLICI, CHI ORDINA METTE IL SUO NOME.
+     Un minorenne dall'app non ordina: e' rifiutato all'origine. Quindi un ordine con alcolici
+     che parte da un tavolo l'ha fatto un adulto \u2014 e a quel punto tanto vale che lo dica lui,
+     con un tocco, invece che farlo chiedere alla crew davanti a tutti.
+     Senza un nome la dichiarazione non dichiara niente: la tessera si scrive qui, una volta.
+     Chi non vuole dichiarare non e' bloccato: l'ordine parte lo stesso e la verifica si fa al
+     ritiro, come prima. */
+  if (COM.getRighe().some((r) => (MENU.find((m) => m.id === r.menu_id) || {}).alcolico)) {
+    const d = await chiediDichiarazione();
+    if (d === null) { return; }
+    corpo.tessera_code = d.tessera || undefined;
+    corpo.dichiarazione_eta = d.dichiara;
+  }
   document.getElementById('send').disabled = true;
   let r;
-  try { r = await (await fetch('/api/self-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ punto: PUNTO, tavolo, righe }) })).json(); }
+  try { r = await (await fetch('/api/self-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })).json(); }
   catch (e) { alert('Invio non riuscito, riprova.'); document.getElementById('send').disabled = false; return; }
   if (!r.ok) { alert(r.error || 'Ordini momentaneamente non disponibili.'); document.getElementById('send').disabled = false; return; }
   document.getElementById('okn').textContent = '#' + r.numero;
@@ -17488,7 +18653,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.52.0" : "dev";
+var VERSION = true ? "6.57.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -17601,7 +18766,7 @@ import { Router } from "express";
       return new RegExp(posto.parole.split("|").map((s) => s.trim()).filter(Boolean).join("|"), "i").test(nome);
     }
     const ammessi = posto.ammessi || [];
-    if (ammessi.length) return ammessi.some((id) => String(id) === String(art.id));
+    if (ammessi.length) return ammessi.some((id2) => String(id2) === String(art.id));
     if (posto.categoria && String(posto.categoria).toLowerCase() !== String(art.categoria || "").toLowerCase()) return false;
     if (posto.prezzo_max != null && Number(art.prezzo) > Number(posto.prezzo_max) + 1e-3) return false;
     return true;
@@ -17609,10 +18774,10 @@ import { Router } from "express";
   function quanteVolte(combo, disponibili, articoli) {
     const posti = (combo.posti || []).slice();
     if (!posti.length) return { volte: 0, usa: {} };
-    const artDi = (id) => articoli.find((a) => String(a.id) === String(id));
+    const artDi = (id2) => articoli.find((a) => String(a.id) === String(id2));
     const candidati = posti.map((p) => ({
       posto: p,
-      quali: Object.keys(disponibili).filter((id) => copre2(p, artDi(id)))
+      quali: Object.keys(disponibili).filter((id2) => copre2(p, artDi(id2)))
     }));
     candidati.sort((a, b) => a.quali.length - b.quali.length);
     let volte = 0;
@@ -17621,7 +18786,7 @@ import { Router } from "express";
     for (; ; ) {
       const presi = [];
       for (const c of candidati) {
-        const scelto = c.quali.filter((id) => (resto[id] || 0) > 0).sort((x, y) => Number((artDi(y) || {}).prezzo || 0) - Number((artDi(x) || {}).prezzo || 0))[0];
+        const scelto = c.quali.filter((id2) => (resto[id2] || 0) > 0).sort((x, y) => Number((artDi(y) || {}).prezzo || 0) - Number((artDi(x) || {}).prezzo || 0))[0];
         if (!scelto) {
           presi.length = 0;
           break;
@@ -17631,7 +18796,7 @@ import { Router } from "express";
       }
       if (!presi.length) break;
       volte++;
-      for (const id of presi) usa[id] = (usa[id] || 0) + 1;
+      for (const id2 of presi) usa[id2] = (usa[id2] || 0) + 1;
     }
     return { volte, usa };
   }
@@ -17641,7 +18806,7 @@ import { Router } from "express";
       const k = String(r.menu_id);
       disponibili[k] = (disponibili[k] || 0) + (Number(r.qta) || 0);
     }
-    const artDi = (id) => (articoli || []).find((a) => String(a.id) === String(id));
+    const artDi = (id2) => (articoli || []).find((a) => String(a.id) === String(id2));
     const ordinate = (combos || []).slice().sort((a, b) => {
       const s = (c) => (c.posti || []).length;
       return s(b) - s(a);
@@ -17651,10 +18816,10 @@ import { Router } from "express";
       const { volte, usa } = quanteVolte(c, disponibili, articoli || []);
       if (!volte) continue;
       let pieno = 0;
-      for (const id of Object.keys(usa)) pieno += Number((artDi(id) || {}).prezzo || 0) * usa[id];
+      for (const id2 of Object.keys(usa)) pieno += Number((artDi(id2) || {}).prezzo || 0) * usa[id2];
       const sconto3 = Math.round((pieno - Number(c.prezzo || 0) * volte) * 100) / 100;
       if (sconto3 <= 0) continue;
-      for (const id of Object.keys(usa)) disponibili[id] -= usa[id];
+      for (const id2 of Object.keys(usa)) disponibili[id2] -= usa[id2];
       fuori.push({
         combo_id: c.id,
         nome: c.nome,
@@ -17849,6 +19014,13 @@ var CAPS_DELEGABILI = [
   // Cinema: cartellone, proiezioni, platea
 ];
 var CAPS_GESTORE_ONLY = [
+  "prepagata",
+  // Saldo e movimenti della prepagata di un socio. NON e' delegabile, ed e' una decisione:
+  // il saldo di una persona non lo legge chi sta al banco. Chi incassa non ha bisogno di
+  // SAPERE quanto c'e': ha bisogno di sapere se questa spesa passa, e quella risposta gliela
+  // da' il pagamento stesso — "saldo insufficiente", senza il numero.
+  // E' la stessa regola del tennis: un importo mostrato a chi non ha diritto di saperlo non
+  // diventa meno riservato solo perche' e' comodo averlo sott'occhio.
   "utenti_del",
   // cancellazione GDPR
   "discipline_del",
@@ -19819,6 +20991,7 @@ async function listino(campoId) {
 
 // server/tornei.js
 init_db();
+init_girone();
 var POSTI_AMMESSI = [4, 8, 16, 32];
 function mescola(v) {
   const a = v.slice();
@@ -19869,11 +21042,21 @@ async function registraRisultato2(partitaId, vincitore, punteggio) {
   const p = await db.prepare("SELECT * FROM tornei_ko_partite WHERE id=?").get(partitaId);
   if (!p) return { ok: false, error: "Partita non trovata" };
   if (!p.a_nome || !p.b_nome) return { ok: false, error: "Questa partita non ha ancora i due giocatori: mancano i risultati del turno prima." };
-  if (![p.a_nome, p.b_nome].includes(vincitore)) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(p.torneo_id);
+  const pariAmmesso = p.turno === 0 && Number(t.punti_pareggio) > 0;
+  if (vincitore === "pari" && !pariAmmesso) {
+    return { ok: false, error: p.turno === 0 ? "Questo torneo non prevede il pareggio: e\u0300 nato con zero punti per il pari." : "Nel tabellone non si pareggia: qualcuno deve passare il turno." };
+  }
+  if (vincitore !== "pari" && ![p.a_nome, p.b_nome].includes(vincitore)) {
     return { ok: false, error: `Il vincitore dev'essere uno dei due: ${p.a_nome} o ${p.b_nome}.` };
   }
+  if (p.turno === 0 && t.stato !== "gironi") return {
+    ok: false,
+    stato: true,
+    error: `Il girone ${p.girone || ""} e\u0300 chiuso: il tabellone e\u0300 stato formato su queste classifiche e non si riscrivono piu\u0300.`.replace("  ", " ")
+  };
   await db.prepare("UPDATE tornei_ko_partite SET vincitore=?, punteggio=?, giocata_at=? WHERE id=?").run(vincitore, punteggio || null, (/* @__PURE__ */ new Date()).toISOString(), p.id);
-  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(p.torneo_id);
+  if (p.turno === 0) return { ok: true, girone: p.girone };
   if (p.turno >= turniNecessari(t.posti)) {
     await db.prepare("UPDATE tornei_ko SET stato='concluso', vincitore=? WHERE id=?").run(vincitore, t.id);
     return { ok: true, finale: true, vincitore };
@@ -19900,6 +21083,295 @@ async function tabellone(torneoId) {
     posti_liberi: Math.max(0, Number(t.posti) - iscritti.length),
     turni: turni2,
     da_giocare: partite.filter((p) => p.a_nome && p.b_nome && !p.vincitore).length
+  };
+}
+async function classifica(torneoId) {
+  const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY id").all(torneoId);
+  const righe = await db.prepare("SELECT * FROM tornei_punti WHERE torneo_id=? ORDER BY id").all(torneoId);
+  const per = new Map(iscritti.map((i) => [i.id, { iscritto_id: i.id, nome: i.nome, punti: 0, inserimenti: 0 }]));
+  for (const r of righe) {
+    const v = per.get(r.iscritto_id);
+    if (!v) continue;
+    v.punti = Math.round((v.punti + Number(r.punti)) * 100) / 100;
+    v.inserimenti++;
+  }
+  const ord = [...per.values()].sort((a, b) => b.punti - a.punti || String(a.nome).localeCompare(String(b.nome)));
+  let pos = 0, ultimo = null;
+  return ord.map((r, i) => {
+    if (r.punti !== ultimo) {
+      pos = i + 1;
+      ultimo = r.punti;
+    }
+    return { ...r, posizione: pos };
+  });
+}
+async function aggiungiPunti({ torneoId, iscrittoId, punti, nota, data, operatore }) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.formato !== "classifica") return { ok: false, error: "Questo torneo non e\u0300 a classifica." };
+  if (t.stato === "concluso") return { ok: false, error: "Il torneo e\u0300 chiuso: la classifica non si tocca piu\u0300." };
+  const i = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE id=? AND torneo_id=?").get(iscrittoId, torneoId);
+  if (!i) return { ok: false, error: "Giocatore non iscritto a questo torneo" };
+  const p = Number(punti);
+  if (!Number.isFinite(p)) return { ok: false, error: "I punti non sono un numero." };
+  await db.prepare(
+    "INSERT INTO tornei_punti (torneo_id,iscritto_id,punti,nota,data,operatore) VALUES (?,?,?,?,?,?)"
+  ).run(torneoId, iscrittoId, p, nota || null, data || (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), operatore || null);
+  return { ok: true, classifica: await classifica(torneoId) };
+}
+async function chiudiClassifica(torneoId, vincitoreDichiarato) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.formato !== "classifica") return { ok: false, error: "Questo torneo non e\u0300 a classifica." };
+  if (t.stato === "concluso") return { ok: false, error: `Gi\xE0 chiuso: ha vinto ${t.vincitore || "\u2014"}.` };
+  const cl = await classifica(torneoId);
+  if (!cl.length) return { ok: false, error: "Non c'e\u0300 nessun iscritto: non si chiude un torneo vuoto." };
+  const primi = cl.filter((r) => r.posizione === 1);
+  let vincitore = primi[0].nome;
+  if (primi.length > 1) {
+    const ammessi = primi.map((r) => r.nome);
+    if (!vincitoreDichiarato) return {
+      ok: false,
+      serve_dichiarazione: true,
+      aPariMerito: ammessi,
+      error: `In testa ci sono ${ammessi.length} giocatori a ${primi[0].punti} punti: ${ammessi.join(", ")}. Dichiara tu chi ha vinto \u2014 il sistema non lo decide al posto tuo.`
+    };
+    if (!ammessi.includes(vincitoreDichiarato)) return {
+      ok: false,
+      error: `${vincitoreDichiarato} non e\u0300 fra quelli in testa: ${ammessi.join(", ")}.`
+    };
+    vincitore = vincitoreDichiarato;
+  }
+  await db.prepare("UPDATE tornei_ko SET stato='concluso', vincitore=?, chiuso_at=? WHERE id=?").run(vincitore, (/* @__PURE__ */ new Date()).toISOString(), torneoId);
+  return { ok: true, vincitore, classifica: cl };
+}
+var LETTERE = "ABCDEFGH".split("");
+function dividi(iscritti, quanti) {
+  const g = Array.from({ length: quanti }, () => []);
+  const m = mescola(iscritti);
+  m.forEach((x, i) => {
+    const giro = Math.floor(i / quanti);
+    const pos = giro % 2 === 0 ? i % quanti : quanti - 1 - i % quanti;
+    g[pos].push(x);
+  });
+  return g;
+}
+async function creaGironi(torneoId, quanti) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.formato !== "gironi") return { ok: false, error: "Questo torneo non e\u0300 a gironi." };
+  if (t.stato !== "iscrizioni") return { ok: false, error: "I gironi si formano una volta sola: questo torneo e\u0300 gi\xE0 partito." };
+  const n = Number(quanti);
+  if (!Number.isInteger(n) || n < 2 || n > 8) return { ok: false, error: "I gironi vanno da 2 a 8." };
+  const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY id").all(torneoId);
+  if (iscritti.length < n * 2) return { ok: false, error: `Con ${iscritti.length} iscritti non si fanno ${n} gironi: ne servono almeno ${n * 2}.` };
+  const gruppi = dividi(iscritti, n);
+  await db.prepare("DELETE FROM tornei_ko_partite WHERE torneo_id=?").run(torneoId);
+  let partite = 0;
+  for (let k = 0; k < n; k++) {
+    const lettera = LETTERE[k];
+    for (const x of gruppi[k]) await db.prepare("UPDATE tornei_ko_iscritti SET girone=? WHERE id=?").run(lettera, x.id);
+    const giornate = roundRobinRounds(gruppi[k]);
+    for (let g = 0; g < giornate.length; g++) {
+      for (let p = 0; p < giornate[g].length; p++) {
+        const [a, b] = giornate[g][p];
+        await db.prepare(
+          "INSERT INTO tornei_ko_partite (torneo_id,turno,posizione,girone,giornata,a_nome,b_nome,a_iscritto,b_iscritto) VALUES (?,0,?,?,?,?,?,?,?)"
+        ).run(torneoId, partite, lettera, g + 1, a.nome, b.nome, a.id, b.id);
+        partite++;
+      }
+    }
+  }
+  await db.prepare("UPDATE tornei_ko SET stato='gironi' WHERE id=?").run(torneoId);
+  return { ok: true, gironi: n, partite, riposi: gruppi.filter((x) => x.length % 2 === 1).length };
+}
+async function classificaGirone(torneoId, lettera) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND girone=? ORDER BY id").all(torneoId, lettera);
+  const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE torneo_id=? AND turno=0 AND girone=?").all(torneoId, lettera);
+  const r = new Map(iscritti.map((i) => [i.id, {
+    iscritto_id: i.id,
+    nome: i.nome,
+    girone: lettera,
+    giocate: 0,
+    vinte: 0,
+    pari: 0,
+    perse: 0,
+    punti: 0
+  }]));
+  for (const p of partite) {
+    if (!p.vincitore) continue;
+    const a = r.get(p.a_iscritto), b = r.get(p.b_iscritto);
+    if (!a || !b) continue;
+    a.giocate++;
+    b.giocate++;
+    if (p.vincitore === "pari") {
+      a.pari++;
+      b.pari++;
+      a.punti += t.punti_pareggio;
+      b.punti += t.punti_pareggio;
+    } else {
+      const vinc = p.vincitore === p.a_nome ? a : b, perd = p.vincitore === p.a_nome ? b : a;
+      vinc.vinte++;
+      perd.perse++;
+      vinc.punti += t.punti_vittoria;
+    }
+  }
+  return [...r.values()].map((x) => ({ ...x, media: x.giocate ? Math.round(x.punti / x.giocate * 1e3) / 1e3 : 0 })).sort((a, b) => b.punti - a.punti || b.media - a.media || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
+}
+async function qualificati(torneoId) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  const lettere = (await db.prepare("SELECT DISTINCT girone g FROM tornei_ko_iscritti WHERE torneo_id=? AND girone IS NOT NULL ORDER BY girone").all(torneoId)).map((x) => x.g);
+  const classifiche = [];
+  for (const l of lettere) classifiche.push(await classificaGirone(torneoId, l));
+  const q = Math.max(1, Number(t.qualificati_girone) || 2);
+  const perMedia = (a, b) => b.media - a.media || b.punti - a.punti;
+  const diretti = classifiche.flatMap((c) => c.slice(0, q));
+  const restanti = classifiche.flatMap((c) => c.slice(q)).sort(perMedia);
+  let posti = 2;
+  while (posti < diretti.length) posti *= 2;
+  const disponibili = diretti.length + restanti.length;
+  if (posti > disponibili) posti = Math.max(2, Math.pow(2, Math.floor(Math.log2(disponibili))));
+  const base = { posti, diretti, classifiche, restanti, ripescati: [], contesa: null, serve_dichiarazione: false, certi: [], in_bilico: [], oltre_il_taglio: [] };
+  if (diretti.length > posti) {
+    const posizioni = [...new Set(diretti.map((x) => x.posizione))].sort((a, b) => a - b);
+    const certi = [];
+    let inBilico = [], oltre = [];
+    for (const p of posizioni) {
+      const gruppo = diretti.filter((x) => x.posizione === p).sort(perMedia);
+      if (inBilico.length) {
+        oltre = oltre.concat(gruppo);
+        continue;
+      }
+      if (certi.length + gruppo.length <= posti) certi.push(...gruppo);
+      else inBilico = gruppo;
+    }
+    return { ...base, serve_dichiarazione: true, certi, in_bilico: inBilico, oltre_il_taglio: oltre, da_scegliere: posti - certi.length };
+  }
+  const quanti = posti - diretti.length;
+  if (quanti <= 0 || !restanti.length) return base;
+  const chiave = (x) => `${x.media}|${x.punti}`;
+  const ultimo = restanti[Math.min(quanti, restanti.length) - 1];
+  const aPari = restanti.filter((x) => chiave(x) === chiave(ultimo));
+  const sicuri = restanti.slice(0, quanti).filter((x) => chiave(x) !== chiave(ultimo));
+  if (aPari.length > quanti - sicuri.length) {
+    return { ...base, ripescati: sicuri, contesa: { fra: aPari, posti: quanti - sicuri.length } };
+  }
+  return { ...base, ripescati: restanti.slice(0, quanti) };
+}
+async function avviaTabellone(torneoId, opzioni = {}) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.formato !== "gironi") return { ok: false, error: "Questo torneo non e\u0300 a gironi." };
+  if (t.stato !== "gironi") return { ok: false, error: "Il tabellone si avvia una volta sola, a gironi finiti." };
+  const daGiocare = await db.prepare(
+    "SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND turno=0 AND vincitore IS NULL"
+  ).get(torneoId);
+  if (Number(daGiocare.n) > 0) return {
+    ok: false,
+    error: `Mancano ancora ${daGiocare.n} ${Number(daGiocare.n) === 1 ? "partita" : "partite"} dei gironi: il tabellone si fa quando le classifiche sono chiuse.`
+  };
+  const q = await qualificati(torneoId);
+  if (q.posti < 2) return { ok: false, error: "Non ci sono abbastanza qualificati per un tabellone." };
+  let ammessi, sorteggio = null, dichiarati = null;
+  if (q.serve_dichiarazione) {
+    const scelti = (opzioni.ammessi || []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    const unici = [...new Set(scelti)];
+    if (!unici.length) return {
+      ok: false,
+      serve_dichiarazione: true,
+      posti: q.posti,
+      certi: q.certi,
+      in_bilico: q.in_bilico,
+      oltre_il_taglio: q.oltre_il_taglio,
+      da_scegliere: q.da_scegliere,
+      error: `I qualificati sono ${q.diretti.length} e il tabellone piu\u0300 grande che i numeri permettono e\u0300 da ${q.posti}: ${q.da_scegliere} ${q.da_scegliere === 1 ? "posto" : "posti"} per ${q.in_bilico.length} giocatori a pari diritto. Dichiara tu chi entra \u2014 il sistema non manda a casa da solo chi si e\u0300 qualificato sul campo.`
+    };
+    if (unici.length !== q.da_scegliere) return {
+      ok: false,
+      serve_dichiarazione: true,
+      posti: q.posti,
+      certi: q.certi,
+      in_bilico: q.in_bilico,
+      oltre_il_taglio: q.oltre_il_taglio,
+      da_scegliere: q.da_scegliere,
+      error: `I posti da assegnare sono ${q.da_scegliere}, i giocatori indicati ${unici.length}.`
+    };
+    const ammissibili = new Map(q.in_bilico.map((x) => [x.iscritto_id, x]));
+    const fuoriElenco = unici.filter((n) => !ammissibili.has(n));
+    if (fuoriElenco.length) return {
+      ok: false,
+      serve_dichiarazione: true,
+      posti: q.posti,
+      certi: q.certi,
+      in_bilico: q.in_bilico,
+      oltre_il_taglio: q.oltre_il_taglio,
+      da_scegliere: q.da_scegliere,
+      error: `Si sceglie fra chi e\u0300 a pari diritto: ${q.in_bilico.map((x) => x.nome).join(", ")}.`
+    };
+    dichiarati = unici.map((n) => ammissibili.get(n));
+    ammessi = [...q.certi, ...dichiarati];
+  } else if (q.contesa) {
+    const estratti = mescola(q.contesa.fra).slice(0, q.contesa.posti);
+    sorteggio = {
+      motivo: "ripescaggio a pari merito",
+      fra: q.contesa.fra.map((x) => `${x.nome} (${x.girone}${x.posizione}, media ${x.media})`),
+      posti: q.contesa.posti,
+      estratti: estratti.map((x) => `${x.nome} (${x.girone}${x.posizione})`)
+    };
+    ammessi = [...q.diretti, ...q.ripescati, ...estratti];
+  } else {
+    ammessi = [...q.diretti, ...q.ripescati];
+  }
+  if (ammessi.length !== q.posti) return {
+    ok: false,
+    error: `Non torna il conto: ${ammessi.length} ammessi per ${q.posti} posti.`
+  };
+  const perMedia = (a, b) => b.media - a.media || b.punti - a.punti;
+  const teste = ammessi.filter((x) => x.posizione === 1).sort(perMedia);
+  const resto = ammessi.filter((x) => x.posizione !== 1).sort(perMedia);
+  const ordinati = [...teste, ...resto];
+  const coppie = [];
+  for (let i = 0; i < q.posti / 2; i++) coppie.push([ordinati[i], ordinati[q.posti - 1 - i]]);
+  const avvisi = [];
+  for (let i = 0; i < coppie.length; i++) {
+    if (coppie[i][0].girone !== coppie[i][1].girone) continue;
+    const alt = coppie.findIndex((c, k) => k !== i && c[1].girone !== coppie[i][0].girone && c[0].girone !== coppie[i][1].girone);
+    if (alt > -1) {
+      const x = coppie[i][1];
+      coppie[i][1] = coppie[alt][1];
+      coppie[alt][1] = x;
+    } else avvisi.push(`${coppie[i][0].nome} e ${coppie[i][1].nome} vengono dallo stesso girone ${coppie[i][0].girone}: con questi numeri non c'e\u0300 modo di evitarlo.`);
+  }
+  if (q.serve_dichiarazione) {
+    const fuori = [...q.in_bilico.filter((x) => !dichiarati.includes(x)), ...q.oltre_il_taglio];
+    if (fuori.length) avvisi.push(`Restano fuori dal tabellone: ${fuori.map((x) => `${x.nome} (${x.girone}${x.posizione})`).join(", ")}.`);
+  }
+  await db.prepare("DELETE FROM tornei_ko_partite WHERE torneo_id=? AND turno>0").run(torneoId);
+  for (let i = 0; i < coppie.length; i++) {
+    const [a, b] = coppie[i];
+    await db.prepare(
+      "INSERT INTO tornei_ko_partite (torneo_id,turno,posizione,a_nome,b_nome,a_iscritto,b_iscritto) VALUES (?,1,?,?,?,?,?)"
+    ).run(torneoId, i, a.nome, b.nome, a.iscritto_id, b.iscritto_id);
+  }
+  for (let turno = 2; turno <= Math.log2(q.posti); turno++) {
+    for (let i = 0; i < q.posti / Math.pow(2, turno); i++) {
+      await db.prepare("INSERT INTO tornei_ko_partite (torneo_id,turno,posizione) VALUES (?,?,?)").run(torneoId, turno, i);
+    }
+  }
+  await db.prepare("UPDATE tornei_ko SET posti=?, stato='sorteggiato' WHERE id=?").run(q.posti, torneoId);
+  return {
+    ok: true,
+    posti: q.posti,
+    /* L'ELENCO DICE CHI E' ENTRATO, non chi si era qualificato. Prima elencava tutti i diretti
+       anche quando due di loro non stavano nel tabellone: la risposta diceva "sei diretti" e
+       nel tabellone ce n'erano quattro. Un elenco che non corrisponde a quello che si vede
+       sullo schermo e' peggio di nessun elenco. */
+    diretti: ammessi.filter((x) => !(q.ripescati.includes(x) || sorteggio && q.contesa.fra.includes(x))).map((x) => `${x.nome} (${x.girone}${x.posizione})`),
+    ripescati: ammessi.filter((x) => q.ripescati.includes(x) || sorteggio && q.contesa.fra.includes(x)).map((x) => `${x.nome} (${x.girone}${x.posizione}, media ${x.media})`),
+    dichiarati: dichiarati && dichiarati.map((x) => `${x.nome} (${x.girone}${x.posizione})`),
+    sorteggio,
+    avvisi
   };
 }
 
@@ -20113,7 +21585,7 @@ async function componi({ soloAnteprima = true } = {}) {
     }
     const schierate = casate.filter((c) => c.membri.length >= minimo).map((c) => c.id);
     await db.prepare("UPDATE casate SET schierata=0").run();
-    for (const id of schierate) await db.prepare("UPDATE casate SET schierata=1 WHERE id=?").run(id);
+    for (const id2 of schierate) await db.prepare("UPDATE casate SET schierata=1 WHERE id=?").run(id2);
   }
   return esito;
 }
@@ -20227,7 +21699,7 @@ async function layoutPredefinito(ambiente = "garden") {
   const n = Math.max(1, Number(await par("garden_tavoli")) || 12);
   const postiTavolo = Math.max(1, Number(await par("garden_posti_per_tavolo")) || 4);
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'garden')").run("Standard");
-  const id = Number(info.lastInsertRowid);
+  const id2 = Number(info.lastInsertRowid);
   const Lm = Number(await par("garden_larghezza_m")) || 0;
   const Pm = Number(await par("garden_profondita_m")) || 0;
   const ingM = Number(await par("garden_ingombro_tavolo_m")) || 2;
@@ -20258,9 +21730,9 @@ async function layoutPredefinito(ambiente = "garden") {
     }
     x = Math.min(97, Math.max(3, x));
     y = Math.min(97, Math.max(3, y));
-    await ins.run(id, i + 1, postiTavolo, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)));
+    await ins.run(id2, i + 1, postiTavolo, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)));
   }
-  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
+  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id2);
 }
 async function layoutDelGiorno(data, ambiente = "garden") {
   if (data && (ambiente === "garden" || ambiente === "carta")) {
@@ -20273,13 +21745,13 @@ async function layoutDelGiorno(data, ambiente = "garden") {
 }
 async function creaSalaCarta() {
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'carta')").run("Sala 20 mq");
-  const id = Number(info.lastInsertRowid);
+  const id2 = Number(info.lastInsertRowid);
   const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,tipo) VALUES (?,?,?,?,?,?,?)");
-  await ins.run(id, 1, 4, "quadrato", 33, 58, "standard");
-  await ins.run(id, 2, 4, "quadrato", 67, 58, "standard");
-  await ins.run(id, 90, 0, "rettangolo", 50, 16, "arredo");
-  await ins.run(id, 91, 0, "quadrato", 12, 86, "arredo");
-  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
+  await ins.run(id2, 1, 4, "quadrato", 33, 58, "standard");
+  await ins.run(id2, 2, 4, "quadrato", 67, 58, "standard");
+  await ins.run(id2, 90, 0, "rettangolo", 50, 16, "arredo");
+  await ins.run(id2, 91, 0, "quadrato", 12, 86, "arredo");
+  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id2);
 }
 async function creaPlateaIniziale() {
   const perGarden = Math.max(1, Number(await par("stage_posti_standard")) || 48);
@@ -20288,10 +21760,10 @@ async function creaPlateaIniziale() {
   const bloccoG = Math.max(1, Number(await par("stage_blocco_garden")) || 4);
   const bloccoS = Math.max(0, Number(await par("stage_blocco_spettacolo")) || 2);
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,1,'stage')").run("Platea");
-  const id = Number(info.lastInsertRowid);
+  const id2 = Number(info.lastInsertRowid);
   const perFila = 10;
   const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,tipo,quota) VALUES (?,?,?,?,?,?,?,?)");
-  await ins.run(id, 99, 0, "rettangolo", 50, 8, "arredo", null);
+  await ins.run(id2, 99, 0, "rettangolo", 50, 8, "arredo", null);
   const seq = [];
   for (let i = 0; i < primaFila; i++) seq.push({ tipo: "standard", quota: "over70" });
   let g = 0;
@@ -20305,9 +21777,9 @@ async function creaPlateaIniziale() {
     const col = i % perFila, fila = Math.floor(i / perFila);
     const x = (col + 1) / (perFila + 1) * 100;
     const y = 22 + fila / Math.max(1, file - 1) * 70;
-    await ins.run(id, i + 1, 1, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)), seq[i].tipo, seq[i].quota);
+    await ins.run(id2, i + 1, 1, "quadrato", Number(x.toFixed(1)), Number(y.toFixed(1)), seq[i].tipo, seq[i].quota);
   }
-  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id);
+  return await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(id2);
 }
 async function tavoliDi(layoutId) {
   const rows = await db.prepare("SELECT * FROM tavoli WHERE layout_id=? ORDER BY numero").all(layoutId);
@@ -21091,11 +22563,20 @@ init_mail();
 init_db();
 init_parametri();
 init_auth();
+function statoEta(socio) {
+  if (!socio) return "sconosciuta";
+  if (["under14", "minore"].includes(String(socio.tipo_profilo || ""))) return "minorenne";
+  if (socio.tutore_id) return "minorenne";
+  const d = socio.data_nascita ? (/* @__PURE__ */ new Date(String(socio.data_nascita).slice(0, 10) + "T12:00:00Z")).getTime() : NaN;
+  if (!Number.isFinite(d)) return "sconosciuta";
+  return (Date.now() - d) / 315576e5 < 18 ? "minorenne" : "maggiorenne";
+}
+var minorennita = (socio) => {
+  const s = statoEta(socio);
+  return s === "sconosciuta" ? null : s === "minorenne";
+};
 function eMinorenne(socio) {
-  if (!socio?.data_nascita) return false;
-  const nato = (/* @__PURE__ */ new Date(socio.data_nascita + "T00:00:00Z")).getTime();
-  if (!Number.isFinite(nato)) return false;
-  return (Date.now() - nato) / 315576e5 < 18;
+  return statoEta(socio) === "minorenne";
 }
 async function statoPrepagata(socio) {
   const accesa = String(await par("tessera_prepagata")) === "true" || await par("tessera_prepagata") === true;
@@ -21118,7 +22599,7 @@ async function saldo(socioId) {
 async function muovi({ socioId, tipo, importo, causale, comandaId = null, operatore = null }) {
   const prima = await saldo(socioId);
   const dopo = Math.round((prima + Number(importo)) * 100) / 100;
-  if (dopo < -1e-3) return { ok: false, error: `Saldo insufficiente: ci sono ${prima.toFixed(2)} \u20AC.`, saldo: prima };
+  if (dopo < -1e-3) return { ok: false, error: "Saldo insufficiente sulla prepagata.", saldo: prima, insufficiente: true };
   await db.prepare(
     "INSERT INTO tessera_movimenti (socio_id,tipo,importo,saldo_dopo,causale,comanda_id,operatore) VALUES (?,?,?,?,?,?,?)"
   ).run(socioId, tipo, Number(importo), dopo, causale || null, comandaId, operatore);
@@ -21206,13 +22687,13 @@ var VINCOLI = {
     { tabella: "tavoli_giorni", colonna: "layout_id", etichetta: "giornate che la usano" }
   ]
 };
-async function rami(entita, id) {
+async function rami(entita, id2) {
   const regole = VINCOLI[entita] || [];
   const out = [];
   for (const r of regole) {
     try {
       const dove = `${r.colonna}=?` + (r.soloSe ? ` AND (${r.soloSe})` : "");
-      const q = await db.prepare(`SELECT COUNT(*) n FROM ${r.tabella} WHERE ${dove}`).get(id);
+      const q = await db.prepare(`SELECT COUNT(*) n FROM ${r.tabella} WHERE ${dove}`).get(id2);
       const n = Number(q?.n || 0);
       if (n > 0) out.push({ tabella: r.tabella, etichetta: r.etichetta, quanti: n });
     } catch (_) {
@@ -21224,19 +22705,19 @@ function messaggio(cosa, blocchi) {
   const elenco = blocchi.map((b) => `${b.quanti} ${b.etichetta}`).join(", ");
   return `Non posso eliminare ${cosa}: prima vanno rimossi ${elenco}.`;
 }
-async function bloccaSeCollegato(res, entita, id, cosa) {
-  const blocchi = await rami(entita, id);
+async function bloccaSeCollegato(res, entita, id2, cosa) {
+  const blocchi = await rami(entita, id2);
   if (!blocchi.length) return false;
   res.status(409).json({ error: messaggio(cosa, blocchi), blocchi });
   return true;
 }
 
 // server/geo.js
-function daGradi(testo) {
+function daGradi(testo2) {
   const re = /(\d{1,3})[°\s]+(\d{1,2})['\u2032\s]+([\d.]+)["\u2033\s]*([NSEWOns])/g;
   const trovati = [];
   let m;
-  while ((m = re.exec(testo)) !== null) {
+  while ((m = re.exec(testo2)) !== null) {
     const val = Number(m[1]) + Number(m[2]) / 60 + Number(m[3]) / 3600;
     const dir = m[4].toUpperCase();
     trovati.push({ val: dir === "S" || dir === "W" || dir === "O" ? -val : val, dir });
@@ -21310,10 +22791,10 @@ function leggiCoordinate(input) {
   return null;
 }
 function leggiEmbed(input) {
-  const testo = String(input || "").trim();
-  if (!testo) return null;
-  const m = testo.match(/src\s*=\s*["']([^"']+)["']/i);
-  const url2 = (m ? m[1] : testo).trim();
+  const testo2 = String(input || "").trim();
+  if (!testo2) return null;
+  const m = testo2.match(/src\s*=\s*["']([^"']+)["']/i);
+  const url2 = (m ? m[1] : testo2).trim();
   if (!/^https:\/\/(www\.)?google\.[a-z.]+\/maps\/embed\?/i.test(url2)) return null;
   const lng = url2.match(/!2d(-?\d+(?:\.\d+)?)/);
   const lat = url2.match(/!3d(-?\d+(?:\.\d+)?)/);
@@ -21451,7 +22932,7 @@ var adminRouter = asyncify(Router());
 adminRouter.post("/login", async (req, res) => {
   const { username, password } = req.body || {};
   const u = await db.prepare("SELECT * FROM utenti_admin WHERE username=?").get(username || "");
-  if (!u || !verifyPassword(password || "", u.password_hash)) {
+  if (!u || !await verifyPasswordAsync(password || "", u.password_hash)) {
     audit(username || "?", "login_fallito", "utenti_admin", u?.id ?? "");
     return res.status(401).json({ error: "Credenziali non valide" });
   }
@@ -21637,17 +23118,17 @@ adminRouter.get("/soci/:id/export", requireCap("utenti"), async (req, res) => {
   res.json({ socio: s, prenotazioni, convocazioni, proposte });
 });
 adminRouter.delete("/soci/:id", requireCap("utenti_del"), async (req, res) => {
-  const id = req.params.id;
-  const s = await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(id);
+  const id2 = req.params.id;
+  const s = await db.prepare("SELECT tessera_code FROM soci WHERE id=?").get(id2);
   if (!s) return res.status(404).json({ error: "Socio non trovato" });
-  await db.prepare("DELETE FROM convocazioni WHERE socio_id=?").run(id);
-  await db.prepare("DELETE FROM prenotazioni WHERE socio_id=?").run(id);
-  await db.prepare("DELETE FROM notifiche WHERE socio_id=?").run(id);
-  await db.prepare("UPDATE proposte SET socio_id=NULL WHERE socio_id=?").run(id);
-  await db.prepare("UPDATE serate_prenotazioni SET socio_id=NULL WHERE socio_id=?").run(id);
-  await db.prepare("DELETE FROM soci WHERE tutore_id=?").run(id);
-  await db.prepare("DELETE FROM soci WHERE id=?").run(id);
-  audit(req.adminUser.username, "cancella_gdpr", "soci", id, s.tessera_code);
+  await db.prepare("DELETE FROM convocazioni WHERE socio_id=?").run(id2);
+  await db.prepare("DELETE FROM prenotazioni WHERE socio_id=?").run(id2);
+  await db.prepare("DELETE FROM notifiche WHERE socio_id=?").run(id2);
+  await db.prepare("UPDATE proposte SET socio_id=NULL WHERE socio_id=?").run(id2);
+  await db.prepare("UPDATE serate_prenotazioni SET socio_id=NULL WHERE socio_id=?").run(id2);
+  await db.prepare("DELETE FROM soci WHERE tutore_id=?").run(id2);
+  await db.prepare("DELETE FROM soci WHERE id=?").run(id2);
+  audit(req.adminUser.username, "cancella_gdpr", "soci", id2, s.tessera_code);
   res.json({ ok: true });
 });
 adminRouter.put("/casate/:id/punti", requireCap("casate"), async (req, res) => {
@@ -21692,8 +23173,8 @@ adminRouter.post("/push/broadcast", requireCap("eventi"), async (req, res) => {
   const soci = await db.prepare(`SELECT id FROM soci WHERE notifiche_push=1 AND attivo=1 ${dove}`).all(...args);
   const ids = soci.map((s) => s.id);
   const insN = db.prepare("INSERT INTO notifiche (socio_id,canale,tipo,titolo,corpo) VALUES (?,?,?,?,?)");
-  for (const id of ids) {
-    await insN.run(id, "push", "sistema", titolo, corpo || null);
+  for (const id2 of ids) {
+    await insN.run(id2, "push", "sistema", titolo, corpo || null);
   }
   let inviati = 0;
   try {
@@ -22536,8 +24017,8 @@ adminRouter.get("/combo", requireCap("menu"), async (req, res) => {
     for (const p of posti) {
       const amm = await db.prepare("SELECT menu_id FROM combo_ammessi WHERE posto_id=?").all(p.id).catch(() => []);
       p.ammessi = amm.map((x) => x.menu_id);
-      p.pieno = p.ammessi.reduce((max, id) => {
-        const a = art.find((x) => x.id === id);
+      p.pieno = p.ammessi.reduce((max, id2) => {
+        const a = art.find((x) => x.id === id2);
         return a && Number(a.prezzo) > max ? Number(a.prezzo) : max;
       }, 0);
     }
@@ -22592,8 +24073,8 @@ adminRouter.put("/combo/posti/:id", requireCap("menu"), async (req, res) => {
   if (b.etichetta) await db.prepare("UPDATE combo_posti SET etichetta=? WHERE id=?").run(String(b.etichetta).trim(), p.id);
   if (Array.isArray(b.ammessi)) {
     await db.prepare("DELETE FROM combo_ammessi WHERE posto_id=?").run(p.id);
-    for (const id of b.ammessi.map(Number).filter(Boolean))
-      await db.prepare("INSERT OR IGNORE INTO combo_ammessi (posto_id,menu_id) VALUES (?,?)").run(p.id, id);
+    for (const id2 of b.ammessi.map(Number).filter(Boolean))
+      await db.prepare("INSERT OR IGNORE INTO combo_ammessi (posto_id,menu_id) VALUES (?,?)").run(p.id, id2);
   }
   res.json({ ok: true });
 });
@@ -22624,8 +24105,8 @@ adminRouter.put("/menu/combo/posti/:id", requireCap("menu"), async (req, res) =>
   await db.prepare("UPDATE menu_combo_posti SET etichetta=?,categoria=?,prezzo_max=? WHERE id=?").run(String(b.etichetta || p.etichetta), b.categoria ?? p.categoria, b.prezzo_max === "" || b.prezzo_max == null ? null : Number(b.prezzo_max), p.id);
   if (Array.isArray(b.ammessi)) {
     await db.prepare("DELETE FROM menu_combo_ammessi WHERE posto_id=?").run(p.id);
-    for (const id of b.ammessi.map(Number).filter(Boolean))
-      await db.prepare("INSERT OR IGNORE INTO menu_combo_ammessi (posto_id,menu_id) VALUES (?,?)").run(p.id, id);
+    for (const id2 of b.ammessi.map(Number).filter(Boolean))
+      await db.prepare("INSERT OR IGNORE INTO menu_combo_ammessi (posto_id,menu_id) VALUES (?,?)").run(p.id, id2);
   }
   res.json({ ok: true, posti: await postiCombo(p.combo_id) });
 });
@@ -22682,7 +24163,7 @@ adminRouter.get("/registro", requireCap("comande"), async (req, res) => {
 adminRouter.get("/registro/storia", requireCap("comande"), async (req, res) => {
   res.json(await storiaDi(String(req.query.servizio || ""), String(req.query.riferimento || "")));
 });
-adminRouter.get("/tessera/:code/saldo", requireCap("comande"), async (req, res) => {
+adminRouter.get("/tessera/:code/saldo", requireCap("prepagata"), async (req, res) => {
   const socio = await db.prepare("SELECT * FROM soci WHERE upper(tessera_code)=?").get(String(req.params.code).toUpperCase());
   if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
   const st = await statoPrepagata(socio);
@@ -23079,10 +24560,10 @@ adminRouter.post("/menu/deduci-punto", requireCap("menu"), async (req, res) => {
 });
 adminRouter.put("/menu/:id/magazzino", requireCap("menu"), async (req, res) => {
   const b = req.body || {};
-  const id = b.magazzino_id ? Number(b.magazzino_id) : null;
+  const id2 = b.magazzino_id ? Number(b.magazzino_id) : null;
   const q = Math.max(0, Number(b.consumo) || 1);
-  await db.prepare("UPDATE menu_articoli SET magazzino_id=?, consumo=? WHERE id=?").run(id, q, req.params.id);
-  audit(req.adminUser.username, "collega_magazzino", "menu_articoli", req.params.id, id ? `articolo ${id} \xD7 ${q}` : "scollegato");
+  await db.prepare("UPDATE menu_articoli SET magazzino_id=?, consumo=? WHERE id=?").run(id2, q, req.params.id);
+  audit(req.adminUser.username, "collega_magazzino", "menu_articoli", req.params.id, id2 ? `articolo ${id2} \xD7 ${q}` : "scollegato");
   res.json({ ok: true });
 });
 adminRouter.delete("/menu/:id", requireCap("menu"), async (req, res) => {
@@ -23091,10 +24572,10 @@ adminRouter.delete("/menu/:id", requireCap("menu"), async (req, res) => {
   audit(req.adminUser.username, "cancella", "menu_articoli", req.params.id);
   res.json({ ok: true });
 });
-async function comandaConRighe(id) {
-  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id);
+async function comandaConRighe(id2) {
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(id2);
   if (!c) return null;
-  c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(id);
+  c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(id2);
   return c;
 }
 async function chiudiComandeAbbandonate() {
@@ -23169,7 +24650,42 @@ adminRouter.get("/comande", requireCap("comande"), async (req, res) => {
   else if (stato) rows = await db.prepare("SELECT * FROM comande WHERE stato=? ORDER BY id DESC LIMIT 100").all(stato);
   else rows = ordinaCoda(await db.prepare("SELECT * FROM comande WHERE stato NOT IN ('chiusa','annullata') ORDER BY id").all());
   for (const c of rows) c.righe = await db.prepare("SELECT * FROM comanda_righe WHERE comanda_id=? ORDER BY id").all(c.id);
+  const cache2 = /* @__PURE__ */ new Map();
+  for (const c of rows) {
+    if (!c.socio_id) {
+      c.eta = "sconosciuta";
+      continue;
+    }
+    if (!cache2.has(c.socio_id)) cache2.set(c.socio_id, await db.prepare(
+      "SELECT nome,cognome,data_nascita,tipo_profilo,tutore_id FROM soci WHERE id=?"
+    ).get(c.socio_id));
+    const so = cache2.get(c.socio_id);
+    c.socio_nome = so ? `${so.nome} ${so.cognome || ""}`.trim() : null;
+    c.eta = statoEta(so);
+  }
   res.json(rows);
+});
+adminRouter.put("/comande/:id/eta", requireCap("comande"), async (req, res) => {
+  const esito = ["documento", "rifiutato"].includes(req.body?.esito) ? req.body.esito : null;
+  if (!esito) return res.status(400).json({ error: "Esito non riconosciuto." });
+  const c = await db.prepare("SELECT * FROM comande WHERE id=?").get(req.params.id);
+  if (!c) return res.status(404).json({ error: "Comanda non trovata" });
+  if (!Number(c.verifica_eta)) return res.status(409).json({ error: "Questa comanda non chiedeva nessuna verifica." });
+  if (c.eta_esito) return res.status(409).json({ error: `Gi\xE0 registrato: ${c.eta_esito} da ${c.eta_operatore || "?"}.` });
+  const ora = (/* @__PURE__ */ new Date()).toISOString();
+  await db.prepare("UPDATE comande SET eta_esito=?, eta_operatore=?, eta_at=? WHERE id=?").run(esito, req.adminUser.username, ora, c.id);
+  await registra({
+    fatto: esito === "documento" ? "eta_documento_verificato" : "eta_servizio_rifiutato",
+    servizio: "comande",
+    riferimento: c.id,
+    socio_id: c.socio_id ?? null,
+    autore: req.adminUser.username,
+    canale: "crew",
+    quando: ora,
+    dettaglio: { numero: c.numero, punto: c.punto, tavolo: c.riferimento }
+  });
+  audit(req.adminUser.username, esito === "documento" ? "eta_verificata" : "eta_rifiutata", "comande", c.id);
+  res.json({ ok: true, esito, operatore: req.adminUser.username, at: ora });
 });
 adminRouter.post("/comande", requireCap("comande"), async (req, res) => {
   const b = req.body || {};
@@ -23390,8 +24906,8 @@ adminRouter.put("/comande/righe/:rigaId/storna", requireCap("comande"), async (r
   if (!motivo) return res.status(400).json({ error: "Scrivi il motivo dello storno: e' quello che serve davanti a una contestazione." });
   const figlie = await db.prepare("SELECT * FROM comanda_righe WHERE parent_riga_id=?").all(r.id);
   const ids = [r.id].concat(figlie.map((f) => f.id));
-  for (const id of ids) {
-    await db.prepare("UPDATE comanda_righe SET stato='stornata', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo, req.adminUser.username, id);
+  for (const id2 of ids) {
+    await db.prepare("UPDATE comanda_righe SET stato='stornata', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo, req.adminUser.username, id2);
   }
   const stornato = Number(r.prezzo) * Number(r.qta) + figlie.reduce((t, f) => t + Number(f.prezzo) * Number(f.qta), 0);
   await db.prepare("UPDATE comande SET totale=MAX(0, totale-?), updated_at=? WHERE id=?").run(stornato, (/* @__PURE__ */ new Date()).toISOString(), r.comanda_id);
@@ -23410,17 +24926,17 @@ adminRouter.put("/comande/righe/:rigaId/storna", requireCap("comande"), async (r
   audit(req.adminUser.username, "storna_riga", "comanda_righe", r.id, motivo);
   res.json(await comandaConRighe(r.comanda_id));
 });
-async function avvisaLaSala(comandaId, testo) {
-  await db.prepare("UPDATE comande SET avviso_cucina=?, avviso_cucina_at=? WHERE id=?").run(testo, (/* @__PURE__ */ new Date()).toISOString(), comandaId);
+async function avvisaLaSala(comandaId, testo2) {
+  await db.prepare("UPDATE comande SET avviso_cucina=?, avviso_cucina_at=? WHERE id=?").run(testo2, (/* @__PURE__ */ new Date()).toISOString(), comandaId);
 }
 adminRouter.post("/comande/:id/avvisa-sala", requireAnyCap("comande", "cucina"), async (req, res) => {
   const c = await db.prepare("SELECT id,stato FROM comande WHERE id=?").get(req.params.id);
   if (!c) return res.status(404).json({ error: "Comanda non trovata" });
   if (["chiusa", "annullata"].includes(c.stato)) return res.status(409).json({ error: "La comanda \xE8 gi\xE0 chiusa: alla sala non serve piu\u2019." });
-  const testo = String(req.body?.testo || "").trim().slice(0, 300);
-  if (!testo) return res.status(400).json({ error: "Scrivi cosa deve sapere la sala." });
-  await avvisaLaSala(c.id, testo);
-  audit(req.adminUser.username, "avvisa_sala", "comande", c.id, testo);
+  const testo2 = String(req.body?.testo || "").trim().slice(0, 300);
+  if (!testo2) return res.status(400).json({ error: "Scrivi cosa deve sapere la sala." });
+  await avvisaLaSala(c.id, testo2);
+  audit(req.adminUser.username, "avvisa_sala", "comande", c.id, testo2);
   res.json({ ok: true });
 });
 adminRouter.put("/comande/:id/avviso-letto", requireCap("comande"), async (req, res) => {
@@ -23438,8 +24954,8 @@ adminRouter.put("/comande/righe/:rigaId/non-servita", requireCap("comande"), asy
   const motivo = String(req.body?.motivo || "").trim();
   if (!motivo) return res.status(400).json({ error: "Scrivi cosa e' successo: e' quello che spiega lo sfrido a fine mese." });
   const figlie = await db.prepare("SELECT * FROM comanda_righe WHERE parent_riga_id=?").all(r.id);
-  for (const id of [r.id].concat(figlie.map((f) => f.id))) {
-    await db.prepare("UPDATE comanda_righe SET stato='non_servita', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo, req.adminUser.username, id);
+  for (const id2 of [r.id].concat(figlie.map((f) => f.id))) {
+    await db.prepare("UPDATE comanda_righe SET stato='non_servita', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo, req.adminUser.username, id2);
   }
   const tolto = Number(r.prezzo) * Number(r.qta) + figlie.reduce((t, f) => t + Number(f.prezzo) * Number(f.qta), 0);
   await db.prepare("UPDATE comande SET totale=MAX(0, totale-?), updated_at=? WHERE id=?").run(tolto, (/* @__PURE__ */ new Date()).toISOString(), r.comanda_id);
@@ -23466,8 +24982,8 @@ adminRouter.post("/comande/righe/:rigaId/sostituisci", requireCap("comande"), as
   const motivo = String(req.body?.motivo || "").trim() || "articolo esaurito";
   const qta = Math.max(1, Math.round(Number(req.body?.qta) || r.qta));
   const figlie = await db.prepare("SELECT * FROM comanda_righe WHERE parent_riga_id=?").all(r.id);
-  for (const id of [r.id].concat(figlie.map((f) => f.id))) {
-    await db.prepare("UPDATE comanda_righe SET stato='stornata', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo + " \u2192 sostituito con " + m.nome, req.adminUser.username, id);
+  for (const id2 of [r.id].concat(figlie.map((f) => f.id))) {
+    await db.prepare("UPDATE comanda_righe SET stato='stornata', motivo_storno=?, stornata_da=? WHERE id=?").run(motivo + " \u2192 sostituito con " + m.nome, req.adminUser.username, id2);
   }
   const tolto = Number(r.prezzo) * Number(r.qta) + figlie.reduce((t, f) => t + Number(f.prezzo) * Number(f.qta), 0);
   await db.prepare("INSERT INTO comanda_righe (comanda_id,menu_id,nome,prezzo,qta,stazione,note,stato,magazzino_id) VALUES (?,?,?,?,?,?,?, 'in_coda', ?)").run(r.comanda_id, m.id, m.nome, Number(m.prezzo), qta, m.stazione, "in sostituzione di " + r.nome, m.magazzino_id || null);
@@ -23571,13 +25087,14 @@ adminRouter.get("/pwa-qr", async (req, res) => {
   res.json({ base, items });
 });
 adminRouter.get("/qr-ombrellone", requireCap("beach"), async (req, res) => {
-  const id = Number(req.query.id);
+  const id2 = id(req.query.id);
+  if (!id2) return res.status(400).json({ error: "Manca il numero dell'ombrellone." });
   const o = await db.prepare(
     "SELECT o.id,o.numero,p.nome AS piazzola FROM ombrelloni o JOIN piazzole p ON p.id=o.piazzola_id WHERE o.id=?"
-  ).get(id);
+  ).get(id2);
   if (!o) return res.status(404).json({ error: "Ombrellone non trovato" });
-  const testo = `omb=${o.id}`;
-  res.json({ id: o.id, numero: o.numero, piazzola: o.piazzola, testo, svg: qrSvg(testo, { cellSize: 6, margin: 2 }) });
+  const testo2 = `omb=${o.id}`;
+  res.json({ id: o.id, numero: o.numero, piazzola: o.piazzola, testo: testo2, svg: qrSvg(testo2, { cellSize: 6, margin: 2 }) });
 });
 adminRouter.get("/qr-ordina", async (req, res) => {
   const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
@@ -23831,8 +25348,8 @@ function requireTennisOperativo(req, res, next) {
 function vedeIncassi(req) {
   return req.adminUser?.ruolo !== "gestore" && hasCap(req.adminUser, "tennis");
 }
-async function campoDelTennis(id) {
-  const c = await db.prepare("SELECT * FROM campi WHERE id=?").get(id);
+async function campoDelTennis(id2) {
+  const c = await db.prepare("SELECT * FROM campi WHERE id=?").get(id2);
   return c && String(c.gestione || "chiosco") === "tennis" ? c : null;
 }
 adminRouter.post("/tennis/campi", requireCap("tennis"), async (req, res) => {
@@ -24134,18 +25651,41 @@ adminRouter.get("/tornei", requireCapTorneo, async (req, res) => {
   const g = req.query.gestione === "tennis" ? "tennis" : "chiosco";
   res.json(await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? ORDER BY created_at DESC").all(g));
 });
+var FORMATI = ["ko", "classifica", "gironi"];
 adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Dai un nome al torneo" });
-  const posti = Number(b.posti);
-  if (!POSTI_AMMESSI.includes(posti)) {
+  const formato = FORMATI.includes(b.formato) ? b.formato : "ko";
+  const num = async (chiave, dalCorpo, minimo) => {
+    const v = dalCorpo === void 0 || dalCorpo === null || dalCorpo === "" ? await par(chiave) : dalCorpo;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= minimo ? n : minimo;
+  };
+  const regole = {
+    punti_vittoria: await num("tornei_punti_vittoria", b.punti_vittoria, 0),
+    punti_pareggio: await num("tornei_punti_pareggio", b.punti_pareggio, 0),
+    qualificati_girone: await num("tornei_qualificati_girone", b.qualificati_girone, 1)
+  };
+  const posti = formato === "ko" ? Number(b.posti) : 0;
+  if (formato === "ko" && !POSTI_AMMESSI.includes(posti)) {
     return res.status(400).json({
       error: `Il tabellone dev'essere da ${POSTI_AMMESSI.join(", ")}. Con un numero diverso qualcuno passerebbe il turno senza giocare, e il torneo comincerebbe con un'ingiustizia.`
     });
   }
   const info = await db.prepare(
-    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data) VALUES (?,?,?,?,?,?)"
-  ).run(b.nome, b.disciplina || null, b.gestione === "tennis" ? "tennis" : "chiosco", posti, Number(b.quota) || 0, b.data || null);
+    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data,formato,punti_vittoria,punti_pareggio,qualificati_girone) VALUES (?,?,?,?,?,?,?,?,?,?)"
+  ).run(
+    b.nome,
+    b.disciplina || null,
+    b.gestione === "tennis" ? "tennis" : "chiosco",
+    posti,
+    Number(b.quota) || 0,
+    b.data || null,
+    formato,
+    regole.punti_vittoria,
+    regole.punti_pareggio,
+    regole.qualificati_girone
+  );
   audit(req.adminUser.username, "crea_torneo", "tornei", info.lastInsertRowid, `${b.nome} \xB7 ${posti} posti`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
@@ -24159,7 +25699,7 @@ adminRouter.post("/tornei/:id/iscritti", requireCap("campi"), async (req, res) =
   if (!t) return res.status(404).json({ error: "Torneo non trovato" });
   if (t.stato !== "iscrizioni") return res.status(409).json({ error: "Le iscrizioni sono chiuse: il tabellone e' gia' stato sorteggiato." });
   const quanti = (await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(t.id)).n;
-  if (Number(quanti) >= Number(t.posti)) return res.status(409).json({ error: `Il tabellone da ${t.posti} e' pieno.` });
+  if (t.formato === "ko" && Number(quanti) >= Number(t.posti)) return res.status(409).json({ error: `Il tabellone da ${t.posti} e' pieno.` });
   const tess = String(req.body?.tessera_code || "").trim();
   let nome = String(req.body?.nome || "").trim();
   let socioId = null;
@@ -24173,15 +25713,120 @@ adminRouter.post("/tornei/:id/iscritti", requireCap("campi"), async (req, res) =
   } else if (!nome) {
     return res.status(400).json({ error: "Serve un nome, oppure la tessera" });
   }
-  await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,socio_id,tessera_code,nome,pagato) VALUES (?,?,?,?,?)").run(t.id, socioId, tess || null, nome, req.body?.pagato ? 1 : 0);
+  const ins = await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,socio_id,tessera_code,nome,pagato) VALUES (?,?,?,?,?)").run(t.id, socioId, tess || null, nome, req.body?.pagato ? 1 : 0);
   const ora = (await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(t.id)).n;
-  res.status(201).json({ ok: true, iscritti: Number(ora), posti: Number(t.posti), pieno: Number(ora) === Number(t.posti) });
+  res.status(201).json({ ok: true, id: Number(ins.lastInsertRowid), nome, iscritti: Number(ora), posti: Number(t.posti), pieno: t.formato === "ko" && Number(ora) === Number(t.posti) });
 });
 adminRouter.delete("/tornei/:id/iscritti/:iscrittoId", requireCap("campi"), async (req, res) => {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(req.params.id);
   if (!t || t.stato !== "iscrizioni") return res.status(409).json({ error: "Il tabellone e' gia' sorteggiato: non si tolgono piu' iscritti." });
   await db.prepare("DELETE FROM tornei_ko_iscritti WHERE id=? AND torneo_id=?").run(req.params.iscrittoId, t.id);
   res.json({ ok: true });
+});
+var torneoDi = async (req, res) => {
+  const n = id(req.params.id);
+  if (!n) {
+    res.status(400).json({ error: "Torneo non indicato." });
+    return null;
+  }
+  const t = await db.prepare("SELECT id FROM tornei_ko WHERE id=?").get(n);
+  if (!t) {
+    res.status(404).json({ error: "Torneo non trovato" });
+    return null;
+  }
+  return n;
+};
+adminRouter.post("/tornei/:id/punti", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const iid = id(req.body?.iscritto_id);
+  if (!iid) return res.status(400).json({ error: "Indica quale giocatore." });
+  const r = await aggiungiPunti({
+    torneoId: tid,
+    iscrittoId: iid,
+    punti: req.body?.punti,
+    nota: req.body?.nota,
+    data: req.body?.data,
+    operatore: req.adminUser.username
+  });
+  if (!r.ok) return res.status(r.error && /non trovat/i.test(r.error) ? 404 : 409).json({ error: r.error });
+  audit(req.adminUser.username, "punti_torneo", "tornei", req.params.id, `${req.body?.punti} a iscritto ${req.body?.iscritto_id}`);
+  res.status(201).json(r);
+});
+adminRouter.get("/tornei/:id/classifica", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  res.json({ classifica: await classifica(tid) });
+});
+adminRouter.post("/tornei/:id/chiudi", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await chiudiClassifica(tid, req.body?.vincitore);
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "torneo_chiuso",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { vincitore: r.vincitore, dichiarato: !!req.body?.vincitore }
+  });
+  audit(req.adminUser.username, "chiudi_torneo", "tornei", req.params.id, r.vincitore);
+  res.json(r);
+});
+adminRouter.post("/tornei/:id/gironi", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await creaGironi(tid, req.body?.quanti);
+  if (!r.ok) return res.status(409).json({ error: r.error });
+  audit(req.adminUser.username, "gironi_torneo", "tornei", tid, `${r.gironi} gironi \xB7 ${r.partite} partite`);
+  res.status(201).json(r);
+});
+adminRouter.get("/tornei/:id/gironi", requireCapTorneo, async (req, res) => {
+  const id2 = await torneoDi(req, res);
+  if (!id2) return;
+  const lettere = (await db.prepare("SELECT DISTINCT girone g FROM tornei_ko_iscritti WHERE torneo_id=? AND girone IS NOT NULL ORDER BY girone").all(id2)).map((x) => x.g);
+  const gironi = [];
+  for (const l of lettere) {
+    gironi.push({
+      girone: l,
+      classifica: await classificaGirone(id2, l),
+      partite: await db.prepare("SELECT * FROM tornei_ko_partite WHERE torneo_id=? AND turno=0 AND girone=? ORDER BY giornata,posizione").all(id2, l)
+    });
+  }
+  const q = lettere.length ? await qualificati(id2) : null;
+  res.json({
+    gironi,
+    qualificazione: q && {
+      posti: q.posti,
+      diretti: q.diretti,
+      ripescati: q.ripescati,
+      contesa: q.contesa,
+      serve_dichiarazione: q.serve_dichiarazione,
+      certi: q.certi,
+      in_bilico: q.in_bilico,
+      oltre_il_taglio: q.oltre_il_taglio,
+      da_scegliere: q.da_scegliere || 0
+    }
+  });
+});
+adminRouter.post("/tornei/:id/tabellone", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await avviaTabellone(tid, { ammessi: req.body?.ammessi });
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "tabellone_da_gironi",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { posti: r.posti, dichiarati: r.dichiarati || null, sorteggio: r.sorteggio || null }
+  });
+  audit(req.adminUser.username, "tabellone_da_gironi", "tornei", tid, `${r.posti} posti`);
+  res.status(201).json(r);
 });
 adminRouter.post("/tornei/:id/sorteggia", requireCap("campi"), async (req, res) => {
   const r = await sorteggia(req.params.id);
@@ -24190,8 +25835,10 @@ adminRouter.post("/tornei/:id/sorteggia", requireCap("campi"), async (req, res) 
   res.json({ ok: true, tabellone: await tabellone(req.params.id) });
 });
 adminRouter.put("/tornei/partite/:id", requireCap("campi"), async (req, res) => {
-  const r = await registraRisultato2(req.params.id, String(req.body?.vincitore || "").trim(), req.body?.punteggio);
-  if (!r.ok) return res.status(400).json({ error: r.error });
+  const pid = id(req.params.id);
+  if (!pid) return res.status(400).json({ error: "Partita non indicata." });
+  const r = await registraRisultato2(pid, String(req.body?.vincitore || "").trim(), req.body?.punteggio);
+  if (!r.ok) return res.status(r.stato ? 409 : 400).json({ error: r.error });
   const p = await db.prepare("SELECT torneo_id FROM tornei_ko_partite WHERE id=?").get(req.params.id);
   audit(req.adminUser.username, "risultato_torneo", "tornei", p?.torneo_id, req.body?.vincitore);
   res.json({ ok: true, finale: !!r.finale, vincitore: r.vincitore || null, tabellone: await tabellone(p.torneo_id) });
@@ -24199,7 +25846,7 @@ adminRouter.put("/tornei/partite/:id", requireCap("campi"), async (req, res) => 
 adminRouter.post("/tennis/incassi/svela", requireTennisOperativo, async (req, res) => {
   if (!vedeIncassi(req)) return res.status(403).json({ error: "Gli incassi sono del gestore del servizio." });
   const u = await db.prepare("SELECT password_hash FROM utenti_admin WHERE username=?").get(req.adminUser.username);
-  if (!u || !verifyPassword(String(req.body?.password || ""), u.password_hash)) {
+  if (!u || !await verifyPasswordAsync(String(req.body?.password || ""), u.password_hash)) {
     audit(req.adminUser.username, "svela_incassi_tennis_fallito", "tennis_incassi", 0, "password errata");
     await new Promise((r) => setTimeout(r, 600));
     return res.status(422).json({ error: "Password non corretta." });
@@ -24325,23 +25972,27 @@ adminRouter.put("/discipline/:id", requireCap("discipline"), async (req, res) =>
   res.json({ ok: true });
 });
 adminRouter.delete("/discipline/:id", requireCap("discipline_del"), async (req, res) => {
-  const id = req.params.id;
-  if (await bloccaSeCollegato(res, "discipline", id, "la disciplina")) return;
-  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id);
-  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id);
+  const id2 = req.params.id;
+  if (await bloccaSeCollegato(res, "discipline", id2, "la disciplina")) return;
+  await db.prepare("DELETE FROM partite WHERE disciplina_id=?").run(id2);
+  const gironi = await db.prepare("SELECT id FROM gironi WHERE disciplina_id=?").all(id2);
   for (const g of gironi) await db.prepare("DELETE FROM classifica WHERE girone_id=?").run(g.id);
-  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(id);
-  await db.prepare("DELETE FROM convocazioni WHERE disciplina_id=?").run(id);
-  await db.prepare("DELETE FROM discipline WHERE id=?").run(id);
-  audit(req.adminUser.username, "cancella", "discipline", id);
+  await db.prepare("DELETE FROM gironi WHERE disciplina_id=?").run(id2);
+  await db.prepare("DELETE FROM convocazioni WHERE disciplina_id=?").run(id2);
+  await db.prepare("DELETE FROM discipline WHERE id=?").run(id2);
+  audit(req.adminUser.username, "cancella", "discipline", id2);
   res.json({ ok: true });
 });
 adminRouter.get("/tabellone/:disciplinaId", requireCap("tabellone"), async (req, res) => {
-  res.json(await getTabellone(Number(req.params.disciplinaId)));
+  const d = id(req.params.disciplinaId);
+  if (!d) return res.status(400).json({ error: "Disciplina non valida." });
+  res.json(await getTabellone(d));
 });
 adminRouter.post("/tabellone/:disciplinaId/genera", requireCap("tabellone_reset"), async (req, res) => {
   try {
-    const t = await generaCalendario(Number(req.params.disciplinaId));
+    const d = id(req.params.disciplinaId);
+    if (!d) return res.status(400).json({ error: "Disciplina non valida." });
+    const t = await generaCalendario(d);
     audit(req.adminUser.username, "genera_calendario", "discipline", req.params.disciplinaId);
     res.json({ ok: true, tabellone: t });
   } catch (e) {
@@ -24442,8 +26093,8 @@ async function chiudiTrattenuti(serataId, stato, quando) {
   const ids = (await db.prepare("SELECT id FROM serate_prenotazioni WHERE serata_id=?").all(serataId)).map((r) => r.id);
   if (!ids.length) return 0;
   let n = 0;
-  for (const id of ids) {
-    const r = await db.prepare("UPDATE incassi_online SET stato=?, chiuso_at=? WHERE ambito='serata' AND riferimento=? AND stato='trattenuto'").run(stato, quando, id);
+  for (const id2 of ids) {
+    const r = await db.prepare("UPDATE incassi_online SET stato=?, chiuso_at=? WHERE ambito='serata' AND riferimento=? AND stato='trattenuto'").run(stato, quando, id2);
     n += r?.changes ?? 0;
   }
   return n;
@@ -24531,19 +26182,93 @@ adminRouter.get("/serate", async (req, res) => {
   }
   res.json(out);
 });
+var testo = (x, max) => {
+  if (x === null || x === void 0) return "";
+  if (typeof x === "object") return null;
+  const t = String(x).trim();
+  return t.length > max ? null : t;
+};
+var misura = (x, predefinito) => {
+  if (x === null || x === void 0 || x === "") return predefinito;
+  const n = Number(x);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
+function serataValida(b) {
+  const titolo = testo(b.titolo, 200);
+  if (!titolo) return { errore: typeof b.titolo === "object" ? "Il titolo non e\u0300 un testo." : !b.titolo ? "Titolo obbligatorio" : "Il titolo e\u0300 troppo lungo: al massimo 200 caratteri." };
+  const quota = misura(b.quota, 0), capienza = misura(b.capienza, 80), minimo = misura(b.minimo, 0);
+  if (quota === null) return { errore: "La quota non e\u0300 un importo valido: non puo\u0300 essere negativa." };
+  if (capienza === null) return { errore: "La capienza non e\u0300 un numero valido: non puo\u0300 essere negativa." };
+  if (minimo === null) return { errore: "Il minimo non e\u0300 un numero valido: non puo\u0300 essere negativo." };
+  const data = testo(b.data, 40);
+  if (data === null) return { errore: "La data non e\u0300 un testo." };
+  if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) return { errore: "La data va scritta come 2026-08-21." };
+  if (data) {
+    const d = /* @__PURE__ */ new Date(data + "T12:00:00Z");
+    if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== data)
+      return { errore: "Quella data non esiste." };
+  }
+  for (const k of ["quando", "tema", "descrizione", "chiave"])
+    if (testo(b[k], 4e3) === null) return { errore: `Il campo ${k} non e\u0300 valido.` };
+  return { titolo, data, quota, capienza, minimo };
+}
 adminRouter.post("/serate", requireCap("serate"), async (req, res) => {
   const b = req.body || {};
-  if (!b.titolo) return res.status(400).json({ error: "Titolo obbligatorio" });
+  const v = serataValida(b);
+  if (v.errore) return res.status(400).json({ error: v.errore });
   const ord = (await db.prepare("SELECT COALESCE(MAX(ordine),0)+1 n FROM serate").get()).n;
-  const info = await db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,minimo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(b.chiave || null, b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, Math.max(0, Number(b.minimo) || 0), b.attivo === false ? 0 : 1, ord);
+  const info = await db.prepare("INSERT INTO serate (chiave,titolo,data,quando,tema,descrizione,quota,capienza,minimo,attivo,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(b.chiave || null, v.titolo, v.data, String(b.quando ?? ""), String(b.tema ?? ""), String(b.descrizione ?? ""), v.quota, v.capienza, v.minimo, b.attivo === false ? 0 : 1, ord);
   audit(req.adminUser.username, "crea", "serate", info.lastInsertRowid, b.titolo);
   res.status(201).json({ ok: true, id: info.lastInsertRowid });
 });
 adminRouter.put("/serate/:id", requireCap("serate"), async (req, res) => {
   const b = req.body || {};
-  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,minimo=?,attivo=? WHERE id=?").run(b.titolo, b.data ?? "", b.quando ?? "", b.tema ?? "", b.descrizione ?? "", Number(b.quota) || 0, Number(b.capienza) || 80, Math.max(0, Number(b.minimo) || 0), b.attivo ? 1 : 0, req.params.id);
+  const v = serataValida(b);
+  if (v.errore) return res.status(400).json({ error: v.errore });
+  const vecchia = await db.prepare("SELECT data, capienza FROM serate WHERE id=?").get(req.params.id);
+  const pren = await db.prepare(
+    "SELECT id, socio_id, persone, nome FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'"
+  ).all(req.params.id).catch(() => []);
+  const coperti = pren.reduce((a, p) => a + (Number(p.persone) || 0), 0);
+  const cambiaData = vecchia && v.data && v.data !== vecchia.data;
+  const stringe = coperti > v.capienza && v.capienza < Number(vecchia?.capienza ?? Infinity);
+  if (pren.length && (cambiaData || stringe) && b.conferma !== true) {
+    return res.status(409).json({
+      error: (stringe ? `La capienza scende a ${v.capienza} ma ci sono gi\xE0 ${coperti} coperti prenotati. ` : "") + (cambiaData ? `La serata si sposta dal ${vecchia.data} al ${v.data}. ` : "") + `${pren.length} ${pren.length === 1 ? "prenotazione \xE8 gi\xE0 stata fatta" : "prenotazioni sono gi\xE0 state fatte"}: confermando, ${pren.length === 1 ? "verr\xE0 avvisata" : "verranno avvisate"}.`,
+      serve_conferma: true,
+      prenotazioni: pren.length,
+      coperti,
+      capienza: v.capienza
+    });
+  }
+  await db.prepare("UPDATE serate SET titolo=?,data=?,quando=?,tema=?,descrizione=?,quota=?,capienza=?,minimo=?,attivo=? WHERE id=?").run(v.titolo, v.data, String(b.quando ?? ""), String(b.tema ?? ""), String(b.descrizione ?? ""), v.quota, v.capienza, v.minimo, b.attivo ? 1 : 0, req.params.id);
+  let avvisati = 0;
+  if (pren.length && (cambiaData || stringe)) {
+    for (const p of pren) {
+      if (!p.socio_id) continue;
+      try {
+        await sendToSocio(p.socio_id, {
+          title: "Cambia \u2014 " + v.titolo,
+          body: (cambiaData ? `La serata si sposta al ${v.data}. ` : "") + (stringe ? "I posti sono stati ridotti: il gestore ti contatter\xE0. " : "") + "La tua prenotazione resta valida.",
+          url: "/",
+          tag: "serata-cambiata"
+        });
+        avvisati++;
+      } catch (_) {
+      }
+    }
+    await registra({
+      fatto: stringe ? "serata_capienza_ridotta" : "serata_spostata",
+      servizio: "serate",
+      riferimento: Number(req.params.id),
+      autore: req.adminUser.username,
+      canale: "back office",
+      quando: (/* @__PURE__ */ new Date()).toISOString(),
+      dettaglio: { da: vecchia?.data, a: v.data, capienza_da: vecchia?.capienza, capienza_a: v.capienza, prenotazioni: pren.length, coperti, avvisati }
+    });
+  }
   audit(req.adminUser.username, "modifica", "serate", req.params.id);
-  res.json({ ok: true });
+  res.json({ ok: true, avvisati, prenotazioni: pren.length });
 });
 adminRouter.delete("/serate/:id", requireCap("serate"), async (req, res) => {
   if (await bloccaSeCollegato(res, "serate", req.params.id, "la serata")) return;
@@ -24567,6 +26292,18 @@ adminRouter.put("/serate-prenotazioni/:id", requireCap("serate"), async (req, re
       error: `Questa quota risulta gi\xE0 ${online.stato === "trattenuto" ? "impegnata" : "pagata"} online (${online.fornitore}, \u20AC ${online.importo}): non incassarla di nuovo. Se il socio insiste di non aver pagato, chiama il gestore.`,
       gia_online: { fornitore: online.fornitore, importo: online.importo, stato: online.stato }
     });
+  if (stato === "saldata" && !pr.ticket) {
+    const ser = await db.prepare("SELECT minimo, attivata_at, titolo FROM serate WHERE id=?").get(pr.serata_id);
+    const coperti = Number((await db.prepare(
+      "SELECT COALESCE(SUM(persone),0) n FROM serate_prenotazioni WHERE serata_id=? AND stato!='annullata'"
+    ).get(pr.serata_id)).n);
+    const att = attivazione(ser?.minimo, coperti, ser?.attivata_at);
+    if (!att.attiva) return res.status(409).json({
+      error: `NON incassare adesso: mancano ${att.mancano} ${att.mancano === 1 ? "persona" : "persone"} perch\xE9 la serata si faccia. Il posto resta tenuto e il ticket esce quando \xE8 confermata. Se si fa lo stesso, la attiva il gestore.`,
+      mancano: att.mancano,
+      minimo: att.minimo
+    });
+  }
   await db.prepare("UPDATE serate_prenotazioni SET stato=? WHERE id=?").run(stato, req.params.id);
   let ticket = pr.ticket || null;
   if (stato === "saldata" && !ticket) {
@@ -24853,12 +26590,12 @@ adminRouter.post("/tavoli/layout", requireCap("comande"), async (req, res) => {
   const copiaDa = b.copia_da ? await db.prepare("SELECT * FROM tavoli_layout WHERE id=?").get(b.copia_da) : null;
   const ambiente = ["garden", "carta", "stage"].includes(String(b.ambiente)) ? String(b.ambiente) : copiaDa?.ambiente || "garden";
   const info = await db.prepare("INSERT INTO tavoli_layout (nome,predefinito,ambiente) VALUES (?,0,?)").run(b.nome, ambiente);
-  const id = Number(info.lastInsertRowid);
+  const id2 = Number(info.lastInsertRowid);
   const src = copiaDa || await layoutPredefinito(ambiente);
   const ins = db.prepare("INSERT INTO tavoli (layout_id,numero,posti,forma,x,y,attivo,uniti,posti_base) VALUES (?,?,?,?,?,?,?,?,?)");
-  for (const t of await tavoliDi(src.id)) await ins.run(id, t.numero, t.posti, t.forma, t.x, t.y, t.attivo, JSON.stringify(t.uniti || []), t.posti_base == null ? null : Number(t.posti_base));
-  audit(req.adminUser.username, "crea", "tavoli_layout", id, b.nome);
-  res.status(201).json({ ok: true, id });
+  for (const t of await tavoliDi(src.id)) await ins.run(id2, t.numero, t.posti, t.forma, t.x, t.y, t.attivo, JSON.stringify(t.uniti || []), t.posti_base == null ? null : Number(t.posti_base));
+  audit(req.adminUser.username, "crea", "tavoli_layout", id2, b.nome);
+  res.status(201).json({ ok: true, id: id2 });
 });
 adminRouter.put("/tavoli/layout/:id", async (req, res) => {
   const lay = await db.prepare("SELECT ambiente FROM tavoli_layout WHERE id=?").get(req.params.id);
@@ -25128,10 +26865,10 @@ adminRouter.post("/fitness/corsi", requireCap("fitness"), async (req, res) => {
   const info = await db.prepare(
     "INSERT INTO corsi_fitness (nome,istruttore,descrizione,data_inizio,data_fine,giorni,ora,durata_min,posti_max,min_iscritti,prezzo,masterclass,prezzo_master,attivo,colore,ordine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
   ).run(...corpoCorso(b), ord);
-  const id = Number(info.lastInsertRowid);
-  const g = await generaSedute(id);
-  audit(req.adminUser.username, "crea", "corsi_fitness", id, `${b.nome}${g.creati ? " \xB7 " + g.creati + " lezioni" : ""}`);
-  res.status(201).json({ ok: true, id, ...g });
+  const id2 = Number(info.lastInsertRowid);
+  const g = await generaSedute(id2);
+  audit(req.adminUser.username, "crea", "corsi_fitness", id2, `${b.nome}${g.creati ? " \xB7 " + g.creati + " lezioni" : ""}`);
+  res.status(201).json({ ok: true, id: id2, ...g });
 });
 adminRouter.put("/fitness/corsi/:id", requireCap("fitness"), async (req, res) => {
   const b = req.body || {};
@@ -25300,16 +27037,16 @@ adminRouter.delete("/sala/:id", requireCap("cdc"), async (req, res) => {
   res.json({ ok: true });
 });
 adminRouter.get("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
-  const id = Number(await getSetting("cdc_articolo_capsule", "")) || null;
+  const id2 = Number(await getSetting("cdc_articolo_capsule", "")) || null;
   const candidati = await db.prepare("SELECT id,nome,giacenza,unita,zona FROM magazzino_articoli ORDER BY (zona IN ('carta','cdc')) DESC, nome").all();
   const att = await articoloCapsule();
-  res.json({ articolo_id: id, attuale: att ? { id: att.id, nome: att.nome, giacenza: att.giacenza } : null, dedotto: !id && !!att, candidati });
+  res.json({ articolo_id: id2, attuale: att ? { id: att.id, nome: att.nome, giacenza: att.giacenza } : null, dedotto: !id2 && !!att, candidati });
 });
 adminRouter.put("/cdc/caffe/articolo", requireCap("cdc"), async (req, res) => {
-  const id = Number(req.body?.articolo_id) || 0;
-  await setSetting("cdc_articolo_capsule", id ? String(id) : "");
-  audit(req.adminUser.username, "articolo_capsule", "magazzino_articoli", id, "");
-  res.json({ ok: true, articolo_id: id || null });
+  const id2 = Number(req.body?.articolo_id) || 0;
+  await setSetting("cdc_articolo_capsule", id2 ? String(id2) : "");
+  audit(req.adminUser.username, "articolo_capsule", "magazzino_articoli", id2, "");
+  res.json({ ok: true, articolo_id: id2 || null });
 });
 adminRouter.get("/tavoli/verifica-spazio", requireCapAmbiente, async (req, res) => {
   const amb = ["garden", "carta", "stage"].includes(String(req.query.ambiente)) ? String(req.query.ambiente) : "garden";
@@ -25807,7 +27544,23 @@ init_parametri();
 init_fitness();
 init_db();
 init_push();
+init_auth();
 var publicRouter = asyncify(Router2());
+publicRouter.use((req, _res, next) => {
+  const pulisci = (v) => typeof v === "string" || typeof v === "number" ? String(v).trim().toUpperCase() : void 0;
+  for (const campo of ["tessera_code", "tessera_titolare", "tessera"]) {
+    if (req.body && campo in req.body) req.body[campo] = pulisci(req.body[campo]) ?? null;
+    if (req.query && campo in req.query) {
+      const v = pulisci(req.query[campo]);
+      try {
+        req.query[campo] = v ?? "";
+      } catch {
+        Object.defineProperty(req, "query", { value: { ...req.query, [campo]: v ?? "" }, configurable: true });
+      }
+    }
+  }
+  next();
+});
 publicRouter.get("/self-order/stato", async (req, res) => {
   const s = await statoCompleto();
   res.json({ aperto: s.aperto, ordinabile: s.ordinabile, sospeso_pressione: s.sospeso_pressione, pressione: s.pressione, eta_min: s.eta_min });
@@ -25908,13 +27661,40 @@ publicRouter.post("/self-order", async (req, res) => {
   ).get(cid);
   let verificaEta = 0;
   if (conAlcol) {
-    if (socio) {
-      const blocco = await bloccoMinorenne(socio, "alcolici");
-      if (blocco) {
-        await db.prepare("DELETE FROM comanda_righe WHERE comanda_id=?").run(cid);
-        await db.prepare("DELETE FROM comande WHERE id=?").run(cid);
-        return res.status(403).json({ error: blocco });
+    const ordinante = chi ? await socioAttivoByTessera(chi) : null;
+    const min = minorennita(ordinante);
+    if (min === true) {
+      await db.prepare("DELETE FROM comanda_righe WHERE comanda_id=?").run(cid);
+      await db.prepare("DELETE FROM comande WHERE id=?").run(cid);
+      return res.status(403).json({ error: "Bevande alcoliche: non si servono sotto i 18 anni." });
+    }
+    const suo = await socioDellaSessione(req);
+    const identificato = !!(suo && chi && String(suo.tessera_code).toUpperCase() === String(chi).toUpperCase());
+    const dichiara = b.dichiarazione_eta === true && !!chi && !!tavolo;
+    if (min === false) {
+    } else if (dichiara) {
+      const q = (/* @__PURE__ */ new Date()).toISOString();
+      await db.prepare("UPDATE comande SET eta_esito=?, eta_operatore=?, eta_at=? WHERE id=?").run(
+        identificato ? "dichiarato" : "dichiarato_non_verificato",
+        `${ordinante?.nome || ""} ${ordinante?.cognome || ""}`.trim() || chi,
+        q,
+        cid
+      );
+      if (!identificato) {
+        verificaEta = 1;
+        await db.prepare("UPDATE comande SET verifica_eta=1 WHERE id=?").run(cid);
       }
+      await registra({
+        fatto: "eta_dichiarata_al_tavolo",
+        servizio: "comande",
+        riferimento: cid,
+        socio_id: socio ? socio.id : null,
+        intestatario: `${ordinante?.nome || ""} ${ordinante?.cognome || ""}`.trim() || null,
+        autore: chi,
+        canale: "app",
+        quando: q,
+        dettaglio: { numero, tavolo, punto }
+      });
     } else {
       verificaEta = 1;
       await db.prepare("UPDATE comande SET verifica_eta=1 WHERE id=?").run(cid);
@@ -26104,6 +27884,8 @@ publicRouter.get("/serate", async (req, res) => {
   res.json(out);
 });
 publicRouter.post("/serate/:id/prenota", async (req, res) => {
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   const s = await db.prepare("SELECT * FROM serate WHERE id=? AND attivo=1").get(req.params.id);
   if (!s) return res.status(404).json({ error: "Serata non trovata" });
   const f = finestraSerata(s);
@@ -26116,11 +27898,10 @@ publicRouter.post("/serate/:id/prenota", async (req, res) => {
   const persone = Math.max(1, Number(req.body?.persone) || 1);
   const usati = await seratePostiUsati(s.id);
   if (usati + persone > s.capienza) return res.status(409).json({ ok: false, error: `Posti esauriti: restano ${Math.max(0, s.capienza - usati)} coperti.`, posti_liberi: Math.max(0, s.capienza - usati) });
-  const tessera = req.body?.tessera_code || null;
-  const socio = tessera ? await db.prepare("SELECT id,nome,cognome,data_nascita FROM soci WHERE tessera_code=?").get(tessera) : null;
+  const tessera = socio.tessera_code;
   const noMin = await bloccoMinorenne(socio, "serata");
   if (noMin) return res.status(403).json({ error: noMin });
-  const nome = req.body?.nome || (socio ? `${socio.nome} ${socio.cognome || ""}`.trim() : "Ospite");
+  const nome = `${socio.nome} ${socio.cognome || ""}`.trim();
   const importo = Math.round(s.quota * persone * 100) / 100;
   const giorni = Number(await par("serate_giorni_saldo")) || 0;
   const scadenza = scadenzaSaldo(inizioSerata(s), giorni);
@@ -26146,6 +27927,8 @@ publicRouter.post("/serate/:id/prenota", async (req, res) => {
 publicRouter.post("/pagamenti/conferma", async (req, res) => {
   const attivi = String(await par("pagamenti_online_attivi")) === "true" || await par("pagamenti_online_attivi") === true;
   if (!attivi) return res.status(409).json({ error: "Il pagamento dall'app non e\u0300 attivo." });
+  const io = await socioDellaSessione(req);
+  if (!io) return res.status(401).json({ error: "Accesso richiesto: entra con la tua tessera." });
   const fornitore = FORNITORI.includes(req.body?.fornitore) ? req.body.fornitore : null;
   if (!fornitore) return res.status(400).json({ error: "Fornitore non riconosciuto." });
   const ammessi = String(await par("pagamenti_fornitori") || "").split(",").map((x) => x.trim());
@@ -26154,6 +27937,8 @@ publicRouter.post("/pagamenti/conferma", async (req, res) => {
   const pr = await db.prepare("SELECT * FROM serate_prenotazioni WHERE id=?").get(Number(req.body?.riferimento) || 0);
   if (!pr) return res.status(404).json({ error: "Prenotazione non trovata." });
   if (pr.stato === "annullata") return res.status(409).json({ error: "La prenotazione e\u0300 stata annullata: non si puo\u0300 saldare." });
+  if (String(pr.tessera_code || "").toUpperCase() !== String(io.tessera_code).toUpperCase())
+    return res.status(403).json({ error: "Questa prenotazione non e\u0300 tua." });
   if (pr.stato === "saldata" && pr.ticket) return res.json({ ok: true, gia_registrato: true, ticket: pr.ticket, importo: pr.importo });
   const verifica = await verificaPagamento(fornitore, req.body?.transazione, pr.importo);
   const esito = esitoValido(verifica);
@@ -26189,6 +27974,8 @@ publicRouter.post("/pagamenti/conferma", async (req, res) => {
 });
 async function verificaPagamento(fornitore, transazione, dovuto) {
   if (fornitore === "manuale") {
+    if ((process.env.KOINE_ENV || "dev") === "prod")
+      return { stato: "rifiutato", motivo: "Il pagamento di prova non esiste in esercizio: la quota si salda in cassa." };
     if (!transazione) return { stato: "rifiutato", motivo: "Manca l'identificativo." };
     return { stato: "completato", transazione: String(transazione), importo: Number(dovuto) };
   }
@@ -26312,7 +28099,28 @@ function settimanaDi(dataISO) {
   const dom = new Date(lun.getTime() + 6 * 864e5);
   return { da: lun.toISOString().slice(0, 10), a: dom.toISOString().slice(0, 10) };
 }
-var socioAttivoByTessera = async (t) => t ? await db.prepare("SELECT id,nome,cognome,tessera_code,attivo,data_nascita FROM soci WHERE tessera_code=?").get(t) : null;
+var normalizzaTessera = (t) => typeof t === "string" || typeof t === "number" ? String(t).trim().toUpperCase() : null;
+var socioAttivoByTessera = async (t) => {
+  const c = normalizzaTessera(t);
+  return c ? await db.prepare("SELECT id,nome,cognome,tessera_code,attivo,data_nascita,tipo_profilo,tutore_id FROM soci WHERE upper(tessera_code)=?").get(c) : null;
+};
+var gettone = (req) => (req.headers.authorization || "").startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
+var socioDellaSessione = async (req) => {
+  const s = await getUserSession(gettone(req));
+  return s ? await socioAttivoByTessera(s.tessera_code) : null;
+};
+async function socioMittente(req, res, tessera) {
+  const io = await socioDellaSessione(req);
+  if (!io || io.attivo === 0) {
+    res.status(401).json({ error: "Accesso richiesto: entra con la tua tessera." });
+    return null;
+  }
+  if (tessera && String(tessera).trim().toUpperCase() !== String(io.tessera_code).toUpperCase()) {
+    res.status(403).json({ error: "Questi non sono i tuoi dati." });
+    return null;
+  }
+  return io;
+}
 async function slotBloccati(campoId, data) {
   const out = /* @__PURE__ */ new Map();
   const rows = await db.prepare("SELECT slot_da,slot_a,motivo,nota FROM campi_blocchi WHERE campo_id=? AND data=?").all(campoId, data);
@@ -26692,7 +28500,8 @@ publicRouter.get("/spiaggia", async (req, res) => {
 });
 publicRouter.post("/spiaggia/prendi", async (req, res) => {
   if (!await par("beach_attiva")) return res.status(409).json({ error: "La gestione degli ombrelloni non e' attiva." });
-  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   if (!socio || socio.attivo === 0) return res.status(404).json({ error: "Serve la tessera di un socio" });
   const pieno = await db.prepare("SELECT id,nome,cognome,tessera_code,nucleo FROM soci WHERE id=?").get(socio.id);
   const r = await prendi({
@@ -26717,14 +28526,16 @@ publicRouter.post("/spiaggia/prendi", async (req, res) => {
   res.status(201).json(r);
 });
 publicRouter.post("/spiaggia/conferma", async (req, res) => {
-  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(404).json({ error: "Serve la tessera di un socio" });
   const r = await conferma({ socio, ombrelloneId: Number(req.body?.ombrellone_id) });
   if (!r.ok) return res.status(409).json(r);
   res.json(r);
 });
 publicRouter.post("/spiaggia/rilascia", async (req, res) => {
-  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(404).json({ error: "Serve la tessera di un socio" });
   const pieno = await db.prepare("SELECT id,nome,cognome,nucleo FROM soci WHERE id=?").get(socio.id);
   const r = await rilascia({ socio: pieno, presaId: req.body?.presa_id });
@@ -26741,7 +28552,8 @@ publicRouter.post("/spiaggia/rilascia", async (req, res) => {
   res.json(r);
 });
 publicRouter.post("/prenotazioni-tavolo/:id/annulla", async (req, res) => {
-  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(404).json({ error: "Serve la tessera di un socio" });
   const p = await db.prepare("SELECT * FROM prenotazioni_tavolo WHERE id=?").get(req.params.id);
   if (!p || p.stato !== "prenotato") return res.status(404).json({ error: "Prenotazione non trovata" });
@@ -26763,7 +28575,8 @@ publicRouter.post("/prenotazioni-tavolo/:id/annulla", async (req, res) => {
   res.json({ ok: true });
 });
 publicRouter.get("/mie-prenotazioni", async (req, res) => {
-  const socio = await socioAttivoByTessera(req.query.tessera_code);
+  const socio = await socioMittente(req, res, req.query.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const voci = [];
@@ -26813,11 +28626,90 @@ publicRouter.get("/mie-prenotazioni", async (req, res) => {
       annulla: { rotta: `/fitness/iscrizioni/${f.id}/annulla` }
     });
   }
+  for (const p of await db.prepare(
+    `SELECT p.id, p.persone, p.importo, p.stato, p.ticket, p.scadenza_saldo, p.ingresso_at,
+            s.id AS serata_id, s.titolo, s.data, s.quando, s.minimo, s.attivata_at
+     FROM serate_prenotazioni p JOIN serate s ON s.id=p.serata_id
+     WHERE upper(p.tessera_code)=? AND p.stato!='annullata' AND s.data>=? ORDER BY s.data`
+  ).all(String(socio.tessera_code).toUpperCase(), oggi2).catch(() => [])) {
+    const att = attivazione(p.minimo, await seratePostiUsati(p.serata_id), p.attivata_at);
+    voci.push({
+      tipo: "serata",
+      titolo: p.titolo,
+      quando: `${p.data} \xB7 ${SERATA_ORA}`,
+      data: p.data,
+      ora: SERATA_ORA,
+      dettaglio: `${p.persone} ${p.persone === 1 ? "persona" : "persone"}`,
+      importo: Number(p.importo) || 0,
+      avviso: statoSerataPerIlSocio(p, att).breve,
+      // `ticket` dice all'app se c'e' qualcosa da mostrare; il codice per intero e il QR si
+      // chiedono aprendo il biglietto, non a ogni caricamento della home.
+      ticket: p.ticket || null,
+      prenotazione_id: p.id,
+      annulla: null
+    });
+  }
   voci.sort((a, b) => a.data + a.ora < b.data + b.ora ? -1 : 1);
   res.json({ oggi: oggi2, voci, quante: voci.length, prossima: voci[0] || null });
 });
+function statoSerataPerIlSocio(p, att) {
+  if (p.ingresso_at) return {
+    breve: "Gi\xE0 entrato",
+    lungo: `Questo ticket \xE8 stato validato all'ingresso alle ${String(p.ingresso_at).slice(11, 16)}. Vale una volta sola.`
+  };
+  if (p.stato === "da_saldare") {
+    const quando = p.scadenza_saldo ? ` entro il ${String(p.scadenza_saldo).slice(8, 10)}/${String(p.scadenza_saldo).slice(5, 7)}` : "";
+    return {
+      breve: `Quota da saldare${quando}`,
+      lungo: `La quota non risulta versata: si salda in cassa${quando ? `, ${quando.trim()}` : ""}. Il ticket esce al saldo: senza, all'ingresso non c'\xE8 posto.`
+    };
+  }
+  if (!p.ticket) return {
+    breve: att.mancano > 0 ? `In attesa: mancano ${att.mancano}` : "In attesa di conferma",
+    lungo: att.mancano > 0 ? `La quota \xE8 impegnata ma non \xE8 stata prelevata: la serata si fa con ${att.minimo} persone e ne mancano ${att.mancano}. Il ticket arriva quando \xE8 certa. Se non si fa, non ti viene preso niente.` : "La quota \xE8 impegnata ma non \xE8 stata prelevata. Il ticket arriva quando la serata \xE8 confermata."
+  };
+  return { breve: "Ticket pronto", lungo: "Mostra questo codice all'ingresso: si inquadra dalla fotocamera del banco." };
+}
+publicRouter.get("/serate/prenotazioni/:id/ticket", async (req, res) => {
+  const socio = await socioMittente(req, res, req.query.tessera_code);
+  if (!socio) return;
+  if (!socio) return res.status(404).json({ error: "Serve la tessera di un socio" });
+  const p = await db.prepare(
+    `SELECT p.*, s.titolo, s.data, s.quando, s.minimo, s.attivata_at
+     FROM serate_prenotazioni p JOIN serate s ON s.id=p.serata_id WHERE p.id=?`
+  ).get(Number(req.params.id) || 0);
+  if (!p) return res.status(404).json({ error: "Prenotazione non trovata" });
+  if (String(p.tessera_code || "").toUpperCase() !== String(socio.tessera_code).toUpperCase())
+    return res.status(403).json({ error: "Questa prenotazione non \xE8 tua." });
+  if (p.stato === "annullata") return res.status(409).json({ error: "Questa prenotazione \xE8 stata annullata." });
+  const att = attivazione(p.minimo, await seratePostiUsati(p.serata_id), p.attivata_at);
+  const testo2 = statoSerataPerIlSocio(p, att);
+  res.json({
+    ok: true,
+    id: p.id,
+    titolo: p.titolo,
+    quando: p.quando || p.data,
+    data: p.data,
+    turno: SERATA_ORA,
+    nome: p.nome,
+    persone: p.persone,
+    importo: Number(p.importo) || 0,
+    stato: p.stato,
+    ticket: p.ticket || null,
+    // Il QR si costruisce solo se il ticket esiste davvero: un QR di un codice vuoto si
+    // inquadrerebbe lo stesso e al banco direbbe "non riconosciuto", che sembra un guasto.
+    qr: p.ticket ? qrSvg(p.ticket, { cellSize: 8, margin: 2 }) : null,
+    gia_entrato: !!p.ingresso_at,
+    entrato_alle: p.ingresso_at ? String(p.ingresso_at).slice(11, 16) : null,
+    mancano: att.mancano,
+    minimo: att.minimo,
+    scadenza_saldo: p.scadenza_saldo || null,
+    messaggio: testo2.lungo
+  });
+});
 publicRouter.get("/estratto-conto", async (req, res) => {
-  const socio = await socioAttivoByTessera(req.query.tessera_code);
+  const socio = await socioMittente(req, res, req.query.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(404).json({ error: "Tessera non trovata" });
   const dal = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dal || "")) ? String(req.query.dal) : "2000-01-01";
   const al = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.al || "")) ? String(req.query.al) : "2999-12-31";
@@ -26851,6 +28743,21 @@ publicRouter.get("/estratto-conto", async (req, res) => {
      WHERE p.tessera_code=? AND p.stato='prenotato' AND p.data BETWEEN ? AND ? ORDER BY p.data DESC`
   ).all(socio.tessera_code, dal, al).catch(() => [])) {
     voci.push({ data: c.data, servizio: "Sport", cosa: `${c.nome} \xB7 ${c.slot}`, importo: 0, pagato: null });
+  }
+  for (const s of await db.prepare(
+    `SELECT p.persone, p.importo, p.stato, p.ticket, se.titolo, se.data
+     FROM serate_prenotazioni p JOIN serate se ON se.id=p.serata_id
+     WHERE upper(p.tessera_code)=? AND p.stato!='annullata' AND se.data BETWEEN ? AND ?
+     ORDER BY se.data DESC`
+  ).all(String(socio.tessera_code).toUpperCase(), dal, al).catch(() => [])) {
+    const nota = s.stato === "da_saldare" ? " (da saldare)" : !s.ticket ? " (impegnata: la serata attende il minimo)" : "";
+    voci.push({
+      data: s.data,
+      servizio: "Serate",
+      cosa: `${s.titolo} \xB7 ${s.persone} ${s.persone === 1 ? "persona" : "persone"}${nota}`,
+      importo: Number(s.importo) || 0,
+      pagato: s.stato === "saldata" ? s.ticket ? "gia' pagato" : "impegnato, non ancora prelevato" : null
+    });
   }
   for (const t of await db.prepare(
     `SELECT data, turno, persone, ambiente FROM prenotazioni_tavolo
@@ -27052,8 +28959,8 @@ publicRouter.get("/garden/turni", async (req, res) => {
   res.json({ data, turni: out });
 });
 async function bloccoMinorenne(socio, cosa) {
-  const eta2 = etaDi(socio);
-  if (eta2 == null || eta2 >= 18) return null;
+  const min = minorennita(socio);
+  if (min !== true) return null;
   const perTramite = " Chiedi a un adulto di farlo per te.";
   if (cosa === "ordine") return "Per ordinare serve un adulto: fino ai 18 anni non si possono fare acquisti da soli." + perTramite;
   if (cosa === "serata") return "La serata ha una quota: fino ai 18 anni la prenota un adulto." + perTramite;
@@ -27081,8 +28988,8 @@ publicRouter.post("/garden/prenota", async (req, res) => {
   const b = req.body || {};
   const data = String(b.data || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
-  const socio = await socioAttivoByTessera(b.tessera_code);
-  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
+  const socio = await socioMittente(req, res, b.tessera_code);
+  if (!socio) return;
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const noMin = await bloccoMinorenne(socio, "tavolo");
   if (noMin) return res.status(403).json({ error: noMin });
@@ -27232,7 +29139,8 @@ publicRouter.post("/cinema/:id/prenota", async (req, res) => {
   if (!await par("cinema_prenotazione")) return res.status(409).json({ error: "La prenotazione dei posti non e\u0300 attiva" });
   const p = await db.prepare("SELECT * FROM proiezioni WHERE id=? AND stato='programmata'").get(req.params.id);
   if (!p) return res.status(404).json({ error: "Proiezione non trovata" });
-  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const nome = (socio.nome + " " + (socio.cognome || "")).trim();
@@ -27280,7 +29188,8 @@ publicRouter.get("/fitness", async (req, res) => {
   });
 });
 publicRouter.post("/fitness/sedute/:id/prenota", async (req, res) => {
-  const socio = await socioAttivoByTessera(req.body?.tessera_code);
+  const socio = await socioMittente(req, res, req.body?.tessera_code);
+  if (!socio) return;
   if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per iscriverti" });
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const noFit = await bloccoMinorenne(socio, "fitness");
@@ -27330,8 +29239,9 @@ publicRouter.post("/fitness/iscrizioni/:id/annulla", async (req, res) => {
 publicRouter.post("/partite-aperte/:id/aggiungi", async (req, res) => {
   const p = await db.prepare("SELECT * FROM partite_aperte WHERE id=?").get(req.params.id);
   if (!p || !["aperta", "completa"].includes(p.stato)) return res.status(409).json({ error: "Prenotazione non disponibile" });
-  const richiedente = await socioAttivoByTessera(req.body?.tessera_titolare);
-  if (!richiedente || richiedente.id !== p.titolare_socio_id) {
+  const richiedente = await socioMittente(req, res, req.body?.tessera_titolare);
+  if (!richiedente) return;
+  if (richiedente.id !== p.titolare_socio_id) {
     return res.status(403).json({ error: "Solo il titolare pu\xF2 aggiungere i compagni" });
   }
   const compagno = await socioAttivoByTessera(req.body?.tessera_code);
@@ -27428,8 +29338,8 @@ publicRouter.post("/carta/prenota", async (req, res) => {
   const b = req.body || {};
   const data = String(b.data || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return res.status(400).json({ error: "Data non valida" });
-  const socio = await socioAttivoByTessera(b.tessera_code);
-  if (!socio) return res.status(403).json({ error: "Serve la tessera di un socio per prenotare" });
+  const socio = await socioMittente(req, res, b.tessera_code);
+  if (!socio) return;
   if (socio.attivo === 0) return res.status(403).json({ error: "Tessera non attiva" });
   const perGioco = scopoTurno(String(b.turno || "")) === "gioco";
   const minGio = perGioco && await par("carta_numero_legale") ? Math.max(1, Number(await par("carta_min_giocatori")) || 1) : 1;
@@ -27868,7 +29778,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-03 08:23" : "online";
+var BUILD = true ? "2026-09-08 05:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
