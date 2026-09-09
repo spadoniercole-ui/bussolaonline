@@ -8668,9 +8668,17 @@ async function entraStaff() {
       body: JSON.stringify({ username: u, password: p })
     });
     if (!r.ok) { if (err) err.textContent = 'Nome utente o password non validi.'; return; }
-    /* Il gettone NON si conserva qui: si va alla porta scelta e li' si entra. Lasciare un
-       gettone di servizio nella memoria dell'app dei soci vorrebbe dire seminarlo su un
-       dispositivo che passa di mano. */
+    /* IL GETTONE SI CONSEGNA ALLA PORTA SCELTA.
+       La prima stesura lo creava per verificare le credenziali e poi lo buttava via: chi
+       arrivava al Chiosco o al back office si trovava a rimettere nome e password appena dati.
+       Un passaggio che non serve a niente e fa sembrare rotto quello che funziona.
+       Viaggia in \`sessionStorage\`, non in \`localStorage\`: vive nella scheda e muore quando si
+       chiude \u2014 su un tablet di banco che passa di mano e' quello che serve \u2014 e chi lo raccoglie
+       lo cancella subito, cosi' non resta in giro. La PORTA invece si ricorda, perche' e' una
+       comodita' senza conseguenze: e' la persona che non si ricorda mai. */
+    const dati = await r.json().catch(() => null);
+    if (!dati || !dati.token) { if (err) err.textContent = 'Non riesco ad aprire la sessione.'; return; }
+    try { sessionStorage.setItem('bussola_staff_token', dati.token); } catch (_) {}
     try { localStorage.setItem('bussola_staff_dove', STAFF_DOVE); } catch (_) {}
     location.href = STAFF_DOVE === 'admin' ? '/admin/' : '/chiosco/';
   } catch (_) {
@@ -9581,15 +9589,33 @@ window.addEventListener('unhandledrejection', (ev) => {
 });
 
 // ---- Login ----
-async function login() {
+/* IL GETTONE CONSEGNATO DAL CANCELLO \u2014 vedi il gemello in chiosco.js.
+   Chi arriva da \`/\` ha gia' dato nome e password: richiederle qui e' un passaggio inutile.
+   Viaggia in \`sessionStorage\` (muore con la scheda) e si consuma alla prima lettura. */
+function gettoneDalCancello() {
+  try {
+    const t = sessionStorage.getItem('bussola_staff_token');
+    if (t) sessionStorage.removeItem('bussola_staff_token');
+    return t || null;
+  } catch (_) { return null; }
+}
+
+async function login(gettonePronto) {
   $('#loginErr').textContent = '';
   try {
-    const res = await fetch(API_BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
-    if (!res.ok) throw new Error('Credenziali non valide');
-    const j = await res.json(); TOKEN = j.token; USER = j.user;
+    let j;
+    if (gettonePronto) j = { token: gettonePronto, user: { username: '', ruolo: '' } };
+    else {
+      const res = await fetch(API_BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
+      if (!res.ok) throw new Error('Credenziali non valide');
+      j = await res.json();
+    }
+    TOKEN = j.token; USER = j.user;
     $('#login').style.display = 'none'; $('#app').style.display = 'grid';
-    $('#whoName').textContent = USER.username + ' (' + USER.ruolo + ')';
     ME = await api('/me').catch(() => ({ ruolo: USER.ruolo, gestore: USER.ruolo === 'gestore', caps: [] }));
+    // Col gettone consegnato il nome non arriva dal login: lo dice \`/me\`.
+    if (!USER.username && ME.user) USER = ME.user;
+    $('#whoName').textContent = USER.username + ' (' + USER.ruolo + ')';
     // DOPO aver chiesto chi sono, non prima: messa sopra, questa riga leggeva un \`ME\` ancora
     // vuoto e il collegamento non sarebbe mai comparso a nessuno.
     mostraTessera(ME && ME.socio ? ME.socio : null);
@@ -12295,8 +12321,10 @@ function modal(html) {
 function closeModal() { $('#modal').classList.remove('show'); }
 
 // ---- Bind ----
-$('#loginBtn').onclick = login;
+$('#loginBtn').onclick = () => login();
 $('#p').onkeydown = (e) => { if (e.key === 'Enter') login(); };
+// Se il cancello ha consegnato un gettone, si entra senza chiedere niente un'altra volta.
+{ const t = gettoneDalCancello(); if (t) login(t); }
 $('#logout').onclick = (e) => { e.preventDefault(); api('/logout', { method:'POST' }).catch(()=>{}); logout(); };
 document.querySelectorAll('#menu button').forEach(b => b.onclick = () => { show(b.dataset.v); document.getElementById('app').classList.remove('nav-open'); });
 $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
@@ -13682,24 +13710,47 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
-async function login() {
+/* IL GETTONE CONSEGNATO DAL CANCELLO.
+   Chi arriva da \`/\` ha gia' dato nome e password: chiedergliele una seconda volta qui e' un
+   passaggio che non serve a niente, ed e' esattamente quello che faceva la prima stesura \u2014
+   creava il gettone per verificare le credenziali e poi lo buttava via.
+   Il gettone viaggia in \`sessionStorage\`, non in \`localStorage\`: vive nella scheda e muore
+   quando si chiude, che su un tablet di banco che passa di mano e' quello che serve. E si
+   CONSUMA subito: si legge una volta sola e si cancella, cosi' non resta in giro. */
+function gettoneDalCancello() {
+  try {
+    const t = sessionStorage.getItem('bussola_staff_token');
+    if (t) sessionStorage.removeItem('bussola_staff_token');
+    return t || null;
+  } catch (_) { return null; }
+}
+
+async function login(gettonePronto) {
   $('#loginErr').textContent = '';
   try {
-    const res = await fetch(API_BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
-    if (!res.ok) throw new Error('Credenziali non valide');
-    const j = await res.json(); TOKEN = j.token;
+    let j;
+    if (gettonePronto) j = { token: gettonePronto, user: { username: '' } };
+    else {
+      const res = await fetch(API_BASE + '/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: $('#u').value, password: $('#p').value }) });
+      if (!res.ok) throw new Error('Credenziali non valide');
+      j = await res.json();
+    }
+    TOKEN = j.token;
     ME = await api('/me').catch(() => ({ gestore: false, ruolo: '', caps: [] }));
     // Regole di funzionamento decise dal gestore: qui servono per mostrare o meno certi comandi.
     try { PAR = Object.fromEntries((await api('/parametri')).map(p => [p.chiave, p.valore])); } catch (_) { PAR = {}; }
     // Accesso a Bussola Crew: basta UN permesso operativo (comande o magazzino); si vedono solo le zone consentite.
     const zone = allowedZones();
     if (!zone.length) throw new Error('Il tuo utente non ha ancora nessun permesso operativo. Chiedi al gestore di abilitarti ad almeno uno di questi moduli: ' + Object.values(CAP_MODULO).join(' \xB7 ') + '.');
-    ME.username = j.user.username;
+    /* Col gettone consegnato il nome non arriva dal login. Lo dice \`/me\`, ma dentro \`user\`:
+       leggerlo da \`ME.username\` avrebbe dato sempre vuoto, e al banco sarebbe comparsa una
+       barra senza nome \u2014 proprio dove serve sapere chi sta battendo le comande. */
+    ME.username = (j.user && j.user.username) || (ME.user && ME.user.username) || '';
     try { applyContrasto(localStorage.getItem('bussola_hc') === '1'); } catch (_) {}
     try { applyAiuti(localStorage.getItem('bussola_aiuti') === '1'); } catch (_) {}
     disegnaModuli(zone);
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
-    $('#whoName').textContent = j.user.username;
+    $('#whoName').textContent = ME.username;
     // Il socio lo dice \`/me\`, non la risposta del login: letto da \`j\` sarebbe sempre stato
     // nullo, e il collegamento non sarebbe mai comparso.
     mostraTessera(ME && ME.socio ? ME.socio : null);
@@ -16486,8 +16537,10 @@ VIEWS.riepilogo = async () => {
 };
 
 /* ---------- boot ---------- */
-$('#loginBtn').onclick = login;
+$('#loginBtn').onclick = () => login();
 $('#p').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+// Se il cancello ha consegnato un gettone, si entra senza chiedere niente un'altra volta.
+{ const t = gettoneDalCancello(); if (t) login(t); }
 $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
 $('#hcBtn').onclick = () => applyContrasto(!document.body.classList.contains('hc'));
 $('#modBtn').onclick = () => apriModuli();
@@ -30912,7 +30965,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-09 07:00" : "online";
+var BUILD = true ? "2026-09-09 07:39" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
