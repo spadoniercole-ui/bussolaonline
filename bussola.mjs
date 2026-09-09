@@ -3441,6 +3441,8 @@ var init_parametri = __esm({
         gruppo: "Tornei",
         tipo: "numero",
         predefinito: 3,
+        min: 0,
+        max: 10,
         etichetta: "Punti per una vittoria nel girone",
         aiuto: "Con 3 vittoria / 1 pareggio si usa il conteggio del calcio. Per gli sport senza pareggio \u2014 tennis, ping pong, biliardino \u2014 metti 1 e 0: la classifica diventa il numero di vittorie."
       },
@@ -3449,6 +3451,8 @@ var init_parametri = __esm({
         gruppo: "Tornei",
         tipo: "numero",
         predefinito: 1,
+        min: 0,
+        max: 10,
         etichetta: "Punti per un pareggio nel girone",
         aiuto: "Zero negli sport dove il pareggio non esiste."
       },
@@ -3457,6 +3461,8 @@ var init_parametri = __esm({
         gruppo: "Tornei",
         tipo: "numero",
         predefinito: 2,
+        min: 1,
+        max: 8,
         etichetta: "Quanti passano da ogni girone",
         aiuto: "I primi di ogni girone entrano nel tabellone. Se non bastano a riempirlo, si ripescano i migliori fra chi e' arrivato subito dopo."
       },
@@ -3486,6 +3492,58 @@ var init_parametri = __esm({
         predefinito: "",
         etichetta: "Giorno di riposo settimanale",
         aiuto: "Vuoto: nessun riposo settimanale. Sul cartello ci va scritto, non lasciato in bianco."
+      },
+      /* LE REGOLE DI GARA DEI TORNEI.
+         Stanno qui, e non nella schermata che crea il torneo, per il modo in cui i tornei nascono
+         davvero: un gruppo di ragazzi vuole rifare il calcetto domani pomeriggio, e il manager lo
+         apre dal banco in trenta secondi. Se ogni volta bisognasse decidere quanto vale una
+         vittoria, a quanti punti si gioca un'americana e quanti campi ci sono, quei trenta secondi
+         diventerebbero cinque minuti e la domanda arriverebbe sempre nel momento sbagliato.
+         Sono regole DELLA CASA, non di quel torneo: si decidono una volta, qui, e ogni torneo nuovo
+         le eredita e se le CONGELA addosso alla creazione. Cambiarle a settembre non tocca nulla di
+         quello che si e' giocato ad agosto — e il manager, sul singolo torneo, puo' comunque
+         scostarsene quando serve. */
+      {
+        chiave: "tornei_riempimento",
+        gruppo: "Tornei",
+        tipo: "scelta",
+        predefinito: "ripescaggio",
+        etichetta: "Come si riempiono i posti che avanzano",
+        opzioni: [
+          { valore: "ripescaggio", etichetta: "Si ripescano i migliori fra chi e\u2019 arrivato dopo" },
+          { valore: "riposo", etichetta: "Diventano riposi per chi ha vinto il girone" }
+        ],
+        aiuto: "Sei qualificati stanno in un tabellone da otto: restano due posti. Il ripescaggio allarga la festa e fa giocare due persone in piu\u2019; il riposo premia chi ha vinto il suo girone con un turno saltato. I due si combinano da soli quando i ripescabili non bastano."
+      },
+      {
+        chiave: "tornei_campi",
+        gruppo: "Tornei",
+        tipo: "numero",
+        predefinito: 2,
+        min: 1,
+        max: 6,
+        etichetta: "Campi disponibili per un\u2019americana",
+        aiuto: "Da qui discende quanti giocatori vuole un\u2019americana: quattro per campo. Con due campi sono otto, ed e\u2019 un numero che fa selezione \u2014 chi arriva nono va in lista d\u2019attesa, non riceve un no. Per ora il calendario della rotazione esiste solo per otto."
+      },
+      {
+        chiave: "tornei_punti_partita",
+        gruppo: "Tornei",
+        tipo: "numero",
+        predefinito: 24,
+        min: 2,
+        max: 64,
+        etichetta: "Punti di una partita di americana",
+        aiuto: "La somma fissa di ogni turno: i due lati insieme fanno sempre questo numero, e un 12\u201312 e\u2019 un risultato normale. Serve anche da controllo \u2014 se chi segna digita 13\u201312 il totale non torna e il sistema lo ferma prima di scrivere."
+      },
+      {
+        chiave: "tornei_bonus_finale",
+        gruppo: "Tornei",
+        tipo: "numero",
+        predefinito: 0,
+        min: 0,
+        max: 100,
+        etichetta: "Bonus alla coppia che vince la finale",
+        aiuto: "Punti in piu\u2019 ai due che vincono la finale dell\u2019americana. I punti giocati in semifinale e finale NON entrano in classifica: entra solo questo bonus, e si vede a parte. A zero la fase finale vale solo per il gusto di vincerla."
       },
       {
         chiave: "beach_attiva",
@@ -4720,6 +4778,13 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 .gate-brand{font-family:Georgia,serif; letter-spacing:2px; color:var(--navy); font-weight:700; font-size:18px; margin-bottom:16px;}
 .gate-brand small{display:block; letter-spacing:3px; font-size:8px; color:var(--gold,#b7791f); margin-top:2px;}
 .gatebox h2{font-family:Georgia,serif; color:var(--navy); font-size:1.4rem;}
+/* LA PORTA DELLO STAFF sta sotto una riga, in fondo: i soci sono la stragrande maggioranza e
+   non devono rispondere a una domanda che non li riguarda. Chi lavora la trova comunque, e
+   dalla seconda volta il dispositivo si presenta gia' aperto sulla porta giusta. */
+.gate-staff{border-top:1px solid var(--linea,#e6e2d6); margin-top:16px; padding-top:12px; text-align:center;}
+.btn.link{background:none; border:0; color:var(--mute,#5a6b75); font-size:.86rem; padding:6px 4px; box-shadow:none; text-decoration:none; width:auto;}
+.btn.link:hover{color:var(--navy); text-decoration:underline;}
+.btn.ghost[aria-pressed="true"]{background:var(--navy); color:#fff; border-color:var(--navy);}
 .gsub2{color:var(--mute); font-size:.8rem; margin:4px 0 12px; line-height:1.35;}
 .gatebox label{display:block; font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; font-weight:800; color:var(--mute); margin:10px 0 7px;}
 .gatebox input{width:100%; padding:12px; border:1.5px solid var(--tratto); border-radius:12px; font-size:16px; font-family:inherit;}
@@ -4921,6 +4986,24 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       <button class="btn gold block" id="gate_enter" style="margin-top:12px">Entra</button>
       <button class="btn ghost block" id="gate_email" style="margin-top:8px">Non ho la tessera \xB7 accedi con e-mail</button>
       <button class="btn navy block" id="gate_register" style="margin-top:8px">\u2728 Non hai un account? Registrati</button>
+      <div class="gate-staff">
+        <button class="btn link" id="gate_staff">Sono dello staff</button>
+      </div>
+    </div>
+    <div class="gatebox" id="gatestaff" hidden>
+      <button class="btn link" id="staff_back" style="text-align:left;padding-left:0">&#8592; Torna alla tessera</button>
+      <h2 class="serif">Accesso staff</h2>
+      <div class="gate-err" id="staffErr" aria-live="polite"></div>
+      <label for="staff_u">Nome utente</label>
+      <input id="staff_u" autocomplete="off" autocapitalize="none">
+      <label for="staff_p" style="margin-top:8px">Password</label>
+      <input id="staff_p" type="password" autocomplete="off">
+      <div class="eyebrow" style="margin-top:12px">Dove vai</div>
+      <div class="row" style="gap:8px;margin-top:6px">
+        <button class="btn ghost" id="staff_crew" style="flex:1" aria-pressed="true">Chiosco</button>
+        <button class="btn ghost" id="staff_admin" style="flex:1" aria-pressed="false">Back office</button>
+      </div>
+      <button class="btn gold block" id="staff_enter" style="margin-top:12px">Entra</button>
     </div>
   </div>
 </div>
@@ -5576,7 +5659,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.59.0';
+const VERSIONE_APP = '6.60.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -7768,10 +7851,14 @@ async function loginTessera() {
       <button class="btn gold block" onclick="location.reload()">\${T('Riprova')}</button></div>\`;
   }
 }
-function demoPreview() {   // solo per anteprima: usa la tessera demo e i dati SEED se offline
-  state.tessera = 'RB-000001-4'; store.set('tessera', state.tessera);
-  hideGate(); enterApp();
-}
+/* Qui c'era \`demoPreview()\`, il tasto "dai un'occhiata senza entrare". Non era un'anteprima:
+   scriveva la tessera del primo socio nella memoria del telefono e apriva l'app come se fosse
+   entrato lui. Il server non si faceva ingannare \u2014 senza gettone ogni rotta personale rispondeva
+   401, in lettura e in scrittura \u2014 ma chi lo toccava si ritrovava in un'app che sembrava la sua
+   e non lo era, e riceveva un rifiuto a ogni tocco.
+   Il tasto era gia' sparito dall'HTML: restava la funzione, agganciata a un elemento che non
+   esiste. Tolta anche quella. Una vetrina che finge di essere il negozio confonde piu' di
+   quanto invogli. */
 
 // ---- Registrazione guidata (porta d'ingresso dal QR) ----
 let REG = {};
@@ -8538,12 +8625,79 @@ async function init() {
   }
   // Il service worker \xE8 registrato dai tag PWA iniettati dal server (server/pwa.js).
 }
+
+/* ---- LA PORTA DELLO STAFF -------------------------------------------------------------------
+   Un indirizzo solo. Chi ha la tessera entra come sempre e non si accorge di niente; chi lavora
+   trova la porta in fondo al cancello.
+
+   LA DESTINAZIONE SI SCEGLIE PRIMA, non dopo. Instradare da soli in base ai permessi voleva dire
+   far atterrare il gestore dove il sistema indovinava e costringerlo a correggere ogni mattina:
+   qui lo dice lui in mezzo secondo, e non c'e' nessuna logica da mantenere. Chi sbaglia porta
+   riceve un errore chiaro e riprova \u2014 sono tasti per lo staff, non per il pubblico.
+
+   SI RICORDA LA PORTA, MAI LA PERSONA. Il tablet del banco si presenta sul Chiosco e il portatile
+   dell'ufficio sul back office, ma nessun nome utente resta scritto da nessuna parte: dietro al
+   banco si alternano piu' mani, e un nome precompilato e' un invito a entrare come un altro.
+   E se i permessi cambiano, la destinazione ricordata si aggiorna da sola alla prima volta che
+   non e' piu' valida: non e' colpa di chi entra se il sistema e' cambiato sotto. */
+let STAFF_DOVE = 'crew';
+function apriStaff(apri) {
+  const g = document.getElementById('gate'), box = g && g.querySelector('.gatebox'), st = document.getElementById('gatestaff');
+  if (!box || !st) return;
+  box.hidden = !!apri; st.hidden = !apri;
+  if (apri) {
+    try { STAFF_DOVE = localStorage.getItem('bussola_staff_dove') === 'admin' ? 'admin' : 'crew'; } catch (_) { STAFF_DOVE = 'crew'; }
+    segnaDove();
+    const u = document.getElementById('staff_u'); if (u) setTimeout(() => u.focus(), 60);
+  }
+}
+function segnaDove() {
+  const c = document.getElementById('staff_crew'), a = document.getElementById('staff_admin');
+  if (c) c.setAttribute('aria-pressed', String(STAFF_DOVE === 'crew'));
+  if (a) a.setAttribute('aria-pressed', String(STAFF_DOVE === 'admin'));
+}
+async function entraStaff() {
+  const err = document.getElementById('staffErr');
+  const u = (document.getElementById('staff_u').value || '').trim();
+  const p = document.getElementById('staff_p').value || '';
+  if (err) err.textContent = '';
+  if (!u || !p) { if (err) err.textContent = 'Servono nome utente e password.'; return; }
+  try {
+    const r = await fetch('/api/admin/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p })
+    });
+    if (!r.ok) { if (err) err.textContent = 'Nome utente o password non validi.'; return; }
+    /* Il gettone NON si conserva qui: si va alla porta scelta e li' si entra. Lasciare un
+       gettone di servizio nella memoria dell'app dei soci vorrebbe dire seminarlo su un
+       dispositivo che passa di mano. */
+    try { localStorage.setItem('bussola_staff_dove', STAFF_DOVE); } catch (_) {}
+    location.href = STAFF_DOVE === 'admin' ? '/admin/' : '/chiosco/';
+  } catch (_) {
+    if (err) err.textContent = 'Non riesco a raggiungere il server.';
+  }
+}
+function bindStaff() {
+  const apri = document.getElementById('gate_staff');
+  if (apri) apri.addEventListener('click', () => apriStaff(true));
+  const back = document.getElementById('staff_back');
+  if (back) back.addEventListener('click', () => apriStaff(false));
+  const c = document.getElementById('staff_crew');
+  if (c) c.addEventListener('click', () => { STAFF_DOVE = 'crew'; segnaDove(); });
+  const a = document.getElementById('staff_admin');
+  if (a) a.addEventListener('click', () => { STAFF_DOVE = 'admin'; segnaDove(); });
+  const go = document.getElementById('staff_enter');
+  if (go) go.addEventListener('click', entraStaff);
+  const pw = document.getElementById('staff_p');
+  if (pw) pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') entraStaff(); });
+}
+
 function bindGate() {
   const enter = $('#gate_enter'); if (enter) enter.addEventListener('click', loginTessera);
   const tess = $('#gate_tess'); if (tess) tess.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginTessera(); });
   const email = $('#gate_email'); if (email) email.addEventListener('click', () => { hideGate(); openLoginOtp(); });
   const reg = $('#gate_register'); if (reg) reg.addEventListener('click', () => { hideGate(); startRegistrazione(); });
-  const demo = $('#gate_demo'); if (demo) demo.addEventListener('click', demoPreview);
+  bindStaff();
 }
 init();
 // Il ritorno al banco si valuta all'avvio, non nel cancello d'ingresso: serve a chi e' DENTRO,
@@ -8885,7 +9039,7 @@ input,select,textarea{border:var(--bordo) solid var(--tratto) !important;}
       </nav>
     </aside>
     <main>
-      <div class="top"><button class="navToggle" id="navToggle" aria-label="Menu">\u2630</button><h2 id="viewTitle">Cruscotto</h2><div class="who">Accesso: <b id="whoName"></b> \xB7 <a href="#" id="miatessera" style="display:none">la mia tessera</a> \xB7 <a href="#" id="logout">esci</a></div></div>
+      <div class="top"><button class="navToggle" id="navToggle" aria-label="Menu">\u2630</button><h2 id="viewTitle">Cruscotto</h2><div class="who">Accesso: <b id="whoName"></b> \xB7 <a href="/chiosco/" id="vaicrew" style="display:none">chiosco</a> \xB7 <a href="#" id="miatessera" style="display:none">la mia tessera</a> \xB7 <a href="#" id="logout">esci</a></div></div>
       <div id="view"></div>
     </main>
     <div class="scrim" id="navScrim"></div>
@@ -9439,6 +9593,8 @@ async function login() {
     // DOPO aver chiesto chi sono, non prima: messa sopra, questa riga leggeva un \`ME\` ancora
     // vuoto e il collegamento non sarebbe mai comparso a nessuno.
     mostraTessera(ME && ME.socio ? ME.socio : null);
+    // Chi puo' aprire cosa lo dice il SERVER: qui si legge e basta.
+    mostraAltraVista('vaicrew', !!(ME && ME.viste && ME.viste.crew));
     applyMenuPermessi();
     CASATE = await api('/../casate').catch(() => []);   // riusa endpoint pubblico
     await caricaParametri();
@@ -12165,6 +12321,24 @@ if ($('#navScrim')) $('#navScrim').onclick = () => document.getElementById('app'
    quello che si otterrebbe passando la propria card davanti al lettore. Il verso opposto \u2014
    dall'app dei soci al banco \u2014 sarebbe salire, e non si fa senza password: la si chiede, come
    e' giusto. Le due direzioni non sono simmetriche, e devono restare cosi'. */
+/* I COLLEGAMENTI FRA LE VISTE COMPAIONO A CONDIZIONE. Un collegamento che porta a un rifiuto e'
+   peggio di un collegamento assente: fa credere di aver sbagliato qualcosa. Il back office si
+   mostra a chi lo puo' aprire, il Chiosco a chi ha almeno un permesso operativo, la tessera a
+   chi ha un socio agganciato.
+   E se la destinazione ricordata sul dispositivo non e' piu' fra i permessi, si aggiorna qui:
+   non e' colpa di chi entra se il sistema e' cambiato sotto. */
+function mostraAltraVista(id, permesso) {
+  const a = document.getElementById(id);
+  if (!a) return;
+  a.style.display = permesso ? '' : 'none';
+  if (!permesso) {
+    try {
+      const dove = id === 'vaiadmin' ? 'admin' : 'crew';
+      if (localStorage.getItem('bussola_staff_dove') === dove) localStorage.removeItem('bussola_staff_dove');
+    } catch (_) {}
+  }
+}
+
 function mostraTessera(socio) {
   const a = document.getElementById('miatessera');
   if (!a || !socio) return;
@@ -12748,7 +12922,7 @@ input,select,textarea{border:var(--bordo) solid var(--tratto) !important;}
         <button id="modBtn" aria-expanded="false"><span id="modBtnTxt">Moduli</span> \u25BE</button>
         <button id="aiutoBtn" title="Mostra le spiegazioni" aria-pressed="false" style="background:transparent;border:1px solid #cfe0ee;color:#cfe0ee;border-radius:4px;padding:4px 9px;font-weight:700;cursor:pointer">?</button>
         <button id="hcBtn" title="Alza il contrasto" style="background:transparent;border:1px solid #cfe0ee;color:#cfe0ee;border-radius:4px;padding:4px 9px;font-weight:700;cursor:pointer">A\u25D0</button>
-        <span>\xB7 <span id="whoName"></span> \xB7 <a href="#" id="miatessera" style="color:#cfe0ee;display:none">la mia tessera</a> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
+        <span>\xB7 <span id="whoName"></span> \xB7 <a href="/admin/" id="vaiadmin" style="color:#cfe0ee;display:none">back office</a> \xB7 <a href="#" id="miatessera" style="color:#cfe0ee;display:none">la mia tessera</a> \xB7 <a href="#" id="logout" style="color:#cfe0ee">esci</a></span>
       </span>
     </div>
 
@@ -13529,6 +13703,9 @@ async function login() {
     // Il socio lo dice \`/me\`, non la risposta del login: letto da \`j\` sarebbe sempre stato
     // nullo, e il collegamento non sarebbe mai comparso.
     mostraTessera(ME && ME.socio ? ME.socio : null);
+    // Chi puo' aprire cosa lo dice il SERVER: qui si legge e basta. Tenerne una copia anche
+    // qui vorrebbe dire due regole che divergono alla prima modifica.
+    mostraAltraVista('vaiadmin', !!(ME && ME.viste && ME.viste.ufficio));
     // Si atterra su ADESSO, non su un modulo. Prima il sistema ricordava l'ultimo modulo usato
     // su questo dispositivo, e nello scenario vero era peggio del niente: sei assegnato allo
     // sport, dai una mano al bar per dieci minuti, e domani ti si apre il bar. La macchina
@@ -15928,19 +16105,34 @@ VIEWS.tornei = async () => {
 
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F3C6} Tornei</h3>
-      <p class="muted" style="font-size:.82rem">Si gioca una sera: iscrizioni, sorteggio cieco, e avanti fino alla finale. Il tabellone \xE8 da <b>4, 8, 16 o 32</b>: a eliminazione diretta ogni turno dimezza, e con un numero diverso qualcuno passerebbe il turno senza giocare.</p>
+      <p class="muted" style="font-size:.82rem">Cinque forme, per come si gioca davvero: si apre in trenta secondi e si comincia. Le regole di gara \u2014 quanto vale una vittoria, a quanti punti si gioca un'americana \u2014 arrivano gi\xE0 impostate dal back office e restano scritte su questo torneo: cambiarle domani non tocca quello di stasera.</p>
       \${supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
         <input id="nt_disc" placeholder="Disciplina" style="width:130px">
         <select id="nt_form" title="La forma del torneo">
           <option value="ko">Eliminazione diretta</option>
-          <option value="classifica">Classifica a punti</option>
           <option value="gironi">Gironi + tabellone</option>
+          <option value="italiana">Girone unico (a giri)</option>
+          <option value="americana">Americana (coppie a rotazione)</option>
+          <option value="classifica">Classifica a punti</option>
         </select>
-        <select id="nt_posti"><option>4</option><option>8</option><option>16</option><option>32</option></select>
+        <label class="muted" style="font-size:.82rem">fino a <input id="nt_posti" inputmode="numeric" value="16" style="width:52px;text-align:center"></label>
         <input id="nt_data" type="date">
         <button class="btn gold sm" id="nt_crea">+ Crea torneo</button>
-      </div>\` : ''}
+        <button class="btn ghost sm" id="nt_piu">\${window.__ntPiu ? 'Meno' : 'Regole di gara\u2026'}</button>
+      </div>
+      <p class="muted" style="font-size:.78rem;margin-top:4px" id="nt_spiega"></p>
+      \${window.__ntPiu ? \`<div class="box" style="padding:9px 11px;margin-top:8px">
+        <b style="font-size:.9rem">Solo per questo torneo</b>
+        <div class="muted" style="font-size:.8rem;margin-bottom:6px">Lasciando i campi vuoti valgono le regole della casa. Si riempiono solo quando questo torneo fa eccezione.</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="muted" style="font-size:.8rem">Vittoria<br><input id="nt_pv" inputmode="numeric" placeholder="\u2014" style="width:56px;text-align:center"></label>
+          <label class="muted" style="font-size:.8rem">Pareggio<br><input id="nt_pp" inputmode="numeric" placeholder="\u2014" style="width:56px;text-align:center"></label>
+          <label class="muted" style="font-size:.8rem">Passano per girone<br><input id="nt_qg" inputmode="numeric" placeholder="\u2014" style="width:56px;text-align:center"></label>
+          <label class="muted" style="font-size:.8rem">Punti a partita<br><input id="nt_ps" inputmode="numeric" placeholder="\u2014" style="width:56px;text-align:center"></label>
+          <label class="muted" style="font-size:.8rem">Bonus finale<br><input id="nt_bf" inputmode="numeric" placeholder="\u2014" style="width:56px;text-align:center"></label>
+        </div>
+      </div>\` : ''}\` : ''}
       \${lista.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">\${lista.map(t => \`<button class="btn \${String(t.id) === String(apertoId) ? 'gold' : 'ghost'} sm" data-tsel="\${t.id}">\${esc(t.nome)} <span class="muted">\${t.posti}</span></button>\`).join('')}</div>\` : ''}
     </div>
 
@@ -15964,16 +16156,47 @@ VIEWS.tornei = async () => {
       \${vistaFormato}
     </div>\` : ''}\`;
 
+  /* UNA RIGA CHE SPIEGA LA FORMA SCELTA, e cambia mentre si sceglie. Cinque formati sono troppi
+     da tenere a mente per chi apre un torneo tre volte a stagione, e il nome da solo non dice
+     cosa succede dopo. */
+  const SPIEGA = {
+    ko: 'Si perde e si va a casa. Il tabellone si dimensiona su chi si iscrive: se avanzano posti diventano riposi al primo turno, e nessuno resta fuori per un numero.',
+    gironi: 'Prima tutti contro tutti dentro i gironi, poi i qualificati nel tabellone. I posti che avanzano si riempiono come dice il back office.',
+    italiana: 'Un girone solo, tutti contro tutti, e si va avanti a giri finch\xE9 non lo chiudi tu. La classifica va a media punti, cos\xEC chi ha giocato meno partite non \xE8 penalizzato.',
+    americana: 'Otto giocatori su due campi, sette turni, il compagno cambia ogni volta: si gioca in coppia ma i punti sono tuoi. Alla fine, se vuoi, semifinali e finale.',
+    classifica: 'Nessun calendario: i punti li aggiungi tu riga per riga, e il torneo dura quanto vuoi.'
+  };
+  const spiegaForma = () => {
+    const s = $('#nt_spiega'), f = $('#nt_form');
+    if (s && f) s.textContent = SPIEGA[f.value] || '';
+  };
+  if ($('#nt_form')) { $('#nt_form').onchange = spiegaForma; spiegaForma(); }
+  if ($('#nt_piu')) $('#nt_piu').onclick = () => { window.__ntPiu = !window.__ntPiu; show('tornei'); };
+
   if ($('#nt_crea')) $('#nt_crea').onclick = async () => {
     const nome = ($('#nt_nome').value || '').trim();
     if (!nome) { alert('Dai un nome al torneo.'); return; }
+    /* I CAMPI VUOTI NON SI MANDANO. Un campo lasciato in bianco vuol dire "vale la regola della
+       casa": mandarlo come zero scriverebbe uno zero sul torneo, e il pareggio a zero punti non
+       e' un valore mancante \u2014 e' una regola precisa, che dice che il pareggio non esiste. */
+    const opz = {};
+    const forse = (id, chiave) => {
+      const e = $(id);
+      if (!e) return;
+      const v = (e.value || '').trim();
+      if (v !== '' && Number.isFinite(Number(v))) opz[chiave] = Number(v);
+    };
+    forse('#nt_pv', 'punti_vittoria'); forse('#nt_pp', 'punti_pareggio');
+    forse('#nt_qg', 'qualificati_girone'); forse('#nt_ps', 'punti_partita');
+    forse('#nt_bf', 'bonus_finale');
     try {
       const r = await api('/tornei', { method: 'POST', body: JSON.stringify({
-        nome, disciplina: $('#nt_disc').value, posti: Number($('#nt_posti').value),
+        nome, disciplina: $('#nt_disc').value, posti: Number($('#nt_posti').value) || 16,
         formato: $('#nt_form') ? $('#nt_form').value : 'ko',
-        data: $('#nt_data').value, gestione: gest
+        data: $('#nt_data').value, gestione: gest, ...opz
       }) });
       window.__torneoAperto = r.id;
+      window.__ntPiu = false;
     } catch (e) { alert(e.message); return; }
     show('tornei');
   };
@@ -17925,6 +18148,24 @@ async function scansionaTessera(quando) {
    quello che si otterrebbe passando la propria card davanti al lettore. Il verso opposto \u2014
    dall'app dei soci al banco \u2014 sarebbe salire, e non si fa senza password: la si chiede, come
    e' giusto. Le due direzioni non sono simmetriche, e devono restare cosi'. */
+/* I COLLEGAMENTI FRA LE VISTE COMPAIONO A CONDIZIONE. Un collegamento che porta a un rifiuto e'
+   peggio di un collegamento assente: fa credere di aver sbagliato qualcosa. Il back office si
+   mostra a chi lo puo' aprire, il Chiosco a chi ha almeno un permesso operativo, la tessera a
+   chi ha un socio agganciato.
+   E se la destinazione ricordata sul dispositivo non e' piu' fra i permessi, si aggiorna qui:
+   non e' colpa di chi entra se il sistema e' cambiato sotto. */
+function mostraAltraVista(id, permesso) {
+  const a = document.getElementById(id);
+  if (!a) return;
+  a.style.display = permesso ? '' : 'none';
+  if (!permesso) {
+    try {
+      const dove = id === 'vaiadmin' ? 'admin' : 'crew';
+      if (localStorage.getItem('bussola_staff_dove') === dove) localStorage.removeItem('bussola_staff_dove');
+    } catch (_) {}
+  }
+}
+
 function mostraTessera(socio) {
   const a = document.getElementById('miatessera');
   if (!a || !socio) return;
@@ -18929,7 +19170,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.59.0" : "dev";
+var VERSION = true ? "6.60.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23636,10 +23877,18 @@ adminRouter.get("/me", async (req, res) => {
     SELECT u.socio_id, s.nome, s.cognome, s.tessera_code
     FROM utenti_admin u LEFT JOIN soci s ON s.id = u.socio_id
     WHERE u.username=?`).get(req.adminUser.username);
+  const info = capsInfo(req.adminUser);
+  const caps = info.caps || [];
+  const CAPS_CREW = ["comande", "magazzino", "tabellone", "campi", "tennis", "tennis_campi", "casate", "beach", "serate", "cdc", "fitness", "cinema", "cucina"];
+  const CAPS_UFFICIO = ["utenti", "utenti_ins", "menu", "casate", "discipline", "eventi", "proposte", "contest", "serate", "cdc", "guida", "luoghi"];
   res.json({
     user: { username: req.adminUser.username, ruolo: req.adminUser.ruolo },
     socio: u?.socio_id ? { id: u.socio_id, nome: `${u.nome} ${u.cognome}`, tessera: u.tessera_code } : null,
-    ...capsInfo(req.adminUser)
+    viste: {
+      crew: !!(info.gestore || caps.some((c) => CAPS_CREW.includes(c))),
+      ufficio: !!(info.gestore || caps.some((c) => CAPS_UFFICIO.includes(c)))
+    },
+    ...info
   });
 });
 var socioDaAgganciare = async (valore, escludiUtenza) => {
@@ -26382,6 +26631,14 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
   const b = req.body || {};
   if (!b.nome) return res.status(400).json({ error: "Dai un nome al torneo" });
   const formato = FORMATI.includes(b.formato) ? b.formato : "ko";
+  const primoNumero = (...valori) => {
+    for (const v of valori) {
+      if (v === void 0 || v === null || v === "") continue;
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return 0;
+  };
   const num = async (chiave, dalCorpo, minimo) => {
     const v = dalCorpo === void 0 || dalCorpo === null || dalCorpo === "" ? await par(chiave) : dalCorpo;
     const n = Number(v);
@@ -26403,9 +26660,16 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
        quattro giocatori invece di otto, e il nono finiva in lista d'attesa mentre il secondo
        campo restava vuoto. Un campo solo e' legittimo, quindi il minimo e' giusto che sia uno:
        e' il DEFAULT che dev'essere due. */
-    campi: Math.max(1, Number(b.campi) || Number(await par("tornei_campi")) || 2),
-    punti_partita: Math.max(2, Number(b.punti_partita) || Number(await par("tornei_punti_partita")) || 24),
-    bonus_finale: Math.max(0, Number(b.bonus_finale) || Number(await par("tornei_bonus_finale")) || 0)
+    /* UNO ZERO CHIESTO APPOSTA NON E' UN VALORE MANCANTE.
+       Scritte con `||`, queste righe scartavano lo zero: chiedere `bonus_finale: 0` per un
+       torneo senza bonus faceva ereditare quello della casa, e sul torneo finiva un numero che
+       nessuno aveva voluto. Non e' un caso di scuola — e' lo stesso zero di `punti_pareggio`,
+       dove significa "in questo sport il pareggio non esiste": una regola precisa, non
+       l'assenza di una regola.
+       Chi non vuole decidere lascia il campo VUOTO, e il Crew i campi vuoti non li manda. */
+    campi: Math.max(1, primoNumero(b.campi, await par("tornei_campi"), 2)),
+    punti_partita: Math.max(2, primoNumero(b.punti_partita, await par("tornei_punti_partita"), 24)),
+    bonus_finale: Math.max(0, primoNumero(b.bonus_finale, await par("tornei_bonus_finale"), 0))
   };
   const posti = formato === "ko" ? Number(b.posti) : 0;
   if (formato === "ko" && (!Number.isInteger(posti) || posti < 2 || posti > 128)) {
@@ -30648,7 +30912,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-08 20:42" : "online";
+var BUILD = true ? "2026-09-09 07:00" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
