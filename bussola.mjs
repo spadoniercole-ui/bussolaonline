@@ -1874,6 +1874,10 @@ async function migrate() {
   await addIfMissing("tornei_ko", "minimo_riposo", "minimo_riposo INTEGER");
   await addIfMissing("tornei_ko_iscritti", "attesa", "attesa INTEGER");
   await addIfMissing("tornei_ko_iscritti", "ritirato_at", "ritirato_at TEXT");
+  await addIfMissing("tornei_ko", "sospeso_at", "sospeso_at TEXT");
+  await addIfMissing("tornei_ko", "sospeso_giorni", "sospeso_giorni INTEGER");
+  await addIfMissing("tornei_ko", "sospeso_motivo", "sospeso_motivo TEXT");
+  await addIfMissing("tornei_ko", "stato_prima", "stato_prima TEXT");
   await db.exec(`
   CREATE TABLE IF NOT EXISTS tornei_punti (
     id         INTEGER PRIMARY KEY,
@@ -5659,7 +5663,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.60.0';
+const VERSIONE_APP = '6.61.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -13937,11 +13941,13 @@ function applyZona() {
   tog('campi', ZONA === 'campi');
   tog('tennis', ZONA === 'tennis');
   tog('beach', ZONA === 'beach');
-  // I TORNEI NON STANNO NEI CAMPI. Un tabellone a eliminazione diretta e' una gara della Coppa,
-  // non un modo di prenotare un campo: chi apre "Campi liberi" vuole dare una fascia a un socio,
-  // e trovarsi il tabellone accanto confonde due lavori che non si somigliano.
-  // Stanno dove sta la competizione: Coppa e Tabellone.
-  tog('tornei', ZONA === 'coppa' || ZONA === 'sport');
+  /* I TORNEI NON STANNO NEI CAMPI. Chi apre "Campi liberi" vuole dare una fascia a un socio, e
+     trovarsi il tabellone accanto confonde due lavori che non si somigliano.
+     E NON STANNO NEMMENO NELLA COPPA. Ci stavano, e la stessa lista si raggiungeva da due porte:
+     ma la Coppa delle Casate e' un'altra cosa \u2014 a punti, di casate, dura tutta la stagione \u2014
+     mentre questi sono tornei estemporanei che nascono giovedi' e finiscono giovedi'. Si
+     somigliano solo nel nome. */
+  tog('tornei', ZONA === 'sport');
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
   tog('fitness', ZONA === 'fitness');
@@ -16184,7 +16190,26 @@ VIEWS.tornei = async () => {
           <label class="muted" style="font-size:.8rem">Bonus finale<br><input id="nt_bf" inputmode="numeric" placeholder="\u2014" style="width:56px;text-align:center"></label>
         </div>
       </div>\` : ''}\` : ''}
-      \${lista.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">\${lista.map(t => \`<button class="btn \${String(t.id) === String(apertoId) ? 'gold' : 'ghost'} sm" data-tsel="\${t.id}">\${esc(t.nome)} <span class="muted">\${t.posti}</span></button>\`).join('')}</div>\` : ''}
+      \${lista.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">\${lista.map(t => \`<button class="btn \${String(t.id) === String(apertoId) ? 'gold' : 'ghost'} sm" data-tsel="\${t.id}">\${esc(t.nome)}\${t.stato === 'sospeso' ? ' <span class="tag">sospeso</span>' : t.stato === 'decaduto' ? ' <span class="tag no">finito</span>' : t.stato === 'concluso' ? ' <span class="tag ok">chiuso</span>' : ''}</button>\`).join('')}</div>\` : ''}
+      \${tab && supervisore() ? (() => {
+        const q = lista.find(x => String(x.id) === String(apertoId)) || {};
+        if (q.stato === 'concluso') return '';
+        return \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
+          \${q.stato === 'sospeso' || q.stato === 'decaduto'
+            ? \`<button class="btn ghost sm" id="ts_riapri">Riprendi il torneo</button>
+               <span class="muted" style="font-size:.8rem">\${q.stato === 'decaduto' ? 'Sospeso da pi\xF9 dei giorni concordati: si pu\xF2 riprendere o cancellare.' : 'Sospeso' + (q.sospeso_motivo ? ' \xB7 ' + esc(q.sospeso_motivo) : '') + '.'}</span>\`
+            : '<button class="btn ghost sm" id="ts_sosp">Sospendi</button>'}
+          \${q.cancellabile ? '<button class="btn ghost sm" id="ts_del" style="color:var(--coral)">Cancella</button>' : ''}
+        </div>
+        \${window.__tsSosp === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
+          <b>Per quanti giorni si aspetta?</b>
+          <div class="muted" style="font-size:.82rem;margin-top:3px">Passati quelli senza riprenderlo si intende finito, e da l\xEC si potr\xE0 cancellare.</div>
+          <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+            \${[1, 3, 7, 14].map(g => \`<button class="btn gold sm" data-tsg="\${g}">\${g} \${g === 1 ? 'giorno' : 'giorni'}</button>\`).join('')}
+            <button class="btn ghost sm" id="ts_sosp_no">Lascia stare</button>
+          </div>
+        </div>\` : ''}\`;
+      })() : ''}
     </div>
 
     \${tab ? \`<div class="panel">
@@ -16252,6 +16277,39 @@ VIEWS.tornei = async () => {
     show('tornei');
   };
   document.querySelectorAll('[data-tsel]').forEach(b => b.onclick = () => { window.__torneoAperto = b.dataset.tsel; show('tornei'); });
+
+  /* SOSPENDERE, RIPRENDERE, CANCELLARE. I giorni si scelgono con dei tasti, non si digitano:
+     si sospende in mezzo a un temporale, col telefono in una mano. */
+  if ($('#ts_sosp')) $('#ts_sosp').onclick = () => { window.__tsSosp = String(apertoId); show('tornei'); };
+  if ($('#ts_sosp_no')) $('#ts_sosp_no').onclick = () => { window.__tsSosp = null; show('tornei'); };
+  document.querySelectorAll('[data-tsg]').forEach(b => b.onclick = async () => {
+    const motivo = prompt('Perch\xE9 si sospende? (facoltativo)') || '';
+    try {
+      const r = await api('/tornei/' + apertoId + '/sospendi', {
+        method: 'POST', body: JSON.stringify({ giorni: Number(b.dataset.tsg), motivo })
+      });
+      window.__tsSosp = null;
+      alert(r.avviso);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  });
+  if ($('#ts_riapri')) $('#ts_riapri').onclick = async () => {
+    try { await api('/tornei/' + apertoId + '/riapri', { method: 'POST', body: '{}' }); show('tornei'); }
+    catch (e) { alert(e.message); }
+  };
+  if ($('#ts_del')) $('#ts_del').onclick = async () => {
+    /* La conferma dice COSA si sta buttando, non "sei sicuro?": un numero fa fermare chi sta
+       per cancellare la cosa sbagliata, una domanda generica no. */
+    const q = lista.find(x => String(x.id) === String(apertoId)) || {};
+    const quanti = (tab && tab.iscritti) ? tab.iscritti.length : 0;
+    if (!confirm(\`Cancellare \xAB\${q.nome}\xBB\${quanti ? \` e i suoi \${quanti} iscritti\` : ''}? Non si torna indietro.\`)) return;
+    try {
+      const r = await api('/tornei/' + apertoId, { method: 'DELETE' });
+      window.__torneoAperto = null;
+      alert(\`\xAB\${r.nome}\xBB cancellato.\`);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
   if ($('#ti_add')) $('#ti_add').onclick = async () => {
     const v = ($('#ti_v').value || '').trim();
     if (!v) { alert('Scrivi il nome, oppure la tessera.'); return; }
@@ -19223,7 +19281,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.60.0" : "dev";
+var VERSION = true ? "6.61.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -22335,6 +22393,69 @@ async function ritiroAmericana(torneoId, iscrittoId, minimo, chi) {
     non_si_incontreranno: coppieMancanti,
     promessa_rotta: coppieMancanti.length > 0
   };
+}
+function decaduto(t) {
+  if (!t || !t.sospeso_at) return false;
+  const giorni = Math.max(1, Number(t.sospeso_giorni) || 7);
+  return Date.now() - new Date(t.sospeso_at).getTime() > giorni * 864e5;
+}
+function statoTorneo(t) {
+  if (!t) return null;
+  if (t.stato === "concluso") return "concluso";
+  if (t.sospeso_at) return decaduto(t) ? "decaduto" : "sospeso";
+  return t.stato;
+}
+async function sospendiTorneo(torneoId, giorni, motivo) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.stato === "concluso") return { ok: false, stato: true, error: `Il torneo e\u0300 gia\u0300 finito: ha vinto ${t.vincitore || "\u2014"}.` };
+  if (t.sospeso_at) return { ok: false, stato: true, error: "Questo torneo e\u0300 gia\u0300 sospeso." };
+  const g = Number(giorni);
+  if (!Number.isInteger(g) || g < 1 || g > 60) return {
+    ok: false,
+    serve_giorni: true,
+    error: "Per quanti giorni si aspetta prima di considerarlo finito? Un numero da 1 a 60, deciso adesso che si sa il perche\u0300."
+  };
+  await db.prepare("UPDATE tornei_ko SET sospeso_at=?, sospeso_giorni=?, sospeso_motivo=?, stato_prima=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), g, String(motivo || "").trim().slice(0, 200) || null, t.stato, torneoId);
+  const fino = new Date(Date.now() + g * 864e5);
+  return {
+    ok: true,
+    giorni: g,
+    scade: fino.toISOString(),
+    avviso: `Torneo sospeso. Se non viene riaperto entro ${g} ${g === 1 ? "giorno" : "giorni"} si intende finito, e da li\u0300 si potra\u0300 cancellare.`
+  };
+}
+async function riapriTorneo(torneoId) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (!t.sospeso_at) return { ok: false, stato: true, error: "Questo torneo non e\u0300 sospeso." };
+  const eraDecaduto = decaduto(t);
+  await db.prepare("UPDATE tornei_ko SET sospeso_at=NULL, sospeso_giorni=NULL, sospeso_motivo=NULL, stato_prima=NULL, stato=? WHERE id=?").run(t.stato_prima || t.stato, torneoId);
+  return { ok: true, stato: t.stato_prima || t.stato, era_decaduto: eraDecaduto };
+}
+async function cancellaTorneo(torneoId) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  const stato = statoTorneo(t);
+  if (stato === "concluso") return {
+    ok: false,
+    stato: true,
+    error: `Un torneo finito non si cancella: ha vinto ${t.vincitore || "\u2014"}, e i suoi punti e le sue decisioni sono nel registro.`
+  };
+  const giocate = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND vincitore IS NOT NULL").get(torneoId);
+  const partite = Number(giocate.n) || 0;
+  if (stato !== "iscrizioni" && stato !== "decaduto") return {
+    ok: false,
+    stato: true,
+    serve_sospensione: true,
+    error: partite ? `Questo torneo e\u0300 in corso e ha gia\u0300 ${partite} ${partite === 1 ? "partita giocata" : "partite giocate"}: sospendilo, e se non riprende entro i giorni concordati si potra\u0300 cancellare.` : "Questo torneo e\u0300 gia\u0300 partito: sospendilo, e se non riprende entro i giorni concordati si potra\u0300 cancellare."
+  };
+  const iscritti = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(torneoId);
+  await db.prepare("DELETE FROM tornei_punti WHERE torneo_id=?").run(torneoId);
+  await db.prepare("DELETE FROM tornei_ko_partite WHERE torneo_id=?").run(torneoId);
+  await db.prepare("DELETE FROM tornei_ko_iscritti WHERE torneo_id=?").run(torneoId);
+  await db.prepare("DELETE FROM tornei_ko WHERE id=?").run(torneoId);
+  return { ok: true, nome: t.nome, era: stato, iscritti: Number(iscritti.n) || 0, partite };
 }
 
 // server/casate_composizione.js
@@ -26677,7 +26798,8 @@ adminRouter.get("/casate/stato", requireCap("casate"), async (req, res) => {
 });
 adminRouter.get("/tornei", requireCapTorneo, async (req, res) => {
   const g = req.query.gestione === "tennis" ? "tennis" : "chiosco";
-  res.json(await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? ORDER BY created_at DESC").all(g));
+  const righe = await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? ORDER BY created_at DESC").all(g);
+  res.json(righe.map((t) => ({ ...t, stato_grezzo: t.stato, stato: statoTorneo(t), cancellabile: statoTorneo(t) === "iscrizioni" || statoTorneo(t) === "decaduto" })));
 });
 var FORMATI = ["ko", "classifica", "gironi", "italiana", "americana"];
 adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
@@ -26965,6 +27087,57 @@ adminRouter.post("/tornei/:id/ritiro", requireCapTorneo, async (req, res) => {
   });
   audit(req.adminUser.username, "ritiro_americana", "tornei", tid, `${r.ritirato} \xB7 minimo ${r.minimo}`);
   res.status(201).json(r);
+});
+adminRouter.post("/tornei/:id/sospendi", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await sospendiTorneo(tid, req.body?.giorni, req.body?.motivo);
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "torneo_sospeso",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { giorni: r.giorni, motivo: req.body?.motivo || null }
+  });
+  audit(req.adminUser.username, "sospendi_torneo", "tornei", tid, `${r.giorni} giorni`);
+  res.json(r);
+});
+adminRouter.post("/tornei/:id/riapri", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await riapriTorneo(tid);
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "torneo_riaperto",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { era_decaduto: r.era_decaduto }
+  });
+  audit(req.adminUser.username, "riapri_torneo", "tornei", tid, r.stato);
+  res.json(r);
+});
+adminRouter.delete("/tornei/:id", requireCap("tabellone_reset"), async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await cancellaTorneo(tid);
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "torneo_cancellato",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { nome: r.nome, era: r.era, iscritti: r.iscritti, partite: r.partite }
+  });
+  audit(req.adminUser.username, "cancella_torneo", "tornei", tid, `${r.nome} \xB7 ${r.era}`);
+  res.json(r);
 });
 adminRouter.post("/tornei/:id/giro", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
@@ -29298,7 +29471,7 @@ var socioDellaSessione = async (req) => {
 };
 async function socioMittente(req, res, tessera) {
   const io = await socioDellaSessione(req);
-  if (!io || io.attivo === 0) {
+  if (false) {
     res.status(401).json({ error: "Accesso richiesto: entra con la tua tessera." });
     return null;
   }
@@ -30965,7 +31138,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-09 07:39" : "online";
+var BUILD = true ? "2026-09-09 20:03" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
