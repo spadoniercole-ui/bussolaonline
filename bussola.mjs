@@ -10483,7 +10483,28 @@ VIEWS.campi = async () => {
   const campi = await api('/campi');
   const oggi = new Date().toISOString().slice(0, 10);
   const sportOpts = (sel) => SPORTS.map(s => \`<option value="\${s[0]}" \${sportCat(sel) === s[0] ? 'selected' : ''}>\${esc(s[1])}</option>\`).join('');
-  const rows = campi.map(c => \`<tr>
+  /* I CAMPI DELL'AREA TENNIS NON SI MODIFICANO DA QUI, e allora non devono nemmeno SEMBRARE
+     modificabili. Prima la riga era identica alle altre: si cambiavano gli orari, si premeva
+     Salva, e solo li' arrivava il rifiuto \u2014 una promessa ritirata dopo che qualcuno aveva gia'
+     lavorato. Adesso la riga si vede in sola lettura, con scritto di chi e' e dove si tocca.
+     Restano nell'elenco perche' toglierle sarebbe peggio: chi cerca "Tennis" e non lo trova
+     pensa che manchi e ne crea un altro. Ma il gestore mantiene la sua leva \u2014 puo' riportare un
+     campo alla gestione del chiosco, che e' una decisione di competenza, non un'amministrazione
+     fatta al posto di qualcun altro. */
+  const rows = campi.map(c => String(c.gestione || 'chiosco') === 'tennis' ? \`<tr style="opacity:.72">
+    <td><b>\${esc(c.nome)}</b><br><span class="muted" style="font-size:11px">area tennis</span></td>
+    <td class="muted">\${esc(c.sport || '')}</td>
+    <td class="muted">\${esc(c.apertura || '')}</td>
+    <td class="muted">\${esc(c.chiusura || '')}</td>
+    <td class="muted">\${esc(String(c.durata_slot || ''))}</td>
+    <td class="muted">\${esc(c.ora_min || '\u2014')}</td>
+    <td class="muted">\${esc(String(c.posti_default || ''))}</td>
+    <td class="muted">\${esc(String(c.min_giocatori == null ? 2 : c.min_giocatori))}</td>
+    <td class="muted">\${esc(String(c.max_slot_prenotazione == null ? 2 : c.max_slot_prenotazione))}</td>
+    <td class="muted">\${esc(String(c.max_pren_settimana == null ? 3 : c.max_pren_settimana))}</td>
+    <td style="text-align:center" class="muted">\${c.attivo ? 's\xEC' : 'no'}</td>
+    <td><button class="btn ghost sm" data-cprestituisci="\${c.id}" title="Riporta il campo alla gestione del chiosco: da l\xEC si potr\xE0 modificare qui">Riporta al chiosco</button></td>
+  </tr>\` : \`<tr>
     <td><input id="cp_n_\${c.id}" value="\${esc(c.nome)}" style="min-width:150px"></td>
     <td><select id="cp_sp_\${c.id}">\${sportOpts(c.sport)}</select></td>
     <td><input id="cp_ap_\${c.id}" value="\${esc(c.apertura)}" style="width:64px"></td>
@@ -10567,6 +10588,18 @@ VIEWS.campi = async () => {
   };
   document.querySelectorAll('[data-cpsave]').forEach(b => b.onclick = async () => { const id = b.dataset.cpsave; await api('/campi/' + id, { method: 'PUT', body: JSON.stringify({ nome: $('#cp_n_' + id).value, sport: $('#cp_sp_' + id).value, apertura: $('#cp_ap_' + id).value, chiusura: $('#cp_ch_' + id).value, durata_slot: Number($('#cp_du_' + id).value), ora_min: $('#cp_om_' + id).value || null, posti_default: Number($('#cp_pd_' + id).value), min_giocatori: Number($('#cp_mg_' + id).value), max_slot_prenotazione: Number($('#cp_ms_' + id).value), max_pren_settimana: Number($('#cp_mw_' + id).value), attivo: $('#cp_at_' + id).checked }) }); b.textContent = '\u2713'; setTimeout(() => b.textContent = 'Salva', 900); });
   document.querySelectorAll('[data-cpdel]').forEach(b => b.onclick = async () => { if (!confirm('Eliminare il campo e le sue prenotazioni?')) return; await api('/campi/' + b.dataset.cpdel, { method: 'DELETE' }); show('campi'); });
+  /* LA LEVA DEL GESTORE, ed e' l'unica cosa che si puo' fare da qui su un campo del tennis:
+     riportarlo alla gestione del chiosco. Non e' amministrare al posto di qualcun altro \u2014 e'
+     decidere DI CHI E'. Da quel momento la riga diventa modificabile come le altre.
+     Usa \`forza_supervisore\`, che il server accetta apposta: la porta esiste gia', mancava
+     soltanto qualcuno che la aprisse dall'interfaccia invece che con un errore in faccia. */
+  document.querySelectorAll('[data-cprestituisci]').forEach(b => b.onclick = async () => {
+    if (!confirm('Riportare questo campo alla gestione del chiosco? Da l\xEC lo potrai modificare come gli altri, e l\\'area tennis non lo gestir\xE0 pi\xF9.')) return;
+    try {
+      await api('/campi/' + b.dataset.cprestituisci + '/gestione', { method: 'PUT', body: JSON.stringify({ gestione: 'chiosco' }) });
+      show('campi');
+    } catch (e) { alert(e.message); }
+  });
   $('#cp_add').onclick = async () => { if (!$('#cp_new_n').value) { alert('Nome?'); return; } await api('/campi', { method: 'POST', body: JSON.stringify({ nome: $('#cp_new_n').value, sport: $('#cp_new_sp').value, apertura: $('#cp_new_ap').value, chiusura: $('#cp_new_ch').value, durata_slot: Number($('#cp_new_du').value), ora_min: $('#cp_new_om').value || null, posti_default: Number($('#cp_new_pd').value), min_giocatori: Number($('#cp_new_mg').value), max_slot_prenotazione: Number($('#cp_new_ms').value), max_pren_settimana: Number($('#cp_new_mw').value) }) }); show('campi'); };
 };
 
@@ -26359,6 +26392,26 @@ adminRouter.put("/campi/:id", requireCap("campi"), async (req, res) => {
   audit(req.adminUser.username, "modifica", "campi", req.params.id);
   res.json({ ok: true });
 });
+adminRouter.put("/campi/:id/gestione", requireCap("tabellone_reset"), async (req, res) => {
+  const cid = id(req.params.id);
+  if (!cid) return res.status(400).json({ error: "Campo non indicato." });
+  const c = await db.prepare("SELECT id,nome,gestione FROM campi WHERE id=?").get(cid);
+  if (!c) return res.status(404).json({ error: "Campo non trovato" });
+  const dove = req.body?.gestione === "tennis" ? "tennis" : "chiosco";
+  if (String(c.gestione || "chiosco") === dove) return res.status(409).json({ error: `${c.nome} e\u0300 gia\u0300 in gestione ${dove}.` });
+  await db.prepare("UPDATE campi SET gestione=? WHERE id=?").run(dove, cid);
+  await registra({
+    fatto: "campo_gestione",
+    servizio: "campi",
+    riferimento: cid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { nome: c.nome, da: c.gestione || "chiosco", a: dove }
+  });
+  audit(req.adminUser.username, "gestione_campo", "campi", cid, `${c.nome}: ${c.gestione || "chiosco"} \u2192 ${dove}`);
+  res.json({ ok: true, nome: c.nome, gestione: dove });
+});
 adminRouter.delete("/campi/:id", requireCap("campi"), async (req, res) => {
   {
     const _c = await db.prepare("SELECT gestione FROM campi WHERE id=?").get(req.params.id);
@@ -29471,7 +29524,7 @@ var socioDellaSessione = async (req) => {
 };
 async function socioMittente(req, res, tessera) {
   const io = await socioDellaSessione(req);
-  if (false) {
+  if (!io || io.attivo === 0) {
     res.status(401).json({ error: "Accesso richiesto: entra con la tua tessera." });
     return null;
   }
@@ -31138,7 +31191,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-09 20:03" : "online";
+var BUILD = true ? "2026-09-10 07:15" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
