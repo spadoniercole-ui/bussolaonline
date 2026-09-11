@@ -5679,7 +5679,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.67.0';
+const VERSIONE_APP = '6.69.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -13812,6 +13812,14 @@ let TOKEN = null, ME = { gestore: false, ruolo: '', caps: [] }, PAR = {};
  * e' solo un ostacolo, e chi lo vede si chiede perche' non funziona. */
 const supervisore = () => ME.gestore || ME.ruolo === 'manager';
 
+/* CHI PUO' SEGNARE UN RISULTATO non e' \xABchi sovrintende\xBB: e' chi sta a bordo campo.
+   Il permesso si chiama \xABTabellone (risultati live)\xBB ed esiste apposta \u2014 ma la schermata
+   chiedeva \`supervisore()\`, cioe' gestore o manager, e uno staff col permesso giusto vedeva
+   \xABda giocare\xBB senza poter scrivere niente. Tre idee diverse della stessa cosa: il server
+   pretendeva \`campi\`, la schermata il ruolo, e il permesso col nome giusto non serviva a nulla.
+   Qui si guarda cosa la persona PUO' FARE, non che grado ha. */
+const puoSegnare = () => supervisore() || (ME.caps || []).some(c => ['tabellone', 'campi'].includes(c));
+
 // LE TESSERE HANNO DUE FORMATI. Il nuovo e' RB-000123-4 (sigla, progressivo, cifra di
 // controllo); il vecchio BR-2026-0101 resta valido perche' le tessere gia' stampate devono
 // continuare a funzionare. Il server accetta gia' tutti e due; qui si riconosceva SOLO il
@@ -16230,7 +16238,7 @@ VIEWS.tornei = async () => {
         <span style="font-size:.9rem"><b>\${esc(p.a_nome)}</b> e <b>\${esc(p.a2_nome)}</b><br><span class="muted">contro</span> <b>\${esc(p.b_nome)}</b> e <b>\${esc(p.b2_nome)}</b></span>
         \${p.punti_a !== null && p.punti_a !== undefined
           ? \`<span class="tag ok" style="font-size:1rem">\${p.punti_a} \u2013 \${p.punti_b}</span>\`
-          : (p.a_nome && p.b_nome && supervisore() ? \`<span class="row" style="gap:5px">
+          : (p.a_nome && p.b_nome && puoSegnare() ? \`<span class="row" style="gap:5px">
               <input id="pa_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:56px;font-size:1rem;text-align:center">
               <input id="pb_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:56px;font-size:1rem;text-align:center">
               <button class="btn gold sm" data-amp="\${p.id}|\${fin ? 1 : 0}">Segna</button>
@@ -16243,6 +16251,28 @@ VIEWS.tornei = async () => {
     vistaFormato = \`<div style="margin-top:12px">
       <b style="color:var(--navy)">Americana</b>
       <p class="muted" style="font-size:.82rem">Sette turni, due campi, il compagno cambia ogni volta. Si gioca in coppia ma <b>i punti sono tuoi</b>. Ogni partita finisce a <b>\${somma}</b>: un \${Math.floor(somma / 2)}\u2013\${Math.ceil(somma / 2)} \xE8 un risultato normale.</p>
+      \${st && supervisore() ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
+        <b style="font-size:.92rem">Il gruppo</b>
+        <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${st.iscritti.length
+          ? \`\${st.iscritti.length} \${st.iscritti.length === 1 ? 'giocatore' : 'giocatori'} nel gruppo. Non c'\xE8 un tetto: a ogni giornata se ne scelgono otto.\`
+          : 'Comincia da qui: carica chi gioca. Non c\\'\xE8 un tetto \u2014 a ogni giornata ne sceglierai otto fra questi.'}</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="am_nome" placeholder="Aggiungi un nome" style="min-width:150px">
+          <button class="btn ghost sm" id="am_add">Aggiungi</button>
+          <label class="btn ghost sm" style="margin:0;cursor:pointer">Carica un elenco\u2026
+            <input type="file" id="am_file" accept=".csv,.xlsx,.xls,text/csv" style="display:none">
+          </label>
+        </div>
+        <div class="muted" style="font-size:.78rem;margin-top:5px">Un foglio csv o xlsx con una colonna <b>nome</b> (vanno bene anche \u201Cgiocatore\u201D o \u201Cnominativo\u201D). Prima di scrivere niente ti dico chi entrerebbe.</div>
+        \${window.__amImport && String(window.__amImport.id) === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:8px 10px">
+          <b>\${window.__amImport.nuovi.length} da aggiungere\${window.__amImport.doppi.length ? \` \xB7 \${window.__amImport.doppi.length} gi\xE0 nel gruppo\` : ''}</b>
+          <div class="muted" style="font-size:.8rem;margin-top:3px">\${window.__amImport.nuovi.map(esc).join(', ') || 'nessuno'}</div>
+          <div class="row" style="gap:6px;margin-top:8px">
+            \${window.__amImport.nuovi.length ? '<button class="btn gold sm" id="am_imp_ok">Aggiungili</button>' : ''}
+            <button class="btn ghost sm" id="am_imp_no">Lascia stare</button>
+          </div>
+        </div>\` : ''}
+      </div>\` : ''}
       \${am.classifica.length ? \`<div class="box" style="padding:8px 10px;margin-bottom:10px">
         \${am.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--tratto)">
           <span>\${r.posizione}. <b>\${esc(r.nome)}</b>\${r.ritirato ? ' <span class="tag">ritirato</span>' : ''}</span>
@@ -16276,26 +16306,6 @@ VIEWS.tornei = async () => {
               <span>\${r.posizione}. <b>\${esc(r.nome)}</b> <span class="muted" style="font-size:.78rem">\${r.presenze} \${r.presenze === 1 ? 'presenza' : 'presenze'}</span></span>
               <span><b>\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
             </div>\`).join('')}
-          </div>
-        </div>\` : ''}
-      </div>\` : ''}
-      \${st && supervisore() ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
-        <b style="font-size:.92rem">Il gruppo</b>
-        <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${st.iscritti.length} \${st.iscritti.length === 1 ? 'giocatore' : 'giocatori'} nel gruppo. Non c'\xE8 un tetto: a ogni giornata se ne scelgono otto.</div>
-        <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
-          <input id="am_nome" placeholder="Aggiungi un nome" style="min-width:150px">
-          <button class="btn ghost sm" id="am_add">Aggiungi</button>
-          <label class="btn ghost sm" style="margin:0;cursor:pointer">Carica un elenco\u2026
-            <input type="file" id="am_file" accept=".csv,.xlsx,.xls,text/csv" style="display:none">
-          </label>
-        </div>
-        <div class="muted" style="font-size:.78rem;margin-top:5px">Un foglio csv o xlsx con una colonna <b>nome</b> (vanno bene anche \u201Cgiocatore\u201D o \u201Cnominativo\u201D). Prima di scrivere niente ti dico chi entrerebbe.</div>
-        \${window.__amImport && String(window.__amImport.id) === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:8px 10px">
-          <b>\${window.__amImport.nuovi.length} da aggiungere\${window.__amImport.doppi.length ? \` \xB7 \${window.__amImport.doppi.length} gi\xE0 nel gruppo\` : ''}</b>
-          <div class="muted" style="font-size:.8rem;margin-top:3px">\${window.__amImport.nuovi.map(esc).join(', ') || 'nessuno'}</div>
-          <div class="row" style="gap:6px;margin-top:8px">
-            \${window.__amImport.nuovi.length ? '<button class="btn gold sm" id="am_imp_ok">Aggiungili</button>' : ''}
-            <button class="btn ghost sm" id="am_imp_no">Lascia stare</button>
           </div>
         </div>\` : ''}
       </div>\` : ''}
@@ -19604,7 +19614,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.67.0" : "dev";
+var VERSION = true ? "6.69.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27648,7 +27658,7 @@ adminRouter.get("/tornei/:id/americana", requireCapTorneo, async (req, res) => {
     da_giocare: partite.filter((x) => x.turno === 0 && x.punti_a === null).length
   });
 });
-adminRouter.put("/tornei/partite/:id/punti", requireCap("campi"), async (req, res) => {
+adminRouter.put("/tornei/partite/:id/punti", requireAnyCap("tabellone", "campi"), async (req, res) => {
   const pid = id(req.params.id);
   if (!pid) return res.status(400).json({ error: "Partita non indicata." });
   const p = await db.prepare("SELECT turno FROM tornei_ko_partite WHERE id=?").get(pid);
@@ -27799,7 +27809,7 @@ adminRouter.post("/tornei/:id/sorteggia", requireCap("campi"), async (req, res) 
   audit(req.adminUser.username, "sorteggia_torneo", "tornei", req.params.id);
   res.json({ ok: true, tabellone: await tabellone(req.params.id) });
 });
-adminRouter.put("/tornei/partite/:id", requireCap("campi"), async (req, res) => {
+adminRouter.put("/tornei/partite/:id", requireAnyCap("tabellone", "campi"), async (req, res) => {
   const pid = id(req.params.id);
   if (!pid) return res.status(400).json({ error: "Partita non indicata." });
   const r = await registraRisultato2(pid, String(req.body?.vincitore || "").trim(), req.body?.punteggio);
@@ -31743,7 +31753,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 18:23" : "online";
+var BUILD = true ? "2026-09-11 18:49" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
