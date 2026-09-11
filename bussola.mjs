@@ -5679,7 +5679,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.66.0';
+const VERSIONE_APP = '6.67.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16279,6 +16279,26 @@ VIEWS.tornei = async () => {
           </div>
         </div>\` : ''}
       </div>\` : ''}
+      \${st && supervisore() ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
+        <b style="font-size:.92rem">Il gruppo</b>
+        <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${st.iscritti.length} \${st.iscritti.length === 1 ? 'giocatore' : 'giocatori'} nel gruppo. Non c'\xE8 un tetto: a ogni giornata se ne scelgono otto.</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="am_nome" placeholder="Aggiungi un nome" style="min-width:150px">
+          <button class="btn ghost sm" id="am_add">Aggiungi</button>
+          <label class="btn ghost sm" style="margin:0;cursor:pointer">Carica un elenco\u2026
+            <input type="file" id="am_file" accept=".csv,.xlsx,.xls,text/csv" style="display:none">
+          </label>
+        </div>
+        <div class="muted" style="font-size:.78rem;margin-top:5px">Un foglio csv o xlsx con una colonna <b>nome</b> (vanno bene anche \u201Cgiocatore\u201D o \u201Cnominativo\u201D). Prima di scrivere niente ti dico chi entrerebbe.</div>
+        \${window.__amImport && String(window.__amImport.id) === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:8px 10px">
+          <b>\${window.__amImport.nuovi.length} da aggiungere\${window.__amImport.doppi.length ? \` \xB7 \${window.__amImport.doppi.length} gi\xE0 nel gruppo\` : ''}</b>
+          <div class="muted" style="font-size:.8rem;margin-top:3px">\${window.__amImport.nuovi.map(esc).join(', ') || 'nessuno'}</div>
+          <div class="row" style="gap:6px;margin-top:8px">
+            \${window.__amImport.nuovi.length ? '<button class="btn gold sm" id="am_imp_ok">Aggiungili</button>' : ''}
+            <button class="btn ghost sm" id="am_imp_no">Lascia stare</button>
+          </div>
+        </div>\` : ''}
+      </div>\` : ''}
       \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>Chi gioca stasera?</b>
         <div class="muted" style="font-size:.82rem;margin-top:3px">Scegline otto dal gruppo. Non devono essere gli stessi dell'ultima volta: chi non c'\xE8 non prende punti.</div>
@@ -16649,6 +16669,45 @@ VIEWS.tornei = async () => {
   /* LA SCELTA DEGLI OTTO: si tocca un nome per metterlo dentro, lo si ritocca per toglierlo.
      Il tetto e' otto, e il tasto in piu' non si accende invece di far scegliere troppi e
      rifiutare dopo. Niente prompt: si sceglie a bordo campo, in piedi. */
+  /* IL GRUPPO: a mano o da un foglio.
+     L'import passa SEMPRE da una prova a vuoto prima di scrivere: chi carica un elenco di
+     persone deve poter guardare chi entrerebbe. E lo stesso file due volte non raddoppia
+     nessuno \u2014 succede piu' spesso di quanto si creda. */
+  if ($('#am_add')) $('#am_add').onclick = async () => {
+    const nome = ($('#am_nome').value || '').trim();
+    if (!nome) return;
+    try { await api('/tornei/' + apertoId + '/iscritti', { method: 'POST', body: JSON.stringify({ nome }) }); show('tornei'); }
+    catch (e) { alert(e.message); }
+  };
+  if ($('#am_file')) $('#am_file').onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const b64 = await new Promise((ok, ko) => {
+      const r = new FileReader();
+      r.onload = () => ok(String(r.result).split(',')[1]);
+      r.onerror = () => ko(new Error('Non riesco a leggere il file.'));
+      r.readAsDataURL(f);
+    }).catch(() => null);
+    if (!b64) { alert('Non riesco a leggere il file.'); return; }
+    try {
+      const r = await api('/tornei/' + apertoId + '/iscritti/import', { method: 'POST', body: JSON.stringify({ fileB64: b64, dryRun: true }) });
+      window.__amImport = { id: apertoId, b64, nuovi: r.nuovi, doppi: r.doppi };
+      show('tornei');
+    } catch (err) {
+      // Il rifiuto dice quali colonne ha letto: nove volte su dieci si chiama in un altro modo.
+      alert(err.message);
+    }
+  };
+  if ($('#am_imp_no')) $('#am_imp_no').onclick = () => { window.__amImport = null; show('tornei'); };
+  if ($('#am_imp_ok')) $('#am_imp_ok').onclick = async () => {
+    try {
+      const r = await api('/tornei/' + apertoId + '/iscritti/import', { method: 'POST', body: JSON.stringify({ fileB64: window.__amImport.b64 }) });
+      window.__amImport = null;
+      alert(\`\${r.aggiunti} aggiunti al gruppo\${r.gia_presenti ? \` \xB7 \${r.gia_presenti} c'erano gi\xE0\` : ''}.\`);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#am_giornata')) $('#am_giornata').onclick = () => {
     window.__amGiornata = { id: apertoId, scelti: [], data: new Date().toISOString().slice(0, 10) };
     show('tornei');
@@ -19545,7 +19604,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.66.0" : "dev";
+var VERSION = true ? "6.67.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27533,9 +27592,19 @@ adminRouter.get("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
   const dettaglio = [];
   for (const g of giornate) {
     const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? ORDER BY turno,giornata,campo").all(g.id);
+    const turni2 = [];
+    for (const p of partite.filter((x) => x.turno === 0)) {
+      let t0 = turni2.find((x) => x.turno === p.giornata);
+      if (!t0) {
+        t0 = { turno: p.giornata, partite: [] };
+        turni2.push(t0);
+      }
+      t0.partite.push(p);
+    }
     dettaglio.push({
       ...g,
-      turni: partite.filter((p) => p.turno === 0),
+      turni: turni2,
+      partite_turni: partite.filter((p) => p.turno === 0),
       finale: partite.filter((p) => p.turno > 0),
       graduatoria: await graduatoriaGiornata(g.id),
       da_giocare: partite.filter((p) => p.turno === 0 && p.punti_a === null).length
@@ -31674,7 +31743,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 18:04" : "online";
+var BUILD = true ? "2026-09-11 18:23" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
