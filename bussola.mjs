@@ -5679,7 +5679,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.69.0';
+const VERSIONE_APP = '6.70.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -19614,7 +19614,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.69.0" : "dev";
+var VERSION = true ? "6.70.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -22789,11 +22789,11 @@ async function cancellaTorneo(torneoId) {
   };
   const giocate = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND vincitore IS NOT NULL").get(torneoId);
   const partite = Number(giocate.n) || 0;
-  if (stato !== "iscrizioni" && stato !== "decaduto") return {
+  if (partite > 0 && stato !== "decaduto") return {
     ok: false,
     stato: true,
     serve_sospensione: true,
-    error: partite ? `Questo torneo e\u0300 in corso e ha gia\u0300 ${partite} ${partite === 1 ? "partita giocata" : "partite giocate"}: sospendilo, e se non riprende entro i giorni concordati si potra\u0300 cancellare.` : "Questo torneo e\u0300 gia\u0300 partito: sospendilo, e se non riprende entro i giorni concordati si potra\u0300 cancellare."
+    error: `Questo torneo ha gia\u0300 ${partite} ${partite === 1 ? "partita giocata" : "partite giocate"}: sospendilo, e se non riprende entro i giorni concordati si potra\u0300 cancellare.`
   };
   const iscritti = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(torneoId);
   await db.prepare("DELETE FROM tornei_punti WHERE torneo_id=?").run(torneoId);
@@ -31753,7 +31753,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 18:49" : "online";
+var BUILD = true ? "2026-09-11 19:03" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
