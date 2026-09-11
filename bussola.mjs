@@ -1878,6 +1878,22 @@ async function migrate() {
   await addIfMissing("tornei_ko", "sospeso_giorni", "sospeso_giorni INTEGER");
   await addIfMissing("tornei_ko", "sospeso_motivo", "sospeso_motivo TEXT");
   await addIfMissing("tornei_ko", "stato_prima", "stato_prima TEXT");
+  await addIfMissing("tornei_ko", "chiusura", "chiusura TEXT NOT NULL DEFAULT 'punti'");
+  await addIfMissing("tornei_ko", "chiusura_valore", "chiusura_valore INTEGER NOT NULL DEFAULT 24");
+  await db.exec(`
+  CREATE TABLE IF NOT EXISTS tornei_giornate (
+    id         INTEGER PRIMARY KEY,
+    torneo_id  INTEGER NOT NULL REFERENCES tornei_ko(id) ON DELETE CASCADE,
+    data       TEXT NOT NULL,
+    numero     INTEGER NOT NULL,
+    stato      TEXT NOT NULL DEFAULT 'turni',   -- turni | finale | conclusa
+    vincitori  TEXT,
+    creata_at  TEXT NOT NULL,
+    chiusa_at  TEXT
+  );`);
+  await db.exec("CREATE INDEX IF NOT EXISTS ix_giornate_torneo ON tornei_giornate(torneo_id, numero)");
+  await addIfMissing("tornei_ko_partite", "giornata_id", "giornata_id INTEGER");
+  await addIfMissing("tornei_punti", "giornata_id", "giornata_id INTEGER");
   await db.exec(`
   CREATE TABLE IF NOT EXISTS tornei_punti (
     id         INTEGER PRIMARY KEY,
@@ -5663,7 +5679,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.64.0';
+const VERSIONE_APP = '6.66.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -9926,9 +9942,16 @@ VIEWS.installa = async () => {
 // I nomi dei moduli Crew sono gli stessi del selettore in alto: chi d\xE0 il permesso e chi lo
 // riceve devono chiamare la stessa cosa allo stesso modo. C'\xE8 un test che lo verifica.
 const CAP_LABEL = { utenti:'Utenti (modifica)', utenti_ins:'Registra utenti', casate:'Casate & punti', cdc:'Casa di Carta', sala:'Coworking & sala', discipline:'Discipline', tabellone:'Crew \xB7 Tabellone (risultati live)', contest:'Contest', serate:'Crew \xB7 Serate', proposte:'Proposte', eventi:'Eventi', magazzino:'Crew \xB7 Magazzino', cucina:'Crew \xB7 Cucina (solo le code di preparazione)', comande:'Crew \xB7 Comande e Cucina', campi:'Crew \xB7 Campi liberi (gratuiti)', menu:'Men\xF9 & listino (decide cosa si vende)', beach:'Crew \xB7 Spiaggia (piazzole)', fitness:'Crew \xB7 Fitness', cinema:'Crew \xB7 Stage (platea e ingressi)', tennis:'Area tennis: gestore del servizio', tennis_campi:'Area tennis: solo prenotazioni e blocchi' };
+/* I GRUPPI ARRIVANO DAL SERVER e si tengono qui: ridisegnarli nella schermata vorrebbe dire una
+   seconda mappa da tenere allineata alla prima. \`FUORI_GRUPPO\` sono i permessi che nessun gruppo
+   ha raccolto \u2014 se ce ne fossero, si mostrano invece di sparire. */
+let GRUPPI = null;
+let FUORI_GRUPPO = [];
 VIEWS.operatori = async () => {
   const d = await api('/operatori');
   const caps = d.caps_delegabili;
+  GRUPPI = (d.gruppi_caps && d.gruppi_caps.gruppi) || null;
+  FUORI_GRUPPO = (d.gruppi_caps && d.gruppi_caps.fuori) || [];
   const ruoloTag = (r) => r === 'gestore' ? '<span class="tag ok">gestore</span>' : r === 'manager' ? '<span class="tag mid">manager</span>' : r === 'sola_lettura' ? '<span class="tag no">sola lettura</span>' : '<span class="tag mid">staff</span>';
   $('#view').innerHTML = \`
     <div class="panel"><h3>Operatori</h3>
@@ -9954,12 +9977,38 @@ function openOperatore(o, caps) {
       <div><label>Password \${isNew ? '' : '(lascia vuoto per non cambiarla)'}</label><input id="o_pwd" type="password" placeholder="\${isNew ? 'password' : '\u2022\u2022\u2022\u2022\u2022\u2022'}"></div>
     </div>
     <div id="o_capsWrap"><label>Permessi (solo per ruolo staff)</label>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">\${caps.map(c => \`<label class="check" style="margin:0"><input type="checkbox" class="o_cap" value="\${c}" \${sel.has(c) ? 'checked' : ''}> \${esc(CAP_LABEL[c] || c)}</label>\`).join('')}</div>
+      \${(GRUPPI || []).map(g => {
+        const suoi = g.caps.filter(c => g.chiave === 'gestore' || caps.includes(c));
+        if (!suoi.length) return '';
+        const spenti = g.chiave === 'gestore';
+        return \`<div class="box" style="padding:9px 11px;margin-bottom:8px\${spenti ? ';opacity:.62' : ''}">
+          <div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <b style="font-size:.92rem">\${esc(g.nome)}</b>
+            \${g.blocco && !spenti ? \`<button type="button" class="btn ghost sm" data-gruppo="\${g.chiave}">Tutte / nessuna</button>\` : ''}
+          </div>
+          <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${esc(g.aiuto)}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">\${suoi.map(c => \`<label class="check" style="margin:0"><input type="checkbox" class="o_cap" data-g="\${g.chiave}" value="\${c}" \${sel.has(c) ? 'checked' : ''} \${spenti ? 'disabled' : ''}> \${esc(CAP_LABEL[c] || c)}</label>\`).join('')}</div>
+        </div>\`;
+      }).join('')}
+      \${(FUORI_GRUPPO || []).length ? \`<div class="box chiama" style="padding:9px 11px">
+        <b style="font-size:.92rem">Senza gruppo</b>
+        <div class="muted" style="font-size:.8rem;margin:3px 0 7px">Questi permessi non sono stati messi in nessun gruppo: si possono dare, ma chi li assegna non sa cosa sta dando. Vanno sistemati nella mappa.</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">\${FUORI_GRUPPO.map(c => \`<label class="check" style="margin:0"><input type="checkbox" class="o_cap" value="\${c}" \${sel.has(c) ? 'checked' : ''}> \${esc(CAP_LABEL[c] || c)}</label>\`).join('')}</div>
+      </div>\` : ''}
     </div>
     <div class="err" id="o_err"></div>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="mCancel">Annulla</button><button class="btn gold sm" id="mSave">Salva</button></div>\`);
   const syncRuolo = () => { $('#o_capsWrap').style.display = $('#o_ruolo').value === 'staff' ? 'block' : 'none'; };
   $('#o_ruolo').onchange = syncRuolo; syncRuolo();
+  /* \xABTutte / nessuna\xBB solo sulle ZONE, e solo li': la crew si ridistribuisce durante la serata e
+     darle il giro completo del Chiosco e' un gesto normale. Sui dati che si possono modificare
+     no \u2014 dare il listino non e' come dare le discipline, e una spunta unica farebbe passare
+     l'una insieme all'altra senza che nessuno ci pensi. */
+  document.querySelectorAll('[data-gruppo]').forEach(b => b.onclick = () => {
+    const suoi = [...document.querySelectorAll(\`.o_cap[data-g="\${b.dataset.gruppo}"]:not([disabled])\`)];
+    const tutte = suoi.every(x => x.checked);
+    suoi.forEach(x => { x.checked = !tutte; });
+  });
   $('#mCancel').onclick = closeModal;
   $('#mSave').onclick = async () => {
     const body = { ruolo: $('#o_ruolo').value, permessi: [...document.querySelectorAll('.o_cap:checked')].map(x => x.value) };
@@ -16164,7 +16213,16 @@ VIEWS.tornei = async () => {
   }
 
   if (tab && tab.torneo.formato === 'americana') {
-    const am = await api('/tornei/' + apertoId + '/americana').catch(() => ({ turni: [], classifica: [], finale: [] }));
+    /* L'AMERICANA E' UNA STAGIONE: gli iscritti sono un bacino e a ogni giornata se ne scelgono
+       otto. Si guarda la giornata aperta \u2014 quella e' il lavoro di stasera \u2014 e sotto la
+       classifica generale, che somma le sere. */
+    const st = await api('/tornei/' + apertoId + '/giornate').catch(() => null);
+    /* Si guarda la GIORNATA APERTA, non il torneo: i turni e la finale sono della serata.
+       Se non ce n'\xE8 nessuna, si \xE8 nella fase in cui si scelgono gli otto. */
+    const gAperta = st && st.giornate ? st.giornate.find(x => x.stato !== 'conclusa') : null;
+    const am = gAperta
+      ? { turni: gAperta.turni, finale: gAperta.finale, classifica: gAperta.graduatoria, da_giocare: gAperta.da_giocare, torneo: st.torneo }
+      : { turni: [], finale: [], classifica: [], da_giocare: 0, torneo: (st && st.torneo) || tab.torneo };
     const t = am.torneo || tab.torneo;
     const somma = Number(t.punti_partita) || 24;
     const partitaAm = (p, fin) => \`<div class="box" style="padding:7px 9px;margin-bottom:5px">
@@ -16181,6 +16239,7 @@ VIEWS.tornei = async () => {
     </div>\`;
     const daGiocare = am.da_giocare || 0;
     const rit = window.__amRitiro && String(window.__amRitiro.id) === String(apertoId) ? window.__amRitiro : null;
+    const gi = window.__amGiornata && String(window.__amGiornata.id) === String(apertoId) ? window.__amGiornata : null;
     vistaFormato = \`<div style="margin-top:12px">
       <b style="color:var(--navy)">Americana</b>
       <p class="muted" style="font-size:.82rem">Sette turni, due campi, il compagno cambia ogni volta. Si gioca in coppia ma <b>i punti sono tuoi</b>. Ogni partita finisce a <b>\${somma}</b>: un \${Math.floor(somma / 2)}\u2013\${Math.ceil(somma / 2)} \xE8 un risultato normale.</p>
@@ -16199,8 +16258,43 @@ VIEWS.tornei = async () => {
         <p class="muted" style="font-size:.8rem">I punti di semifinale e finale non entrano in classifica: entra solo il bonus.</p>
         \${am.finale.map(p => partitaAm(p, true)).join('')}
       </div>\` : ''}
+      \${st && st.giornate ? \`<div style="margin-top:12px">
+        <b style="color:var(--navy)">Le giornate</b>
+        \${st.giornate.length ? st.giornate.slice(0, 4).map(g => \`<div class="box" style="padding:7px 9px;margin-top:5px">
+          <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
+            <b>\${esc(g.data)}</b>
+            <span class="tag \${g.stato === 'conclusa' ? 'ok' : ''}">\${g.stato === 'conclusa' ? 'chiusa' : g.stato === 'finale' ? 'in finale' : 'in corso'}</span>
+          </div>
+          \${g.vincitori ? \`<div class="muted" style="font-size:.82rem">Hanno vinto \${esc(g.vincitori)}</div>\` : ''}
+          \${g.graduatoria.length ? \`<div class="muted" style="font-size:.8rem;margin-top:3px">\${g.graduatoria.map(r => \`\${esc(r.nome)} \${r.punti}\`).join(' \xB7 ')}</div>\` : ''}
+        </div>\`).join('') : '<p class="muted" style="font-size:.82rem">Nessuna giornata ancora. Scegli otto giocatori e comincia.</p>'}
+        \${st.classifica && st.classifica.some(r => r.presenze) ? \`<div style="margin-top:10px">
+          <b style="color:var(--navy)">Classifica generale</b>
+          <div class="muted" style="font-size:.8rem">Somma di tutte le giornate. Chi non c'era non prende punti.</div>
+          <div class="box" style="padding:8px 10px;margin-top:5px">
+            \${st.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--tratto)">
+              <span>\${r.posizione}. <b>\${esc(r.nome)}</b> <span class="muted" style="font-size:.78rem">\${r.presenze} \${r.presenze === 1 ? 'presenza' : 'presenze'}</span></span>
+              <span><b>\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
+            </div>\`).join('')}
+          </div>
+        </div>\` : ''}
+      </div>\` : ''}
+      \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
+        <b>Chi gioca stasera?</b>
+        <div class="muted" style="font-size:.82rem;margin-top:3px">Scegline otto dal gruppo. Non devono essere gli stessi dell'ultima volta: chi non c'\xE8 non prende punti.</div>
+        <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+          \${(st ? st.iscritti : []).map(i => \`<button class="btn \${gi.scelti.includes(i.id) ? 'gold' : 'ghost'} sm" data-gsel="\${i.id}">\${esc(i.nome)}</button>\`).join('')}
+        </div>
+        <div class="row" style="gap:8px;margin-top:9px;align-items:center;flex-wrap:wrap">
+          <label class="muted" style="font-size:.82rem">Quando <input id="gi_data" type="date" value="\${esc(gi.data || '')}"></label>
+          <span class="muted" style="font-size:.82rem">Scelti \${gi.scelti.length} su 8.</span>
+          \${gi.scelti.length === 8 ? '<button class="btn gold sm" id="gi_via">Comincia la giornata</button>' : ''}
+          <button class="btn ghost sm" id="gi_no">Lascia stare</button>
+        </div>
+      </div>\` : ''}
       \${supervisore() ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
-        \${tab.torneo.stato === 'iscrizioni' ? '<button class="btn gold sm" id="am_avvia">Forma le coppie e comincia</button>' : ''}
+        \${st && st.iscritti && st.iscritti.length > 8 && !st.giornate.some(g => g.stato !== 'conclusa') ? '<button class="btn gold sm" id="am_giornata">+ Nuova giornata</button>' : ''}
+        \${tab.torneo.stato === 'iscrizioni' && st && st.iscritti.length === 8 ? '<button class="btn gold sm" id="am_avvia">Forma le coppie e comincia</button>' : ''}
         \${tab.torneo.stato === 'girone' && !daGiocare ? '<button class="btn gold sm" id="am_finale">Avvia la fase finale</button>' : ''}
         \${tab.torneo.stato === 'girone' ? '<button class="btn ghost sm" id="am_ritiro">Qualcuno se ne va</button>' : ''}
       </div>\` : ''}
@@ -16552,6 +16646,32 @@ VIEWS.tornei = async () => {
   /* L'AMERICANA. I due punteggi si digitano affiancati e grandi: si segna a bordo campo, in
      piedi, con il telefono in una mano. La somma sbagliata la ferma il server, non la
      schermata: la regola sta in un posto solo. */
+  /* LA SCELTA DEGLI OTTO: si tocca un nome per metterlo dentro, lo si ritocca per toglierlo.
+     Il tetto e' otto, e il tasto in piu' non si accende invece di far scegliere troppi e
+     rifiutare dopo. Niente prompt: si sceglie a bordo campo, in piedi. */
+  if ($('#am_giornata')) $('#am_giornata').onclick = () => {
+    window.__amGiornata = { id: apertoId, scelti: [], data: new Date().toISOString().slice(0, 10) };
+    show('tornei');
+  };
+  if ($('#gi_no')) $('#gi_no').onclick = () => { window.__amGiornata = null; show('tornei'); };
+  document.querySelectorAll('[data-gsel]').forEach(b => b.onclick = () => {
+    const g = window.__amGiornata; if (!g) return;
+    const id = Number(b.dataset.gsel);
+    if (g.scelti.includes(id)) g.scelti = g.scelti.filter(x => x !== id);
+    else if (g.scelti.length < 8) g.scelti.push(id);
+    const d = $('#gi_data'); if (d) g.data = d.value;
+    show('tornei');
+  });
+  if ($('#gi_via')) $('#gi_via').onclick = async () => {
+    const g = window.__amGiornata;
+    const data = ($('#gi_data') && $('#gi_data').value) || g.data;
+    try {
+      await api('/tornei/' + apertoId + '/giornate', { method: 'POST', body: JSON.stringify({ data, giocatori: g.scelti }) });
+      window.__amGiornata = null;
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#am_avvia')) $('#am_avvia').onclick = async () => {
     if (!confirm('Formare le coppie e cominciare? Il calendario dei sette turni esce adesso.')) return;
     try { await api('/tornei/' + apertoId + '/americana', { method: 'POST', body: '{}' }); show('tornei'); }
@@ -19425,7 +19545,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.64.0" : "dev";
+var VERSION = true ? "6.66.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -19865,6 +19985,44 @@ function capsInfo(user) {
     gestore: user.ruolo === "gestore",
     caps: user.ruolo === "gestore" ? tutte : tutte.filter((c) => hasCap(user, c))
   };
+}
+var GRUPPI_CAPS = [
+  {
+    chiave: "zone",
+    nome: "Dove lavora",
+    aiuto: "Le zone del Chiosco che si aprono durante il turno. Fuori dal Chiosco non contano niente, e si possono dare in blocco: la crew si ridistribuisce durante la serata.",
+    blocco: true,
+    caps: ["comande", "cucina", "magazzino", "campi", "tennis_campi", "beach", "serate", "cdc", "fitness", "cinema", "tabellone", "casate"]
+  },
+  {
+    chiave: "dati",
+    nome: "Cosa pu\xF2 modificare",
+    aiuto: "Non aprono una zona: autorizzano a cambiare dei dati, e valgono ovunque. Si danno uno per uno \u2014 dare il listino non \xE8 come dare le discipline.",
+    blocco: false,
+    caps: ["menu", "discipline", "tennis", "contest", "proposte", "eventi"]
+  },
+  {
+    chiave: "anagrafica",
+    nome: "Le persone",
+    aiuto: "L'anagrafica dei soci e degli ospiti: la cosa pi\xF9 delicata che ci sia qui dentro. Sta da sola di proposito, perch\xE9 non finisca dentro una spunta di gruppo.",
+    blocco: false,
+    caps: ["utenti", "utenti_ins"]
+  },
+  {
+    chiave: "gestore",
+    nome: "Solo il gestore",
+    aiuto: "Non si delegano a nessuno: il gestore \xE8 un'entit\xE0 a s\xE9, con una password che non sta nemmeno nella banca dati. Si vedono spenti perch\xE9 si sappia che esistono.",
+    blocco: false,
+    caps: null
+    // si riempie da CAPS_GESTORE_ONLY: una lista sola, non due da tenere allineate
+  }
+];
+function gruppiCaps() {
+  const g = GRUPPI_CAPS.map((x) => ({ ...x, caps: x.caps || [...CAPS_GESTORE_ONLY] }));
+  const mappati = g.flatMap((x) => x.caps);
+  const doppi = mappati.filter((c, i) => mappati.indexOf(c) !== i);
+  const fuori = [...CAPS_DELEGABILI, ...CAPS_GESTORE_ONLY].filter((c) => !mappati.includes(c));
+  return { gruppi: g, fuori, doppi };
 }
 
 // server/routes/admin.js
@@ -22299,38 +22457,12 @@ async function avviaAmericana(torneoId) {
   const servono = postiAmericana(t.campi);
   if (iscritti.length !== servono) return {
     ok: false,
-    error: `L'americana vuole esattamente ${servono} giocatori (${t.campi} ${Number(t.campi) === 1 ? "campo" : "campi"}, quattro per campo): ce ne sono ${iscritti.length}.`
+    error: `L'americana vuole esattamente ${servono} giocatori (${t.campi} ${Number(t.campi) === 1 ? "campo" : "campi"}, quattro per campo): ce ne sono ${iscritti.length}. Con piu\u0300 iscritti si aprono le giornate scegliendo chi gioca.`
   };
-  if (servono !== 8) return {
-    ok: false,
-    error: `Per ora il calendario dell'americana c'e\u0300 solo per otto giocatori su due campi. Con ${t.campi} campi ne servirebbero ${servono}, e la rotazione va scritta e verificata prima di poterla usare.`
-  };
-  const g = mescola(iscritti);
-  await db.prepare("DELETE FROM tornei_ko_partite WHERE torneo_id=?").run(torneoId);
-  let pos = 0;
-  for (let turno = 0; turno < AMERICANA_8.length; turno++) {
-    for (let campo = 0; campo < AMERICANA_8[turno].length; campo++) {
-      const [[a1, a2], [b1, b2]] = AMERICANA_8[turno][campo];
-      await db.prepare(
-        "INSERT INTO tornei_ko_partite (torneo_id,turno,posizione,giornata,campo,a_nome,a2_nome,b_nome,b2_nome,a_iscritto,a2_iscritto,b_iscritto,b2_iscritto) VALUES (?,0,?,?,?,?,?,?,?,?,?,?,?)"
-      ).run(
-        torneoId,
-        pos++,
-        turno + 1,
-        campo + 1,
-        g[a1].nome,
-        g[a2].nome,
-        g[b1].nome,
-        g[b2].nome,
-        g[a1].id,
-        g[a2].id,
-        g[b1].id,
-        g[b2].id
-      );
-    }
-  }
-  await db.prepare("UPDATE tornei_ko SET stato='girone' WHERE id=?").run(torneoId);
-  return { ok: true, turni: AMERICANA_8.length, partite: pos, giocatori: g.map((x) => x.nome) };
+  const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const r = await creaGiornata_americana(torneoId, oggi2, iscritti.map((x) => x.id));
+  if (!r.ok) return r;
+  return { ok: true, turni: r.turni, partite: r.partite, giocatori: r.giocatori, giornata_id: r.giornata_id, data: r.data };
 }
 async function risultatoAmericana(partitaId, puntiA, puntiB) {
   const p = await db.prepare("SELECT * FROM tornei_ko_partite WHERE id=?").get(partitaId);
@@ -22338,17 +22470,10 @@ async function risultatoAmericana(partitaId, puntiA, puntiB) {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(p.torneo_id);
   if (t.formato !== "americana") return { ok: false, error: "Questa partita non e\u0300 di un'americana." };
   if (t.stato === "concluso") return { ok: false, stato: true, error: `Il torneo e\u0300 chiuso: ha vinto ${t.vincitore}.` };
-  const a = Number(puntiA), b = Number(puntiB);
-  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) {
-    return { ok: false, error: "I punti dei due lati devono essere due numeri interi." };
-  }
-  const somma = Number(t.punti_partita);
-  if (a + b !== somma) return {
-    ok: false,
-    error: `Le partite di questo torneo si giocano a ${somma} punti: ${a} e ${b} fanno ${a + b}. Ricontrolla il punteggio.`
-  };
-  await db.prepare("UPDATE tornei_ko_partite SET punti_a=?, punti_b=?, vincitore=?, giocata_at=? WHERE id=?").run(a, b, a === b ? "pari" : a > b ? p.a_nome : p.b_nome, (/* @__PURE__ */ new Date()).toISOString(), p.id);
-  return { ok: true, pari: a === b, turno: p.giornata };
+  const l = leggiPunteggio(t, puntiA, puntiB);
+  if (!l.ok) return l;
+  await db.prepare("UPDATE tornei_ko_partite SET punti_a=?, punti_b=?, vincitore=?, giocata_at=? WHERE id=?").run(l.a, l.b, l.pari ? "pari" : l.vinceA ? p.a_nome : p.b_nome, (/* @__PURE__ */ new Date()).toISOString(), p.id);
+  return { ok: true, pari: l.pari, turno: p.giornata };
 }
 async function classificaAmericana(torneoId) {
   const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND attesa IS NULL ORDER BY id").all(torneoId);
@@ -22392,14 +22517,17 @@ async function finaleAmericana(torneoId) {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
   if (!t) return { ok: false, error: "Torneo non trovato" };
   if (t.formato !== "americana") return { ok: false, error: "Questo torneo non e\u0300 un'americana." };
-  if (t.stato !== "girone") return { ok: false, error: "La fase finale si avvia una volta sola, a turni finiti." };
-  const mancano = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND turno=0 AND punti_a IS NULL").get(torneoId);
+  const gg = await db.prepare("SELECT * FROM tornei_giornate WHERE torneo_id=? AND stato<>'conclusa' ORDER BY numero DESC").get(torneoId);
+  if (!gg) return { ok: false, stato: true, error: "Non c'e\u0300 nessuna giornata aperta: aprine una e gioca i turni." };
+  if (gg.stato === "finale") return { ok: false, stato: true, error: "La fase finale di questa giornata e\u0300 gia\u0300 stata formata." };
+  const mancano = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE giornata_id=? AND turno=0 AND punti_a IS NULL").get(gg.id);
   if (Number(mancano.n) > 0) return {
     ok: false,
-    error: `Mancano ancora ${mancano.n} ${Number(mancano.n) === 1 ? "partita" : "partite"} dei turni: la fase finale si fa quando la classifica di giornata e\u0300 chiusa.`
+    stato: true,
+    error: `Mancano ancora ${mancano.n} ${Number(mancano.n) === 1 ? "partita" : "partite"} dei turni: la fase finale si fa quando la graduatoria della giornata e\u0300 chiusa.`
   };
-  const cl = (await classificaAmericana(torneoId)).filter((x) => !x.ritirato);
-  if (cl.length < 8) return { ok: false, error: `Per la fase finale servono otto giocatori in classifica: ce ne sono ${cl.length}.` };
+  const cl = await graduatoriaGiornata(gg.id);
+  if (cl.length < 8) return { ok: false, error: `Per la fase finale servono otto giocatori: ce ne sono ${cl.length}.` };
   const sorteggi = [];
   const ordinati = [];
   let i = 0;
@@ -22412,24 +22540,25 @@ async function finaleAmericana(torneoId) {
     } else ordinati.push(cl[i]);
     i += pari.length;
   }
-  await db.prepare("DELETE FROM tornei_ko_partite WHERE torneo_id=? AND turno>0").run(torneoId);
+  await db.prepare("DELETE FROM tornei_ko_partite WHERE giornata_id=? AND turno>0").run(gg.id);
   const semi = [[ordinati[0], ordinati[1], ordinati[6], ordinati[7]], [ordinati[2], ordinati[3], ordinati[4], ordinati[5]]];
   for (let k = 0; k < 2; k++) {
     const [a1, a2, b1, b2] = semi[k];
     await db.prepare(
-      "INSERT INTO tornei_ko_partite (torneo_id,turno,posizione,campo,a_nome,a2_nome,b_nome,b2_nome,a_iscritto,a2_iscritto,b_iscritto,b2_iscritto) VALUES (?,1,?,?,?,?,?,?,?,?,?,?)"
-    ).run(torneoId, k, k + 1, a1.nome, a2.nome, b1.nome, b2.nome, a1.iscritto_id, a2.iscritto_id, b1.iscritto_id, b2.iscritto_id);
+      "INSERT INTO tornei_ko_partite (torneo_id,giornata_id,turno,posizione,campo,a_nome,a2_nome,b_nome,b2_nome,a_iscritto,a2_iscritto,b_iscritto,b2_iscritto) VALUES (?,?,1,?,?,?,?,?,?,?,?,?,?)"
+    ).run(torneoId, gg.id, k, k + 1, a1.nome, a2.nome, b1.nome, b2.nome, a1.iscritto_id, a2.iscritto_id, b1.iscritto_id, b2.iscritto_id);
   }
-  await db.prepare("INSERT INTO tornei_ko_partite (torneo_id,turno,posizione,campo) VALUES (?,2,0,1)").run(torneoId);
-  await db.prepare("UPDATE tornei_ko SET stato='sorteggiato', posti=4 WHERE id=?").run(torneoId);
+  await db.prepare("INSERT INTO tornei_ko_partite (torneo_id,giornata_id,turno,posizione,campo) VALUES (?,?,2,0,1)").run(torneoId, gg.id);
+  await db.prepare("UPDATE tornei_giornate SET stato='finale' WHERE id=?").run(gg.id);
   return {
     ok: true,
+    giornata_id: gg.id,
+    data: gg.data,
     semifinali: semi.map((s) => `${s[0].nome} e ${s[1].nome} contro ${s[2].nome} e ${s[3].nome}`),
-    /* L'ORDINE SU CUI SI E' LAVORATO esce nella risposta. Serve a chi guarda — a pari merito il
-       sorteggio puo' aver scambiato due nomi, e senza questo elenco non si capirebbe perche' il
-       terzo gioca col quarto invece che col quinto. E serve a poterlo verificare: un test che
-       controlla gli accoppiamenti senza sapere l'ordine usato e' un test che a volte passa. */
-    ordine: ordinati.map((x, i2) => `${i2 + 1}. ${x.nome} (${x.punti})`),
+    /* L'ORDINE SU CUI SI E' LAVORATO esce nella risposta: a pari merito il sorteggio puo' aver
+       scambiato due nomi, e senza questo elenco non si capirebbe perche' il terzo gioca col
+       quarto invece che col quinto. */
+    ordine: ordinati.map((x, k) => `${k + 1}. ${x.nome} (${x.punti})`),
     sorteggi,
     avvisi: ["I punti di semifinale e finale non entrano in classifica: entra solo il bonus alla coppia vincitrice."]
   };
@@ -22439,17 +22568,15 @@ async function risultatoFinaleAmericana(partitaId, puntiA, puntiB) {
   if (!p) return { ok: false, error: "Partita non trovata" };
   if (!p.a_nome || !p.b_nome) return { ok: false, error: "Questa partita non ha ancora le due coppie: mancano i risultati delle semifinali." };
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(p.torneo_id);
-  const a = Number(puntiA), b = Number(puntiB);
-  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return { ok: false, error: "I punti dei due lati devono essere due numeri interi." };
-  if (a + b !== Number(t.punti_partita)) return {
-    ok: false,
-    error: `Le partite di questo torneo si giocano a ${t.punti_partita} punti: ${a} e ${b} fanno ${a + b}. Ricontrolla il punteggio.`
-  };
-  if (a === b) return { ok: false, error: `${a} pari: nella fase finale qualcuno deve passare. Si rigioca.` };
-  const vinceA = a > b;
+  const l = leggiPunteggio(t, puntiA, puntiB);
+  if (!l.ok) return l;
+  if (l.pari) return { ok: false, error: `${l.a} pari: nella fase finale qualcuno deve passare. Si rigioca.` };
+  const a = l.a, b = l.b, vinceA = l.vinceA;
   await db.prepare("UPDATE tornei_ko_partite SET punti_a=?, punti_b=?, vincitore=?, giocata_at=? WHERE id=?").run(a, b, vinceA ? p.a_nome : p.b_nome, (/* @__PURE__ */ new Date()).toISOString(), p.id);
+  const gg = p.giornata_id ? await db.prepare("SELECT * FROM tornei_giornate WHERE id=?").get(p.giornata_id) : null;
   if (p.turno === 1) {
-    const dopo = await db.prepare("SELECT * FROM tornei_ko_partite WHERE torneo_id=? AND turno=2 AND posizione=0").get(p.torneo_id);
+    const dopo = p.giornata_id ? await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? AND turno=2 AND posizione=0").get(p.giornata_id) : await db.prepare("SELECT * FROM tornei_ko_partite WHERE torneo_id=? AND turno=2 AND posizione=0").get(p.torneo_id);
+    if (!dopo) return { ok: false, error: "Non trovo la finale di questa giornata." };
     const campo = p.posizione === 0 ? ["a_nome", "a2_nome", "a_iscritto", "a2_iscritto"] : ["b_nome", "b2_nome", "b_iscritto", "b2_iscritto"];
     await db.prepare(`UPDATE tornei_ko_partite SET ${campo[0]}=?, ${campo[1]}=?, ${campo[2]}=?, ${campo[3]}=? WHERE id=?`).run(
       vinceA ? p.a_nome : p.b_nome,
@@ -22467,8 +22594,13 @@ async function risultatoFinaleAmericana(partitaId, puntiA, puntiB) {
       await db.prepare("INSERT INTO tornei_punti (torneo_id,iscritto_id,punti,nota,data,operatore) VALUES (?,?,?,?,?,?)").run(p.torneo_id, id2, bonus, "bonus finale", (/* @__PURE__ */ new Date()).toISOString(), "sistema");
     }
   }
-  await db.prepare("UPDATE tornei_ko SET stato='concluso', vincitore=?, chiuso_at=? WHERE id=?").run(vincitori.map((v) => v[1]).join(" e "), (/* @__PURE__ */ new Date()).toISOString(), p.torneo_id);
-  return { ok: true, finale: true, vincitori: vincitori.map((v) => v[1]), bonus };
+  const nomi = vincitori.map((v) => v[1]).join(" e ");
+  if (gg) {
+    await db.prepare("UPDATE tornei_giornate SET stato='conclusa', vincitori=?, chiusa_at=? WHERE id=?").run(nomi, (/* @__PURE__ */ new Date()).toISOString(), gg.id);
+  } else {
+    await db.prepare("UPDATE tornei_ko SET stato='concluso', vincitore=?, chiuso_at=? WHERE id=?").run(nomi, (/* @__PURE__ */ new Date()).toISOString(), p.torneo_id);
+  }
+  return { ok: true, finale: true, vincitori: vincitori.map((v) => v[1]), bonus, giornata: gg ? gg.data : null };
 }
 async function ritiroAmericana(torneoId, iscrittoId, minimo, chi) {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
@@ -22600,6 +22732,158 @@ async function cancellaTorneo(torneoId) {
   await db.prepare("DELETE FROM tornei_ko_iscritti WHERE torneo_id=?").run(torneoId);
   await db.prepare("DELETE FROM tornei_ko WHERE id=?").run(torneoId);
   return { ok: true, nome: t.nome, era: stato, iscritti: Number(iscritti.n) || 0, partite };
+}
+function leggiPunteggio(t, a, b) {
+  const x = Number(a), y = Number(b);
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
+    return { ok: false, error: "I due punteggi devono essere numeri interi." };
+  }
+  const modo = String(t.chiusura || "punti");
+  const tetto = Number(t.chiusura_valore) || 24;
+  if (modo !== "minuti" && x + y !== tetto) {
+    const cosa = modo === "game" ? "game" : "punti";
+    return { ok: false, error: `Qui si gioca a ${tetto} ${cosa}: ${x} e ${y} fanno ${x + y}. Ricontrolla il punteggio.` };
+  }
+  return { ok: true, a: x, b: y, pari: x === y, vinceA: x > y };
+}
+function comeSiChiude(t) {
+  const v = Number(t.chiusura_valore) || 24;
+  const modo = String(t.chiusura || "punti");
+  if (modo === "game") return `a ${v} game`;
+  if (modo === "minuti") return `a tempo, ${v} minuti`;
+  return `a ${v} punti`;
+}
+var PUNTI_AMERICANA = { vittoria: 3, pareggio: 1, sconfitta: 0 };
+async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
+  if (!t) return { ok: false, error: "Torneo non trovato" };
+  if (t.formato !== "americana") return { ok: false, error: "Questo torneo non e\u0300 un'americana." };
+  if (t.stato === "concluso") return { ok: false, stato: true, error: `Il torneo e\u0300 chiuso: ha vinto ${t.vincitore}.` };
+  const aperta = await db.prepare("SELECT * FROM tornei_giornate WHERE torneo_id=? AND stato<>'conclusa' ORDER BY numero DESC").get(torneoId);
+  if (aperta) return {
+    ok: false,
+    stato: true,
+    error: `La giornata del ${aperta.data} non e\u0300 ancora finita: si chiude quella prima di aprirne un'altra.`
+  };
+  const giorno = String(data || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(giorno)) return { ok: false, serve_data: true, error: "Serve la data della giornata." };
+  const servono = postiAmericana(t.campi);
+  const scelti = [...new Set((iscrittiScelti || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (scelti.length !== servono) return {
+    ok: false,
+    serve_scelta: true,
+    servono,
+    error: `Servono esattamente ${servono} giocatori per questa giornata: ne hai scelti ${scelti.length}.`
+  };
+  if (servono !== 8) return {
+    ok: false,
+    error: `Per ora il calendario dell'americana c'e\u0300 solo per otto giocatori su due campi.`
+  };
+  const dentro = await db.prepare(`SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND id IN (${scelti.map(() => "?").join(",")})`).all(torneoId, ...scelti);
+  if (dentro.length !== scelti.length) return { ok: false, error: "Qualcuno dei giocatori scelti non e\u0300 iscritto a questo torneo." };
+  const ultima = await db.prepare("SELECT MAX(numero) n FROM tornei_giornate WHERE torneo_id=?").get(torneoId);
+  const numero = (Number(ultima?.n) || 0) + 1;
+  const ins = await db.prepare("INSERT INTO tornei_giornate (torneo_id,data,numero,stato,creata_at) VALUES (?,?,?,'turni',?)").run(torneoId, giorno, numero, (/* @__PURE__ */ new Date()).toISOString());
+  const gid = Number(ins.lastInsertRowid);
+  const g = mescola(dentro.sort((a, b) => scelti.indexOf(a.id) - scelti.indexOf(b.id)));
+  let pos = 0;
+  for (let turno = 0; turno < AMERICANA_8.length; turno++) {
+    for (let campo = 0; campo < AMERICANA_8[turno].length; campo++) {
+      const [[a1, a2], [b1, b2]] = AMERICANA_8[turno][campo];
+      await db.prepare(
+        "INSERT INTO tornei_ko_partite (torneo_id,giornata_id,turno,posizione,giornata,campo,a_nome,a2_nome,b_nome,b2_nome,a_iscritto,a2_iscritto,b_iscritto,b2_iscritto) VALUES (?,?,0,?,?,?,?,?,?,?,?,?,?,?)"
+      ).run(
+        torneoId,
+        gid,
+        pos++,
+        turno + 1,
+        campo + 1,
+        g[a1].nome,
+        g[a2].nome,
+        g[b1].nome,
+        g[b2].nome,
+        g[a1].id,
+        g[a2].id,
+        g[b1].id,
+        g[b2].id
+      );
+    }
+  }
+  if (t.stato === "iscrizioni") await db.prepare("UPDATE tornei_ko SET stato='girone' WHERE id=?").run(torneoId);
+  return { ok: true, giornata_id: gid, numero, data: giorno, turni: AMERICANA_8.length, partite: pos, giocatori: g.map((x) => x.nome) };
+}
+async function graduatoriaGiornata(giornataId) {
+  const gg = await db.prepare("SELECT * FROM tornei_giornate WHERE id=?").get(giornataId);
+  if (!gg) return [];
+  const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? AND turno=0").all(giornataId);
+  const r = /* @__PURE__ */ new Map();
+  const tocca = (id2, nome) => {
+    if (!r.has(id2)) r.set(id2, { iscritto_id: id2, nome, punti: 0, vinte: 0, pari: 0, perse: 0, giocate: 0 });
+    return r.get(id2);
+  };
+  for (const p of partite) {
+    for (const [id2, nome] of [[p.a_iscritto, p.a_nome], [p.a2_iscritto, p.a2_nome], [p.b_iscritto, p.b_nome], [p.b2_iscritto, p.b2_nome]]) {
+      if (id2) tocca(id2, nome);
+    }
+    if (p.punti_a === null || p.punti_a === void 0) continue;
+    const pari = Number(p.punti_a) === Number(p.punti_b);
+    const vinceA = Number(p.punti_a) > Number(p.punti_b);
+    for (const [id2, lato] of [[p.a_iscritto, "a"], [p.a2_iscritto, "a"], [p.b_iscritto, "b"], [p.b2_iscritto, "b"]]) {
+      const x = r.get(id2);
+      if (!x) continue;
+      x.giocate++;
+      if (pari) {
+        x.punti += PUNTI_AMERICANA.pareggio;
+        x.pari++;
+      } else if (lato === "a" === vinceA) {
+        x.punti += PUNTI_AMERICANA.vittoria;
+        x.vinte++;
+      } else {
+        x.punti += PUNTI_AMERICANA.sconfitta;
+        x.perse++;
+      }
+    }
+  }
+  return [...r.values()].sort((a, b) => b.punti - a.punti || b.vinte - a.vinte || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
+}
+async function classificaGeneraleAmericana(torneoId) {
+  const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY id").all(torneoId);
+  const giornate = await db.prepare("SELECT * FROM tornei_giornate WHERE torneo_id=? ORDER BY numero").all(torneoId);
+  const extra = await db.prepare("SELECT * FROM tornei_punti WHERE torneo_id=?").all(torneoId);
+  const r = new Map(iscritti.map((i) => [i.id, {
+    iscritto_id: i.id,
+    nome: i.nome,
+    punti: 0,
+    bonus: 0,
+    presenze: 0,
+    vinte: 0,
+    pari: 0,
+    perse: 0,
+    giornate_vinte: 0
+  }]));
+  for (const gg of giornate) {
+    const g = await graduatoriaGiornata(gg.id);
+    for (const riga of g) {
+      const x = r.get(riga.iscritto_id);
+      if (!x || !riga.giocate) continue;
+      x.punti += riga.punti;
+      x.presenze++;
+      x.vinte += riga.vinte;
+      x.pari += riga.pari;
+      x.perse += riga.perse;
+    }
+    for (const nome of String(gg.vincitori || "").split(" e ").map((s) => s.trim()).filter(Boolean)) {
+      const x = [...r.values()].find((y) => y.nome === nome);
+      if (x) x.giornate_vinte++;
+    }
+  }
+  for (const e of extra) {
+    const x = r.get(e.iscritto_id);
+    if (!x) continue;
+    x.punti += Number(e.punti);
+    if (String(e.nota || "").startsWith("bonus")) x.bonus += Number(e.punti);
+  }
+  return [...r.values()].sort((a, b) => b.punti - a.punti || b.giornate_vinte - a.giornate_vinte || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
 }
 
 // server/casate_composizione.js
@@ -24198,13 +24482,12 @@ adminRouter.get("/me", async (req, res) => {
   const info = capsInfo(req.adminUser);
   const caps = info.caps || [];
   const CAPS_CREW = ["comande", "magazzino", "tabellone", "campi", "tennis", "tennis_campi", "casate", "beach", "serate", "cdc", "fitness", "cinema", "cucina"];
-  const CAPS_UFFICIO = ["utenti", "utenti_ins", "menu", "casate", "discipline", "eventi", "proposte", "contest", "serate", "cdc", "guida", "luoghi"];
   res.json({
     user: { username: req.adminUser.username, ruolo: req.adminUser.ruolo },
     socio: u?.socio_id ? { id: u.socio_id, nome: `${u.nome} ${u.cognome}`, tessera: u.tessera_code } : null,
     viste: {
       crew: !!(info.gestore || caps.some((c) => CAPS_CREW.includes(c))),
-      ufficio: !!(info.gestore || caps.some((c) => CAPS_UFFICIO.includes(c)))
+      ufficio: !!info.gestore
     },
     ...info
   });
@@ -24235,7 +24518,12 @@ adminRouter.get("/operatori", requireCap("operatori"), async (req, res) => {
       permessi: parsePermessi(r.permessi),
       socio: r.socio_id ? { id: r.socio_id, nome: `${r.socio_nome} ${r.socio_cognome}`, tessera: r.socio_tessera } : null
     })),
-    caps_delegabili: CAPS_DELEGABILI
+    caps_delegabili: CAPS_DELEGABILI,
+    /* I GRUPPI ESCONO DAL SERVER, non li ridisegna la schermata: sarebbe una seconda mappa da
+       tenere allineata alla prima, e divergerebbe alla prima modifica fatta guardando solo
+       l'interfaccia. `fuori` e `doppi` viaggiano con loro: se un permesso nuovo resta senza
+       gruppo, chi assegna lo vede invece di non sapere che esiste. */
+    gruppi_caps: gruppiCaps()
   });
 });
 adminRouter.post("/operatori", requireCap("operatori"), async (req, res) => {
@@ -27008,6 +27296,17 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
        Chi non vuole decidere lascia il campo VUOTO, e il Crew i campi vuoti non li manda. */
     campi: Math.max(1, primoNumero(b.campi, await par("tornei_campi"), 2)),
     punti_partita: Math.max(2, primoNumero(b.punti_partita, await par("tornei_punti_partita"), 24)),
+    /* COME FINISCE UNA PARTITA: e' l'unica cosa che cambia fra padel e tennis, e non fa due
+       formati. Si sceglie qui e si congela sul torneo, come tutte le regole di gara.
+       Lo sport NON si indovina dal punteggio: un "6-2" scritto per sbaglio in un torneo di padel
+       non deve cambiare le regole sotto i piedi. */
+    chiusura: ["punti", "game", "minuti"].includes(b.chiusura) ? b.chiusura : "punti",
+    chiusura_valore: Math.max(1, primoNumero(
+      b.chiusura_valore,
+      b.chiusura === "game" ? 12 : b.chiusura === "minuti" ? 30 : null,
+      await par("tornei_punti_partita"),
+      24
+    )),
     bonus_finale: Math.max(0, primoNumero(b.bonus_finale, await par("tornei_bonus_finale"), 0))
   };
   const posti = formato === "ko" ? Number(b.posti) : 0;
@@ -27017,7 +27316,7 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
     });
   }
   const info = await db.prepare(
-    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data,formato,punti_vittoria,punti_pareggio,qualificati_girone,riempimento,campi,punti_partita,bonus_finale) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data,formato,punti_vittoria,punti_pareggio,qualificati_girone,riempimento,campi,punti_partita,bonus_finale,chiusura,chiusura_valore) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
   ).run(
     b.nome,
     b.disciplina || null,
@@ -27032,7 +27331,9 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
     regole.riempimento,
     regole.campi,
     regole.punti_partita,
-    regole.bonus_finale
+    regole.bonus_finale,
+    regole.chiusura,
+    regole.chiusura_valore
   );
   audit(req.adminUser.username, "crea_torneo", "tornei", info.lastInsertRowid, `${b.nome} \xB7 ${posti} posti`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
@@ -27175,6 +27476,77 @@ adminRouter.get("/tornei/:id/gironi", requireCapTorneo, async (req, res) => {
       oltre_il_taglio: q.oltre_il_taglio,
       da_scegliere: q.da_scegliere || 0
     }
+  });
+});
+adminRouter.post("/tornei/:id/iscritti/import", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  let righe;
+  try {
+    righe = sheetRows(req.body?.fileB64);
+  } catch (e) {
+    return res.status(400).json({ error: "File non leggibile (usa .xlsx o .csv)" });
+  }
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  const alias = ["nome", "giocatore", "nominativo", "name", "cognome e nome", "nome e cognome"];
+  const colonne = Object.keys(righe[0] || {});
+  const colonnaNome = colonne.find((x) => alias.includes(norm(x)));
+  const sembraUnNome = (s) => /[A-Za-z\u00C0-\u024F]/.test(String(s || ""));
+  const nomi = (colonnaNome ? righe.map((r) => String(r[colonnaNome] || "").trim()) : colonne.length === 1 && sembraUnNome(colonne[0]) ? [colonne[0].trim(), ...righe.map((r) => String(Object.values(r)[0] || "").trim())] : []).filter(Boolean).filter(sembraUnNome);
+  if (!nomi.length) return res.status(400).json({
+    error: `Nessun nome nel file. Serve una colonna "nome" (vanno bene anche "giocatore" o "nominativo"). Le colonne che ho letto sono: ${colonne.join(", ") || "nessuna"}.`,
+    colonne
+  });
+  const gia = new Set((await db.prepare("SELECT nome FROM tornei_ko_iscritti WHERE torneo_id=?").all(tid)).map((x) => norm(x.nome)));
+  const nuovi = [], doppi = [];
+  for (const n of nomi) {
+    if (gia.has(norm(n)) || nuovi.some((x) => norm(x) === norm(n))) doppi.push(n);
+    else nuovi.push(n);
+  }
+  if (req.body?.dryRun) return res.json({ ok: true, prova: true, nuovi, doppi, letti: nomi.length });
+  for (const n of nuovi) await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,nome) VALUES (?,?)").run(tid, n);
+  audit(req.adminUser.username, "import_iscritti", "tornei", tid, `${nuovi.length} aggiunti \xB7 ${doppi.length} gi\xE0 c'erano`);
+  res.status(201).json({ ok: true, aggiunti: nuovi.length, gia_presenti: doppi.length, nuovi, doppi });
+});
+adminRouter.post("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const r = await creaGiornata_americana(tid, req.body?.data, req.body?.giocatori);
+  if (!r.ok) return res.status(409).json(r);
+  await registra({
+    fatto: "giornata_americana",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { data: r.data, numero: r.numero, giocatori: r.giocatori }
+  });
+  audit(req.adminUser.username, "giornata_americana", "tornei", tid, `${r.data} \xB7 ${r.giocatori.length} giocatori`);
+  res.status(201).json(r);
+});
+adminRouter.get("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  const giornate = await db.prepare("SELECT * FROM tornei_giornate WHERE torneo_id=? ORDER BY numero DESC").all(tid);
+  const dettaglio = [];
+  for (const g of giornate) {
+    const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? ORDER BY turno,giornata,campo").all(g.id);
+    dettaglio.push({
+      ...g,
+      turni: partite.filter((p) => p.turno === 0),
+      finale: partite.filter((p) => p.turno > 0),
+      graduatoria: await graduatoriaGiornata(g.id),
+      da_giocare: partite.filter((p) => p.turno === 0 && p.punti_a === null).length
+    });
+  }
+  res.json({
+    torneo: t,
+    come_si_chiude: comeSiChiude(t),
+    iscritti: await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY nome").all(tid),
+    giornate: dettaglio,
+    classifica: await classificaGeneraleAmericana(tid)
   });
 });
 adminRouter.post("/tornei/:id/americana", requireCapTorneo, async (req, res) => {
@@ -31302,7 +31674,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 09:54" : "online";
+var BUILD = true ? "2026-09-11 18:04" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
