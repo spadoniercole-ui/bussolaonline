@@ -5663,7 +5663,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.63.0';
+const VERSIONE_APP = '6.64.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -8682,9 +8682,41 @@ async function entraStaff() {
        comodita' senza conseguenze: e' la persona che non si ricorda mai. */
     const dati = await r.json().catch(() => null);
     if (!dati || !dati.token) { if (err) err.textContent = 'Non riesco ad aprire la sessione.'; return; }
+
+    /* SI CONTROLLA LA PORTA PRIMA DI MANDARCI QUALCUNO.
+       Il cancello spediva dove gli veniva chiesto, e la verifica toccava alla porta d'arrivo:
+       chi sceglieva \xABback office\xBB senza averne i permessi ci finiva dentro comunque, perche' di
+       la' non c'era nessuna guardia. Avevo scritto che \xABchi sbaglia porta riceve un errore
+       chiaro\xBB \u2014 l'errore non esisteva.
+       Chi puo' cosa lo dice il server: si chiede prima di navigare. Se la porta scelta e'
+       chiusa ma l'altra e' aperta si va li', dicendolo: l'alternativa sarebbe respingere al
+       cancello qualcuno che un posto dove lavorare ce l'ha. */
+    let viste = null;
+    try {
+      const me = await fetch('/api/admin/me', { headers: { Authorization: 'Bearer ' + dati.token } });
+      if (me.ok) viste = (await me.json()).viste || null;
+    } catch (_) { /* se non si riesce a chiedere, decide la porta d'arrivo come prima */ }
+
+    let dove = STAFF_DOVE;
+    if (viste) {
+      const puo = dove === 'admin' ? viste.ufficio : viste.crew;
+      if (!puo) {
+        const altra = dove === 'admin' ? viste.crew : viste.ufficio;
+        if (!altra) {
+          if (err) err.textContent = 'Il tuo utente non ha ancora nessun permesso: chiedi al gestore di abilitarti.';
+          return;
+        }
+        dove = dove === 'admin' ? 'crew' : 'admin';
+        if (err) err.textContent = dove === 'crew'
+          ? 'Non hai permessi da back office: ti apro Bussola Crew.'
+          : 'Non hai permessi operativi: ti apro il back office.';
+        await new Promise((ok) => setTimeout(ok, 1400));   // il tempo di leggere
+      }
+    }
+
     try { sessionStorage.setItem('bussola_staff_token', dati.token); } catch (_) {}
-    try { localStorage.setItem('bussola_staff_dove', STAFF_DOVE); } catch (_) {}
-    location.href = STAFF_DOVE === 'admin' ? '/admin/' : '/chiosco/';
+    try { localStorage.setItem('bussola_staff_dove', dove); } catch (_) {}
+    location.href = dove === 'admin' ? '/admin/' : '/chiosco/';
   } catch (_) {
     if (err) err.textContent = 'Non riesco a raggiungere il server.';
   }
@@ -9615,8 +9647,22 @@ async function login(gettonePronto) {
       j = await res.json();
     }
     TOKEN = j.token; USER = j.user;
-    $('#login').style.display = 'none'; $('#app').style.display = 'grid';
     ME = await api('/me').catch(() => ({ ruolo: USER.ruolo, gestore: USER.ruolo === 'gestore', caps: [] }));
+
+    /* LA GUARDIA ALL'INGRESSO, che qui non c'era.
+       Il Chiosco respinge chi non ha nessun permesso operativo; il back office lasciava entrare
+       CHIUNQUE avesse un'utenza valida \u2014 bastava scegliere \xABBack office\xBB dal cancello e si
+       arrivava al Cruscotto, permessi o no. Le singole rotte rispondevano 403, e il menu
+       mostrava solo le voci consentite, ma la casa era aperta e i numeri del Cruscotto si
+       leggevano lo stesso.
+       Chi puo' entrare lo dice il SERVER, con \`viste.ufficio\`: qui si ascolta e basta. E si dice
+       dove si puo' andare invece di lasciare davanti a una porta chiusa. */
+    if (!(ME && ME.viste && ME.viste.ufficio)) {
+      const altrove = ME && ME.viste && ME.viste.crew;
+      throw new Error('Il tuo utente non ha permessi da back office.' + (altrove ? ' Il tuo posto \xE8 Bussola Crew: entra da l\xEC.' : ' Chiedi al gestore di abilitarti.'));
+    }
+
+    $('#login').style.display = 'none'; $('#app').style.display = 'grid';
     // Col gettone consegnato il nome non arriva dal login: lo dice \`/me\`.
     if (!USER.username && ME.user) USER = ME.user;
     $('#whoName').textContent = USER.username + ' (' + USER.ruolo + ')';
@@ -19379,7 +19425,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.63.0" : "dev";
+var VERSION = true ? "6.64.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -31256,7 +31302,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 09:06" : "online";
+var BUILD = true ? "2026-09-11 09:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
