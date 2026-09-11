@@ -5663,7 +5663,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.61.0';
+const VERSIONE_APP = '6.62.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -9631,7 +9631,18 @@ async function login(gettonePronto) {
     show('dashboard');
   } catch (e) { $('#loginErr').textContent = e.message; }
 }
-function logout() { TOKEN = null; USER = null; ME = { ruolo: '', gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
+/* USCENDO SI TORNA AL CANCELLO, non alla vecchia schermata.
+   L'ingresso unico era stato AGGIUNTO senza chiudere le vecchie porte: chi usciva si ritrovava
+   il login di questo modulo, e da quel momento il cancello non esisteva piu' \u2014 \xABse esco ritrovo
+   la vecchia e non la nuova\xBB. Un ingresso unico che vale solo la prima volta non e' un ingresso
+   unico, e' una scorciatoia.
+   La schermata di login locale resta nel codice e continua a funzionare: serve a chi arriva
+   dall'indirizzo diretto (un segnalibro vecchio, il tablet configurato l'anno scorso) e serve
+   quando il cancello non e' raggiungibile. Ma non e' piu' il posto dove si finisce uscendo. */
+function logout() { TOKEN = null; USER = null; ME = { ruolo: '', gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex';
+  try { sessionStorage.removeItem('bussola_staff_token'); } catch (_) {}
+  location.href = '/';
+}
 
 // Mostra nel menu solo le voci consentite dai permessi (il Cruscotto \xE8 sempre visibile).
 function applyMenuPermessi() {
@@ -13813,7 +13824,18 @@ function applyContrasto(on) {
   try { localStorage.setItem('bussola_hc', on ? '1' : '0'); } catch (_) {}
   const b = document.querySelector('#hcBtn'); if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
-function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex'; }
+/* USCENDO SI TORNA AL CANCELLO, non alla vecchia schermata.
+   L'ingresso unico era stato AGGIUNTO senza chiudere le vecchie porte: chi usciva si ritrovava
+   il login di questo modulo, e da quel momento il cancello non esisteva piu' \u2014 \xABse esco ritrovo
+   la vecchia e non la nuova\xBB. Un ingresso unico che vale solo la prima volta non e' un ingresso
+   unico, e' una scorciatoia.
+   La schermata di login locale resta nel codice e continua a funzionare: serve a chi arriva
+   dall'indirizzo diretto (un segnalibro vecchio, il tablet configurato l'anno scorso) e serve
+   quando il cancello non e' raggiungibile. Ma non e' piu' il posto dove si finisce uscendo. */
+function logout() { TOKEN = null; ME = { gestore: false, caps: [] }; $('#app').style.display = 'none'; $('#login').style.display = 'flex';
+  try { sessionStorage.removeItem('bussola_staff_token'); } catch (_) {}
+  location.href = '/';
+}
 // Zone consentite in base ai permessi: comande \u2192 garden/bar/cucina \xB7 magazzino \u2192 magazzino.
 function allowedZones() {
   const caps = ME.caps || [];
@@ -16232,7 +16254,8 @@ VIEWS.tornei = async () => {
             ? \`<button class="btn ghost sm" id="ts_riapri">Riprendi il torneo</button>
                <span class="muted" style="font-size:.8rem">\${q.stato === 'decaduto' ? 'Sospeso da pi\xF9 dei giorni concordati: si pu\xF2 riprendere o cancellare.' : 'Sospeso' + (q.sospeso_motivo ? ' \xB7 ' + esc(q.sospeso_motivo) : '') + '.'}</span>\`
             : '<button class="btn ghost sm" id="ts_sosp">Sospendi</button>'}
-          \${q.cancellabile ? '<button class="btn ghost sm" id="ts_del" style="color:var(--coral)">Cancella</button>' : ''}
+          \${q.cancellabile && puoCancellare() ? '<button class="btn ghost sm" id="ts_del" style="color:var(--coral)">Cancella</button>' : ''}
+          \${q.cancellabile && !puoCancellare() ? '<span class="muted" style="font-size:.8rem">Si pu\xF2 cancellare, ma lo fa il gestore.</span>' : ''}
         </div>
         \${window.__tsSosp === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
           <b>Per quanti giorni si aspetta?</b>
@@ -18298,6 +18321,20 @@ async function scansionaTessera(quando) {
    chi ha un socio agganciato.
    E se la destinazione ricordata sul dispositivo non e' piu' fra i permessi, si aggiorna qui:
    non e' colpa di chi entra se il sistema e' cambiato sotto. */
+/* CANCELLARE UN TORNEO E' DEL GESTORE, e il tasto deve saperlo.
+   \`cancellabile\` dice che il TORNEO si puo' cancellare \u2014 e' finito o non ha prodotto niente \u2014
+   non che CHI GUARDA possa farlo: sono due domande diverse e il tasto le teneva insieme, cosi'
+   chi aveva i permessi dei tornei lo vedeva, lo premeva e si sentiva rispondere \xABpermesso
+   insufficiente per il tuo ruolo\xBB. E' la regola che vale per i collegamenti fra le viste, qui
+   dimenticata: un tasto che porta a un rifiuto e' peggio di un tasto assente, perche' fa credere
+   di aver sbagliato qualcosa.
+   \`tabellone_reset\` NON e' delegabile: ce l'ha il gestore e nessun altro, per costruzione. A chi
+   non ce l'ha si dice che si puo' fare e chi lo fa \u2014 informazione utile \u2014 invece di offrire una
+   porta chiusa. */
+function puoCancellare() {
+  return !!(ME && (ME.gestore || (ME.caps || []).includes('tabellone_reset')));
+}
+
 function mostraAltraVista(id, permesso) {
   const a = document.getElementById(id);
   if (!a) return;
@@ -19314,7 +19351,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.61.0" : "dev";
+var VERSION = true ? "6.62.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -31191,7 +31228,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-10 07:15" : "online";
+var BUILD = true ? "2026-09-11 06:12" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
