@@ -5663,7 +5663,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.62.0';
+const VERSIONE_APP = '6.63.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -13784,6 +13784,26 @@ async function login(gettonePronto) {
       j = await res.json();
     }
     TOKEN = j.token;
+    /* CHI ARRIVA COL GETTONE NON DEVE VEDERE LA PORTA CHE HA GIA' APERTO.
+       Il Chiosco, prima di mostrare l'app, chiede \`/me\`, i parametri e i permessi: due o tre
+       andate e ritorni, e per tutto quel tempo la schermata di accesso restava li' davanti. Chi
+       entrava dal cancello vedeva comparire un secondo login \u2014 \xABsta facendo un appoggio sulla
+       vecchia schermata\xBB \u2014 anche se non gli veniva chiesto niente. Il back office non lo faceva
+       perche' nasconde il login appena ha il gettone, e infatti li' il salto non si vedeva.
+       Si nasconde subito e si dice cosa sta succedendo. Se poi qualcosa va storto, il \`catch\`
+       rimette la schermata con il suo errore: non si perde niente, si smette solo di mostrare
+       una porta a chi l'ha gia' varcata. */
+    if (gettonePronto) {
+      /* L'attesa si mette ACCANTO, non DENTRO \`#app\`: li' c'e' la barra, i moduli, tutta la
+         struttura della pagina, e scriverci sopra avrebbe cancellato l'app che stavamo per
+         aprire. Un velo che si toglie da solo quando la pagina e' pronta. */
+      $('#login').style.display = 'none';
+      const velo = document.createElement('div');
+      velo.id = 'veloIngresso';
+      velo.style.cssText = 'position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;background:#12324F;color:#fff;font-size:.95rem';
+      velo.textContent = 'Un momento, sto aprendo il tuo modulo\u2026';
+      document.body.appendChild(velo);
+    }
     ME = await api('/me').catch(() => ({ gestore: false, ruolo: '', caps: [] }));
     // Regole di funzionamento decise dal gestore: qui servono per mostrare o meno certi comandi.
     try { PAR = Object.fromEntries((await api('/parametri')).map(p => [p.chiave, p.valore])); } catch (_) { PAR = {}; }
@@ -13798,6 +13818,7 @@ async function login(gettonePronto) {
     try { applyAiuti(localStorage.getItem('bussola_aiuti') === '1'); } catch (_) {}
     disegnaModuli(zone);
     $('#login').style.display = 'none'; $('#app').style.display = 'block';
+    { const v = document.getElementById('veloIngresso'); if (v) v.remove(); }
     $('#whoName').textContent = ME.username;
     // Il socio lo dice \`/me\`, non la risposta del login: letto da \`j\` sarebbe sempre stato
     // nullo, e il collegamento non sarebbe mai comparso.
@@ -13814,7 +13835,14 @@ async function login(gettonePronto) {
     applyZona();
     show('adesso'); segnaModulo('adesso');
     avviaAdesso();
-  } catch (e) { $('#loginErr').textContent = e.message; }
+  } catch (e) {
+    /* Se qualcosa va storto DOPO aver nascosto la porta, la porta si rimette: chi e' arrivato
+       col gettone resterebbe altrimenti davanti a una schermata vuota, senza sapere cosa fare. */
+    { const v = document.getElementById('veloIngresso'); if (v) v.remove(); }
+    $('#app').style.display = 'none';
+    $('#login').style.display = 'flex';
+    $('#loginErr').textContent = e.message;
+  }
 }
 // Alto contrasto, come nell'app del socio: chi lavora al sole lo alza e il sistema se lo
 // ricorda su questo dispositivo. Con questo interruttore la regola sul testo secondario torna
@@ -19351,7 +19379,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.62.0" : "dev";
+var VERSION = true ? "6.63.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -31228,7 +31256,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 06:12" : "online";
+var BUILD = true ? "2026-09-11 09:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
