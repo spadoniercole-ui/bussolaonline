@@ -5682,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.77.0';
+const VERSIONE_APP = '6.78.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16239,6 +16239,11 @@ VIEWS.tornei = async () => {
     /* Si guarda la GIORNATA APERTA, non il torneo: i turni e la finale sono della serata.
        Se non ce n'\xE8 nessuna, si \xE8 nella fase in cui si scelgono gli otto. */
     const gAperta = st && st.giornate ? st.giornate.find(x => x.stato !== 'conclusa') : null;
+    /* L'ID DELLA GIORNATA APERTA VIAGGIA CON LA PAGINA. I gestori dei tasti girano DOPO, in
+       un'altra funzione, dove \`st\` non esiste: il tasto \xABSostituisci\xBB moriva con \xABst is not
+       defined\xBB e non faceva niente. Un tasto che esiste e non funziona e' peggio di un tasto
+       assente, perche' chi lo preme crede di aver sbagliato lui. */
+    window.__amGiornataAperta = gAperta ? gAperta.id : null;
     const am = gAperta
       ? { turni: gAperta.turni, finale: gAperta.finale, classifica: gAperta.graduatoria, da_giocare: gAperta.da_giocare, torneo: st.torneo }
       : { turni: [], finale: [], classifica: [], da_giocare: 0, torneo: (st && st.torneo) || tab.torneo };
@@ -16315,6 +16320,37 @@ VIEWS.tornei = async () => {
       \${am.turni.map(x => \`<div style="margin-bottom:8px">
         <div class="muted" style="font-size:.8rem;margin-bottom:3px">Turno \${x.turno}</div>
         \${x.partite.map(p => partitaAm(p, false)).join('')}
+        \${puoSegnare() && x.partite.every(p => p.punti_a === null || p.punti_a === undefined) ? (() => {
+          /* RICOMPORRE LE COPPIE di un turno: il sorteggio va bene quasi sempre, ma chi organizza
+             sa cose che il computer non sa. Si tocca un nome per volta, in ordine: i primi due
+             fanno la prima coppia, gli altri due la seconda, e cosi' via per ogni campo. */
+          const rc = window.__amRic && String(window.__amRic.id) === String(apertoId) && window.__amRic.turno === x.turno ? window.__amRic : null;
+          const dentro = x.partite.flatMap(p => [[p.a_iscritto, p.a_nome], [p.a2_iscritto, p.a2_nome], [p.b_iscritto, p.b_nome], [p.b2_iscritto, p.b2_nome]]).filter(y => y[0]);
+          if (!rc) return \`<button class="btn ghost sm" data-ricapri="\${x.turno}" style="margin:2px 0 8px">Rifai le coppie di questo turno</button>\`;
+          const scelti = rc.ordine;
+          const quanti = dentro.length;
+          return \`<div class="box chiama" style="padding:9px 11px;margin:2px 0 8px">
+            <b>Chi sta con chi, nel turno \${x.turno}</b>
+            <div class="muted" style="font-size:.82rem;margin:3px 0 7px">Tocca i nomi in ordine: i primi due sono una coppia, i due dopo sono chi affrontano. Poi i quattro del campo successivo.</div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              \${dentro.map(([id, nome]) => {
+                const pos = scelti.indexOf(id);
+                return \`<button class="btn \${pos >= 0 ? 'gold' : 'ghost'} sm" data-ricsel="\${x.turno}|\${id}">\${pos >= 0 ? \`\${pos + 1}. \` : ''}\${esc(nome)}</button>\`;
+              }).join('')}
+            </div>
+            \${scelti.length ? \`<div class="muted" style="font-size:.82rem;margin-top:7px">\${
+              Array.from({ length: Math.ceil(scelti.length / 4) }, (_, k) => scelti.slice(k * 4, k * 4 + 4))
+                .map(q => q.length === 4
+                  ? \`Campo \${Math.floor(scelti.indexOf(q[0]) / 4) + 1}: <b>\${esc(dentro.find(d => d[0] === q[0])[1])}</b> e <b>\${esc(dentro.find(d => d[0] === q[1])[1])}</b> contro <b>\${esc(dentro.find(d => d[0] === q[2])[1])}</b> e <b>\${esc(dentro.find(d => d[0] === q[3])[1])}</b>\`
+                  : \`<span class="muted">ne mancano \${4 - q.length}</span>\`).join('<br>')
+            }</div>\` : ''}
+            <div class="row" style="gap:6px;margin-top:8px">
+              \${scelti.length === quanti ? \`<button class="btn gold sm" data-ricsalva="\${x.turno}">Salva le coppie</button>\` : ''}
+              <button class="btn ghost sm" data-ricazzera="\${x.turno}">Ricomincia</button>
+              <button class="btn ghost sm" id="ric_no">Lascia stare</button>
+            </div>
+          </div>\`;
+        })() : ''}
       </div>\`).join('')}
       \${giornataIntatta(gAperta) && puoSegnare() && inCampo.length ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -16976,13 +17012,45 @@ VIEWS.tornei = async () => {
   };
   /* I TRE SET: si manda quello che e' stato compilato, e il terzo vuoto vuol dire \xABnon si e'
      giocato\xBB \u2014 cioe' pareggio, se i primi due sono uno a testa. */
+  document.querySelectorAll('[data-ricapri]').forEach(b => b.onclick = () => {
+    window.__amRic = { id: String(apertoId), turno: Number(b.dataset.ricapri), ordine: [] };
+    show('tornei');
+  });
+  if ($('#ric_no')) $('#ric_no').onclick = () => { window.__amRic = null; show('tornei'); };
+  document.querySelectorAll('[data-ricazzera]').forEach(b => b.onclick = () => {
+    if (window.__amRic) window.__amRic.ordine = [];
+    show('tornei');
+  });
+  document.querySelectorAll('[data-ricsel]').forEach(b => b.onclick = () => {
+    const [, id] = b.dataset.ricsel.split('|');
+    const r = window.__amRic;
+    if (!r) return;
+    const n = Number(id);
+    r.ordine = r.ordine.includes(n) ? r.ordine.filter(x => x !== n) : [...r.ordine, n];
+    show('tornei');
+  });
+  document.querySelectorAll('[data-ricsalva]').forEach(b => b.onclick = async () => {
+    const r = window.__amRic;
+    const gid = window.__amGiornataAperta;
+    if (!r || !gid) return;
+    const coppie = [];
+    for (let i = 0; i < r.ordine.length; i += 4) coppie.push(r.ordine.slice(i, i + 4));
+    try {
+      const out = await api('/tornei/' + apertoId + '/giornate/' + gid + '/turno/' + r.turno, { method: 'PUT', body: JSON.stringify({ coppie }) });
+      window.__amRic = null;
+      alert(out.incontri.join('\\n'));
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  });
+
   if ($('#so_apri')) $('#so_apri').onclick = () => { window.__amSost = { id: String(apertoId) }; show('tornei'); };
   if ($('#so_no')) $('#so_no').onclick = () => { window.__amSost = null; show('tornei'); };
   if ($('#so_fai')) $('#so_fai').onclick = async () => {
     const esce = $('#so_esce').value, entra = $('#so_entra').value;
     if (!esce || !entra) { alert('Servono chi esce e chi entra.'); return; }
     try {
-      const gid = (st.giornate.find(x => x.stato !== 'conclusa') || {}).id;
+      const gid = window.__amGiornataAperta;
+      if (!gid) { alert('Non c\\'\xE8 nessuna giornata aperta.'); return; }
       const r = await api('/tornei/' + apertoId + '/giornate/' + gid + '/giocatore', { method: 'PUT', body: JSON.stringify({ esce: Number(esce), entra: Number(entra) }) });
       window.__amSost = null;
       alert(\`\${r.entra} prende il posto di \${r.esce} in \${r.partite} \${r.partite === 1 ? 'partita' : 'partite'}.\`);
@@ -19873,7 +19941,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.77.0" : "dev";
+var VERSION = true ? "6.78.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -28052,6 +28120,53 @@ adminRouter.post("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
   audit(req.adminUser.username, "giornata_americana", "tornei", tid, `${r.data} \xB7 ${r.giocatori.length} giocatori`);
   res.status(201).json(r);
 });
+adminRouter.put("/tornei/:id/giornate/:gid/turno/:turno", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const gid = id(req.params.gid);
+  const turno = Number(req.params.turno);
+  if (!gid || !Number.isInteger(turno) || turno < 1) return res.status(400).json({ error: "Giornata o turno non indicati." });
+  const g = await db.prepare("SELECT * FROM tornei_giornate WHERE id=? AND torneo_id=?").get(gid, tid);
+  if (!g) return res.status(404).json({ error: "Giornata non trovata" });
+  const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? AND turno=0 AND giornata=? ORDER BY campo").all(gid, turno);
+  if (!partite.length) return res.status(404).json({ error: `Il turno ${turno} non esiste in questa giornata.` });
+  if (partite.some((p) => p.punti_a !== null && p.punti_a !== void 0)) return res.status(409).json({
+    stato: true,
+    gia_giocato: true,
+    error: `Il turno ${turno} e\u0300 gia\u0300 stato giocato: le coppie si cambiano prima del risultato.`
+  });
+  const righe = Array.isArray(req.body?.coppie) ? req.body.coppie : null;
+  if (!righe || righe.length !== partite.length) return res.status(400).json({
+    error: `Servono ${partite.length} ${partite.length === 1 ? "incontro" : "incontri"} per questo turno.`
+  });
+  const ids = righe.flat().map(Number);
+  if (ids.some((x) => !Number.isInteger(x) || x <= 0)) return res.status(400).json({ error: "Ogni incontro vuole quattro giocatori." });
+  if (new Set(ids).size !== ids.length) return res.status(409).json({ error: "Qualcuno compare due volte: in un turno si gioca una partita sola." });
+  const prima = new Set(partite.flatMap((p) => [p.a_iscritto, p.a2_iscritto, p.b_iscritto, p.b2_iscritto]).filter(Boolean).map(Number));
+  if (ids.length !== prima.size || ids.some((x) => !prima.has(x))) return res.status(409).json({
+    error: "Devono essere gli stessi giocatori del turno, in ordine diverso. Per cambiare una persona usa la sostituzione."
+  });
+  const nomi = new Map((await db.prepare(`SELECT id, nome FROM tornei_ko_iscritti WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids)).map((x) => [x.id, x.nome]));
+  for (let i = 0; i < partite.length; i++) {
+    const [a1, a2, b1, b2] = righe[i].map(Number);
+    await db.prepare("UPDATE tornei_ko_partite SET a_iscritto=?, a_nome=?, a2_iscritto=?, a2_nome=?, b_iscritto=?, b_nome=?, b2_iscritto=?, b2_nome=? WHERE id=?").run(a1, nomi.get(a1), a2, nomi.get(a2), b1, nomi.get(b1), b2, nomi.get(b2), partite[i].id);
+  }
+  await registra({
+    fatto: "turno_ricomposto",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { data: g.data, turno, coppie: righe.map((r) => r.map((x) => nomi.get(Number(x))).join(" ")) }
+  });
+  audit(req.adminUser.username, "ricompone_turno", "tornei", tid, `${g.data} turno ${turno}`);
+  res.json({
+    ok: true,
+    turno,
+    incontri: righe.map(([a1, a2, b1, b2]) => `${nomi.get(Number(a1))} e ${nomi.get(Number(a2))} contro ${nomi.get(Number(b1))} e ${nomi.get(Number(b2))}`)
+  });
+});
 adminRouter.put("/tornei/:id/giornate/:gid/giocatore", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
@@ -32350,7 +32465,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 12:28" : "online";
+var BUILD = true ? "2026-09-12 13:40" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
