@@ -5682,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.78.0';
+const VERSIONE_APP = '6.79.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -13989,6 +13989,12 @@ function allowedZones() {
   if (ME.gestore || caps.includes('cucina')) z.push('cucina');
   if (ME.gestore || caps.includes('magazzino')) z.push('magazzino');
   if (ME.gestore || caps.includes('tabellone')) z.push('sport');   // risultati live
+  /* I TORNEI HANNO UNA ZONA LORO. Stavano dentro \xABsport\xBB, che si apre col permesso dei
+     risultati live: chi aveva il permesso \`tornei\` e nient'altro veniva respinto dal Chiosco
+     con \xABnon hai nessun permesso operativo\xBB \u2014 un permesso che non apre niente.
+     Sono due mestieri diversi: chi costruisce il torneo e chi segna i risultati a bordo campo
+     possono essere la stessa persona, ma non devono esserlo per forza. */
+  if (ME.gestore || caps.includes('tornei')) z.push('tornei');
   // La Coppa non e' il tabellone di una disciplina: e' la classifica generale delle otto
   // casate, che si somma su tutte le discipline piu' i contest. Chi segna i risultati in campo
   // e chi guarda come sta andando la Coppa sono due lavori diversi, e due permessi diversi.
@@ -14035,11 +14041,11 @@ function allowedZones() {
 // menu' a tendina; ora disegnano la barra laterale. Nomi e icone tutti diversi fra loro.
 const MODULI = [
   ['Ristorazione',     [['garden','\u{1F33F}','Garden'], ['bar','\u{1F378}','Bar'], ['cucina','\u{1F373}','Cucina'], ['serate','\u{1F37D}\uFE0F','Serate']]],
-  ['Sport',            [['campi','\u26BD','Campi liberi'], ['tennis','\u{1F3BE}','Area tennis'], ['fitness','\u{1F9D8}','Fitness'], ['sport','\u{1F3C5}','Tabellone'], ['coppa','\u{1F6E1}\uFE0F','Coppa delle Casate']]],
+  ['Sport',            [['campi','\u26BD','Campi liberi'], ['tennis','\u{1F3BE}','Area tennis'], ['fitness','\u{1F9D8}','Fitness'], ['tornei','\u{1F3C6}','Tornei'], ['sport','\u{1F3C5}','Tabellone'], ['coppa','\u{1F6E1}\uFE0F','Coppa delle Casate']]],
   ['Cultura',          [['settimana','\u{1F5D3}\uFE0F','La settimana'], ['cinema','\u{1F3AD}','Stage'], ['cdc','\u{1F4DA}','Casa di Carta']]],
   ['Logistica',        [['magazzino','\u{1F4E6}','Magazzino'], ['beach','\u26F1\uFE0F','Spiaggia']]],
 ];
-const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tabellone: 'Tabellone', campi: 'Campi liberi', tennis: 'Area tennis', casate: 'Coppa delle Casate', beach: 'Spiaggia', serate: 'Serate', cdc: 'Casa di Carta', fitness: 'Fitness', cinema: 'Stage' };
+const CAP_MODULO = { comande: 'Comande (Garden/Bar/Cucina)', magazzino: 'Magazzino', tornei: 'Tornei', tabellone: 'Tabellone', campi: 'Campi liberi', tennis: 'Area tennis', casate: 'Coppa delle Casate', beach: 'Spiaggia', serate: 'Serate', cdc: 'Casa di Carta', fitness: 'Fitness', cinema: 'Stage' };
 // La barra dei moduli. Non e' un menu' che si apre: sta li'. Cercare dove sono le cose e' il
 // tempo che al picco non si ha.
 // "Adesso" e' in cima e non e' un modulo: e' la coda del turno, cioe' cio' che chiede una
@@ -14112,7 +14118,7 @@ function setZona(z) {
   // Dove si atterra aprendo un modulo. Il Bar c'era solo come ripiego implicito
   // (\`PRIMA[ZONA] || 'comande'\`): funzionava, ma un ripiego non si puo' verificare, e un
   // modulo aggiunto domani senza la sua riga finirebbe zitto sulle comande del bar.
-  const PRIMA = { bar: 'comande', garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', coppa: 'coppa', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema', settimana: 'settimana' };
+  const PRIMA = { bar: 'comande', garden: 'pianta', cucina: 'kds', magazzino: 'magazzino', sport: 'sport', tornei: 'tornei', coppa: 'coppa', campi: 'campi', tennis: 'tennis', beach: 'beach', serate: 'serate', cdc: 'cdc', fitness: 'fitness', cinema: 'cinema', settimana: 'settimana' };
   show(PRIMA[ZONA] || 'comande');   // il ripiego resta per sicurezza, ma ora ogni zona ha la sua riga
 }
 // Mostra solo i tab pertinenti alla zona corrente:
@@ -14142,7 +14148,7 @@ function applyZona() {
      ma la Coppa delle Casate e' un'altra cosa \u2014 a punti, di casate, dura tutta la stagione \u2014
      mentre questi sono tornei estemporanei che nascono giovedi' e finiscono giovedi'. Si
      somigliano solo nel nome. */
-  tog('tornei', ZONA === 'sport');
+  tog('tornei', ZONA === 'sport' || ZONA === 'tornei');
   tog('serate', ZONA === 'serate');
   tog('cdc', ZONA === 'cdc');
   tog('fitness', ZONA === 'fitness');
@@ -14167,6 +14173,7 @@ const ZONA_ACCENT = {
   cucina:    { a: '#b14a35', g1: '#8f3826', g2: '#c8624b', nome: 'Cucina' },
   magazzino: { a: '#12324f', g1: '#12324F', g2: '#1c4a6e', nome: 'Magazzino' },
   sport:     { a: '#5b3f8a', g1: '#463170', g2: '#6b4ea0', nome: 'Tabellone' },
+  tornei:    { a: '#2e6da4', g1: '#245688', g2: '#3a82c0', nome: 'Tornei' },
   campi:     { a: '#2e6b45', g1: '#245437', g2: '#3d8a5a', nome: 'Campi liberi' },
   // Area tennis e Spiaggia non c'erano: cadevano sul ripiego \`|| ZONA_ACCENT.magazzino\` e si
   // tingevano di navy Magazzino. Due moduli su dodici dicevano all'operatore di essere altrove,
@@ -14256,6 +14263,7 @@ const CAPO = {
   registro:  ['Memoria lunga', 'Registro storico'],
   magazzino: ['Scorte e movimenti', 'Magazzino'],
   sport:     ['Risultati e gironi', 'Tabellone'],
+  tornei:    ['Crea, gruppi, giornate', 'Tornei'],
   coppa:     ['Classifica generale', 'Coppa delle Casate'],
   settimana: ['Il programma', 'La settimana'],
   tornei:    ['Eliminazione diretta', 'Tornei'],
@@ -19941,7 +19949,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.78.0" : "dev";
+var VERSION = true ? "6.79.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -25058,7 +25066,7 @@ adminRouter.get("/me", async (req, res) => {
     WHERE u.username=?`).get(req.adminUser.username);
   const info = capsInfo(req.adminUser);
   const caps = info.caps || [];
-  const CAPS_CREW = ["comande", "magazzino", "tabellone", "campi", "tennis", "tennis_campi", "casate", "beach", "serate", "cdc", "fitness", "cinema", "cucina"];
+  const CAPS_CREW = ["comande", "magazzino", "tornei", "tabellone", "campi", "tennis", "tennis_campi", "casate", "beach", "serate", "cdc", "fitness", "cinema", "cucina"];
   res.json({
     user: { username: req.adminUser.username, ruolo: req.adminUser.ruolo },
     socio: u?.socio_id ? { id: u.socio_id, nome: `${u.nome} ${u.cognome}`, tessera: u.tessera_code } : null,
@@ -32465,7 +32473,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 13:40" : "online";
+var BUILD = true ? "2026-09-12 14:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
