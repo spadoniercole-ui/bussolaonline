@@ -5682,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.79.0';
+const VERSIONE_APP = '6.80.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16259,6 +16259,8 @@ VIEWS.tornei = async () => {
     const somma = Number(t.punti_partita) || 24;
     // A set le caselle sono tre coppie (i game di ogni set), altrimenti due (i punti).
     const aSet = String((am.torneo || tab.torneo || {}).chiusura) === 'set';
+    // Quante serate servono per il giro completo: a tennis una giornata e' un turno solo.
+    const unTurnoSolo = (gAperta ? gAperta.turni.length : 0) === 1;
     const partitaAm = (p, fin) => \`<div class="box" style="padding:7px 9px;margin-bottom:5px">
       <div class="row" style="justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="font-size:.9rem"><b>\${esc(p.a_nome)}</b> e <b>\${esc(p.a2_nome)}</b><br><span class="muted">contro</span> <b>\${esc(p.b_nome)}</b> e <b>\${esc(p.b2_nome)}</b></span>
@@ -16320,9 +16322,13 @@ VIEWS.tornei = async () => {
         </div>\` : ''}
       </div>\` : ''}
       \${am.classifica.length ? \`<div class="box" style="padding:8px 10px;margin-bottom:10px">
+        <div class="row" style="justify-content:space-between;padding:0 0 4px;border-bottom:1px solid var(--tratto)">
+          <span class="muted" style="font-size:.76rem">La serata</span>
+          <span class="muted" style="font-size:.76rem">\${am.classifica.some(r => r.fatti) ? 'giocate \xB7 game \xB7 diff \xB7 punti' : 'giocate \xB7 punti'}</span>
+        </div>
         \${am.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--tratto)">
           <span>\${r.posizione}. <b>\${esc(r.nome)}</b>\${r.ritirato ? ' <span class="tag">ritirato</span>' : ''}</span>
-          <span><b>\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus} bonus</span>\` : ''}</span>
+          <span class="muted" style="font-size:.8rem">\${r.giocate || 0}\${r.fatti ? \` \xB7 \${r.fatti}-\${r.subiti} \xB7 \${r.fatti - r.subiti > 0 ? '+' : ''}\${r.fatti - r.subiti}\` : ''} \xB7 <b style="font-size:1rem;color:var(--ink)">\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
         </div>\`).join('')}
       </div>\` : ''}
       \${am.turni.map(x => \`<div style="margin-bottom:8px">
@@ -16385,15 +16391,24 @@ VIEWS.tornei = async () => {
             <span class="tag \${g.stato === 'conclusa' ? 'ok' : ''}">\${g.stato === 'conclusa' ? 'chiusa' : g.stato === 'finale' ? 'in finale' : 'in corso'}</span>
           </div>
           \${g.vincitori ? \`<div class="muted" style="font-size:.82rem">Hanno vinto \${esc(g.vincitori)}</div>\` : ''}
-          \${g.graduatoria.length ? \`<div class="muted" style="font-size:.8rem;margin-top:3px">\${g.graduatoria.map(r => \`\${esc(r.nome)} \${r.punti}\`).join(' \xB7 ')}</div>\` : ''}
+          \${/* LA GRADUATORIA NON SI RIPETE UNA TERZA VOLTA. Compariva qui per intero, uguale a
+                quella della serata che sta gia' sopra e alla classifica generale che sta sotto:
+                tre elenchi degli stessi nomi nella stessa schermata. Di una giornata passata
+                serve sapere chi ha vinto e quanti hanno giocato, non la fila. */
+            g.graduatoria.length ? \`<div class="muted" style="font-size:.8rem;margin-top:3px">\${
+              g.vincitori ? \`\${esc(g.vincitori)} \xB7 \` : ''}\${g.graduatoria.filter(r => r.giocate).length} giocatori</div>\` : ''}
         </div>\`).join('') : '<p class="muted" style="font-size:.82rem">Nessuna giornata ancora. Scegli otto giocatori e comincia.</p>'}
         \${st.classifica && st.classifica.some(r => r.presenze) ? \`<div style="margin-top:10px">
           <b style="color:var(--navy)">Classifica generale</b>
           <div class="muted" style="font-size:.8rem">Somma di tutte le giornate. Chi non c'era non prende punti.</div>
           <div class="box" style="padding:8px 10px;margin-top:5px">
-            \${st.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--tratto)">
+            <div class="row" style="justify-content:space-between;padding:0 0 4px;border-bottom:1px solid var(--tratto)">
+              <span class="muted" style="font-size:.76rem">Giocatore</span>
+              <span class="muted" style="font-size:.76rem">\${st.classifica.some(r => r.fatti) ? 'partite \xB7 game \xB7 diff \xB7 punti' : 'partite \xB7 punti'}</span>
+            </div>
+            \${st.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--tratto)\${r.presenze ? '' : ';opacity:.55'}">
               <span>\${r.posizione}. <b>\${esc(r.nome)}</b> <span class="muted" style="font-size:.78rem">\${r.presenze} \${r.presenze === 1 ? 'presenza' : 'presenze'}</span></span>
-              <span><b>\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
+              <span class="muted" style="font-size:.8rem">\${r.giocate || 0}\${r.fatti ? \` \xB7 \${r.fatti}-\${r.subiti} \xB7 \${r.fatti - r.subiti > 0 ? '+' : ''}\${r.fatti - r.subiti}\` : ''} \xB7 <b style="font-size:1rem;color:var(--ink)">\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
             </div>\`).join('')}
           </div>
         </div>\` : ''}
@@ -16424,7 +16439,17 @@ VIEWS.tornei = async () => {
       \${supervisore() ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
         \${st && st.iscritti && st.iscritti.length > 8 && !st.giornate.some(g => g.stato !== 'conclusa') ? '<button class="btn gold sm" id="am_giornata">+ Nuova giornata</button>' : ''}
         \${tab.torneo.stato === 'iscrizioni' && st && st.iscritti.length === 8 ? '<button class="btn gold sm" id="am_avvia">Forma le coppie e comincia</button>' : ''}
-        \${tab.torneo.stato === 'girone' && !daGiocare ? '<button class="btn gold sm" id="am_finale">Avvia la fase finale</button>' : ''}
+        \${/* IL TASTO GIUSTO PER QUESTO TORNEO. La fase finale \u2014 semifinali e finale sulla
+              graduatoria della serata \u2014 ha senso a padel, dove sette turni fanno una classifica
+              e i primi si giocano il titolo prima di andare a cena.
+              A TENNIS la serata e' un turno solo: finita quella non c'e' nessuna graduatoria da
+              premiare, e quello che serve e' chiudere e passare alla prossima. Il tasto diceva
+              \xABavvia la fase finale\xBB e la giornata restava aperta per sempre. */
+          tab.torneo.stato === 'girone' && !daGiocare
+            ? (unTurnoSolo
+              ? '<button class="btn gold sm" id="am_chiudig">Chiudi la giornata</button>'
+              : '<button class="btn gold sm" id="am_finale">Avvia la fase finale</button>')
+            : ''}
         \${tab.torneo.stato === 'girone' ? '<button class="btn ghost sm" id="am_ritiro">Qualcuno se ne va</button>' : ''}
       </div>\` : ''}
       \${tab.torneo.stato === 'concluso' ? \`<div class="box chiama" style="margin-top:10px;padding:8px 10px"><b>Hanno vinto \${esc(tab.torneo.vincitore || '\u2014')}</b></div>\` : ''}
@@ -17009,6 +17034,16 @@ VIEWS.tornei = async () => {
     try { await api('/tornei/' + apertoId + '/americana', { method: 'POST', body: '{}' }); show('tornei'); }
     catch (e) { alert(e.message); }
   };
+  if ($('#am_chiudig')) $('#am_chiudig').onclick = async () => {
+    const gid = window.__amGiornataAperta;
+    if (!gid) { alert('Non c\\'\xE8 nessuna giornata aperta.'); return; }
+    try {
+      const r = await api('/tornei/' + apertoId + '/giornate/' + gid + '/chiudi', { method: 'POST', body: '{}' });
+      alert(\`Giornata del \${r.data} chiusa\${r.primi.length ? \` \xB7 meglio di tutti: \${r.primi.join(', ')}\` : ''}.\`);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#am_finale')) $('#am_finale').onclick = async () => {
     if (!confirm('Avviare la fase finale? Le coppie si formano sulla classifica di adesso.')) return;
     try {
@@ -19949,7 +19984,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.79.0" : "dev";
+var VERSION = true ? "6.80.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23403,7 +23438,7 @@ async function graduatoriaGiornata(giornataId) {
   const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? AND turno=0").all(giornataId);
   const r = /* @__PURE__ */ new Map();
   const tocca = (id2, nome) => {
-    if (!r.has(id2)) r.set(id2, { iscritto_id: id2, nome, punti: 0, vinte: 0, pari: 0, perse: 0, giocate: 0 });
+    if (!r.has(id2)) r.set(id2, { iscritto_id: id2, nome, punti: 0, vinte: 0, pari: 0, perse: 0, giocate: 0, fatti: 0, subiti: 0 });
     return r.get(id2);
   };
   for (const p of partite) {
@@ -23413,10 +23448,22 @@ async function graduatoriaGiornata(giornataId) {
     if (p.punti_a === null || p.punti_a === void 0) continue;
     const pari = Number(p.punti_a) === Number(p.punti_b);
     const vinceA = Number(p.punti_a) > Number(p.punti_b);
+    const gm = { a: 0, b: 0 };
+    if (p.set_dettaglio) {
+      for (const set of String(p.set_dettaglio).split(" ")) {
+        const [x1, x2] = set.split("-").map(Number);
+        if (Number.isInteger(x1) && Number.isInteger(x2)) {
+          gm.a += x1;
+          gm.b += x2;
+        }
+      }
+    }
     for (const [id2, lato] of [[p.a_iscritto, "a"], [p.a2_iscritto, "a"], [p.b_iscritto, "b"], [p.b2_iscritto, "b"]]) {
       const x = r.get(id2);
       if (!x) continue;
       x.giocate++;
+      x.fatti += lato === "a" ? gm.a : gm.b;
+      x.subiti += lato === "a" ? gm.b : gm.a;
       if (pari) {
         x.punti += PUNTI_AMERICANA.pareggio;
         x.pari++;
@@ -23444,7 +23491,10 @@ async function classificaGeneraleAmericana(torneoId) {
     vinte: 0,
     pari: 0,
     perse: 0,
-    giornate_vinte: 0
+    giornate_vinte: 0,
+    giocate: 0,
+    fatti: 0,
+    subiti: 0
   }]));
   for (const gg of giornate) {
     const g = await graduatoriaGiornata(gg.id);
@@ -23456,6 +23506,9 @@ async function classificaGeneraleAmericana(torneoId) {
       x.vinte += riga.vinte;
       x.pari += riga.pari;
       x.perse += riga.perse;
+      x.giocate += riga.giocate;
+      x.fatti += riga.fatti || 0;
+      x.subiti += riga.subiti || 0;
     }
     for (const nome of String(gg.vincitori || "").split(" e ").map((s) => s.trim()).filter(Boolean)) {
       const x = [...r.values()].find((y) => y.nome === nome);
@@ -28128,6 +28181,25 @@ adminRouter.post("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
   audit(req.adminUser.username, "giornata_americana", "tornei", tid, `${r.data} \xB7 ${r.giocatori.length} giocatori`);
   res.status(201).json(r);
 });
+adminRouter.post("/tornei/:id/giornate/:gid/chiudi", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const gid = id(req.params.gid);
+  if (!gid) return res.status(400).json({ error: "Giornata non indicata." });
+  const g = await db.prepare("SELECT * FROM tornei_giornate WHERE id=? AND torneo_id=?").get(gid, tid);
+  if (!g) return res.status(404).json({ error: "Giornata non trovata" });
+  if (g.stato === "conclusa") return res.status(409).json({ stato: true, error: "Questa giornata e\u0300 gia\u0300 chiusa." });
+  const mancano = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE giornata_id=? AND turno=0 AND punti_a IS NULL").get(gid);
+  if (Number(mancano.n) > 0) return res.status(409).json({
+    stato: true,
+    error: `Mancano ancora ${mancano.n} ${Number(mancano.n) === 1 ? "partita" : "partite"}: la giornata si chiude quando si e\u0300 giocato tutto.`
+  });
+  const grad = await graduatoriaGiornata(gid);
+  const primi = grad.filter((x) => x.giocate && x.punti === (grad[0] || {}).punti).map((x) => x.nome);
+  await db.prepare("UPDATE tornei_giornate SET stato='conclusa', vincitori=?, chiusa_at=? WHERE id=?").run(primi.join(" e ") || null, (/* @__PURE__ */ new Date()).toISOString(), gid);
+  audit(req.adminUser.username, "chiudi_giornata", "tornei", tid, `${g.data} \xB7 ${primi.join(", ")}`);
+  res.json({ ok: true, data: g.data, primi, graduatoria: grad });
+});
 adminRouter.put("/tornei/:id/giornate/:gid/turno/:turno", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
@@ -32473,7 +32545,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 14:06" : "online";
+var BUILD = true ? "2026-09-12 14:14" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
