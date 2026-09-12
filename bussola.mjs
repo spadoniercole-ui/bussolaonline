@@ -5682,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.80.0';
+const VERSIONE_APP = '6.81.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16540,7 +16540,7 @@ VIEWS.tornei = async () => {
 
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F3C6} Tornei</h3>
-      <p class="muted" style="font-size:.82rem">Cinque forme, per come si gioca davvero: si apre in trenta secondi e si comincia. Le regole di gara \u2014 quanto vale una vittoria, a quanti punti si gioca un'americana \u2014 arrivano gi\xE0 impostate dal back office e restano scritte su questo torneo: cambiarle domani non tocca quello di stasera.</p>
+      <p class="muted" style="font-size:.82rem">Tre forme: eliminazione diretta, round robin, americano. Si apre in trenta secondi, si carica il gruppo e si comincia. Le regole di gara restano scritte su questo torneo: cambiarle domani non tocca quello di stasera, e finch\xE9 non si \xE8 giocato si correggono.</p>
       \${supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
         <input id="nt_disc" placeholder="Disciplina" style="width:130px">
@@ -19984,7 +19984,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.80.0" : "dev";
+var VERSION = true ? "6.81.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27995,12 +27995,12 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
   audit(req.adminUser.username, "crea_torneo", "tornei", info.lastInsertRowid, `${b.nome} \xB7 ${posti} posti`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
 });
-adminRouter.get("/tornei/:id", requireCap("campi"), async (req, res) => {
+adminRouter.get("/tornei/:id", requireCapTorneo, async (req, res) => {
   const t = await tabellone(req.params.id);
   if (!t) return res.status(404).json({ error: "Torneo non trovato" });
   res.json(t);
 });
-adminRouter.post("/tornei/:id/iscritti", requireCap("campi"), async (req, res) => {
+adminRouter.post("/tornei/:id/iscritti", requireCapTorneo, async (req, res) => {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(req.params.id);
   if (!t) return res.status(404).json({ error: "Torneo non trovato" });
   if (t.stato !== "iscrizioni") return res.status(409).json({ error: "Le iscrizioni sono chiuse: il tabellone e' gia' stato sorteggiato." });
@@ -28040,7 +28040,7 @@ adminRouter.post("/tornei/:id/iscritti", requireCap("campi"), async (req, res) =
     pieno: t.formato === "ko" && Number(ora) === Number(t.posti)
   });
 });
-adminRouter.delete("/tornei/:id/iscritti/:iscrittoId", requireCap("campi"), async (req, res) => {
+adminRouter.delete("/tornei/:id/iscritti/:iscrittoId", requireCapTorneo, async (req, res) => {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(req.params.id);
   if (!t || t.stato !== "iscrizioni") return res.status(409).json({ error: "Il tabellone e' gia' sorteggiato: non si tolgono piu' iscritti." });
   await db.prepare("DELETE FROM tornei_ko_iscritti WHERE id=? AND torneo_id=?").run(req.params.iscrittoId, t.id);
@@ -32545,7 +32545,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 14:14" : "online";
+var BUILD = true ? "2026-09-12 14:18" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
