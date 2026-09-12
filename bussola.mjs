@@ -1879,6 +1879,7 @@ async function migrate() {
   await addIfMissing("tornei_ko", "sospeso_motivo", "sospeso_motivo TEXT");
   await addIfMissing("tornei_ko", "stato_prima", "stato_prima TEXT");
   await addIfMissing("tornei_ko", "turni_giornata", "turni_giornata INTEGER");
+  await addIfMissing("tornei_ko_partite", "set_dettaglio", "set_dettaglio TEXT");
   await addIfMissing("tornei_ko", "archiviato_at", "archiviato_at TEXT");
   await addIfMissing("tornei_ko", "chiusura", "chiusura TEXT NOT NULL DEFAULT 'punti'");
   await addIfMissing("tornei_ko", "chiusura_valore", "chiusura_valore INTEGER NOT NULL DEFAULT 24");
@@ -5681,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.76.0';
+const VERSIONE_APP = '6.77.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -13813,6 +13814,12 @@ let TOKEN = null, ME = { gestore: false, ruolo: '', caps: [] }, PAR = {};
  * Un comando straordinario si NASCONDE, non si disabilita: un tasto grigio in mezzo al lavoro
  * e' solo un ostacolo, e chi lo vede si chiede perche' non funziona. */
 const supervisore = () => ME.gestore || ME.ruolo === 'manager';
+/* UNA GIORNATA NON E' COMINCIATA quando NESSUN risultato e' stato segnato \u2014 non quando ne manca
+   qualcuno. La differenza conta: si sostituisce un giocatore solo prima della prima partita,
+   perche' dal primo punteggio in poi quella persona ha dei punti e cambiarla vorrebbe dire
+   attribuirli a un altro. */
+const giornataIntatta = (g) => !!g && Array.isArray(g.turni) &&
+  g.turni.flatMap(t => t.partite).every(p => p.punti_a === null || p.punti_a === undefined);
 
 /* CHI PUO' SEGNARE UN RISULTATO non e' \xABchi sovrintende\xBB: e' chi sta a bordo campo.
    Il permesso si chiama \xABTabellone (risultati live)\xBB ed esiste apposta \u2014 ma la schermata
@@ -16237,19 +16244,41 @@ VIEWS.tornei = async () => {
       : { turni: [], finale: [], classifica: [], da_giocare: 0, torneo: (st && st.torneo) || tab.torneo };
     const t = am.torneo || tab.torneo;
     const somma = Number(t.punti_partita) || 24;
+    // A set le caselle sono tre coppie (i game di ogni set), altrimenti due (i punti).
+    const aSet = String((am.torneo || tab.torneo || {}).chiusura) === 'set';
     const partitaAm = (p, fin) => \`<div class="box" style="padding:7px 9px;margin-bottom:5px">
       <div class="row" style="justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="font-size:.9rem"><b>\${esc(p.a_nome)}</b> e <b>\${esc(p.a2_nome)}</b><br><span class="muted">contro</span> <b>\${esc(p.b_nome)}</b> e <b>\${esc(p.b2_nome)}</b></span>
         \${p.punti_a !== null && p.punti_a !== undefined
-          ? \`<span class="tag ok" style="font-size:1rem">\${p.punti_a} \u2013 \${p.punti_b}</span>\`
-          : (p.a_nome && p.b_nome && puoSegnare() ? \`<span class="row" style="gap:5px">
-              <input id="pa_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:56px;font-size:1rem;text-align:center">
-              <input id="pb_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:56px;font-size:1rem;text-align:center">
-              <button class="btn gold sm" data-amp="\${p.id}|\${fin ? 1 : 0}">Segna</button>
-            </span>\` : '<span class="muted">da giocare</span>')}
+          ? \`<span class="tag ok" style="font-size:1rem">\${p.punti_a} \u2013 \${p.punti_b}\${p.set_dettaglio ? \` <span class="muted" style="font-size:.8rem">\${esc(p.set_dettaglio)}</span>\` : ''}</span>\`
+          : (p.a_nome && p.b_nome && puoSegnare()
+            ? (aSet
+              /* A TENNIS SI SCRIVONO I GAME DI OGNI SET \u2014 6-4, 3-6, 7-5 \u2014 non i set vinti: e' il
+                 punteggio che si ha davanti a bordo campo. Il terzo si lascia vuoto quando non
+                 si gioca: due set uno a testa sono un pareggio. */
+              ? \`<span class="row" style="gap:5px;align-items:center">
+                  \${[1, 2, 3].map(k => \`<span class="row" style="gap:2px">
+                    <input id="s\${k}a_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:34px;font-size:.95rem;text-align:center">
+                    <input id="s\${k}b_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:34px;font-size:.95rem;text-align:center">
+                  </span>\`).join('<span class="muted" style="font-size:.8rem">\xB7</span>')}
+                  <button class="btn gold sm" data-amset="\${p.id}|\${fin ? 1 : 0}">Segna</button>
+                </span>\`
+              : \`<span class="row" style="gap:5px">
+                  <input id="pa_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:56px;font-size:1rem;text-align:center">
+                  <input id="pb_\${p.id}" inputmode="numeric" placeholder="\u2014" style="width:56px;font-size:1rem;text-align:center">
+                  <button class="btn gold sm" data-amp="\${p.id}|\${fin ? 1 : 0}">Segna</button>
+                </span>\`)
+            : '<span class="muted">da giocare</span>')}
       </div>
     </div>\`;
     const daGiocare = am.da_giocare || 0;
+    /* SOSTITUIRE UNA PERSONA nella giornata in corso, finche' non si e' giocato: la giornata
+       resta com'e' e cambia solo il nome. Rifare tutto quando manca uno vuol dire buttare
+       accoppiamenti che andavano bene. */
+    const sost = window.__amSost && String(window.__amSost.id) === String(apertoId) ? window.__amSost : null;
+    const inCampo = gAperta ? [...new Set(gAperta.turni.flatMap(t => t.partite).flatMap(p => [
+      [p.a_iscritto, p.a_nome], [p.a2_iscritto, p.a2_nome], [p.b_iscritto, p.b_nome], [p.b2_iscritto, p.b2_nome]
+    ]).filter(x => x[0]).map(x => x.join('\\u0001')))].map(x => x.split('\\u0001')) : [];
     const rit = window.__amRitiro && String(window.__amRitiro.id) === String(apertoId) ? window.__amRitiro : null;
     const gi = window.__amGiornata && String(window.__amGiornata.id) === String(apertoId) ? window.__amGiornata : null;
     vistaFormato = \`<div style="margin-top:12px">
@@ -16287,6 +16316,18 @@ VIEWS.tornei = async () => {
         <div class="muted" style="font-size:.8rem;margin-bottom:3px">Turno \${x.turno}</div>
         \${x.partite.map(p => partitaAm(p, false)).join('')}
       </div>\`).join('')}
+      \${giornataIntatta(gAperta) && puoSegnare() && inCampo.length ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <b style="font-size:.92rem">Manca qualcuno?</b>
+          \${sost ? '<button class="btn ghost sm" id="so_no">Lascia stare</button>' : '<button class="btn ghost sm" id="so_apri">Sostituisci un giocatore</button>'}
+        </div>
+        \${sost ? \`<div class="muted" style="font-size:.82rem;margin:5px 0 7px">Chi esce e chi entra al suo posto. La giornata resta com'\xE8: cambia solo il nome, in tutti i turni.</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:end">
+          <label class="muted" style="font-size:.8rem">Esce<br><select id="so_esce" style="min-width:150px">\${inCampo.map(([id, nome]) => \`<option value="\${id}">\${esc(nome)}</option>\`).join('')}</select></label>
+          <label class="muted" style="font-size:.8rem">Entra<br><select id="so_entra" style="min-width:150px">\${(st ? st.iscritti : []).filter(i => !inCampo.some(([id]) => String(id) === String(i.id))).map(i => \`<option value="\${i.id}">\${esc(i.nome)}</option>\`).join('') || '<option value="">\u2014 nessuno libero nel gruppo \u2014</option>'}</select></label>
+          <button class="btn gold sm" id="so_fai">Sostituisci</button>
+        </div>\` : ''}
+      </div>\` : ''}
       \${am.finale && am.finale.length ? \`<div style="margin-top:10px">
         <b style="color:var(--navy)">Fase finale</b>
         <p class="muted" style="font-size:.8rem">I punti di semifinale e finale non entrano in classifica: entra solo il bonus.</p>
@@ -16316,9 +16357,19 @@ VIEWS.tornei = async () => {
       \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>Chi gioca stasera?</b>
         <div class="muted" style="font-size:.82rem;margin-top:3px">Scegline otto dal gruppo. Non devono essere gli stessi dell'ultima volta: chi non c'\xE8 non prende punti.</div>
-        <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
-          \${(st ? st.iscritti : []).map(i => \`<button class="btn \${gi.scelti.includes(i.id) ? 'gold' : 'ghost'} sm" data-gsel="\${i.id}">\${esc(i.nome)}</button>\`).join('')}
-        </div>
+        \${(st && st.iscritti.length) ? \`<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+          \${st.iscritti.map(i => \`<button class="btn \${gi.scelti.includes(i.id) ? 'gold' : 'ghost'} sm" data-gsel="\${i.id}">\${esc(i.nome)}</button>\`).join('')}
+        </div>\` : \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
+          <b>Il gruppo \xE8 vuoto</b>
+          <div class="muted" style="font-size:.82rem;margin:3px 0 7px">Carica chi gioca: lo fai una volta, poi a ogni giornata scegli otto fra questi.</div>
+          <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+            <input id="gi_nome" placeholder="Aggiungi un nome" style="min-width:150px">
+            <button class="btn ghost sm" id="gi_add">Aggiungi</button>
+            <label class="btn ghost sm" style="margin:0;cursor:pointer">Carica un elenco\u2026
+              <input type="file" id="gi_file" accept=".csv,.xlsx,.xls,text/csv" style="display:none">
+            </label>
+          </div>
+        </div>\`}
         <div class="row" style="gap:8px;margin-top:9px;align-items:center;flex-wrap:wrap">
           <label class="muted" style="font-size:.82rem">Quando <input id="gi_data" type="date" value="\${esc(gi.data || '')}"></label>
           <span class="muted" style="font-size:.82rem">Scelti \${gi.scelti.length} su 8.</span>
@@ -16469,8 +16520,27 @@ VIEWS.tornei = async () => {
             ? \`<button class="btn ghost sm" id="ts_riapri">Riprendi il torneo</button>
                <span class="muted" style="font-size:.8rem">\${q.stato === 'decaduto' ? 'Sospeso da pi\xF9 dei giorni concordati: si pu\xF2 riprendere o cancellare.' : 'Sospeso' + (q.sospeso_motivo ? ' \xB7 ' + esc(q.sospeso_motivo) : '') + '.'}</span>\`
             : '<button class="btn ghost sm" id="ts_sosp">Sospendi</button>'}
+          \${!q.partite_giocate ? '<button class="btn ghost sm" id="ts_reg">Correggi le regole\u2026</button>' : ''}
           \${q.cancellabile && puoCancellare() ? '<button class="btn ghost sm" id="ts_del" style="color:var(--coral)">Cancella</button>' : ''}
         </div>
+        \${window.__tsReg === String(apertoId) ? \`<div class="box" style="margin-top:8px;padding:9px 11px">
+          <b>Le regole di questo torneo</b>
+          <div class="muted" style="font-size:.8rem;margin:3px 0 7px">Si possono cambiare finch\xE9 non \xE8 stata giocata nessuna partita. Dal primo risultato in poi no: da l\xEC hanno gi\xE0 prodotto dei punti.</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:end">
+            <label class="muted" style="font-size:.8rem">Disciplina<br><input id="tr_dis" value="\${esc(q.disciplina || '')}" placeholder="tennis, padel\u2026" style="width:130px"></label>
+            <label class="muted" style="font-size:.8rem">Come finisce<br><select id="tr_chi" style="width:150px">
+              <option value="">\u2014 dalla disciplina \u2014</option>
+              <option value="punti"\${q.chiusura === 'punti' ? ' selected' : ''}>a punti (padel)</option>
+              <option value="set"\${q.chiusura === 'set' ? ' selected' : ''}>a set (tennis)</option>
+              <option value="game"\${q.chiusura === 'game' ? ' selected' : ''}>a game</option>
+              <option value="minuti"\${q.chiusura === 'minuti' ? ' selected' : ''}>a tempo</option>
+            </select></label>
+            <label class="muted" style="font-size:.8rem">Quanti<br><input id="tr_val" inputmode="numeric" value="\${esc(String(q.chiusura_valore || ''))}" style="width:60px;text-align:center"></label>
+            <label class="muted" style="font-size:.8rem">Campi<br><input id="tr_cam" inputmode="numeric" value="\${esc(String(q.campi || ''))}" style="width:56px;text-align:center"></label>
+            <button class="btn gold sm" id="tr_salva">Salva</button>
+            <button class="btn ghost sm" id="tr_no">Lascia stare</button>
+          </div>
+        </div>\` : ''}
         \${window.__tsSosp === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
           <b>Per quanti giorni si aspetta?</b>
           <div class="muted" style="font-size:.82rem;margin-top:3px">Passati quelli senza riprenderlo si intende finito, e da l\xEC si potr\xE0 cancellare.</div>
@@ -16597,6 +16667,23 @@ VIEWS.tornei = async () => {
     try { await api('/tornei/' + apertoId + '/riapri', { method: 'POST', body: '{}' }); show('tornei'); }
     catch (e) { alert(e.message); }
   };
+  /* CORREGGERE LE REGOLE finche' il torneo e' intatto: chi sbaglia la disciplina non deve
+     buttare il torneo e ricaricare tutto il gruppo da capo. */
+  if ($('#ts_reg')) $('#ts_reg').onclick = () => { window.__tsReg = String(apertoId); show('tornei'); };
+  if ($('#tr_no')) $('#tr_no').onclick = () => { window.__tsReg = null; show('tornei'); };
+  if ($('#tr_salva')) $('#tr_salva').onclick = async () => {
+    const corpo = { disciplina: $('#tr_dis').value };
+    if ($('#tr_chi').value) corpo.chiusura = $('#tr_chi').value;
+    if ($('#tr_val').value) corpo.chiusura_valore = Number($('#tr_val').value);
+    if ($('#tr_cam').value) corpo.campi = Number($('#tr_cam').value);
+    try {
+      const r = await api('/tornei/' + apertoId, { method: 'PUT', body: JSON.stringify(corpo) });
+      window.__tsReg = null;
+      alert(\`Regole aggiornate: si gioca \${r.come_si_chiude}, \${r.turni_serata} \${r.turni_serata === 1 ? 'turno' : 'turni'} a serata.\`);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#ts_arch')) $('#ts_arch').onclick = async () => {
     const q = lista.find(x => String(x.id) === String(apertoId)) || {};
     if (!confirm(\`Archiviare \xAB\${q.nome}\xBB? Esce dall'elenco, ma non si perde niente.\`)) return;
@@ -16830,6 +16917,31 @@ VIEWS.tornei = async () => {
     show('tornei');
   };
   if ($('#gi_no')) $('#gi_no').onclick = () => { window.__amGiornata = null; show('tornei'); };
+  /* IL GRUPPO SI CARICA DALLA GIORNATA, senza uscire e rientrare: si carica una volta sola, ma
+     la prima volta bisognava andarlo a cercare da un'altra parte. */
+  if ($('#gi_add')) $('#gi_add').onclick = async () => {
+    const nome = ($('#gi_nome').value || '').trim();
+    if (!nome) return;
+    try { await api('/tornei/' + apertoId + '/iscritti', { method: 'POST', body: JSON.stringify({ nome }) }); show('tornei'); }
+    catch (e) { alert(e.message); }
+  };
+  if ($('#gi_file')) $('#gi_file').onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const b64 = await new Promise((ok, ko) => {
+      const r = new FileReader();
+      r.onload = () => ok(String(r.result).split(',')[1]);
+      r.onerror = () => ko(new Error('Non riesco a leggere il file.'));
+      r.readAsDataURL(f);
+    }).catch(() => null);
+    if (!b64) { alert('Non riesco a leggere il file.'); return; }
+    try {
+      const r = await api('/tornei/' + apertoId + '/iscritti/import', { method: 'POST', body: JSON.stringify({ fileB64: b64 }) });
+      alert(\`\${r.aggiunti} aggiunti al gruppo\${r.gia_presenti ? \` \xB7 \${r.gia_presenti} c'erano gi\xE0\` : ''}.\`);
+      show('tornei');
+    } catch (err) { alert(err.message); }
+  };
+
   document.querySelectorAll('[data-gsel]').forEach(b => b.onclick = () => {
     const g = window.__amGiornata; if (!g) return;
     const id = Number(b.dataset.gsel);
@@ -16862,6 +16974,38 @@ VIEWS.tornei = async () => {
       show('tornei');
     } catch (e) { alert(e.message); }
   };
+  /* I TRE SET: si manda quello che e' stato compilato, e il terzo vuoto vuol dire \xABnon si e'
+     giocato\xBB \u2014 cioe' pareggio, se i primi due sono uno a testa. */
+  if ($('#so_apri')) $('#so_apri').onclick = () => { window.__amSost = { id: String(apertoId) }; show('tornei'); };
+  if ($('#so_no')) $('#so_no').onclick = () => { window.__amSost = null; show('tornei'); };
+  if ($('#so_fai')) $('#so_fai').onclick = async () => {
+    const esce = $('#so_esce').value, entra = $('#so_entra').value;
+    if (!esce || !entra) { alert('Servono chi esce e chi entra.'); return; }
+    try {
+      const gid = (st.giornate.find(x => x.stato !== 'conclusa') || {}).id;
+      const r = await api('/tornei/' + apertoId + '/giornate/' + gid + '/giocatore', { method: 'PUT', body: JSON.stringify({ esce: Number(esce), entra: Number(entra) }) });
+      window.__amSost = null;
+      alert(\`\${r.entra} prende il posto di \${r.esce} in \${r.partite} \${r.partite === 1 ? 'partita' : 'partite'}.\`);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
+  document.querySelectorAll('[data-amset]').forEach(b => b.onclick = async () => {
+    const [pid] = b.dataset.amset.split('|');
+    const set = [];
+    for (const k of [1, 2, 3]) {
+      const a = ($('#s' + k + 'a_' + pid) || {}).value, c = ($('#s' + k + 'b_' + pid) || {}).value;
+      if (String(a || '').trim() === '' && String(c || '').trim() === '') continue;
+      set.push([Number(a), Number(c)]);
+    }
+    if (!set.length) { alert('Scrivi almeno un set.'); return; }
+    try {
+      const r = await api('/tornei/partite/' + pid + '/punti', { method: 'PUT', body: JSON.stringify({ set }) });
+      if (r.pari) alert('Pareggio: un punto a testa.');
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  });
+
   document.querySelectorAll('[data-amp]').forEach(b => b.onclick = async () => {
     const [pid] = b.dataset.amp.split('|');
     const a = $('#pa_' + pid), c = $('#pb_' + pid);
@@ -19729,7 +19873,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.76.0" : "dev";
+var VERSION = true ? "6.77.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -22658,8 +22802,8 @@ async function risultatoAmericana(partitaId, puntiA, puntiB) {
   if (t.stato === "concluso") return { ok: false, stato: true, error: `Il torneo e\u0300 chiuso: ha vinto ${t.vincitore}.` };
   const l = leggiPunteggio(t, puntiA, puntiB);
   if (!l.ok) return l;
-  await db.prepare("UPDATE tornei_ko_partite SET punti_a=?, punti_b=?, vincitore=?, giocata_at=? WHERE id=?").run(l.a, l.b, l.pari ? "pari" : l.vinceA ? p.a_nome : p.b_nome, (/* @__PURE__ */ new Date()).toISOString(), p.id);
-  return { ok: true, pari: l.pari, turno: p.giornata };
+  await db.prepare("UPDATE tornei_ko_partite SET punti_a=?, punti_b=?, vincitore=?, giocata_at=?, set_dettaglio=? WHERE id=?").run(l.a, l.b, l.pari ? "pari" : l.vinceA ? p.a_nome : p.b_nome, (/* @__PURE__ */ new Date()).toISOString(), l.dettaglio || null, p.id);
+  return { ok: true, pari: l.pari, turno: p.giornata, set: l.dettaglio || null, punti: `${l.a}-${l.b}` };
 }
 async function classificaAmericana(torneoId) {
   const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND attesa IS NULL ORDER BY id").all(torneoId);
@@ -22927,6 +23071,37 @@ async function cancellaTorneo(torneoId) {
   return { ok: true, nome: t.nome, era: stato, iscritti: Number(iscritti.n) || 0, partite };
 }
 function leggiPunteggio(t, a, b) {
+  const modo0 = String(t.chiusura || "punti");
+  if (modo0 === "set" && Array.isArray(a) && a.length && Array.isArray(a[0])) {
+    const tetto2 = Number(t.chiusura_valore) || 3;
+    const serve2 = Math.ceil((tetto2 + 1) / 2);
+    const giocati = a.filter((x2) => Array.isArray(x2) && (Number(x2[0]) || Number(x2[1])));
+    if (!giocati.length) return { ok: false, error: "Non c'e\u0300 nessun set: la partita non e\u0300 stata giocata." };
+    if (giocati.length > tetto2) return { ok: false, error: `Al meglio dei ${tetto2} set non se ne possono giocare ${giocati.length}.` };
+    let sa = 0, sb = 0;
+    for (const [g1, g2] of giocati) {
+      const p1 = Number(g1), p2 = Number(g2);
+      if (!Number.isInteger(p1) || !Number.isInteger(p2) || p1 < 0 || p2 < 0) {
+        return { ok: false, error: "I game di ogni set devono essere due numeri interi." };
+      }
+      if (p1 === p2) return { ok: false, error: `${p1}-${p2} non e\u0300 un set finito: o si gioca il tiebreak, o il set non e\u0300 chiuso.` };
+      if (p1 > p2) sa++;
+      else sb++;
+    }
+    if (Math.max(sa, sb) > serve2) return { ok: false, error: `Non si gioca oltre: la partita era gia\u0300 decisa a ${serve2} set.` };
+    const pari = sa === sb;
+    if (!pari && Math.max(sa, sb) < serve2) {
+      return { ok: false, error: `${sa}-${sb} non chiude la partita: serve il ${serve2}\xB0 set, oppure la si dichiara pari lasciando l'ultimo vuoto.` };
+    }
+    return {
+      ok: true,
+      a: sa,
+      b: sb,
+      pari,
+      vinceA: sa > sb,
+      dettaglio: giocati.map(([g1, g2]) => `${g1}-${g2}`).join(" ")
+    };
+  }
   const x = Number(a), y = Number(b);
   if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
     return { ok: false, error: "I due punteggi devono essere numeri interi." };
@@ -27877,6 +28052,43 @@ adminRouter.post("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
   audit(req.adminUser.username, "giornata_americana", "tornei", tid, `${r.data} \xB7 ${r.giocatori.length} giocatori`);
   res.status(201).json(r);
 });
+adminRouter.put("/tornei/:id/giornate/:gid/giocatore", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const gid = id(req.params.gid);
+  if (!gid) return res.status(400).json({ error: "Giornata non indicata." });
+  const g = await db.prepare("SELECT * FROM tornei_giornate WHERE id=? AND torneo_id=?").get(gid, tid);
+  if (!g) return res.status(404).json({ error: "Giornata non trovata" });
+  const giocate = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE giornata_id=? AND punti_a IS NOT NULL").get(gid);
+  if (Number(giocate.n) > 0) return res.status(409).json({
+    stato: true,
+    gia_iniziata: true,
+    error: `Questa giornata e\u0300 gia\u0300 cominciata: ${giocate.n} ${Number(giocate.n) === 1 ? "partita segnata" : "partite segnate"}. I giocatori si cambiano prima del primo risultato.`
+  });
+  const esce = id(req.body?.esce), entra = id(req.body?.entra);
+  if (!esce || !entra) return res.status(400).json({ error: "Servono chi esce e chi entra." });
+  const chiEntra = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE id=? AND torneo_id=?").get(entra, tid);
+  if (!chiEntra) return res.status(409).json({ error: "Chi entra non e\u0300 nel gruppo di questo torneo." });
+  const dentro = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE giornata_id=? AND (a_iscritto=? OR a2_iscritto=? OR b_iscritto=? OR b2_iscritto=?)").get(gid, entra, entra, entra, entra);
+  if (Number(dentro.n) > 0) return res.status(409).json({ error: `${chiEntra.nome} sta gia\u0300 giocando questa giornata.` });
+  const chiEsce = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE id=?").get(esce);
+  const tocca = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE giornata_id=? AND (a_iscritto=? OR a2_iscritto=? OR b_iscritto=? OR b2_iscritto=?)").get(gid, esce, esce, esce, esce);
+  if (!Number(tocca.n)) return res.status(409).json({ error: `${chiEsce ? chiEsce.nome : "Chi esce"} non sta giocando questa giornata.` });
+  for (const [id2, nome] of [["a_iscritto", "a_nome"], ["a2_iscritto", "a2_nome"], ["b_iscritto", "b_nome"], ["b2_iscritto", "b2_nome"]]) {
+    await db.prepare(`UPDATE tornei_ko_partite SET ${id2}=?, ${nome}=? WHERE giornata_id=? AND ${id2}=?`).run(entra, chiEntra.nome, gid, esce);
+  }
+  await registra({
+    fatto: "giornata_sostituzione",
+    servizio: "tornei",
+    riferimento: tid,
+    autore: req.adminUser.username,
+    canale: "back office",
+    quando: (/* @__PURE__ */ new Date()).toISOString(),
+    dettaglio: { data: g.data, esce: chiEsce ? chiEsce.nome : esce, entra: chiEntra.nome }
+  });
+  audit(req.adminUser.username, "sostituzione_giornata", "tornei", tid, `${chiEsce ? chiEsce.nome : esce} \u2192 ${chiEntra.nome}`);
+  res.json({ ok: true, esce: chiEsce ? chiEsce.nome : null, entra: chiEntra.nome, partite: Number(tocca.n) });
+});
 adminRouter.put("/tornei/:id/giornate/:gid", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
@@ -27994,9 +28206,11 @@ adminRouter.put("/tornei/partite/:id/punti", requireAnyCap("tornei", "tabellone"
   if (!pid) return res.status(400).json({ error: "Partita non indicata." });
   const p = await db.prepare("SELECT turno FROM tornei_ko_partite WHERE id=?").get(pid);
   if (!p) return res.status(404).json({ error: "Partita non trovata" });
-  const r = p.turno === 0 ? await risultatoAmericana(pid, req.body?.punti_a, req.body?.punti_b) : await risultatoFinaleAmericana(pid, req.body?.punti_a, req.body?.punti_b);
-  if (!r.ok) return res.status(r.stato ? 409 : 400).json({ error: r.error });
-  audit(req.adminUser.username, "punti_americana", "tornei", pid, `${req.body?.punti_a}-${req.body?.punti_b}`);
+  const a = Array.isArray(req.body?.set) ? req.body.set : req.body?.punti_a;
+  const b = Array.isArray(req.body?.set) ? null : req.body?.punti_b;
+  const r = p.turno === 0 ? await risultatoAmericana(pid, a, b) : await risultatoFinaleAmericana(pid, a, b);
+  if (!r.ok) return res.status(r.stato ? 409 : 400).json(r);
+  audit(req.adminUser.username, "punti_americana", "tornei", pid, r.set || `${req.body?.punti_a}-${req.body?.punti_b}`);
   res.json(r);
 });
 adminRouter.post("/tornei/:id/finale", requireCapTorneo, async (req, res) => {
@@ -28067,6 +28281,45 @@ adminRouter.post("/tornei/:id/riapri", requireCapTorneo, async (req, res) => {
   });
   audit(req.adminUser.username, "riapri_torneo", "tornei", tid, r.stato);
   res.json(r);
+});
+adminRouter.put("/tornei/:id", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  const giocate = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND (vincitore IS NOT NULL OR punti_a IS NOT NULL)").get(tid);
+  if (Number(giocate.n) > 0) return res.status(409).json({
+    stato: true,
+    gia_giocato: true,
+    error: `Questo torneo ha gia\u0300 ${giocate.n} ${Number(giocate.n) === 1 ? "partita giocata" : "partite giocate"}: le regole non si cambiano piu\u0300, perche\u0300 hanno gia\u0300 prodotto dei punti.`
+  });
+  const b = req.body || {};
+  const campi = {};
+  if (b.nome != null && String(b.nome).trim()) campi.nome = String(b.nome).trim().slice(0, 80);
+  if (b.disciplina != null) campi.disciplina = String(b.disciplina).trim().slice(0, 40);
+  if (["punti", "set", "game", "minuti"].includes(b.chiusura)) campi.chiusura = b.chiusura;
+  else if (b.disciplina != null && b.chiusura === void 0) {
+    campi.chiusura = /tennis/i.test(String(b.disciplina)) ? "set" : "punti";
+  }
+  if (campi.chiusura && b.chiusura_valore === void 0) {
+    campi.chiusura_valore = campi.chiusura === "set" ? 3 : campi.chiusura === "game" ? 12 : campi.chiusura === "minuti" ? 30 : 24;
+  }
+  const n = (x) => x === null || x === void 0 || x === "" ? null : Number(x);
+  for (const [k, v2] of [
+    ["campi", n(b.campi)],
+    ["chiusura_valore", n(b.chiusura_valore)],
+    ["turni_giornata", n(b.turni_giornata)],
+    ["punti_vittoria", n(b.punti_vittoria)],
+    ["punti_pareggio", n(b.punti_pareggio)],
+    ["bonus_finale", n(b.bonus_finale)]
+  ]) {
+    if (v2 !== null && Number.isInteger(v2) && v2 >= 0) campi[k] = v2;
+  }
+  if (!Object.keys(campi).length) return res.status(400).json({ error: "Non c'e\u0300 niente da cambiare." });
+  const set = Object.keys(campi).map((k) => `${k}=?`).join(", ");
+  await db.prepare(`UPDATE tornei_ko SET ${set} WHERE id=?`).run(...Object.values(campi), tid);
+  const dopo = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  audit(req.adminUser.username, "modifica_torneo", "tornei", tid, Object.keys(campi).join(", "));
+  res.json({ ok: true, cambiati: Object.keys(campi), come_si_chiude: comeSiChiude(dopo), turni_serata: turniPerSerata(dopo) });
 });
 adminRouter.post("/tornei/:id/archivia", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
@@ -32097,7 +32350,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 10:40" : "online";
+var BUILD = true ? "2026-09-12 12:28" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
