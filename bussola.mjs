@@ -1878,6 +1878,7 @@ async function migrate() {
   await addIfMissing("tornei_ko", "sospeso_giorni", "sospeso_giorni INTEGER");
   await addIfMissing("tornei_ko", "sospeso_motivo", "sospeso_motivo TEXT");
   await addIfMissing("tornei_ko", "stato_prima", "stato_prima TEXT");
+  await addIfMissing("tornei_ko", "archiviato_at", "archiviato_at TEXT");
   await addIfMissing("tornei_ko", "chiusura", "chiusura TEXT NOT NULL DEFAULT 'punti'");
   await addIfMissing("tornei_ko", "chiusura_valore", "chiusura_valore INTEGER NOT NULL DEFAULT 24");
   await db.exec(`
@@ -5679,7 +5680,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.73.0';
+const VERSIONE_APP = '6.74.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16455,7 +16456,13 @@ VIEWS.tornei = async () => {
             definitivo. */
         tab && puoGestireTornei() ? (() => {
         const q = lista.find(x => String(x.id) === String(apertoId)) || {};
-        if (q.stato === 'concluso') return '';
+        /* UN TORNEO FINITO NON SI CANCELLA, SI ARCHIVIA. Prima qui non compariva niente: il
+           torneo restava nell'elenco per sempre, e a settembre si scorrevano venti righe di roba
+           chiusa per trovare quella di stasera. */
+        if (q.stato === 'concluso') return \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn ghost sm" id="ts_arch">Archivia</button>
+          <span class="muted" style="font-size:.8rem">Esce dall'elenco. Resta tutto: vincitore, partite e classifica.</span>
+        </div>\`;
         return \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
           \${q.stato === 'sospeso' || q.stato === 'decaduto'
             ? \`<button class="btn ghost sm" id="ts_riapri">Riprendi il torneo</button>
@@ -16589,6 +16596,17 @@ VIEWS.tornei = async () => {
     try { await api('/tornei/' + apertoId + '/riapri', { method: 'POST', body: '{}' }); show('tornei'); }
     catch (e) { alert(e.message); }
   };
+  if ($('#ts_arch')) $('#ts_arch').onclick = async () => {
+    const q = lista.find(x => String(x.id) === String(apertoId)) || {};
+    if (!confirm(\`Archiviare \xAB\${q.nome}\xBB? Esce dall'elenco, ma non si perde niente.\`)) return;
+    try {
+      const r = await api('/tornei/' + apertoId + '/archivia', { method: 'POST', body: '{}' });
+      window.__torneoAperto = null;
+      alert(\`\xAB\${r.nome}\xBB in archivio\${r.vincitore ? \` \xB7 ha vinto \${r.vincitore}\` : ''}.\`);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#ts_del')) $('#ts_del').onclick = async () => {
     /* La conferma dice COSA si sta buttando, non "sei sicuro?": un numero fa fermare chi sta
        per cancellare la cosa sbagliata, una domanda generica no. */
@@ -19710,7 +19728,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.73.0" : "dev";
+var VERSION = true ? "6.74.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -27422,7 +27440,7 @@ adminRouter.get("/casate/stato", requireCap("casate"), async (req, res) => {
 });
 adminRouter.get("/tornei", requireCapTorneo, async (req, res) => {
   const g = req.query.gestione === "tennis" ? "tennis" : "chiosco";
-  const righe = await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? ORDER BY created_at DESC").all(g);
+  const righe = req.query.archivio === "1" ? await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? AND archiviato_at IS NOT NULL ORDER BY archiviato_at DESC").all(g) : await db.prepare("SELECT * FROM tornei_ko WHERE gestione=? AND archiviato_at IS NULL ORDER BY created_at DESC").all(g);
   const fuori = [];
   for (const t of righe) {
     const c = await siPuoCancellare(t);
@@ -27898,6 +27916,19 @@ adminRouter.post("/tornei/:id/riapri", requireCapTorneo, async (req, res) => {
   });
   audit(req.adminUser.username, "riapri_torneo", "tornei", tid, r.stato);
   res.json(r);
+});
+adminRouter.post("/tornei/:id/archivia", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  if (statoTorneo(t) !== "concluso") return res.status(409).json({
+    stato: true,
+    error: "Si archivia solo un torneo finito: questo e\u0300 ancora in piedi."
+  });
+  if (t.archiviato_at) return res.status(409).json({ stato: true, error: "Questo torneo e\u0300 gia\u0300 in archivio." });
+  await db.prepare("UPDATE tornei_ko SET archiviato_at=? WHERE id=?").run((/* @__PURE__ */ new Date()).toISOString(), tid);
+  audit(req.adminUser.username, "archivia_torneo", "tornei", tid, t.nome);
+  res.json({ ok: true, nome: t.nome, vincitore: t.vincitore });
 });
 adminRouter.delete("/tornei/:id", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
@@ -31915,7 +31946,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 09:10" : "online";
+var BUILD = true ? "2026-09-12 09:27" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
