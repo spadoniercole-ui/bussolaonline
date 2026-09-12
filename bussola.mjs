@@ -5680,7 +5680,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.74.0';
+const VERSIONE_APP = '6.75.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -19728,7 +19728,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.74.0" : "dev";
+var VERSION = true ? "6.75.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -22932,6 +22932,16 @@ function leggiPunteggio(t, a, b) {
   }
   const modo = String(t.chiusura || "punti");
   const tetto = Number(t.chiusura_valore) || 24;
+  if (modo === "set") {
+    const serve = Math.ceil((tetto + 1) / 2);
+    if (x === y) return { ok: false, error: "A set non c'e\u0300 pareggio: o si gioca il set decisivo, o il super tiebreak." };
+    if (Math.max(x, y) !== serve) return {
+      ok: false,
+      error: `Qui si gioca al meglio dei ${tetto} set: vince chi ne prende ${serve}. ${x}-${y} non chiude la partita.`
+    };
+    if (x + y > tetto) return { ok: false, error: `Al meglio dei ${tetto} set non se ne possono giocare ${x + y}.` };
+    return { ok: true, a: x, b: y, pari: false, vinceA: x > y };
+  }
   if (modo !== "minuti" && x + y !== tetto) {
     const cosa = modo === "game" ? "game" : "punti";
     return { ok: false, error: `Qui si gioca a ${tetto} ${cosa}: ${x} e ${y} fanno ${x + y}. Ricontrolla il punteggio.` };
@@ -22941,11 +22951,29 @@ function leggiPunteggio(t, a, b) {
 function comeSiChiude(t) {
   const v = Number(t.chiusura_valore) || 24;
   const modo = String(t.chiusura || "punti");
+  if (modo === "set") return `al meglio dei ${v} set`;
   if (modo === "game") return `a ${v} game`;
   if (modo === "minuti") return `a tempo, ${v} minuti`;
   return `a ${v} punti`;
 }
 var PUNTI_AMERICANA = { vittoria: 3, pareggio: 1, sconfitta: 0 };
+var chiaveCoppia = (a, b) => [Number(a), Number(b)].sort((x, y) => x - y).join("-");
+async function coppieGiaViste(torneoId) {
+  const partite = await db.prepare(
+    "SELECT a_iscritto, a2_iscritto, b_iscritto, b2_iscritto FROM tornei_ko_partite WHERE torneo_id=? AND turno=0 AND a2_iscritto IS NOT NULL"
+  ).all(torneoId);
+  const m = /* @__PURE__ */ new Map();
+  const conta = (x, y) => {
+    if (!x || !y) return;
+    const k = chiaveCoppia(x, y);
+    m.set(k, (m.get(k) || 0) + 1);
+  };
+  for (const p of partite) {
+    conta(p.a_iscritto, p.a2_iscritto);
+    conta(p.b_iscritto, p.b2_iscritto);
+  }
+  return m;
+}
 async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
   if (!t) return { ok: false, error: "Torneo non trovato" };
@@ -22978,6 +23006,16 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
   const ins = await db.prepare("INSERT INTO tornei_giornate (torneo_id,data,numero,stato,creata_at) VALUES (?,?,?,'turni',?)").run(torneoId, giorno, numero, (/* @__PURE__ */ new Date()).toISOString());
   const gid = Number(ins.lastInsertRowid);
   const g = mescola(dentro.sort((a, b) => scelti.indexOf(a.id) - scelti.indexOf(b.id)));
+  const viste = await coppieGiaViste(torneoId);
+  let ripetute = 0, nuove = 0;
+  for (const turno of AMERICANA_8) {
+    for (const [[a1, a2], [b1, b2]] of turno) {
+      for (const [x, y] of [[a1, a2], [b1, b2]]) {
+        if (viste.get(chiaveCoppia(g[x].id, g[y].id))) ripetute++;
+        else nuove++;
+      }
+    }
+  }
   let pos = 0;
   for (let turno = 0; turno < AMERICANA_8.length; turno++) {
     for (let campo = 0; campo < AMERICANA_8[turno].length; campo++) {
@@ -23002,7 +23040,21 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
     }
   }
   if (t.stato === "iscrizioni") await db.prepare("UPDATE tornei_ko SET stato='girone' WHERE id=?").run(torneoId);
-  return { ok: true, giornata_id: gid, numero, data: giorno, turni: AMERICANA_8.length, partite: pos, giocatori: g.map((x) => x.nome) };
+  return {
+    ok: true,
+    giornata_id: gid,
+    numero,
+    data: giorno,
+    turni: AMERICANA_8.length,
+    partite: pos,
+    giocatori: g.map((x) => x.nome),
+    coppie_nuove: nuove,
+    coppie_ripetute: ripetute,
+    /* Si spiega perche', invece di lasciarlo sembrare un difetto: con lo stesso gruppo le
+       combinazioni sono esaurite, e cambiare qualche giocatore e' l'unico modo di averne di
+       nuove. */
+    avviso: ripetute ? `${ripetute} delle ${ripetute + nuove} coppie si erano gia\u0300 viste: il calendario usa tutte le combinazioni possibili fra otto giocatori, quindi con un gruppo simile a quello di prima qualche coppia si ripete per forza.` : null
+  };
 }
 async function graduatoriaGiornata(giornataId) {
   const gg = await db.prepare("SELECT * FROM tornei_giornate WHERE id=?").get(giornataId);
@@ -27502,10 +27554,19 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
        formati. Si sceglie qui e si congela sul torneo, come tutte le regole di gara.
        Lo sport NON si indovina dal punteggio: un "6-2" scritto per sbaglio in un torneo di padel
        non deve cambiare le regole sotto i piedi. */
-    chiusura: ["punti", "game", "minuti"].includes(b.chiusura) ? b.chiusura : "punti",
+    /* LA DISCIPLINA DICE COME SI GIOCA, se non lo si e' detto esplicitamente.
+       Prima il modo di chiusura era sempre «punti» a meno di sceglierlo: chi scriveva disciplina
+       «tennis» si ritrovava le partite a 24 punti come a padel, e se ne accorgeva davanti alle
+       caselle del punteggio.
+       Resta vero che lo sport NON si indovina dal PUNTEGGIO — un «6-2» battuto per sbaglio non
+       deve cambiare le regole sotto i piedi — ma la disciplina e' una cosa che il gestore
+       dichiara, e tenerne conto non e' indovinare: e' leggere quello che ha scritto. Si puo'
+       sempre scostarsene scegliendo la chiusura a mano. */
+    chiusura: ["punti", "set", "game", "minuti"].includes(b.chiusura) ? b.chiusura : /tennis|padel/i.test(String(b.disciplina || "")) && /tennis/i.test(String(b.disciplina || "")) ? "set" : "punti",
     chiusura_valore: Math.max(1, primoNumero(
       b.chiusura_valore,
-      b.chiusura === "game" ? 12 : b.chiusura === "minuti" ? 30 : null,
+      b.chiusura === "game" ? 12 : b.chiusura === "minuti" ? 30 : b.chiusura === "set" ? 3 : null,
+      /tennis/i.test(String(b.disciplina || "")) && !b.chiusura ? 3 : null,
       await par("tornei_punti_partita"),
       24
     )),
@@ -31946,7 +32007,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 09:27" : "online";
+var BUILD = true ? "2026-09-12 09:57" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
