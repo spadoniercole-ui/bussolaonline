@@ -5679,7 +5679,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.72.0';
+const VERSIONE_APP = '6.73.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16447,7 +16447,13 @@ VIEWS.tornei = async () => {
         </div>
       </div>\` : ''}\` : ''}
       \${lista.length ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">\${lista.map(t => \`<button class="btn \${String(t.id) === String(apertoId) ? 'gold' : 'ghost'} sm" data-tsel="\${t.id}">\${esc(t.nome)}\${t.stato === 'sospeso' ? ' <span class="tag">sospeso</span>' : t.stato === 'decaduto' ? ' <span class="tag no">finito</span>' : t.stato === 'concluso' ? ' <span class="tag ok">chiuso</span>' : ''}</button>\`).join('')}</div>\` : ''}
-      \${tab && supervisore() ? (() => {
+      \${/* SOSPENDERE E CANCELLARE DIPENDONO DAL PERMESSO, non dal grado.
+            Qui il blocco intero era dietro \`supervisore()\` \u2014 gestore o manager \u2014 e uno staff col
+            permesso dei tornei non vedeva nemmeno \xABSospendi\xBB, pur potendolo fare. E' lo stesso
+            errore gia' corretto per i risultati, rimasto qui: si guarda cosa la persona PUO'
+            FARE, non che grado ha. Il tasto \xABCancella\xBB resta piu' stretto, perche' e'
+            definitivo. */
+        tab && puoGestireTornei() ? (() => {
         const q = lista.find(x => String(x.id) === String(apertoId)) || {};
         if (q.stato === 'concluso') return '';
         return \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap;align-items:center">
@@ -16456,7 +16462,6 @@ VIEWS.tornei = async () => {
                <span class="muted" style="font-size:.8rem">\${q.stato === 'decaduto' ? 'Sospeso da pi\xF9 dei giorni concordati: si pu\xF2 riprendere o cancellare.' : 'Sospeso' + (q.sospeso_motivo ? ' \xB7 ' + esc(q.sospeso_motivo) : '') + '.'}</span>\`
             : '<button class="btn ghost sm" id="ts_sosp">Sospendi</button>'}
           \${q.cancellabile && puoCancellare() ? '<button class="btn ghost sm" id="ts_del" style="color:var(--coral)">Cancella</button>' : ''}
-          \${q.cancellabile && !puoCancellare() ? '<span class="muted" style="font-size:.8rem">Si pu\xF2 cancellare, ma lo fa il gestore.</span>' : ''}
         </div>
         \${window.__tsSosp === String(apertoId) ? \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
           <b>Per quanti giorni si aspetta?</b>
@@ -18677,8 +18682,16 @@ async function scansionaTessera(quando) {
    \`tabellone_reset\` NON e' delegabile: ce l'ha il gestore e nessun altro, per costruzione. A chi
    non ce l'ha si dice che si puo' fare e chi lo fa \u2014 informazione utile \u2014 invece di offrire una
    porta chiusa. */
+/* Chi puo' mandare avanti un torneo: il permesso \`tornei\`, o i vecchi che lo aprivano prima
+   che esistesse. */
+function puoGestireTornei() {
+  return !!(ME && (ME.gestore || ME.ruolo === 'manager' || (ME.caps || []).some(c => ['tornei', 'campi', 'tennis'].includes(c))));
+}
+
 function puoCancellare() {
-  return !!(ME && (ME.gestore || (ME.caps || []).includes('tabellone_reset')));
+  /* Chi gestisce i tornei li cancella: la protezione non e' il permesso, e' la regola \u2014 si
+     cancella solo cio' che non ha prodotto niente, o un torneo decaduto. */
+  return puoGestireTornei();
 }
 
 function mostraAltraVista(id, permesso) {
@@ -19697,7 +19710,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.72.0" : "dev";
+var VERSION = true ? "6.73.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -20094,6 +20107,7 @@ var CAPS_GESTORE_ONLY = [
 ];
 var GO = new Set(CAPS_GESTORE_ONLY);
 var MANAGER_CAPS = /* @__PURE__ */ new Set([
+  "tornei",
   "utenti",
   "casate",
   "cdc",
@@ -27885,7 +27899,7 @@ adminRouter.post("/tornei/:id/riapri", requireCapTorneo, async (req, res) => {
   audit(req.adminUser.username, "riapri_torneo", "tornei", tid, r.stato);
   res.json(r);
 });
-adminRouter.delete("/tornei/:id", requireCap("tabellone_reset"), async (req, res) => {
+adminRouter.delete("/tornei/:id", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
   const r = await cancellaTorneo(tid);
@@ -31901,7 +31915,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-11 21:50" : "online";
+var BUILD = true ? "2026-09-12 09:10" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
