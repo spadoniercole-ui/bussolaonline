@@ -1878,6 +1878,7 @@ async function migrate() {
   await addIfMissing("tornei_ko", "sospeso_giorni", "sospeso_giorni INTEGER");
   await addIfMissing("tornei_ko", "sospeso_motivo", "sospeso_motivo TEXT");
   await addIfMissing("tornei_ko", "stato_prima", "stato_prima TEXT");
+  await addIfMissing("tornei_ko", "turni_giornata", "turni_giornata INTEGER");
   await addIfMissing("tornei_ko", "archiviato_at", "archiviato_at TEXT");
   await addIfMissing("tornei_ko", "chiusura", "chiusura TEXT NOT NULL DEFAULT 'punti'");
   await addIfMissing("tornei_ko", "chiusura_valore", "chiusura_valore INTEGER NOT NULL DEFAULT 24");
@@ -5680,7 +5681,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.75.0';
+const VERSIONE_APP = '6.76.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -19728,7 +19729,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.75.0" : "dev";
+var VERSION = true ? "6.76.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -22934,7 +22935,11 @@ function leggiPunteggio(t, a, b) {
   const tetto = Number(t.chiusura_valore) || 24;
   if (modo === "set") {
     const serve = Math.ceil((tetto + 1) / 2);
-    if (x === y) return { ok: false, error: "A set non c'e\u0300 pareggio: o si gioca il set decisivo, o il super tiebreak." };
+    if (x === y) {
+      if (x === 0) return { ok: false, error: "0-0 non e\u0300 un pareggio: e\u0300 una partita che non e\u0300 stata giocata." };
+      if (x >= serve) return { ok: false, error: `Al meglio dei ${tetto} set non si arriva a ${x} pari: sarebbero ${x + y} set.` };
+      return { ok: true, a: x, b: y, pari: true, vinceA: false };
+    }
     if (Math.max(x, y) !== serve) return {
       ok: false,
       error: `Qui si gioca al meglio dei ${tetto} set: vince chi ne prende ${serve}. ${x}-${y} non chiude la partita.`
@@ -22974,6 +22979,78 @@ async function coppieGiaViste(torneoId) {
   }
   return m;
 }
+function turniDiUnaSerata(giocatori, quanti, campi, viste, scontri) {
+  const n = giocatori.length;
+  const perTurno = Math.max(1, Number(campi) || 2);
+  const costoTurno = (coppie) => {
+    let c = 0;
+    for (const [x, y] of coppie) c += 6 * (viste.get(chiaveCoppia(giocatori[x].id, giocatori[y].id)) || 0);
+    for (let i = 0; i < coppie.length; i += 2) {
+      const [a1, a2] = coppie[i], [b1, b2] = coppie[i + 1] || [];
+      if (b1 === void 0) continue;
+      for (const p of [a1, a2]) for (const q of [b1, b2]) {
+        c += scontri.get(chiaveCoppia(giocatori[p].id, giocatori[q].id)) || 0;
+      }
+    }
+    return c;
+  };
+  const turni2 = [];
+  for (let t = 0; t < quanti; t++) {
+    let meglio = null, suoCosto = Infinity;
+    for (let tentativo = 0; tentativo < 400; tentativo++) {
+      const ordine = mescola([...Array(n).keys()]);
+      const coppie = [];
+      for (let i = 0; i + 1 < ordine.length && coppie.length < perTurno * 2; i += 2) coppie.push([ordine[i], ordine[i + 1]]);
+      if (coppie.length < perTurno * 2) break;
+      const c = costoTurno(coppie);
+      if (c < suoCosto) {
+        meglio = coppie;
+        suoCosto = c;
+      }
+      if (c === 0) break;
+    }
+    if (!meglio) break;
+    const partite = [];
+    for (let i = 0; i < meglio.length; i += 2) {
+      const [a1, a2] = meglio[i], [b1, b2] = meglio[i + 1];
+      partite.push([[a1, a2], [b1, b2]]);
+      for (const [x, y] of [[a1, a2], [b1, b2]]) {
+        const k = chiaveCoppia(giocatori[x].id, giocatori[y].id);
+        viste.set(k, (viste.get(k) || 0) + 1);
+      }
+      for (const p of [a1, a2]) for (const q of [b1, b2]) {
+        const k = chiaveCoppia(giocatori[p].id, giocatori[q].id);
+        scontri.set(k, (scontri.get(k) || 0) + 1);
+      }
+    }
+    turni2.push(partite);
+  }
+  return turni2;
+}
+async function scontriGiaVisti(torneoId) {
+  const partite = await db.prepare(
+    "SELECT a_iscritto, a2_iscritto, b_iscritto, b2_iscritto FROM tornei_ko_partite WHERE torneo_id=? AND turno=0 AND a2_iscritto IS NOT NULL"
+  ).all(torneoId);
+  const m = /* @__PURE__ */ new Map();
+  for (const p of partite) {
+    for (const x of [p.a_iscritto, p.a2_iscritto]) {
+      for (const y of [p.b_iscritto, p.b2_iscritto]) {
+        if (!x || !y) continue;
+        const k = chiaveCoppia(x, y);
+        m.set(k, (m.get(k) || 0) + 1);
+      }
+    }
+  }
+  return m;
+}
+function turniPerSerata(t) {
+  const suo = Number(t.turni_giornata);
+  if (Number.isInteger(suo) && suo > 0) return Math.min(suo, AMERICANA_8.length);
+  const modo = String(t.chiusura || "punti");
+  if (modo === "punti") return AMERICANA_8.length;
+  if (modo === "set") return 1;
+  return 3;
+}
 async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(torneoId);
   if (!t) return { ok: false, error: "Torneo non trovato" };
@@ -23005,21 +23082,30 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
   const numero = (Number(ultima?.n) || 0) + 1;
   const ins = await db.prepare("INSERT INTO tornei_giornate (torneo_id,data,numero,stato,creata_at) VALUES (?,?,?,'turni',?)").run(torneoId, giorno, numero, (/* @__PURE__ */ new Date()).toISOString());
   const gid = Number(ins.lastInsertRowid);
-  const g = mescola(dentro.sort((a, b) => scelti.indexOf(a.id) - scelti.indexOf(b.id)));
+  const g = dentro.sort((a, b) => scelti.indexOf(a.id) - scelti.indexOf(b.id));
+  const quantiTurni = turniPerSerata(t);
   const viste = await coppieGiaViste(torneoId);
-  let ripetute = 0, nuove = 0;
-  for (const turno of AMERICANA_8) {
-    for (const [[a1, a2], [b1, b2]] of turno) {
-      for (const [x, y] of [[a1, a2], [b1, b2]]) {
-        if (viste.get(chiaveCoppia(g[x].id, g[y].id))) ripetute++;
-        else nuove++;
+  const scontri = await scontriGiaVisti(torneoId);
+  const giaViste = new Map(viste);
+  const calendario = quantiTurni >= AMERICANA_8.length && g.length === 8 ? AMERICANA_8.map((turno) => turno.map(([[a1, a2], [b1, b2]]) => [[a1, a2], [b1, b2]])) : turniDiUnaSerata(g, quantiTurni, t.campi, viste, scontri);
+  if (calendario === AMERICANA_8 || quantiTurni >= AMERICANA_8.length) {
+    for (const turno of calendario) {
+      for (const [[a1, a2], [b1, b2]] of turno) {
+        for (const [x, y] of [[a1, a2], [b1, b2]]) {
+          const k = chiaveCoppia(g[x].id, g[y].id);
+          viste.set(k, (viste.get(k) || 0) + 1);
+        }
       }
     }
   }
-  let pos = 0;
-  for (let turno = 0; turno < AMERICANA_8.length; turno++) {
-    for (let campo = 0; campo < AMERICANA_8[turno].length; campo++) {
-      const [[a1, a2], [b1, b2]] = AMERICANA_8[turno][campo];
+  let ripetute = 0, nuove = 0, pos = 0;
+  for (let turno = 0; turno < calendario.length; turno++) {
+    for (let campo = 0; campo < calendario[turno].length; campo++) {
+      const [[a1, a2], [b1, b2]] = calendario[turno][campo];
+      for (const [x, y] of [[a1, a2], [b1, b2]]) {
+        if (giaViste.get(chiaveCoppia(g[x].id, g[y].id))) ripetute++;
+        else nuove++;
+      }
       await db.prepare(
         "INSERT INTO tornei_ko_partite (torneo_id,giornata_id,turno,posizione,giornata,campo,a_nome,a2_nome,b_nome,b2_nome,a_iscritto,a2_iscritto,b_iscritto,b2_iscritto) VALUES (?,?,0,?,?,?,?,?,?,?,?,?,?,?)"
       ).run(
@@ -23045,7 +23131,7 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
     giornata_id: gid,
     numero,
     data: giorno,
-    turni: AMERICANA_8.length,
+    turni: calendario.length,
     partite: pos,
     giocatori: g.map((x) => x.nome),
     coppie_nuove: nuove,
@@ -23053,7 +23139,11 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
     /* Si spiega perche', invece di lasciarlo sembrare un difetto: con lo stesso gruppo le
        combinazioni sono esaurite, e cambiare qualche giocatore e' l'unico modo di averne di
        nuove. */
-    avviso: ripetute ? `${ripetute} delle ${ripetute + nuove} coppie si erano gia\u0300 viste: il calendario usa tutte le combinazioni possibili fra otto giocatori, quindi con un gruppo simile a quello di prima qualche coppia si ripete per forza.` : null
+    /* Si spiega il numero invece di lasciarlo sembrare un difetto: col giro completo — sette
+       turni — le ventotto coppie possibili fra otto persone si usano TUTTE, quindi con un gruppo
+       simile a quello di prima ripetere e' matematico. Con meno turni le ripetizioni si possono
+       davvero evitare, e questo numero dice quanto ci si e' riusciti. */
+    avviso: ripetute ? quantiTurni >= AMERICANA_8.length ? `${ripetute} delle ${ripetute + nuove} coppie si erano gia\u0300 viste: con il giro completo il calendario usa tutte le combinazioni possibili fra otto giocatori, quindi con un gruppo simile a quello di prima qualche coppia si ripete per forza.` : `${ripetute} delle ${ripetute + nuove} coppie si erano gia\u0300 viste: sono state scelte le meno frequentate, ma con questo gruppo non se ne trovavano altre.` : null
   };
 }
 async function graduatoriaGiornata(giornataId) {
@@ -32007,7 +32097,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 09:57" : "online";
+var BUILD = true ? "2026-09-12 10:40" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
