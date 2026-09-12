@@ -5682,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.81.0';
+const VERSIONE_APP = '6.82.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16299,7 +16299,7 @@ VIEWS.tornei = async () => {
     vistaFormato = \`<div style="margin-top:12px">
       <b style="color:var(--navy)">Americana</b>
       <p class="muted" style="font-size:.82rem">Sette turni, due campi, il compagno cambia ogni volta. Si gioca in coppia ma <b>i punti sono tuoi</b>. Ogni partita finisce a <b>\${somma}</b>: un \${Math.floor(somma / 2)}\u2013\${Math.ceil(somma / 2)} \xE8 un risultato normale.</p>
-      \${st && supervisore() ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
+      \${st && puoGestireTornei() ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
         <b style="font-size:.92rem">Il gruppo</b>
         <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${st.iscritti.length
           ? \`\${st.iscritti.length} \${st.iscritti.length === 1 ? 'giocatore' : 'giocatori'} nel gruppo. Non c'\xE8 un tetto: a ogni giornata se ne scelgono otto.\`
@@ -16399,18 +16399,49 @@ VIEWS.tornei = async () => {
               g.vincitori ? \`\${esc(g.vincitori)} \xB7 \` : ''}\${g.graduatoria.filter(r => r.giocate).length} giocatori</div>\` : ''}
         </div>\`).join('') : '<p class="muted" style="font-size:.82rem">Nessuna giornata ancora. Scegli otto giocatori e comincia.</p>'}
         \${st.classifica && st.classifica.some(r => r.presenze) ? \`<div style="margin-top:10px">
-          <b style="color:var(--navy)">Classifica generale</b>
-          <div class="muted" style="font-size:.8rem">Somma di tutte le giornate. Chi non c'era non prende punti.</div>
-          <div class="box" style="padding:8px 10px;margin-top:5px">
-            <div class="row" style="justify-content:space-between;padding:0 0 4px;border-bottom:1px solid var(--tratto)">
-              <span class="muted" style="font-size:.76rem">Giocatore</span>
-              <span class="muted" style="font-size:.76rem">\${st.classifica.some(r => r.fatti) ? 'partite \xB7 game \xB7 diff \xB7 punti' : 'partite \xB7 punti'}</span>
-            </div>
-            \${st.classifica.map(r => \`<div class="row" style="justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--tratto)\${r.presenze ? '' : ';opacity:.55'}">
-              <span>\${r.posizione}. <b>\${esc(r.nome)}</b> <span class="muted" style="font-size:.78rem">\${r.presenze} \${r.presenze === 1 ? 'presenza' : 'presenze'}</span></span>
-              <span class="muted" style="font-size:.8rem">\${r.giocate || 0}\${r.fatti ? \` \xB7 \${r.fatti}-\${r.subiti} \xB7 \${r.fatti - r.subiti > 0 ? '+' : ''}\${r.fatti - r.subiti}\` : ''} \xB7 <b style="font-size:1rem;color:var(--ink)">\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
-            </div>\`).join('')}
+          <div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <b style="color:var(--navy)">Classifica generale</b>
+            <button class="btn ghost sm" id="cl_stampa">Stampa / PDF</button>
           </div>
+          <div class="muted" style="font-size:.8rem">Somma di tutte le giornate. Chi non c'era non prende punti.</div>
+          \${(() => {
+            /* LA CLASSIFICA SI LEGGE A COLPO D'OCCHIO, o non serve.
+               Prima i numeri stavano tutti in fila su una riga \u2014 \xAB1 \xB7 13-10 \xB7 +3 \xB7 3\xBB \u2014 senza
+               colonne: per capire chi aveva fatto meglio bisognava leggerli uno per uno. E chi
+               non ha mai giocato occupava lo stesso spazio di chi c'e' ogni settimana.
+               Adesso le colonne sono allineate, i punti sono l'unica cosa grande, e chi non ha
+               ancora giocato sta in fondo, raccolto in una riga sola. */
+            const gioca = st.classifica.filter(r => r.presenze);
+            const fermi = st.classifica.filter(r => !r.presenze);
+            const conGame = gioca.some(r => r.fatti);
+            const col = conGame ? '26px 1fr 34px 62px 46px 40px' : '26px 1fr 34px 40px';
+            return \`<div class="box" style="padding:0;margin-top:5px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:\${col};gap:6px;padding:6px 10px;background:#f4f2ea;border-bottom:1px solid var(--tratto)">
+                <span></span>
+                <span class="muted" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase">Giocatore</span>
+                <span class="muted" style="font-size:.68rem;text-align:right" title="partite giocate">P</span>
+                \${conGame ? '<span class="muted" style="font-size:.68rem;text-align:right" title="game fatti e subiti">Game</span><span class="muted" style="font-size:.68rem;text-align:right" title="differenza">Diff</span>' : ''}
+                <span class="muted" style="font-size:.68rem;text-align:right">Punti</span>
+              </div>
+              \${gioca.map((r, k) => {
+                const diff = (r.fatti || 0) - (r.subiti || 0);
+                /* Il podio si vede senza contare: la posizione in oro per i primi tre. L'oro qui
+                   e' cerimonia, non evidenziatore \u2014 sta sul numero, non sulla riga. */
+                const podio = k < 3;
+                return \`<div style="display:grid;grid-template-columns:\${col};gap:6px;padding:7px 10px;align-items:center;border-bottom:1px solid #f0efe8\${k % 2 ? ';background:#fbfaf6' : ''}">
+                  <span style="font-size:.82rem;font-weight:\${podio ? '800' : '600'};color:\${podio ? 'var(--gold)' : 'var(--mute)'};text-align:right">\${r.posizione}</span>
+                  <span style="min-width:0"><b style="font-size:.92rem">\${esc(r.nome)}</b><br><span class="muted" style="font-size:.7rem">\${r.presenze} \${r.presenze === 1 ? 'giornata' : 'giornate'}\${r.giornate_vinte ? \` \xB7 \${r.giornate_vinte} vinta\${r.giornate_vinte > 1 ? 'e' : ''}\` : ''}</span></span>
+                  <span class="muted" style="font-size:.82rem;text-align:right">\${r.giocate || 0}</span>
+                  \${conGame ? \`<span class="muted" style="font-size:.82rem;text-align:right;font-variant-numeric:tabular-nums">\${r.fatti || 0}\\u2013\${r.subiti || 0}</span>
+                  <span style="font-size:.82rem;text-align:right;font-variant-numeric:tabular-nums;color:\${diff > 0 ? 'var(--ok)' : diff < 0 ? 'var(--coral)' : 'var(--mute)'}">\${diff > 0 ? '+' : ''}\${diff}</span>\` : ''}
+                  <span style="text-align:right"><b style="font-size:1.15rem;color:var(--navy)">\${r.punti}</b>\${r.bonus ? \`<br><span class="muted" style="font-size:.66rem">+\${r.bonus} bonus</span>\` : ''}</span>
+                </div>\`;
+              }).join('')}
+              \${fermi.length ? \`<div style="padding:7px 10px;background:#f7f6f0">
+                <span class="muted" style="font-size:.76rem">Nel gruppo ma non ancora in campo: \${fermi.map(r => esc(r.nome)).join(', ')}.</span>
+              </div>\` : ''}
+            </div>\`;
+          })()}
         </div>\` : ''}
       </div>\` : ''}
       \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
@@ -16436,7 +16467,7 @@ VIEWS.tornei = async () => {
           <button class="btn ghost sm" id="gi_no">Lascia stare</button>
         </div>
       </div>\` : ''}
-      \${supervisore() ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
+      \${puoGestireTornei() ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
         \${st && st.iscritti && st.iscritti.length > 8 && !st.giornate.some(g => g.stato !== 'conclusa') ? '<button class="btn gold sm" id="am_giornata">+ Nuova giornata</button>' : ''}
         \${tab.torneo.stato === 'iscrizioni' && st && st.iscritti.length === 8 ? '<button class="btn gold sm" id="am_avvia">Forma le coppie e comincia</button>' : ''}
         \${/* IL TASTO GIUSTO PER QUESTO TORNEO. La fase finale \u2014 semifinali e finale sulla
@@ -16484,7 +16515,7 @@ VIEWS.tornei = async () => {
         <input id="cp_pt" type="number" step="0.5" placeholder="punti" style="width:90px">
         <input id="cp_nota" placeholder="Nota (facoltativa)" style="min-width:150px">
         <button class="btn ghost sm" id="cp_add">+ Aggiungi punti</button>
-        \${supervisore() ? '<button class="btn gold sm" id="cp_chiudi">\u{1F3C1} Chiudi il torneo</button>' : ''}
+        \${puoGestireTornei() ? '<button class="btn gold sm" id="cp_chiudi">\u{1F3C1} Chiudi il torneo</button>' : ''}
       </div>\` : ''}
       \${window.__torneoPari && String(window.__torneoPari.id) === String(apertoId) ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>\${esc(window.__torneoPari.testo)}</b>
@@ -16502,7 +16533,7 @@ VIEWS.tornei = async () => {
        girone, punti, partite, media. Non un prompt() e non un nome digitato a memoria. */
     const amm = window.__torneoAmmessi && String(window.__torneoAmmessi.id) === String(apertoId) ? window.__torneoAmmessi : null;
     vistaFormato = \`<div style="margin-top:12px">
-      \${tab.torneo.stato === 'iscrizioni' && supervisore() ? \`<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+      \${tab.torneo.stato === 'iscrizioni' && puoGestireTornei() ? \`<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
         <span class="muted" style="font-size:.85rem">Quanti gironi?</span>
         <select id="gg_n">\${[2,3,4,5,6,7,8].map(n => \`<option>\${n}</option>\`).join('')}</select>
         <button class="btn gold sm" id="gg_crea">Forma i gironi</button>
@@ -16522,7 +16553,7 @@ VIEWS.tornei = async () => {
         \${q.ripescati.length ? \`<div class="muted" style="font-size:.84rem">Ripescati con la media migliore: \${q.ripescati.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ', media ' + x.media + ')').join(', ')}</div>\` : ''}
         \${q.contesa ? \`<div class="muted" style="font-size:.84rem">Per \${q.contesa.posti === 1 ? 'l\\u2019ultimo posto' : 'gli ultimi ' + q.contesa.posti + ' posti'} sono a pari merito \${q.contesa.fra.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ', media ' + x.media + ')').join(', ')}: si sorteggia quando parte il tabellone.</div>\` : ''}
         \${q.serve_dichiarazione ? \`<div class="muted" style="font-size:.84rem">I qualificati sono pi\xF9 dei posti: \${q.da_scegliere === 1 ? 'un posto' : q.da_scegliere + ' posti'} per \${q.in_bilico.map(x => esc(x.nome) + ' (' + x.girone + x.posizione + ')').join(', ')}. Sceglie il gestore quando parte il tabellone.</div>\` : ''}
-        \${tab.torneo.stato === 'gironi' && supervisore() ? '<button class="btn gold sm" id="gg_tab" style="margin-top:8px">Avvia il tabellone</button>' : ''}
+        \${tab.torneo.stato === 'gironi' && puoGestireTornei() ? '<button class="btn gold sm" id="gg_tab" style="margin-top:8px">Avvia il tabellone</button>' : ''}
       </div>\` : ''}
       \${amm ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>\${esc(amm.testo)}</b>
@@ -16541,7 +16572,11 @@ VIEWS.tornei = async () => {
   $('#view').innerHTML = \`
     <div class="panel"><h3>\u{1F3C6} Tornei</h3>
       <p class="muted" style="font-size:.82rem">Tre forme: eliminazione diretta, round robin, americano. Si apre in trenta secondi, si carica il gruppo e si comincia. Le regole di gara restano scritte su questo torneo: cambiarle domani non tocca quello di stasera, e finch\xE9 non si \xE8 giocato si correggono.</p>
-      \${supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+      \${/* CREARE UN TORNEO RESTA AL GRADO, e non e' una svista: e' un comando straordinario \u2014
+            cambia le regole della serata \u2014 e non deve stare sotto le mani di chi sta servendo al
+            banco. Un test del progetto lo pretende, ed e' caduto appena l'ho aperto a tutti.
+            Gestire un torneo che esiste e' un'altra cosa: quello va col permesso. */
+        supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
         <input id="nt_disc" placeholder="Disciplina" style="width:130px">
         <select id="nt_form" title="La forma del torneo">
@@ -17034,6 +17069,8 @@ VIEWS.tornei = async () => {
     try { await api('/tornei/' + apertoId + '/americana', { method: 'POST', body: '{}' }); show('tornei'); }
     catch (e) { alert(e.message); }
   };
+  if ($('#cl_stampa')) $('#cl_stampa').onclick = () => stampaClassifica(st.torneo || tab.torneo, st.classifica, st.giornate || []);
+
   if ($('#am_chiudig')) $('#am_chiudig').onclick = async () => {
     const gid = window.__amGiornataAperta;
     if (!gid) { alert('Non c\\'\xE8 nessuna giornata aperta.'); return; }
@@ -18958,6 +18995,64 @@ async function scansionaTessera(quando) {
    porta chiusa. */
 /* Chi puo' mandare avanti un torneo: il permesso \`tornei\`, o i vecchi che lo aprivano prima
    che esistesse. */
+/* NELLA VISTA DEI TORNEI CONTA IL PERMESSO, NON IL GRADO.
+   Sei blocchi chiedevano \`supervisore()\` \u2014 gestore o manager \u2014 e cosi' chi aveva il permesso
+   \`tornei\` apriva il torneo e non poteva fare NIENTE: non vedeva il gruppo, non poteva creare
+   una giornata, non poteva avviare il tabellone. Il permesso diceva una cosa e la schermata
+   un'altra.
+   E' la quarta volta in quattro versioni che questo permesso lascia indietro un pezzo. Stavolta
+   li ho cercati tutti insieme invece di correggere quello segnalato. */
+/* LA CLASSIFICA SU CARTA (o in PDF).
+   Non si genera un PDF con una libreria: si apre una finestra formattata e si lascia stampare
+   al browser, che sa gia' salvare in PDF. Zero dipendenze in piu' nel bundle, e il risultato e'
+   lo stesso \u2014 piu' una cosa che una libreria non da': si puo' anche stampare e appendere al
+   muro, che al residence e' quello che succede davvero.
+   E' lo stesso meccanismo dei QR dei tavoli: se ne esiste gia' uno che funziona, un secondo
+   modo di fare la stessa cosa e' solo un altro posto dove sbagliare. */
+function stampaClassifica(torneo, classifica, giornate) {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Il browser ha bloccato la finestra di stampa.'); return; }
+  const conGame = classifica.some(r => r.fatti);
+  const gioca = classifica.filter(r => r.presenze);
+  const fermi = classifica.filter(r => !r.presenze);
+  const riga = (r, k) => \`<tr\${k < 3 ? ' class="podio"' : ''}>
+    <td class="pos">\${r.posizione}</td>
+    <td><b>\${esc(r.nome)}</b><br><span class="sotto">\${r.presenze} \${r.presenze === 1 ? 'giornata' : 'giornate'}\${r.giornate_vinte ? \` \xB7 \${r.giornate_vinte} vinta\${r.giornate_vinte > 1 ? 'e' : ''}\` : ''}</span></td>
+    <td class="n">\${r.giocate || 0}</td>
+    \${conGame ? \`<td class="n">\${r.fatti || 0}\u2013\${r.subiti || 0}</td><td class="n \${(r.fatti - r.subiti) > 0 ? 'su' : (r.fatti - r.subiti) < 0 ? 'giu' : ''}">\${(r.fatti - r.subiti) > 0 ? '+' : ''}\${(r.fatti || 0) - (r.subiti || 0)}</td>\` : ''}
+    <td class="punti">\${r.punti}</td>
+  </tr>\`;
+  w.document.write(\`<html><head><title>\${esc(torneo.nome)} \xB7 classifica</title><style>
+    @page{size:A4;margin:18mm}
+    body{font-family:Arial,Helvetica,sans-serif;color:#12324F;margin:0}
+    .k{letter-spacing:3px;font-size:.62rem;color:#8a5a12;text-transform:uppercase;font-weight:700}
+    h1{font-family:Georgia,'Times New Roman',serif;font-size:1.7rem;margin:4px 0 2px}
+    .sub{color:#5a6b75;font-size:.82rem;margin:0 0 16px}
+    table{width:100%;border-collapse:collapse;font-size:.86rem}
+    th{text-align:right;font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:#5a6b75;border-bottom:1.5px solid #12324F;padding:5px 6px}
+    th.l{text-align:left}
+    td{padding:6px;border-bottom:1px solid #e6e2d6;vertical-align:top}
+    td.pos{width:26px;text-align:right;color:#5a6b75;font-weight:700}
+    tr.podio td.pos{color:#8a5a12}
+    td.n{text-align:right;color:#5a6b75;font-variant-numeric:tabular-nums;white-space:nowrap}
+    td.n.su{color:#2f5a2d} td.n.giu{color:#9E2B20}
+    td.punti{text-align:right;font-weight:700;font-size:1.05rem;width:42px}
+    .sotto{color:#5a6b75;font-size:.68rem}
+    .fuori{margin-top:14px;color:#5a6b75;font-size:.76rem}
+    .pie{margin-top:22px;padding-top:8px;border-top:1px solid #e6e2d6;color:#9a8a5f;font-size:.66rem}
+  </style></head><body>
+    <div class="k">Bussola Residence \xB7 classifica generale</div>
+    <h1>\${esc(torneo.nome)}</h1>
+    <p class="sub">\${giornate.filter(g => g.stato === 'conclusa').length} \${giornate.filter(g => g.stato === 'conclusa').length === 1 ? 'giornata giocata' : 'giornate giocate'} \xB7 \${gioca.length} giocatori in campo\${torneo.disciplina ? \` \xB7 \${esc(torneo.disciplina)}\` : ''}</p>
+    <table><thead><tr>
+      <th></th><th class="l">Giocatore</th><th>P</th>\${conGame ? '<th>Game</th><th>Diff</th>' : ''}<th>Punti</th>
+    </tr></thead><tbody>\${gioca.map(riga).join('')}</tbody></table>
+    \${fermi.length ? \`<p class="fuori">Nel gruppo ma non ancora in campo: \${fermi.map(r => esc(r.nome)).join(', ')}.</p>\` : ''}
+    <p class="pie">Stampata il \${new Date().toLocaleDateString('it-IT')} alle \${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}</p>
+  <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script></body></html>\`);
+  w.document.close();
+}
+
 function puoGestireTornei() {
   return !!(ME && (ME.gestore || ME.ruolo === 'manager' || (ME.caps || []).some(c => ['tornei', 'campi', 'tennis'].includes(c))));
 }
@@ -19984,7 +20079,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.81.0" : "dev";
+var VERSION = true ? "6.82.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -32545,7 +32640,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 14:18" : "online";
+var BUILD = true ? "2026-09-12 14:30" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
