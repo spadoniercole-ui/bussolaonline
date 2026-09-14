@@ -1880,6 +1880,7 @@ async function migrate() {
   await addIfMissing("tornei_ko", "stato_prima", "stato_prima TEXT");
   await addIfMissing("tornei_ko", "turni_giornata", "turni_giornata INTEGER");
   await addIfMissing("tornei_ko_partite", "set_dettaglio", "set_dettaglio TEXT");
+  await addIfMissing("tornei_ko", "campi_nomi", "campi_nomi TEXT");
   await addIfMissing("tornei_ko", "archiviato_at", "archiviato_at TEXT");
   await addIfMissing("tornei_ko", "chiusura", "chiusura TEXT NOT NULL DEFAULT 'punti'");
   await addIfMissing("tornei_ko", "chiusura_valore", "chiusura_valore INTEGER NOT NULL DEFAULT 24");
@@ -5682,7 +5683,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.83.0';
+const VERSIONE_APP = '6.84.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16262,6 +16263,7 @@ VIEWS.tornei = async () => {
     // Quante serate servono per il giro completo: a tennis una giornata e' un turno solo.
     const unTurnoSolo = (gAperta ? gAperta.turni.length : 0) === 1;
     const partitaAm = (p, fin) => \`<div class="box" style="padding:7px 9px;margin-bottom:5px">
+      \${p.campo_nome && !fin ? \`<div class="muted" style="font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px">\${esc(p.campo_nome)}</div>\` : ''}
       <div class="row" style="justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="font-size:.9rem"><b>\${esc(p.a_nome)}</b> e <b>\${esc(p.a2_nome)}</b><br><span class="muted">contro</span> <b>\${esc(p.b_nome)}</b> e <b>\${esc(p.b2_nome)}</b></span>
         \${p.punti_a !== null && p.punti_a !== undefined
@@ -16383,7 +16385,28 @@ VIEWS.tornei = async () => {
         <p class="muted" style="font-size:.8rem">I punti di semifinale e finale non entrano in classifica: entra solo il bonus.</p>
         \${am.finale.map(p => partitaAm(p, true)).join('')}
       </div>\` : ''}
-      \${st && st.giornate ? \`<div style="margin-top:12px">
+      \${st && st.giornate && st.giornate.length ? \`<div style="margin-top:12px">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <b style="color:var(--navy)">Il calendario</b>
+          <button class="btn ghost sm" id="cal_apri">\${window.__amCal === String(apertoId) ? 'Chiudi' : 'Tutte le partite giocate'}</button>
+        </div>
+        \${window.__amCal === String(apertoId) && window.__amCalDati ? (() => {
+          /* IL CALENDARIO: quello che si e' giocato le sere prima spariva dalla vista \u2014 restava
+             nei dati ma non lo guardava nessuno. E a fine stagione la domanda che si fa al bar e'
+             sempre la stessa: \xABquella sera come e' finita?\xBB. */
+          const c = window.__amCalDati;
+          return \`<div class="muted" style="font-size:.8rem;margin:4px 0 6px">\${c.riassunto.giornate} giornate \xB7 \${c.riassunto.chiuse} chiuse \xB7 \${c.riassunto.partite} partite giocate</div>
+          \${c.giornate.map(g => \`<div class="box" style="padding:8px 10px;margin-bottom:6px">
+            <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+              <b>\${esc(g.data)}</b>
+              <span class="tag \${g.stato === 'conclusa' ? 'ok' : ''}">\${g.stato === 'conclusa' ? 'chiusa' : 'in corso'}</span>
+            </div>
+            \${g.partite.filter(p => p.punti).map(p => \`<div class="row" style="justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f0efe8;flex-wrap:wrap">
+              <span style="font-size:.86rem">\${p.fase ? \`<span class="tag">\${p.fase}</span> \` : ''}\${esc(p.a)} <span class="muted">contro</span> \${esc(p.b)}</span>
+              <span style="white-space:nowrap"><span class="muted" style="font-size:.74rem">\${esc(p.campo_nome || '')}</span> <b>\${esc(p.punti)}</b>\${p.set ? \` <span class="muted" style="font-size:.76rem">\${esc(p.set)}</span>\` : ''}</span>
+            </div>\`).join('') || '<div class="muted" style="font-size:.8rem;margin-top:4px">Ancora nessun risultato.</div>'}
+          </div>\`).join('')}\`;
+        })() : ''}
         <b style="color:var(--navy)">Le giornate</b>
         \${st.giornate.length ? st.giornate.slice(0, 4).map(g => \`<div class="box" style="padding:7px 9px;margin-top:5px">
           <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
@@ -16446,7 +16469,20 @@ VIEWS.tornei = async () => {
       </div>\` : ''}
       \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>Chi gioca stasera?</b>
-        <div class="muted" style="font-size:.82rem;margin-top:3px">Scegline otto dal gruppo. Non devono essere gli stessi dell'ultima volta: chi non c'\xE8 non prende punti.</div>
+        \${/* LA PRIMA DOMANDA E' CHI FA GLI ACCOPPIAMENTI. Il sorteggio va bene quasi sempre, ma
+              chi organizza a volte le coppie ce le ha gia' in testa \u2014 e allora non deve
+              disfarle a mano dopo che il computer le ha fatte a caso. */
+          gi.modo ? '' : \`<div class="box chiama" style="padding:9px 11px;margin-top:6px">
+            <b>Gli accoppiamenti li faccio io?</b>
+            <div class="muted" style="font-size:.82rem;margin:3px 0 8px">Posso sorteggiarli, tenendo conto di chi ha gi\xE0 giocato con chi. Oppure li decidi tu toccando i nomi in ordine.</div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              <button class="btn gold sm" id="gi_auto">S\xEC, sorteggia tu</button>
+              <button class="btn ghost sm" id="gi_mano">No, li scelgo io</button>
+            </div>
+          </div>\`}
+        \${gi.modo ? \`<div class="muted" style="font-size:.82rem;margin-top:3px">\${gi.modo === 'mano'
+          ? \`Tocca i nomi <b>in ordine</b>: i primi due sono una coppia, i due dopo sono chi affrontano \u2014 e cos\xEC per ogni campo. Servono \${(st && st.campi_nomi ? st.campi_nomi.length : 2) * 4} giocatori\${st && st.campi_nomi ? \` su \${st.campi_nomi.join(', ')}\` : ''}.\`
+          : \`Scegline \${(st && st.campi_nomi ? st.campi_nomi.length : 2) * 4} dal gruppo\${st && st.campi_nomi ? \` \u2014 si gioca su \${st.campi_nomi.join(', ')}\` : ''}. Non devono essere gli stessi dell'ultima volta: chi non c'\xE8 non prende punti.\`}</div>\` : ''}
         \${(st && st.iscritti.length) ? \`<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
           \${st.iscritti.map(i => \`<button class="btn \${gi.scelti.includes(i.id) ? 'gold' : 'ghost'} sm" data-gsel="\${i.id}">\${esc(i.nome)}</button>\`).join('')}
         </div>\` : \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
@@ -16462,6 +16498,11 @@ VIEWS.tornei = async () => {
         </div>\`}
         <div class="row" style="gap:8px;margin-top:9px;align-items:center;flex-wrap:wrap">
           <label class="muted" style="font-size:.82rem">Quando <input id="gi_data" type="date" value="\${esc(gi.data || '')}"></label>
+          \${gi.modo === 'mano' && gi.scelti.length ? \`<span class="muted" style="font-size:.8rem">\${
+            Array.from({ length: Math.ceil(gi.scelti.length / 4) }, (_, k) => gi.scelti.slice(k * 4, k * 4 + 4))
+              .map((q, k) => q.length === 4
+                ? \`\${esc((st && st.campi_nomi && st.campi_nomi[k]) || ('Campo ' + (k + 1)))}: \${q.map(id => esc(((st ? st.iscritti : []).find(x => x.id === id) || {}).nome || '')).slice(0, 2).join(' e ')} contro \${q.map(id => esc(((st ? st.iscritti : []).find(x => x.id === id) || {}).nome || '')).slice(2).join(' e ')}\`
+                : '').filter(Boolean).join(' \xB7 ')}</span>\` : ''}
           <span class="muted" style="font-size:.82rem">Scelti \${gi.scelti.length} su 8.</span>
           \${gi.scelti.length === 8 ? '<button class="btn gold sm" id="gi_via">Comincia la giornata</button>' : ''}
           <button class="btn ghost sm" id="gi_no">Lascia stare</button>
@@ -16579,6 +16620,8 @@ VIEWS.tornei = async () => {
         supervisore() ? \`<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input id="nt_nome" placeholder="Nome del torneo" style="min-width:160px">
         <input id="nt_disc" placeholder="Disciplina" style="width:130px">
+        <input id="nt_campi" inputmode="numeric" placeholder="Campi" style="width:66px;text-align:center" title="Quanti campi: quattro giocatori per campo">
+        <input id="nt_campin" placeholder="Terra 1, Terra 2" style="width:150px" title="Come si chiamano, separati da virgola">
         <select id="nt_form" title="La forma del torneo">
           <option value="ko">Eliminazione diretta</option>
           <option value="gironi">Gironi + tabellone</option>
@@ -16643,6 +16686,7 @@ VIEWS.tornei = async () => {
             </select></label>
             <label class="muted" style="font-size:.8rem">Quanti<br><input id="tr_val" inputmode="numeric" value="\${esc(String(q.chiusura_valore || ''))}" style="width:60px;text-align:center"></label>
             <label class="muted" style="font-size:.8rem">Campi<br><input id="tr_cam" inputmode="numeric" value="\${esc(String(q.campi || ''))}" style="width:56px;text-align:center"></label>
+            <label class="muted" style="font-size:.8rem">Come si chiamano<br><input id="tr_camn" value="\${esc(q.campi_nomi || '')}" placeholder="Terra 1, Terra 2" style="min-width:170px"></label>
             <span class="muted" style="font-size:.78rem">quattro per campo: \${(Number(q.campi) || 2) * 4} giocatori a giornata</span>
             <button class="btn gold sm" id="tr_salva">Salva</button>
             <button class="btn ghost sm" id="tr_no">Lascia stare</button>
@@ -16745,6 +16789,8 @@ VIEWS.tornei = async () => {
     try {
       const r = await api('/tornei', { method: 'POST', body: JSON.stringify({
         nome, disciplina: $('#nt_disc').value, posti: Number($('#nt_posti').value) || 16,
+        campi: Number($('#nt_campi') && $('#nt_campi').value) || undefined,
+        campi_nomi: ($('#nt_campin') && $('#nt_campin').value) || undefined,
         formato: $('#nt_form') ? $('#nt_form').value : 'ko',
         data: $('#nt_data').value, gestione: gest, ...opz
       }) });
@@ -16784,6 +16830,7 @@ VIEWS.tornei = async () => {
     if ($('#tr_chi').value) corpo.chiusura = $('#tr_chi').value;
     if ($('#tr_val').value) corpo.chiusura_valore = Number($('#tr_val').value);
     if ($('#tr_cam').value) corpo.campi = Number($('#tr_cam').value);
+    if ($('#tr_camn')) corpo.campi_nomi = $('#tr_camn').value;
     try {
       const r = await api('/tornei/' + apertoId, { method: 'PUT', body: JSON.stringify(corpo) });
       window.__tsReg = null;
@@ -17027,6 +17074,9 @@ VIEWS.tornei = async () => {
   if ($('#gi_no')) $('#gi_no').onclick = () => { window.__amGiornata = null; show('tornei'); };
   /* IL GRUPPO SI CARICA DALLA GIORNATA, senza uscire e rientrare: si carica una volta sola, ma
      la prima volta bisognava andarlo a cercare da un'altra parte. */
+  if ($('#gi_auto')) $('#gi_auto').onclick = () => { if (window.__amGiornata) window.__amGiornata.modo = 'auto'; show('tornei'); };
+  if ($('#gi_mano')) $('#gi_mano').onclick = () => { if (window.__amGiornata) window.__amGiornata.modo = 'mano'; show('tornei'); };
+
   if ($('#gi_add')) $('#gi_add').onclick = async () => {
     const nome = ($('#gi_nome').value || '').trim();
     if (!nome) return;
@@ -17050,6 +17100,9 @@ VIEWS.tornei = async () => {
     } catch (err) { alert(err.message); }
   };
 
+  /* A MANO L'ORDINE CONTA: i primi due sono una coppia, i due dopo sono chi affrontano. Toccare
+     di nuovo un nome lo toglie, e con lui si spostano tutti quelli dopo \u2014 che e' quello che ci
+     si aspetta quando si sbaglia un tocco. */
   document.querySelectorAll('[data-gsel]').forEach(b => b.onclick = () => {
     const g = window.__amGiornata; if (!g) return;
     const id = Number(b.dataset.gsel);
@@ -17062,7 +17115,16 @@ VIEWS.tornei = async () => {
     const g = window.__amGiornata;
     const data = ($('#gi_data') && $('#gi_data').value) || g.data;
     try {
-      await api('/tornei/' + apertoId + '/giornate', { method: 'POST', body: JSON.stringify({ data, giocatori: g.scelti }) });
+      /* A MANO: l'ordine in cui sono stati toccati i nomi E' l'accoppiamento. Il server crea la
+         giornata e poi le coppie si riscrivono in quell'ordine, invece di sorteggiarle e farle
+         disfare a mano subito dopo. */
+      const r = await api('/tornei/' + apertoId + '/giornate', { method: 'POST', body: JSON.stringify({ data, giocatori: g.scelti }) });
+      if (g.modo === 'mano' && r.giornata_id) {
+        const coppie = [];
+        for (let i = 0; i < g.scelti.length; i += 4) coppie.push(g.scelti.slice(i, i + 4));
+        try { await api('/tornei/' + apertoId + '/giornate/' + r.giornata_id + '/turno/1', { method: 'PUT', body: JSON.stringify({ coppie }) }); }
+        catch (e) { alert('Giornata creata, ma gli accoppiamenti non si sono potuti applicare: ' + e.message); }
+      }
       window.__amGiornata = null;
       show('tornei');
     } catch (e) { alert(e.message); }
@@ -17073,6 +17135,15 @@ VIEWS.tornei = async () => {
     try { await api('/tornei/' + apertoId + '/americana', { method: 'POST', body: '{}' }); show('tornei'); }
     catch (e) { alert(e.message); }
   };
+  if ($('#cal_apri')) $('#cal_apri').onclick = async () => {
+    if (window.__amCal === String(apertoId)) { window.__amCal = null; window.__amCalDati = null; show('tornei'); return; }
+    try {
+      window.__amCalDati = await api('/tornei/' + apertoId + '/calendario');
+      window.__amCal = String(apertoId);
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#cl_stampa')) $('#cl_stampa').onclick = () => stampaClassifica(st.torneo || tab.torneo, st.classifica, st.giornate || []);
 
   if ($('#am_chiudig')) $('#am_chiudig').onclick = async () => {
@@ -19057,22 +19128,36 @@ function stampaClassifica(torneo, classifica, giornate) {
     \${fermi.length ? \`<p class="fuori">Nel gruppo ma non ancora in campo: \${fermi.map(r => esc(r.nome)).join(', ')}.</p>\` : ''}
     <p class="pie">Stampata il \${new Date().toLocaleDateString('it-IT')} alle \${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}</p>
   </body></html>\`;
+  /* PERCHE' NON BASTA UN IFRAME NASCOSTO.
+     Ci ho provato due volte: prima \`window.open\`, che sul telefono viene bloccato, poi un
+     \`<iframe>\` fuori schermo \u2014 e neanche quello stampava. Su Android la stampa di un iframe
+     largo zero produce una pagina vuota, e su iOS \`print()\` da dentro un frame spesso non parte
+     affatto.
+     La strada che funziona ovunque e' la piu' semplice: si scrive il foglio DENTRO la pagina,
+     si dice al CSS di stampare solo quello, si stampa, e poi si rimette tutto a posto. Niente
+     finestre, niente frame, niente permessi da chiedere \u2014 e il browser fa da se' il PDF. */
   const vecchio = document.getElementById('foglioStampa');
   if (vecchio) vecchio.remove();
-  const f = document.createElement('iframe');
-  f.id = 'foglioStampa';
-  f.style.cssText = 'position:absolute;width:0;height:0;border:0;left:-9999px';
-  document.body.appendChild(f);
-  f.contentDocument.open();
-  f.contentDocument.write(doc);
-  f.contentDocument.close();
-  /* Si aspetta che il documento sia pronto prima di stampare: senza l'attesa il telefono
-     stampa un foglio bianco, perche' la finestra di stampa si apre mentre il contenuto sta
-     ancora arrivando. */
-  setTimeout(() => {
-    try { f.contentWindow.focus(); f.contentWindow.print(); }
-    catch (e) { alert('Non riesco ad aprire la stampa: ' + (e.message || '')); }
-  }, 350);
+  const box = document.createElement('div');
+  box.id = 'foglioStampa';
+  box.innerHTML = doc.replace(/^[\\s\\S]*<body>/, '').replace(/<\\/body>[\\s\\S]*$/, '');
+  const stile = document.createElement('style');
+  stile.id = 'stileStampa';
+  stile.textContent = \`
+    #foglioStampa{display:none}
+    @media print{
+      body > *:not(#foglioStampa){display:none !important}
+      #foglioStampa{display:block !important;font-family:Arial,Helvetica,sans-serif;color:#12324F}
+      \${doc.replace(/^[\\s\\S]*<style>/, '').replace(/<\\/style>[\\s\\S]*$/, '').replace(/@page[^}]*}/, '').replace(/(^|})\\s*([a-z.#][^{}]*)\\{/g, '$1 #foglioStampa $2{')}
+      @page{size:A4;margin:18mm}
+    }\`;
+  document.head.appendChild(stile);
+  document.body.appendChild(box);
+  const pulisci = () => { box.remove(); stile.remove(); window.removeEventListener('afterprint', pulisci); };
+  window.addEventListener('afterprint', pulisci);
+  setTimeout(() => { try { window.print(); } catch (e) { alert('Non riesco ad aprire la stampa: ' + (e.message || '')); pulisci(); } }, 60);
+  // Se \`afterprint\` non arriva (succede su qualche telefono), si pulisce lo stesso dopo un po'.
+  setTimeout(pulisci, 60000);
 }
 
 function puoGestireTornei() {
@@ -20101,7 +20186,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.83.0" : "dev";
+var VERSION = true ? "6.84.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23365,6 +23450,10 @@ function comeSiChiude(t) {
   return `a ${v} punti`;
 }
 var PUNTI_AMERICANA = { vittoria: 3, pareggio: 1, sconfitta: 0 };
+function nomeCampo(t, n) {
+  const nomi = String(t && t.campi_nomi || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return nomi[n - 1] || `Campo ${n}`;
+}
 var chiaveCoppia = (a, b) => [Number(a), Number(b)].sort((x, y) => x - y).join("-");
 async function coppieGiaViste(torneoId) {
   const partite = await db.prepare(
@@ -28086,7 +28175,7 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
     });
   }
   const info = await db.prepare(
-    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data,formato,punti_vittoria,punti_pareggio,qualificati_girone,riempimento,campi,punti_partita,bonus_finale,chiusura,chiusura_valore) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO tornei_ko (nome,disciplina,gestione,posti,quota,data,formato,punti_vittoria,punti_pareggio,qualificati_girone,riempimento,campi,punti_partita,bonus_finale,chiusura,chiusura_valore,campi_nomi) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
   ).run(
     b.nome,
     b.disciplina || null,
@@ -28103,7 +28192,8 @@ adminRouter.post("/tornei", requireCapTorneo, async (req, res) => {
     regole.punti_partita,
     regole.bonus_finale,
     regole.chiusura,
-    regole.chiusura_valore
+    regole.chiusura_valore,
+    String(b.campi_nomi || "").trim().slice(0, 200) || null
   );
   audit(req.adminUser.username, "crea_torneo", "tornei", info.lastInsertRowid, `${b.nome} \xB7 ${posti} posti`);
   res.status(201).json({ ok: true, id: Number(info.lastInsertRowid) });
@@ -28464,11 +28554,12 @@ adminRouter.get("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
       }
       t0.partite.push(p);
     }
+    const conNome = (p) => ({ ...p, campo_nome: nomeCampo(t, p.campo) });
     dettaglio.push({
       ...g,
-      turni: turni2,
-      partite_turni: partite.filter((p) => p.turno === 0),
-      finale: partite.filter((p) => p.turno > 0),
+      turni: turni2.map((x) => ({ ...x, partite: x.partite.map(conNome) })),
+      partite_turni: partite.filter((p) => p.turno === 0).map(conNome),
+      finale: partite.filter((p) => p.turno > 0).map(conNome),
       graduatoria: await graduatoriaGiornata(g.id),
       da_giocare: partite.filter((p) => p.turno === 0 && p.punti_a === null).length
     });
@@ -28476,6 +28567,7 @@ adminRouter.get("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
   res.json({
     torneo: t,
     come_si_chiude: comeSiChiude(t),
+    campi_nomi: Array.from({ length: Number(t.campi) || 2 }, (_, i) => nomeCampo(t, i + 1)),
     iscritti: await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY nome").all(tid),
     giornate: dettaglio,
     classifica: await classificaGeneraleAmericana(tid)
@@ -28598,7 +28690,7 @@ adminRouter.put("/tornei/:id", requireCapTorneo, async (req, res) => {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
   const b = req.body || {};
   const giocate = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND (vincitore IS NOT NULL OR punti_a IS NOT NULL)").get(tid);
-  const soloCampi = Object.keys(b).filter((k) => b[k] !== void 0 && b[k] !== null && b[k] !== "").every((k) => k === "campi" || k === "nome");
+  const soloCampi = Object.keys(b).filter((k) => b[k] !== void 0 && b[k] !== null && b[k] !== "").every((k) => k === "campi" || k === "campi_nomi" || k === "nome");
   if (Number(giocate.n) > 0 && !soloCampi) return res.status(409).json({
     stato: true,
     gia_giocato: true,
@@ -28607,6 +28699,7 @@ adminRouter.put("/tornei/:id", requireCapTorneo, async (req, res) => {
   const campi = {};
   if (b.nome != null && String(b.nome).trim()) campi.nome = String(b.nome).trim().slice(0, 80);
   if (b.disciplina != null) campi.disciplina = String(b.disciplina).trim().slice(0, 40);
+  if (b.campi_nomi != null) campi.campi_nomi = String(b.campi_nomi).trim().slice(0, 200) || null;
   if (["punti", "set", "game", "minuti"].includes(b.chiusura)) campi.chiusura = b.chiusura;
   else if (b.disciplina != null && b.chiusura === void 0) {
     campi.chiusura = /tennis/i.test(String(b.disciplina)) ? "set" : "punti";
@@ -28631,6 +28724,66 @@ adminRouter.put("/tornei/:id", requireCapTorneo, async (req, res) => {
   const dopo = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
   audit(req.adminUser.username, "modifica_torneo", "tornei", tid, Object.keys(campi).join(", "));
   res.json({ ok: true, cambiati: Object.keys(campi), come_si_chiude: comeSiChiude(dopo), turni_serata: turniPerSerata(dopo) });
+});
+adminRouter.get("/tornei/:id/calendario", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  const giornate = await db.prepare("SELECT * FROM tornei_giornate WHERE torneo_id=? ORDER BY numero DESC").all(tid);
+  const fuori = [];
+  for (const g of giornate) {
+    const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? ORDER BY turno, giornata, campo").all(g.id);
+    fuori.push({
+      id: g.id,
+      data: g.data,
+      numero: g.numero,
+      stato: g.stato,
+      vincitori: g.vincitori,
+      partite: partite.map((p) => ({
+        turno: p.turno === 0 ? p.giornata : null,
+        fase: p.turno === 1 ? "semifinale" : p.turno === 2 ? "finale" : null,
+        campo: p.campo,
+        campo_nome: nomeCampo(t, p.campo),
+        a: [p.a_nome, p.a2_nome].filter(Boolean).join(" e "),
+        b: [p.b_nome, p.b2_nome].filter(Boolean).join(" e "),
+        punti: p.punti_a === null || p.punti_a === void 0 ? null : `${p.punti_a}\u2013${p.punti_b}`,
+        set: p.set_dettaglio || null,
+        esito: p.vincitore === "pari" ? "pari" : p.vincitore || null
+      }))
+    });
+  }
+  res.json({
+    torneo: { id: t.id, nome: t.nome, disciplina: t.disciplina, chiusura: t.chiusura },
+    come_si_chiude: comeSiChiude(t),
+    giornate: fuori,
+    /* Quante se ne sono giocate e quante partite in tutto: e' la prima cosa che si guarda, e
+       ricavarla contando a mano le righe non e' un lavoro per chi legge. */
+    riassunto: {
+      giornate: fuori.length,
+      chiuse: fuori.filter((g) => g.stato === "conclusa").length,
+      partite: fuori.reduce((n, g) => n + g.partite.filter((p) => p.punti).length, 0)
+    }
+  });
+});
+adminRouter.put("/tornei/:id/iscritti/:iscrittoId", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const iid = id(req.params.iscrittoId);
+  if (!iid) return res.status(400).json({ error: "Giocatore non indicato." });
+  const i = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE id=? AND torneo_id=?").get(iid, tid);
+  if (!i) return res.status(404).json({ error: "Giocatore non trovato in questo torneo." });
+  const nome = String(req.body?.nome || "").trim().slice(0, 60);
+  if (!nome) return res.status(400).json({ error: "Serve il nome nuovo." });
+  const gia = await db.prepare("SELECT id FROM tornei_ko_iscritti WHERE torneo_id=? AND id<>? AND LOWER(nome)=LOWER(?)").get(tid, iid, nome);
+  if (gia) return res.status(409).json({ error: `Nel gruppo c'e\u0300 gia\u0300 un ${nome}.` });
+  await db.prepare("UPDATE tornei_ko_iscritti SET nome=? WHERE id=?").run(nome, iid);
+  for (const [idc, nomec] of [["a_iscritto", "a_nome"], ["a2_iscritto", "a2_nome"], ["b_iscritto", "b_nome"], ["b2_iscritto", "b2_nome"]]) {
+    await db.prepare(`UPDATE tornei_ko_partite SET ${nomec}=? WHERE torneo_id=? AND ${idc}=?`).run(nome, tid, iid);
+  }
+  await db.prepare("UPDATE tornei_ko_partite SET vincitore=? WHERE torneo_id=? AND vincitore=?").run(nome, tid, i.nome);
+  await db.prepare("UPDATE tornei_ko SET vincitore=? WHERE id=? AND vincitore=?").run(nome, tid, i.nome);
+  audit(req.adminUser.username, "rinomina_iscritto", "tornei", tid, `${i.nome} \u2192 ${nome}`);
+  res.json({ ok: true, prima: i.nome, adesso: nome });
 });
 adminRouter.post("/tornei/:id/archivia", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
@@ -32661,7 +32814,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 15:06" : "online";
+var BUILD = true ? "2026-09-14 05:45" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
