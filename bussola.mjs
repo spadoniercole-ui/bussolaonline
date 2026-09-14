@@ -5686,7 +5686,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.87.0';
+const VERSIONE_APP = '6.88.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -20233,7 +20233,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.87.0" : "dev";
+var VERSION = true ? "6.88.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23727,7 +23727,7 @@ async function graduatoriaGiornata(giornataId) {
       }
     }
   }
-  return [...r.values()].sort((a, b) => b.punti - a.punti || b.vinte - a.vinte || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
+  return [...r.values()].sort((a, b) => b.punti - a.punti || (b.fatti || 0) - (b.subiti || 0) - ((a.fatti || 0) - (a.subiti || 0)) || b.vinte - a.vinte || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
 }
 async function classificaGeneraleAmericana(torneoId) {
   const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY id").all(torneoId);
@@ -23772,7 +23772,7 @@ async function classificaGeneraleAmericana(torneoId) {
     x.punti += Number(e.punti);
     if (String(e.nota || "").startsWith("bonus")) x.bonus += Number(e.punti);
   }
-  return [...r.values()].sort((a, b) => b.punti - a.punti || b.giornate_vinte - a.giornate_vinte || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
+  return [...r.values()].sort((a, b) => b.punti - a.punti || (b.fatti || 0) - (b.subiti || 0) - ((a.fatti || 0) - (a.subiti || 0)) || b.giornate_vinte - a.giornate_vinte || String(a.nome).localeCompare(String(b.nome))).map((x, i) => ({ ...x, posizione: i + 1 }));
 }
 
 // server/casate_composizione.js
@@ -32918,7 +32918,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-14 07:20" : "online";
+var BUILD = true ? "2026-09-14 07:46" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
