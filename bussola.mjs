@@ -5683,7 +5683,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.84.0';
+const VERSIONE_APP = '6.85.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16300,7 +16300,37 @@ VIEWS.tornei = async () => {
     const gi = window.__amGiornata && String(window.__amGiornata.id) === String(apertoId) ? window.__amGiornata : null;
     vistaFormato = \`<div style="margin-top:12px">
       <b style="color:var(--navy)">Americana</b>
-      <p class="muted" style="font-size:.82rem">Sette turni, due campi, il compagno cambia ogni volta. Si gioca in coppia ma <b>i punti sono tuoi</b>. Ogni partita finisce a <b>\${somma}</b>: un \${Math.floor(somma / 2)}\u2013\${Math.ceil(somma / 2)} \xE8 un risultato normale.</p>
+      \${/* LA DESCRIZIONE DICE QUESTO TORNEO, non l'americana in generale.
+            Diceva \xABsette turni, due campi\xBB scritto a mano, sempre: chi aveva tre campi leggeva
+            due, e chi giocava a tennis leggeva sette turni quando la sua serata ne ha uno.
+            I CAMPI SI VEDONO QUI, col loro nome, ed e' il posto dove si guardano \u2014 non dentro
+            una finestra di regole che bisogna sapere di dover aprire. Li ho messi nel posto
+            sbagliato tre volte. */
+        (() => {
+        const nomi = (st && st.campi_nomi) || [];
+        const quanti = nomi.length || Number((am.torneo || tab.torneo || {}).campi) || 2;
+        const turni = (am.torneo || tab.torneo || {}).chiusura === 'set' ? 1 : 7;
+        return \`<p class="muted" style="font-size:.82rem">\${turni === 1
+          ? \`Una serata, un turno: \${quanti} \${quanti === 1 ? 'incontro' : 'incontri'} in contemporanea. Le coppie si rifanno la volta dopo.\`
+          : \`Sette turni, \${quanti} \${quanti === 1 ? 'campo' : 'campi'}, il compagno cambia ogni volta.\`} Si gioca in coppia ma <b>i punti sono tuoi</b>. \${
+          (am.torneo || tab.torneo || {}).chiusura === 'set'
+            ? \`Ogni partita e' al meglio dei <b>\${(am.torneo || tab.torneo || {}).chiusura_valore || 3}</b> set: due set uno a testa, col terzo non giocato, sono un pareggio.\`
+            : \`Ogni partita finisce a <b>\${somma}</b>: un \${Math.floor(somma / 2)}\u2013\${Math.ceil(somma / 2)} \xE8 un risultato normale.\`}</p>
+        <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap;margin:4px 0 2px">
+          <span class="muted" style="font-size:.72rem;letter-spacing:.06em;text-transform:uppercase">Campi</span>
+          \${nomi.map(x => \`<span class="tag">\${esc(x)}</span>\`).join('') || \`<span class="tag">\${quanti} senza nome</span>\`}
+          <span class="muted" style="font-size:.78rem">\xB7 \${quanti * 4} giocatori a giornata</span>
+          \${puoGestireTornei() ? \`<button class="btn ghost sm" id="am_campi">\${window.__amCampi === String(apertoId) ? 'Lascia stare' : 'Cambia'}</button>\` : ''}
+        </div>
+        \${window.__amCampi === String(apertoId) ? \`<div class="box chiama" style="padding:9px 11px;margin-bottom:8px">
+          <div class="muted" style="font-size:.82rem;margin-bottom:7px">Quanti campi e come si chiamano. Vale dalla prossima giornata: quelle gi\xE0 giocate non si toccano.</div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:end">
+            <label class="muted" style="font-size:.8rem">Quanti<br><input id="ac_n" inputmode="numeric" value="\${quanti}" style="width:56px;text-align:center"></label>
+            <label class="muted" style="font-size:.8rem">Come si chiamano<br><input id="ac_nomi" value="\${esc(((am.torneo || tab.torneo || {}).campi_nomi) || '')}" placeholder="Terra 1, Terra 2" style="min-width:180px"></label>
+            <button class="btn gold sm" id="ac_salva">Salva</button>
+          </div>
+        </div>\` : ''}\`;
+      })()}
       \${st && puoGestireTornei() ? \`<div class="box" style="margin-top:10px;padding:9px 11px">
         <b style="font-size:.92rem">Il gruppo</b>
         <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${st.iscritti.length
@@ -16469,6 +16499,13 @@ VIEWS.tornei = async () => {
       </div>\` : ''}
       \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>Chi gioca stasera?</b>
+        \${/* I CAMPI SI RICORDANO ANCHE QUI, che e' il momento in cui contano: quanti ne scegli
+             dipende da quanti campi hai, e su quali si gioca e' la prima cosa che la gente
+             chiede. */
+          (st && st.campi_nomi && st.campi_nomi.length) ? \`<div class="row" style="gap:5px;align-items:center;flex-wrap:wrap;margin-top:4px">
+            \${st.campi_nomi.map(x => \`<span class="tag">\${esc(x)}</span>\`).join('')}
+            <span class="muted" style="font-size:.78rem">\xB7 \${st.campi_nomi.length * 4} giocatori</span>
+          </div>\` : ''}
         \${/* LA PRIMA DOMANDA E' CHI FA GLI ACCOPPIAMENTI. Il sorteggio va bene quasi sempre, ma
               chi organizza a volte le coppie ce le ha gia' in testa \u2014 e allora non deve
               disfarle a mano dopo che il computer le ha fatte a caso. */
@@ -16822,6 +16859,25 @@ VIEWS.tornei = async () => {
   };
   /* CORREGGERE LE REGOLE finche' il torneo e' intatto: chi sbaglia la disciplina non deve
      buttare il torneo e ricaricare tutto il gruppo da capo. */
+  /* \xABCambia\xBB accanto ai campi apre la stessa finestra delle regole: un secondo modo di fare la
+     stessa cosa sarebbe un altro posto dove sbagliare. */
+  /* I CAMPI SI CAMBIANO DOVE SI GUARDANO. Rimandare alla finestra delle regole, che si apre in
+     cima alla pagina, vuol dire far premere un tasto e vedere comparire qualcosa altrove. */
+  if ($('#am_campi')) $('#am_campi').onclick = () => {
+    window.__amCampi = window.__amCampi === String(apertoId) ? null : String(apertoId);
+    show('tornei');
+  };
+  if ($('#ac_salva')) $('#ac_salva').onclick = async () => {
+    const corpo = {};
+    if ($('#ac_n').value) corpo.campi = Number($('#ac_n').value);
+    corpo.campi_nomi = $('#ac_nomi').value;
+    try {
+      await api('/tornei/' + apertoId, { method: 'PUT', body: JSON.stringify(corpo) });
+      window.__amCampi = null;
+      show('tornei');
+    } catch (e) { alert(e.message); }
+  };
+
   if ($('#ts_reg')) $('#ts_reg').onclick = () => { window.__tsReg = String(apertoId); show('tornei'); };
   if ($('#tr_no')) $('#tr_no').onclick = () => { window.__tsReg = null; show('tornei'); };
   if ($('#tr_salva')) $('#tr_salva').onclick = async () => {
@@ -20186,7 +20242,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.84.0" : "dev";
+var VERSION = true ? "6.85.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -32814,7 +32870,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-14 05:45" : "online";
+var BUILD = true ? "2026-09-14 05:57" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
