@@ -4964,7 +4964,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
 
   <!-- La strada del ritorno per chi e' arrivato dal banco: si mostra da sola solo a chi ci e'
        passato davvero, e sparisce quando esce. Un socio normale non la vede mai. -->
-  <a href="/chiosco/" id="ritornoBanco" style="display:none;position:fixed;left:12px;bottom:74px;z-index:40;background:#12324F;color:#fff;border-radius:26px;padding:9px 14px;font-size:.84rem;text-decoration:none;box-shadow:0 8px 22px rgba(18,50,79,.24)">&#8592; Torna al Chiosco</a>
+  <a href="/chiosco/" id="ritornoBanco" style="display:none;position:fixed;left:12px;bottom:74px;z-index:40;background:#12324F;color:#fff;border-radius:26px;padding:9px 14px;font-size:.84rem;text-decoration:none;box-shadow:0 8px 22px rgba(18,50,79,.24)">&#8592; Torna allo Staff</a>
 
   <nav aria-label="Navigazione principale">
     <button class="tab on" data-t="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 10.5L12 4l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
@@ -5027,7 +5027,7 @@ nav{position:absolute; bottom:0; left:0; right:0; height:72px; background:rgba(2
       <input id="staff_p" type="password" autocomplete="off">
       <div class="eyebrow" style="margin-top:12px">Dove vai</div>
       <div class="row" style="gap:8px;margin-top:6px">
-        <button class="btn ghost" id="staff_crew" style="flex:1" aria-pressed="true">Chiosco</button>
+        <button class="btn ghost" id="staff_crew" style="flex:1" aria-pressed="true">Staff</button>
         <button class="btn ghost" id="staff_admin" style="flex:1" aria-pressed="false">Back office</button>
       </div>
       <button class="btn gold block" id="staff_enter" style="margin-top:12px">Entra</button>
@@ -5686,7 +5686,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.88.0';
+const VERSIONE_APP = '6.89.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -8731,7 +8731,10 @@ async function entraStaff() {
         }
         dove = dove === 'admin' ? 'crew' : 'admin';
         if (err) err.textContent = dove === 'crew'
-          ? 'Non hai permessi da back office: ti apro Bussola Crew.'
+          /* Il nome dell'area e' quello scritto sul tasto: chi ha scelto \xABStaff\xBB deve sentirsi
+             rispondere \xABStaff\xBB, non un altro nome per la stessa cosa \u2014 altrimenti resta il
+             dubbio di essere finito da un'altra parte. */
+          ? 'Non hai permessi da back office: ti apro l\\'area Staff.'
           : 'Non hai permessi operativi: ti apro il back office.';
         await new Promise((ok) => setTimeout(ok, 1400));   // il tempo di leggere
       }
@@ -20233,7 +20236,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.88.0" : "dev";
+var VERSION = true ? "6.89.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -20242,7 +20245,12 @@ var png180 = Buffer.from(ICON_180, "base64");
 var APPS = {
   socio: { scope: "/", name: "Bussola Residence", short: "Bussola", theme: "#12324F", bg: "#0d2137" },
   admin: { scope: "/admin/", name: "Bussola Back Office", short: "Bussola BO", theme: "#12324F", bg: "#0d2137" },
-  chiosco: { scope: "/chiosco/", name: "Bussola Chiosco", short: "Chiosco", theme: "#12324F", bg: "#0d2137" }
+  /* L'AREA SI CHIAMA STAFF, anche sulla schermata iniziale del telefono: chi la aggiunge deve
+     ritrovare lo stesso nome che ha letto sul tasto per entrarci. «Chiosco» e' il bar — un
+     modulo dentro l'area — e usarlo per l'area intera confondeva due cose diverse.
+     L'INDIRIZZO RESTA `/chiosco/`: cambiarlo romperebbe i collegamenti salvati sui telefoni di
+     chi ci lavora, e il nome di una porta non e' la porta. */
+  chiosco: { scope: "/chiosco/", name: "Bussola Staff", short: "Staff", theme: "#12324F", bg: "#0d2137" }
 };
 function manifest(app2) {
   return JSON.stringify({
@@ -32918,7 +32926,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-14 07:46" : "online";
+var BUILD = true ? "2026-09-14 08:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
