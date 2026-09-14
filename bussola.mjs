@@ -5682,7 +5682,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.82.0';
+const VERSIONE_APP = '6.83.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16624,14 +16624,16 @@ VIEWS.tornei = async () => {
             ? \`<button class="btn ghost sm" id="ts_riapri">Riprendi il torneo</button>
                <span class="muted" style="font-size:.8rem">\${q.stato === 'decaduto' ? 'Sospeso da pi\xF9 dei giorni concordati: si pu\xF2 riprendere o cancellare.' : 'Sospeso' + (q.sospeso_motivo ? ' \xB7 ' + esc(q.sospeso_motivo) : '') + '.'}</span>\`
             : '<button class="btn ghost sm" id="ts_sosp">Sospendi</button>'}
-          \${!q.partite_giocate ? '<button class="btn ghost sm" id="ts_reg">Correggi le regole\u2026</button>' : ''}
+          <button class="btn ghost sm" id="ts_reg">\${q.partite_giocate ? 'Campi\u2026' : 'Correggi le regole\u2026'}</button>
           \${q.cancellabile && puoCancellare() ? '<button class="btn ghost sm" id="ts_del" style="color:var(--coral)">Cancella</button>' : ''}
         </div>
         \${window.__tsReg === String(apertoId) ? \`<div class="box" style="margin-top:8px;padding:9px 11px">
           <b>Le regole di questo torneo</b>
-          <div class="muted" style="font-size:.8rem;margin:3px 0 7px">Si possono cambiare finch\xE9 non \xE8 stata giocata nessuna partita. Dal primo risultato in poi no: da l\xEC hanno gi\xE0 prodotto dei punti.</div>
+          <div class="muted" style="font-size:.8rem;margin:3px 0 7px">\${q.partite_giocate
+            ? 'Si \xE8 gi\xE0 giocato: le regole di gara restano quelle. Il numero di campi invece si cambia sempre \u2014 dice quanti giocano dalla prossima giornata in poi.'
+            : 'Si possono cambiare finch\xE9 non \xE8 stata giocata nessuna partita. Dal primo risultato in poi no: da l\xEC hanno gi\xE0 prodotto dei punti.'}</div>
           <div class="row" style="gap:8px;flex-wrap:wrap;align-items:end">
-            <label class="muted" style="font-size:.8rem">Disciplina<br><input id="tr_dis" value="\${esc(q.disciplina || '')}" placeholder="tennis, padel\u2026" style="width:130px"></label>
+            \${q.partite_giocate ? '' : \`<label class="muted" style="font-size:.8rem">Disciplina<br><input id="tr_dis" value="\${esc(q.disciplina || '')}" placeholder="tennis, padel\u2026" style="width:130px"></label>\`}
             <label class="muted" style="font-size:.8rem">Come finisce<br><select id="tr_chi" style="width:150px">
               <option value="">\u2014 dalla disciplina \u2014</option>
               <option value="punti"\${q.chiusura === 'punti' ? ' selected' : ''}>a punti (padel)</option>
@@ -16641,6 +16643,7 @@ VIEWS.tornei = async () => {
             </select></label>
             <label class="muted" style="font-size:.8rem">Quanti<br><input id="tr_val" inputmode="numeric" value="\${esc(String(q.chiusura_valore || ''))}" style="width:60px;text-align:center"></label>
             <label class="muted" style="font-size:.8rem">Campi<br><input id="tr_cam" inputmode="numeric" value="\${esc(String(q.campi || ''))}" style="width:56px;text-align:center"></label>
+            <span class="muted" style="font-size:.78rem">quattro per campo: \${(Number(q.campi) || 2) * 4} giocatori a giornata</span>
             <button class="btn gold sm" id="tr_salva">Salva</button>
             <button class="btn ghost sm" id="tr_no">Lascia stare</button>
           </div>
@@ -16776,7 +16779,8 @@ VIEWS.tornei = async () => {
   if ($('#ts_reg')) $('#ts_reg').onclick = () => { window.__tsReg = String(apertoId); show('tornei'); };
   if ($('#tr_no')) $('#tr_no').onclick = () => { window.__tsReg = null; show('tornei'); };
   if ($('#tr_salva')) $('#tr_salva').onclick = async () => {
-    const corpo = { disciplina: $('#tr_dis').value };
+    const corpo = {};
+    if ($('#tr_dis')) corpo.disciplina = $('#tr_dis').value;
     if ($('#tr_chi').value) corpo.chiusura = $('#tr_chi').value;
     if ($('#tr_val').value) corpo.chiusura_valore = Number($('#tr_val').value);
     if ($('#tr_cam').value) corpo.campi = Number($('#tr_cam').value);
@@ -19010,8 +19014,11 @@ async function scansionaTessera(quando) {
    E' lo stesso meccanismo dei QR dei tavoli: se ne esiste gia' uno che funziona, un secondo
    modo di fare la stessa cosa e' solo un altro posto dove sbagliare. */
 function stampaClassifica(torneo, classifica, giornate) {
-  const w = window.open('', '_blank');
-  if (!w) { alert('Il browser ha bloccato la finestra di stampa.'); return; }
+  /* SI STAMPA DA UN RIQUADRO NASCOSTO, non da una finestra nuova.
+     \`window.open\` sul telefono viene bloccato quasi sempre \u2014 e quando non viene bloccato apre
+     una scheda che l'utente si ritrova aperta dopo. Un \`<iframe>\` dentro la pagina stampa lo
+     stesso e non chiede niente a nessuno: funziona su Android, su iPhone e sul portatile del
+     banco allo stesso modo. */
   const conGame = classifica.some(r => r.fatti);
   const gioca = classifica.filter(r => r.presenze);
   const fermi = classifica.filter(r => !r.presenze);
@@ -19022,7 +19029,7 @@ function stampaClassifica(torneo, classifica, giornate) {
     \${conGame ? \`<td class="n">\${r.fatti || 0}\u2013\${r.subiti || 0}</td><td class="n \${(r.fatti - r.subiti) > 0 ? 'su' : (r.fatti - r.subiti) < 0 ? 'giu' : ''}">\${(r.fatti - r.subiti) > 0 ? '+' : ''}\${(r.fatti || 0) - (r.subiti || 0)}</td>\` : ''}
     <td class="punti">\${r.punti}</td>
   </tr>\`;
-  w.document.write(\`<html><head><title>\${esc(torneo.nome)} \xB7 classifica</title><style>
+  const doc = \`<html><head><title>\${esc(torneo.nome)} \xB7 classifica</title><style>
     @page{size:A4;margin:18mm}
     body{font-family:Arial,Helvetica,sans-serif;color:#12324F;margin:0}
     .k{letter-spacing:3px;font-size:.62rem;color:#8a5a12;text-transform:uppercase;font-weight:700}
@@ -19049,8 +19056,23 @@ function stampaClassifica(torneo, classifica, giornate) {
     </tr></thead><tbody>\${gioca.map(riga).join('')}</tbody></table>
     \${fermi.length ? \`<p class="fuori">Nel gruppo ma non ancora in campo: \${fermi.map(r => esc(r.nome)).join(', ')}.</p>\` : ''}
     <p class="pie">Stampata il \${new Date().toLocaleDateString('it-IT')} alle \${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}</p>
-  <script>window.onload=function(){setTimeout(function(){window.print()},250)}<\\/script></body></html>\`);
-  w.document.close();
+  </body></html>\`;
+  const vecchio = document.getElementById('foglioStampa');
+  if (vecchio) vecchio.remove();
+  const f = document.createElement('iframe');
+  f.id = 'foglioStampa';
+  f.style.cssText = 'position:absolute;width:0;height:0;border:0;left:-9999px';
+  document.body.appendChild(f);
+  f.contentDocument.open();
+  f.contentDocument.write(doc);
+  f.contentDocument.close();
+  /* Si aspetta che il documento sia pronto prima di stampare: senza l'attesa il telefono
+     stampa un foglio bianco, perche' la finestra di stampa si apre mentre il contenuto sta
+     ancora arrivando. */
+  setTimeout(() => {
+    try { f.contentWindow.focus(); f.contentWindow.print(); }
+    catch (e) { alert('Non riesco ad aprire la stampa: ' + (e.message || '')); }
+  }, 350);
 }
 
 function puoGestireTornei() {
@@ -20079,7 +20101,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.82.0" : "dev";
+var VERSION = true ? "6.83.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23452,10 +23474,6 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti) {
     serve_scelta: true,
     servono,
     error: `Servono esattamente ${servono} giocatori per questa giornata: ne hai scelti ${scelti.length}.`
-  };
-  if (servono !== 8) return {
-    ok: false,
-    error: `Per ora il calendario dell'americana c'e\u0300 solo per otto giocatori su due campi.`
   };
   const dentro = await db.prepare(`SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND id IN (${scelti.map(() => "?").join(",")})`).all(torneoId, ...scelti);
   if (dentro.length !== scelti.length) return { ok: false, error: "Qualcuno dei giocatori scelti non e\u0300 iscritto a questo torneo." };
@@ -28098,7 +28116,9 @@ adminRouter.get("/tornei/:id", requireCapTorneo, async (req, res) => {
 adminRouter.post("/tornei/:id/iscritti", requireCapTorneo, async (req, res) => {
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(req.params.id);
   if (!t) return res.status(404).json({ error: "Torneo non trovato" });
-  if (t.stato !== "iscrizioni") return res.status(409).json({ error: "Le iscrizioni sono chiuse: il tabellone e' gia' stato sorteggiato." });
+  if (t.formato === "ko" && t.stato !== "iscrizioni") {
+    return res.status(409).json({ error: "Le iscrizioni sono chiuse: il tabellone e' gia' stato sorteggiato." });
+  }
   const quanti = (await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=?").get(t.id)).n;
   if (t.formato === "ko" && Number(t.posti) > 0 && Number(quanti) >= Number(t.posti)) return res.status(409).json({ error: `Le iscrizioni sono chiuse: la capienza e\u0300 di ${t.posti}.` });
   let attesa = null;
@@ -28576,13 +28596,14 @@ adminRouter.put("/tornei/:id", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
   const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  const b = req.body || {};
   const giocate = await db.prepare("SELECT COUNT(*) n FROM tornei_ko_partite WHERE torneo_id=? AND (vincitore IS NOT NULL OR punti_a IS NOT NULL)").get(tid);
-  if (Number(giocate.n) > 0) return res.status(409).json({
+  const soloCampi = Object.keys(b).filter((k) => b[k] !== void 0 && b[k] !== null && b[k] !== "").every((k) => k === "campi" || k === "nome");
+  if (Number(giocate.n) > 0 && !soloCampi) return res.status(409).json({
     stato: true,
     gia_giocato: true,
-    error: `Questo torneo ha gia\u0300 ${giocate.n} ${Number(giocate.n) === 1 ? "partita giocata" : "partite giocate"}: le regole non si cambiano piu\u0300, perche\u0300 hanno gia\u0300 prodotto dei punti.`
+    error: `Questo torneo ha gia\u0300 ${giocate.n} ${Number(giocate.n) === 1 ? "partita giocata" : "partite giocate"}: le regole di gara non si cambiano piu\u0300, perche\u0300 hanno gia\u0300 prodotto dei punti. Il numero di campi si puo\u0300 cambiare: vale dalla prossima giornata.`
   });
-  const b = req.body || {};
   const campi = {};
   if (b.nome != null && String(b.nome).trim()) campi.nome = String(b.nome).trim().slice(0, 80);
   if (b.disciplina != null) campi.disciplina = String(b.disciplina).trim().slice(0, 40);
@@ -32640,7 +32661,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-12 14:30" : "online";
+var BUILD = true ? "2026-09-12 15:06" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
