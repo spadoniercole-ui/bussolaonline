@@ -2948,7 +2948,8 @@ async function destroySession(token) {
 async function requireAdmin(req, res, next) {
   try {
     const auth = req.headers.authorization || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    const daIndirizzo = /\.html$/.test(String(req.path || "")) && req.method === "GET" ? String(req.query.t || "") : "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : daIndirizzo || null;
     const user = await getSession(token);
     if (!user) return res.status(401).json({ error: "Autenticazione richiesta" });
     req.adminUser = user;
@@ -5685,7 +5686,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.86.0';
+const VERSIONE_APP = '6.87.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -17249,7 +17250,16 @@ VIEWS.tornei = async () => {
     } catch (e) { alert(e.message); }
   };
 
-  if ($('#cl_stampa')) $('#cl_stampa').onclick = () => stampaClassifica(st.torneo || tab.torneo, st.classifica, st.giornate || []);
+  /* LA STAMPA APRE UNA PAGINA VERA, generata dal server. Tre tentativi dal browser \u2014 finestra
+     nuova, iframe nascosto, CSS di stampa sulla pagina \u2014 e nessuno ha stampato sul telefono.
+     Un link normale non si puo' bloccare: si apre, e si stampa col menu del browser, che sa gia'
+     salvare in PDF. */
+  if ($('#cl_stampa')) $('#cl_stampa').onclick = () => {
+    const url = API_BASE + '/api/admin/tornei/' + apertoId + '/classifica.html?t=' + encodeURIComponent(TOKEN);
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
 
   if ($('#am_chiudig')) $('#am_chiudig').onclick = async () => {
     const gid = window.__amGiornataAperta;
@@ -19189,81 +19199,13 @@ async function scansionaTessera(quando) {
    muro, che al residence e' quello che succede davvero.
    E' lo stesso meccanismo dei QR dei tavoli: se ne esiste gia' uno che funziona, un secondo
    modo di fare la stessa cosa e' solo un altro posto dove sbagliare. */
-function stampaClassifica(torneo, classifica, giornate) {
-  /* SI STAMPA DA UN RIQUADRO NASCOSTO, non da una finestra nuova.
-     \`window.open\` sul telefono viene bloccato quasi sempre \u2014 e quando non viene bloccato apre
-     una scheda che l'utente si ritrova aperta dopo. Un \`<iframe>\` dentro la pagina stampa lo
-     stesso e non chiede niente a nessuno: funziona su Android, su iPhone e sul portatile del
-     banco allo stesso modo. */
-  const conGame = classifica.some(r => r.fatti);
-  const gioca = classifica.filter(r => r.presenze);
-  const fermi = classifica.filter(r => !r.presenze);
-  const riga = (r, k) => \`<tr\${k < 3 ? ' class="podio"' : ''}>
-    <td class="pos">\${r.posizione}</td>
-    <td><b>\${esc(r.nome)}</b><br><span class="sotto">\${r.presenze} \${r.presenze === 1 ? 'giornata' : 'giornate'}\${r.giornate_vinte ? \` \xB7 \${r.giornate_vinte} vinta\${r.giornate_vinte > 1 ? 'e' : ''}\` : ''}</span></td>
-    <td class="n">\${r.giocate || 0}</td>
-    \${conGame ? \`<td class="n">\${r.fatti || 0}\u2013\${r.subiti || 0}</td><td class="n \${(r.fatti - r.subiti) > 0 ? 'su' : (r.fatti - r.subiti) < 0 ? 'giu' : ''}">\${(r.fatti - r.subiti) > 0 ? '+' : ''}\${(r.fatti || 0) - (r.subiti || 0)}</td>\` : ''}
-    <td class="punti">\${r.punti}</td>
-  </tr>\`;
-  const doc = \`<html><head><title>\${esc(torneo.nome)} \xB7 classifica</title><style>
-    @page{size:A4;margin:18mm}
-    body{font-family:Arial,Helvetica,sans-serif;color:#12324F;margin:0}
-    .k{letter-spacing:3px;font-size:.62rem;color:#8a5a12;text-transform:uppercase;font-weight:700}
-    h1{font-family:Georgia,'Times New Roman',serif;font-size:1.7rem;margin:4px 0 2px}
-    .sub{color:#5a6b75;font-size:.82rem;margin:0 0 16px}
-    table{width:100%;border-collapse:collapse;font-size:.86rem}
-    th{text-align:right;font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:#5a6b75;border-bottom:1.5px solid #12324F;padding:5px 6px}
-    th.l{text-align:left}
-    td{padding:6px;border-bottom:1px solid #e6e2d6;vertical-align:top}
-    td.pos{width:26px;text-align:right;color:#5a6b75;font-weight:700}
-    tr.podio td.pos{color:#8a5a12}
-    td.n{text-align:right;color:#5a6b75;font-variant-numeric:tabular-nums;white-space:nowrap}
-    td.n.su{color:#2f5a2d} td.n.giu{color:#9E2B20}
-    td.punti{text-align:right;font-weight:700;font-size:1.05rem;width:42px}
-    .sotto{color:#5a6b75;font-size:.68rem}
-    .fuori{margin-top:14px;color:#5a6b75;font-size:.76rem}
-    .pie{margin-top:22px;padding-top:8px;border-top:1px solid #e6e2d6;color:#9a8a5f;font-size:.66rem}
-  </style></head><body>
-    <div class="k">Bussola Residence \xB7 classifica generale</div>
-    <h1>\${esc(torneo.nome)}</h1>
-    <p class="sub">\${giornate.filter(g => g.stato === 'conclusa').length} \${giornate.filter(g => g.stato === 'conclusa').length === 1 ? 'giornata giocata' : 'giornate giocate'} \xB7 \${gioca.length} giocatori in campo\${torneo.disciplina ? \` \xB7 \${esc(torneo.disciplina)}\` : ''}</p>
-    <table><thead><tr>
-      <th></th><th class="l">Giocatore</th><th>P</th>\${conGame ? '<th>Game</th><th>Diff</th>' : ''}<th>Punti</th>
-    </tr></thead><tbody>\${gioca.map(riga).join('')}</tbody></table>
-    \${fermi.length ? \`<p class="fuori">Nel gruppo ma non ancora in campo: \${fermi.map(r => esc(r.nome)).join(', ')}.</p>\` : ''}
-    <p class="pie">Stampata il \${new Date().toLocaleDateString('it-IT')} alle \${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}</p>
-  </body></html>\`;
-  /* PERCHE' NON BASTA UN IFRAME NASCOSTO.
-     Ci ho provato due volte: prima \`window.open\`, che sul telefono viene bloccato, poi un
-     \`<iframe>\` fuori schermo \u2014 e neanche quello stampava. Su Android la stampa di un iframe
-     largo zero produce una pagina vuota, e su iOS \`print()\` da dentro un frame spesso non parte
-     affatto.
-     La strada che funziona ovunque e' la piu' semplice: si scrive il foglio DENTRO la pagina,
-     si dice al CSS di stampare solo quello, si stampa, e poi si rimette tutto a posto. Niente
-     finestre, niente frame, niente permessi da chiedere \u2014 e il browser fa da se' il PDF. */
-  const vecchio = document.getElementById('foglioStampa');
-  if (vecchio) vecchio.remove();
-  const box = document.createElement('div');
-  box.id = 'foglioStampa';
-  box.innerHTML = doc.replace(/^[\\s\\S]*<body>/, '').replace(/<\\/body>[\\s\\S]*$/, '');
-  const stile = document.createElement('style');
-  stile.id = 'stileStampa';
-  stile.textContent = \`
-    #foglioStampa{display:none}
-    @media print{
-      body > *:not(#foglioStampa){display:none !important}
-      #foglioStampa{display:block !important;font-family:Arial,Helvetica,sans-serif;color:#12324F}
-      \${doc.replace(/^[\\s\\S]*<style>/, '').replace(/<\\/style>[\\s\\S]*$/, '').replace(/@page[^}]*}/, '').replace(/(^|})\\s*([a-z.#][^{}]*)\\{/g, '$1 #foglioStampa $2{')}
-      @page{size:A4;margin:18mm}
-    }\`;
-  document.head.appendChild(stile);
-  document.body.appendChild(box);
-  const pulisci = () => { box.remove(); stile.remove(); window.removeEventListener('afterprint', pulisci); };
-  window.addEventListener('afterprint', pulisci);
-  setTimeout(() => { try { window.print(); } catch (e) { alert('Non riesco ad aprire la stampa: ' + (e.message || '')); pulisci(); } }, 60);
-  // Se \`afterprint\` non arriva (succede su qualche telefono), si pulisce lo stesso dopo un po'.
-  setTimeout(pulisci, 60000);
-}
+/* QUI C'ERA \`stampaClassifica\`, e non c'e' piu'.
+   Tre tentativi di stampare dal browser \u2014 finestra nuova, iframe nascosto, CSS di stampa sulla
+   pagina \u2014 e nessuno ha funzionato sul telefono. La classifica adesso e' una PAGINA servita dal
+   server, che si apre con un link normale e si stampa col menu del browser.
+   La vecchia funzione e' stata tolta invece di lasciarla li' inutilizzata: codice che nessuno
+   chiama e' codice che qualcuno prima o poi richiama per sbaglio. */
+
 
 function puoGestireTornei() {
   return !!(ME && (ME.gestore || ME.ruolo === 'manager' || (ME.caps || []).some(c => ['tornei', 'campi', 'tennis'].includes(c))));
@@ -20291,7 +20233,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.86.0" : "dev";
+var VERSION = true ? "6.87.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -28835,6 +28777,58 @@ adminRouter.put("/tornei/:id", requireCapTorneo, async (req, res) => {
   audit(req.adminUser.username, "modifica_torneo", "tornei", tid, Object.keys(campi).join(", "));
   res.json({ ok: true, cambiati: Object.keys(campi), come_si_chiude: comeSiChiude(dopo), turni_serata: turniPerSerata(dopo) });
 });
+adminRouter.get("/tornei/:id/classifica.html", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  const cl = await classificaGeneraleAmericana(tid);
+  const giornate = await db.prepare("SELECT * FROM tornei_giornate WHERE torneo_id=? ORDER BY numero").all(tid);
+  const e = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const gioca = cl.filter((r) => r.presenze), fermi = cl.filter((r) => !r.presenze);
+  const conGame = gioca.some((r) => r.fatti);
+  const riga = (r, k) => `<tr${k < 3 ? ' class="podio"' : ""}>
+    <td class="pos">${r.posizione}</td>
+    <td><b>${e(r.nome)}</b><br><span class="sotto">${r.presenze} ${r.presenze === 1 ? "giornata" : "giornate"}${r.giornate_vinte ? ` \xB7 ${r.giornate_vinte} vinta${r.giornate_vinte > 1 ? "e" : ""}` : ""}</span></td>
+    <td class="n">${r.giocate || 0}</td>
+    ${conGame ? `<td class="n">${r.fatti || 0}\u2013${r.subiti || 0}</td><td class="n ${r.fatti - r.subiti > 0 ? "su" : r.fatti - r.subiti < 0 ? "giu" : ""}">${r.fatti - r.subiti > 0 ? "+" : ""}${(r.fatti || 0) - (r.subiti || 0)}</td>` : ""}
+    <td class="punti">${r.punti}</td>
+  </tr>`;
+  res.type("html").send(`<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${e(t.nome)} \xB7 classifica</title><style>
+  @page{size:A4;margin:16mm}
+  body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#12324F;margin:0;padding:18px;background:#F7F4EC}
+  .foglio{max-width:760px;margin:0 auto;background:#fff;padding:22px;border-radius:10px}
+  .k{letter-spacing:3px;font-size:.62rem;color:#8a5a12;text-transform:uppercase;font-weight:700}
+  h1{font-family:Georgia,'Times New Roman',serif;font-size:1.7rem;margin:4px 0 2px}
+  .sub{color:#5a6b75;font-size:.84rem;margin:0 0 16px}
+  table{width:100%;border-collapse:collapse;font-size:.88rem}
+  th{text-align:right;font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:#5a6b75;border-bottom:1.5px solid #12324F;padding:5px 6px}
+  th.l{text-align:left}
+  td{padding:7px 6px;border-bottom:1px solid #e6e2d6;vertical-align:top}
+  td.pos{width:26px;text-align:right;color:#5a6b75;font-weight:700}
+  tr.podio td.pos{color:#8a5a12}
+  td.n{text-align:right;color:#5a6b75;font-variant-numeric:tabular-nums;white-space:nowrap}
+  td.n.su{color:#2f5a2d} td.n.giu{color:#9E2B20}
+  td.punti{text-align:right;font-weight:700;font-size:1.1rem;width:44px}
+  .sotto{color:#5a6b75;font-size:.7rem}
+  .fuori{margin-top:14px;color:#5a6b75;font-size:.78rem}
+  .pie{margin-top:22px;padding-top:8px;border-top:1px solid #e6e2d6;color:#9a8a5f;font-size:.68rem}
+  .barra{max-width:760px;margin:0 auto 12px;display:flex;gap:8px;justify-content:flex-end}
+  .barra button{background:#12324F;color:#fff;border:0;border-radius:22px;padding:10px 18px;font-size:.9rem;cursor:pointer}
+  @media print{body{background:#fff;padding:0}.foglio{max-width:none;padding:0;border-radius:0}.barra{display:none}}
+</style></head><body>
+<div class="barra"><button onclick="window.print()">Stampa o salva in PDF</button></div>
+<div class="foglio">
+  <div class="k">Bussola Residence \xB7 classifica generale</div>
+  <h1>${e(t.nome)}</h1>
+  <p class="sub">${giornate.filter((g) => g.stato === "conclusa").length} ${giornate.filter((g) => g.stato === "conclusa").length === 1 ? "giornata giocata" : "giornate giocate"} \xB7 ${gioca.length} giocatori in campo${t.disciplina ? ` \xB7 ${e(t.disciplina)}` : ""}</p>
+  <table><thead><tr><th></th><th class="l">Giocatore</th><th>P</th>${conGame ? "<th>Game</th><th>Diff</th>" : ""}<th>Punti</th></tr></thead>
+  <tbody>${gioca.map(riga).join("")}</tbody></table>
+  ${fermi.length ? `<p class="fuori">Nel gruppo ma non ancora in campo: ${fermi.map((r) => e(r.nome)).join(", ")}.</p>` : ""}
+  <p class="pie">${(/* @__PURE__ */ new Date()).toLocaleDateString("it-IT")} \xB7 ${(/* @__PURE__ */ new Date()).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</p>
+</div></body></html>`);
+});
 adminRouter.get("/tornei/:id/calendario", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
@@ -32924,7 +32918,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-14 06:56" : "online";
+var BUILD = true ? "2026-09-14 07:20" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
