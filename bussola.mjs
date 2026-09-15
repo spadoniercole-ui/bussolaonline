@@ -5686,7 +5686,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.89.0';
+const VERSIONE_APP = '6.90.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16374,6 +16374,11 @@ VIEWS.tornei = async () => {
           <span class="muted" style="font-size:.8rem">\${r.giocate || 0}\${r.fatti ? \` \xB7 \${r.fatti}-\${r.subiti} \xB7 \${r.fatti - r.subiti > 0 ? '+' : ''}\${r.fatti - r.subiti}\` : ''} \xB7 <b style="font-size:1rem;color:var(--ink)">\${r.punti}</b>\${r.bonus ? \` <span class="tag ok">+\${r.bonus}</span>\` : ''}</span>
         </div>\`).join('')}
       </div>\` : ''}
+      \${/* IL FOGLIO DEI CAMPI sta dove finisce la preparazione: appena i turni ci sono, si puo'
+            stampare e appendere \u2014 o salvare in PDF e mandare nel gruppo. */
+        am.turni.length ? \`<div class="row" style="justify-content:flex-end;margin-bottom:6px">
+          <button class="btn ghost sm" id="gio_foglio">Il foglio dei campi</button>
+        </div>\` : ''}
       \${am.turni.map(x => \`<div style="margin-bottom:8px">
         <div class="muted" style="font-size:.8rem;margin-bottom:3px">Turno \${x.turno}</div>
         \${x.partite.map(p => partitaAm(p, false)).join('')}
@@ -17257,6 +17262,16 @@ VIEWS.tornei = async () => {
      nuova, iframe nascosto, CSS di stampa sulla pagina \u2014 e nessuno ha stampato sul telefono.
      Un link normale non si puo' bloccare: si apre, e si stampa col menu del browser, che sa gia'
      salvare in PDF. */
+  /* IL FOGLIO DEI CAMPI: si apre come la classifica, con un link normale. */
+  if ($('#gio_foglio')) $('#gio_foglio').onclick = () => {
+    const gid = window.__amGiornataAperta;
+    if (!gid) { alert('Non c\\'\xE8 nessuna giornata aperta.'); return; }
+    const url = API_BASE + '/api/admin/tornei/' + apertoId + '/giornate/' + gid + '/foglio.html?t=' + encodeURIComponent(TOKEN);
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
   if ($('#cl_stampa')) $('#cl_stampa').onclick = () => {
     const url = API_BASE + '/api/admin/tornei/' + apertoId + '/classifica.html?t=' + encodeURIComponent(TOKEN);
     const a = document.createElement('a');
@@ -20236,7 +20251,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.89.0" : "dev";
+var VERSION = true ? "6.90.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -28837,6 +28852,62 @@ adminRouter.get("/tornei/:id/classifica.html", requireCapTorneo, async (req, res
   <p class="pie">${(/* @__PURE__ */ new Date()).toLocaleDateString("it-IT")} \xB7 ${(/* @__PURE__ */ new Date()).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</p>
 </div></body></html>`);
 });
+adminRouter.get("/tornei/:id/giornate/:gid/foglio.html", requireCapTorneo, async (req, res) => {
+  const tid = await torneoDi(req, res);
+  if (!tid) return;
+  const gid = id(req.params.gid);
+  if (!gid) return res.status(400).json({ error: "Giornata non indicata." });
+  const t = await db.prepare("SELECT * FROM tornei_ko WHERE id=?").get(tid);
+  const g = await db.prepare("SELECT * FROM tornei_giornate WHERE id=? AND torneo_id=?").get(gid, tid);
+  if (!g) return res.status(404).json({ error: "Giornata non trovata" });
+  const suoi = { campi: g.campi || t.campi, campi_nomi: g.campi_nomi || t.campi_nomi };
+  const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? AND turno=0 ORDER BY giornata, campo").all(gid);
+  const e = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const turni2 = [...new Set(partite.map((p) => p.giornata))].sort((a, b) => a - b);
+  const campo = (p) => `<div class="campo">
+    <div class="nomecampo">${e(nomeCampo(suoi, p.campo))}</div>
+    <div class="rett">
+      <div class="lato">${e([p.a_nome, p.a2_nome].filter(Boolean).join(" \xB7 "))}</div>
+      <div class="rete"><span>rete</span></div>
+      <div class="lato">${e([p.b_nome, p.b2_nome].filter(Boolean).join(" \xB7 "))}</div>
+    </div>
+    ${p.punti_a !== null && p.punti_a !== void 0 ? `<div class="ris">${p.punti_a}\u2013${p.punti_b}${p.set_dettaglio ? ` <span class="det">${e(p.set_dettaglio)}</span>` : ""}</div>` : '<div class="ris vuoto">\u2014</div>'}
+  </div>`;
+  res.type("html").send(`<!doctype html><html lang="it"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${e(t.nome)} \xB7 ${e(g.data)}</title><style>
+  @page{size:A4;margin:14mm}
+  body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#12324F;margin:0;padding:16px;background:#F7F4EC}
+  .foglio{max-width:780px;margin:0 auto;background:#fff;padding:22px;border-radius:10px}
+  .k{letter-spacing:3px;font-size:.6rem;color:#8a5a12;text-transform:uppercase;font-weight:700}
+  h1{font-family:Georgia,'Times New Roman',serif;font-size:1.6rem;margin:4px 0 2px}
+  .sub{color:#5a6b75;font-size:.84rem;margin:0 0 18px}
+  h2{font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:#5a6b75;margin:18px 0 8px;border-bottom:1px solid #e6e2d6;padding-bottom:4px}
+  .fila{display:flex;gap:14px;flex-wrap:wrap}
+  .campo{flex:1 1 210px;min-width:190px;break-inside:avoid}
+  .nomecampo{font-size:.66rem;text-transform:uppercase;letter-spacing:.09em;color:#8a5a12;font-weight:700;margin-bottom:4px}
+  .rett{border:2px solid #12324F;border-radius:4px;overflow:hidden}
+  .lato{padding:13px 10px;text-align:center;font-weight:700;font-size:.92rem;line-height:1.35}
+  .rete{border-top:2px dashed #12324F;border-bottom:2px dashed #12324F;background:#f4f2ea;text-align:center}
+  .rete span{font-size:.56rem;text-transform:uppercase;letter-spacing:.2em;color:#9aa7b0}
+  .ris{text-align:center;font-weight:700;margin-top:5px;font-size:1.02rem}
+  .ris.vuoto{color:#c8c2b2}
+  .det{font-weight:400;font-size:.76rem;color:#5a6b75}
+  .pie{margin-top:22px;padding-top:8px;border-top:1px solid #e6e2d6;color:#9a8a5f;font-size:.66rem}
+  .barra{max-width:780px;margin:0 auto 12px;display:flex;justify-content:flex-end}
+  .barra button{background:#12324F;color:#fff;border:0;border-radius:22px;padding:10px 18px;font-size:.9rem;cursor:pointer}
+  @media print{body{background:#fff;padding:0}.foglio{max-width:none;padding:0;border-radius:0}.barra{display:none}}
+</style></head><body>
+<div class="barra"><button onclick="window.print()">Stampa o salva in PDF</button></div>
+<div class="foglio">
+  <div class="k">${e(t.nome)}</div>
+  <h1>${e(g.data)}</h1>
+  <p class="sub">${turni2.length === 1 ? "Una serata, un turno" : `${turni2.length} turni`} \xB7 ${partite.length} ${partite.length === 1 ? "incontro" : "incontri"}${t.disciplina ? ` \xB7 ${e(t.disciplina)}` : ""}</p>
+  ${turni2.map((n) => `${turni2.length > 1 ? `<h2>Turno ${n}</h2>` : ""}
+    <div class="fila">${partite.filter((p) => p.giornata === n).map(campo).join("")}</div>`).join("")}
+  <p class="pie">Bussola Residence \xB7 ${(/* @__PURE__ */ new Date()).toLocaleDateString("it-IT")}</p>
+</div></body></html>`);
+});
 adminRouter.get("/tornei/:id/calendario", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
   if (!tid) return;
@@ -32926,7 +32997,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-14 08:06" : "online";
+var BUILD = true ? "2026-09-14 15:26" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
