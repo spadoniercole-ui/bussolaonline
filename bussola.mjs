@@ -5687,7 +5687,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.92.0';
+const VERSIONE_APP = '6.93.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16618,8 +16618,12 @@ VIEWS.tornei = async () => {
         })()}
       </div>\` : ''}
       \${puoGestireTornei() ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
-        \${st && st.iscritti && st.iscritti.length > 8 && !st.giornate.some(g => g.stato !== 'conclusa') ? '<button class="btn gold sm" id="am_giornata">+ Nuova giornata</button>' : ''}
-        \${tab.torneo.stato === 'iscrizioni' && st && st.iscritti.length === 8 ? '<button class="btn gold sm" id="am_avvia">Forma le coppie e comincia</button>' : ''}
+        \${/* ALTRI DUE NUMERI FISSI, e nascosti nei tasti: \xABpiu' di 8 nel gruppo\xBB per aprire una
+              giornata e \xABesattamente 8\xBB per cominciare. Con tre campi ne servono fino a dodici,
+              con un campo solo ne bastano quattro: il minimo per giocare e' due per campo, e
+              quello e' il numero da guardare. */
+          st && st.iscritti && st.iscritti.length >= minimoPerGiocare(st) && !st.giornate.some(g => g.stato !== 'conclusa') ? '<button class="btn gold sm" id="am_giornata">+ Nuova giornata</button>' : ''}
+        \${tab.torneo.stato === 'iscrizioni' && st && formaSerata(st.iscritti.length, (st.campi_nomi || []).length || 2).ok ? '<button class="btn gold sm" id="am_avvia">Forma le coppie e comincia</button>' : ''}
         \${/* IL TASTO GIUSTO PER QUESTO TORNEO. La fase finale \u2014 semifinali e finale sulla
               graduatoria della serata \u2014 ha senso a padel, dove sette turni fanno una classifica
               e i primi si giocano il titolo prima di andare a cena.
@@ -17271,21 +17275,39 @@ VIEWS.tornei = async () => {
      si aspetta quando si sbaglia un tocco. */
   /* Il numero di campi digitato si tiene da parte prima di ridisegnare: senza, toccando un nome
      la casella tornerebbe al valore di prima e il conteggio \xABsu quanti\xBB direbbe un'altra cosa. */
-  const ricordaCampi = () => {
+  /* QUELLO CHE E' STATO SCRITTO NELLE CASELLE SI TIENE prima di ridisegnare.
+     Ogni tocco su un nome rifa' la schermata da capo: senza questo passaggio le caselle
+     tornerebbero al valore di partenza, e chi aveva appena scritto \xABTerra 1, Terra 2, Terra 3\xBB
+     se li vedeva sparire al primo giocatore selezionato.
+     LA DATA VA CON LE ALTRE: era rimasta fuori, e spariva allo stesso modo. */
+  const ricordaCasella = () => {
     const g = window.__amGiornata;
     if (!g) return;
     if ($('#gi_campi')) g.campi = Number($('#gi_campi').value) || null;
     if ($('#gi_campin')) g.campi_nomi = $('#gi_campin').value;
+    if ($('#gi_data')) g.data = $('#gi_data').value;
   };
-  if ($('#gi_campi')) $('#gi_campi').onchange = () => { ricordaCampi(); show('tornei'); };
+  /* Si ricorda a ogni tasto premuto, non solo quando la casella perde il fuoco: su un telefono
+     si tocca un nome subito dopo aver scritto, e \`onchange\` non fa in tempo a scattare. */
+  for (const id of ['gi_campi', 'gi_campin', 'gi_data']) {
+    const el = $('#' + id);
+    if (el) { el.oninput = ricordaCasella; el.onchange = () => { ricordaCasella(); show('tornei'); }; }
+  }
 
   document.querySelectorAll('[data-gsel]').forEach(b => b.onclick = () => {
-    ricordaCampi();
+    ricordaCasella();
     const g = window.__amGiornata; if (!g) return;
     const id = Number(b.dataset.gsel);
+    /* IL TETTO E' QUATTRO PER CAMPO, non otto.
+       Qui c'era \`g.scelti.length < 8\` scritto a mano: con tre campi la schermata diceva
+       giustamente \xABda 6 a 12 giocatori\xBB e poi si rifiutava di prenderne piu' di otto. E' lo
+       stesso numero fisso che era gia' stato tolto dal conteggio e dal tasto di conferma \u2014
+       questo era il terzo posto, e nessuno lo guardava perche' non si vedeva. */
+    const tetto = Math.max(1, (window.__amGiornata.campi != null
+      ? Number(window.__amGiornata.campi)
+      : ((window.__amStato && window.__amStato.campi_nomi) ? window.__amStato.campi_nomi.length : 2))) * 4;
     if (g.scelti.includes(id)) g.scelti = g.scelti.filter(x => x !== id);
-    else if (g.scelti.length < 8) g.scelti.push(id);
-    const d = $('#gi_data'); if (d) g.data = d.value;
+    else if (g.scelti.length < tetto) g.scelti.push(id);
     show('tornei');
   });
   if ($('#gi_via')) $('#gi_via').onclick = async () => {
@@ -19294,6 +19316,11 @@ async function scansionaTessera(quando) {
 /* QUANTI DOPPI E QUANTI SINGOLI, la stessa regola del server \u2014 scritta qui perche' la schermata
    deve dirlo MENTRE si tocca, non dopo aver chiesto. Se le due divergessero, il conto mostrato e
    quello applicato direbbero cose diverse: per questo un test verifica che siano d'accordo. */
+/* Il minimo per giocare una serata: due per campo. Sotto, un campo resterebbe vuoto. */
+function minimoPerGiocare(st) {
+  return Math.max(2, ((st && st.campi_nomi) ? st.campi_nomi.length : 2) * 2);
+}
+
 function formaSerata(presenti, campi) {
   const c = Math.max(1, Number(campi) || 2), n = Number(presenti) || 0;
   if (n === 0) return { ok: false, error: 'Nessuno scelto.' };
@@ -20359,7 +20386,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.92.0" : "dev";
+var VERSION = true ? "6.93.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23275,10 +23302,10 @@ async function avviaAmericana(torneoId) {
   if (t.formato !== "americana") return { ok: false, error: "Questo torneo non e\u0300 un'americana." };
   if (t.stato !== "iscrizioni") return { ok: false, error: "L'americana si avvia una volta sola." };
   const iscritti = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND attesa IS NULL ORDER BY id").all(torneoId);
-  const servono = postiAmericana(t.campi);
-  if (iscritti.length !== servono) return {
+  const forma = formaDellaSerata(iscritti.length, t.campi);
+  if (!forma.ok) return {
     ok: false,
-    error: `L'americana vuole esattamente ${servono} giocatori (${t.campi} ${Number(t.campi) === 1 ? "campo" : "campi"}, quattro per campo): ce ne sono ${iscritti.length}. Con piu\u0300 iscritti si aprono le giornate scegliendo chi gioca.`
+    error: `${forma.error} Con piu\u0300 iscritti si aprono le giornate scegliendo chi gioca.`
   };
   const oggi2 = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const r = await creaGiornata_americana(torneoId, oggi2, iscritti.map((x) => x.id));
@@ -33191,7 +33218,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-18 13:22" : "online";
+var BUILD = true ? "2026-09-18 13:54" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
