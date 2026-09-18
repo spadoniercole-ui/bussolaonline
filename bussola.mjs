@@ -1874,6 +1874,7 @@ async function migrate() {
   await addIfMissing("tornei_ko", "minimo_riposo", "minimo_riposo INTEGER");
   await addIfMissing("tornei_ko_iscritti", "attesa", "attesa INTEGER");
   await addIfMissing("tornei_ko_iscritti", "ritirato_at", "ritirato_at TEXT");
+  await addIfMissing("tornei_ko_iscritti", "ruoli", "ruoli TEXT");
   await addIfMissing("tornei_ko", "sospeso_at", "sospeso_at TEXT");
   await addIfMissing("tornei_ko", "sospeso_giorni", "sospeso_giorni INTEGER");
   await addIfMissing("tornei_ko", "sospeso_motivo", "sospeso_motivo TEXT");
@@ -5686,7 +5687,7 @@ window.Comanda = (function () {
 // La versione di QUESTA copia dell'app, cotta dentro la pagina dal build. Serve a confrontarla
 // con quella del server: se non coincidono, il telefono si e' tenuto una copia vecchia e la
 // guida lo dice. (Fuori dal build resta il segnaposto, e il confronto non si fa.)
-const VERSIONE_APP = '6.90.0';
+const VERSIONE_APP = '6.92.0';
 /* Bussola Residence \u2014 front-end utente.
    Legge i dati dalle API del server; se il server non \xE8 raggiungibile
    (es. file aperto da solo per anteprima) usa i dati incorporati SEED. */
@@ -16251,6 +16252,9 @@ VIEWS.tornei = async () => {
        otto. Si guarda la giornata aperta \u2014 quella e' il lavoro di stasera \u2014 e sotto la
        classifica generale, che somma le sere. */
     const st = await api('/tornei/' + apertoId + '/giornate').catch(() => null);
+    /* Lo stato serve anche alle funzioni che compongono i pezzi della schermata, che girano
+       fuori da qui: si mette da parte invece di passarlo di mano in mano. */
+    window.__amStato = st;
     /* Si guarda la GIORNATA APERTA, non il torneo: i turni e la finale sono della serata.
        Se non ce n'\xE8 nessuna, si \xE8 nella fase in cui si scelgono gli otto. */
     const gAperta = st && st.giornate ? st.giornate.find(x => x.stato !== 'conclusa') : null;
@@ -16515,63 +16519,103 @@ VIEWS.tornei = async () => {
       </div>\` : ''}
       \${gi ? \`<div class="box chiama" style="margin-top:10px;padding:9px 11px">
         <b>Chi gioca stasera?</b>
-        \${/* I CAMPI SI SCELGONO QUI, PER QUESTA SERA. Stavano sul torneo \u2014 \xABdi solito giochiamo
-             su questi\xBB \u2014 ma quanti ce ne sono liberi si sa la sera stessa: stasera due, giovedi'
-             prossimo tre. Quelli del torneo restano il predefinito, e la giornata se li congela
-             addosso: una serata giocata su due campi resta scritta su due campi. */''}
-        <div class="row" style="gap:8px;align-items:end;flex-wrap:wrap;margin-top:5px">
-          <label class="muted" style="font-size:.8rem">Campi stasera<br><input id="gi_campi" inputmode="numeric" value="\${gi.campi != null ? gi.campi : ((st && st.campi_nomi) ? st.campi_nomi.length : 2)}" style="width:56px;text-align:center"></label>
-          <label class="muted" style="font-size:.8rem">Come si chiamano<br><input id="gi_campin" value="\${esc(gi.campi_nomi != null ? gi.campi_nomi : (((am.torneo || tab.torneo || {}).campi_nomi) || ''))}" placeholder="Terra 1, Terra 2" style="min-width:170px"></label>
-          <span class="muted" style="font-size:.8rem">\${servonoStasera} giocatori</span>
-        </div>
-        \${/* LA PRIMA DOMANDA E' CHI FA GLI ACCOPPIAMENTI. Il sorteggio va bene quasi sempre, ma
-              chi organizza a volte le coppie ce le ha gia' in testa \u2014 e allora non deve
-              disfarle a mano dopo che il computer le ha fatte a caso. */
-          gi.modo ? '' : \`<div class="box chiama" style="padding:9px 11px;margin-top:6px">
-            <b>Gli accoppiamenti li faccio io?</b>
-            <div class="muted" style="font-size:.82rem;margin:3px 0 8px">Posso sorteggiarli, tenendo conto di chi ha gi\xE0 giocato con chi. Oppure li decidi tu toccando i nomi in ordine.</div>
-            <div class="row" style="gap:6px;flex-wrap:wrap">
-              <button class="btn gold sm" id="gi_auto">S\xEC, sorteggia tu</button>
-              <button class="btn ghost sm" id="gi_mano">No, li scelgo io</button>
-            </div>
-          </div>\`}
-        \${gi.modo ? \`<div class="muted" style="font-size:.82rem;margin-top:3px">\${gi.modo === 'mano'
-          ? \`Tocca i nomi <b>in ordine</b>: i primi due sono una coppia, i due dopo sono chi affrontano \u2014 e cos\xEC per ogni campo. Servono \${(st && st.campi_nomi ? st.campi_nomi.length : 2) * 4} giocatori\${st && st.campi_nomi ? \` su \${st.campi_nomi.join(', ')}\` : ''}.\`
-          : \`Scegline \${(st && st.campi_nomi ? st.campi_nomi.length : 2) * 4} dal gruppo\${st && st.campi_nomi ? \` \u2014 si gioca su \${st.campi_nomi.join(', ')}\` : ''}. Non devono essere gli stessi dell'ultima volta: chi non c'\xE8 non prende punti.\`}</div>\` : ''}
-        \${(st && st.iscritti.length) ? \`<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
-          \${st.iscritti.map(i => \`<button class="btn \${gi.scelti.includes(i.id) ? 'gold' : 'ghost'} sm" data-gsel="\${i.id}">\${esc(i.nome)}</button>\`).join('')}
-          \${puoGestireTornei() ? \`<button class="btn ghost sm" id="gi_rin" title="Correggi un nome scritto male">\${window.__amRin === String(apertoId) ? 'Lascia stare' : '\u270E Correggi un nome'}</button>\` : ''}
-        </div>
-        \${window.__amRin === String(apertoId) ? \`<div class="box chiama" style="padding:9px 11px;margin-top:6px">
-          <b>Un nome scritto male</b>
-          <div class="muted" style="font-size:.82rem;margin:3px 0 7px">Si cambia solo il nome: la persona resta la stessa, le partite restano le sue, la classifica non si muove.</div>
-          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:end">
-            <label class="muted" style="font-size:.8rem">Chi<br><select id="rin_chi" style="min-width:150px">\${st.iscritti.map(i => \`<option value="\${i.id}">\${esc(i.nome)}</option>\`).join('')}</select></label>
-            <label class="muted" style="font-size:.8rem">Come si scrive<br><input id="rin_nome" placeholder="Nome corretto" style="min-width:150px"></label>
-            <button class="btn gold sm" id="rin_fai">Correggi</button>
+        \${(() => {
+          /* LA GIORNATA SI COMPONE A PASSI, IN ORDINE.
+             Prima era tutto insieme \u2014 campi, modo, nomi, data \u2014 e non si capiva da dove
+             cominciare ne' quando si era finito: si toccavano nomi prima di aver deciso quanti
+             ne servivano, e il tasto per partire compariva solo quando il conto tornava, senza
+             dire perche' non tornava.
+             Adesso ogni passo si apre quando il precedente e' completo, e chi guarda vede
+             sempre due cose: a che punto e', e cosa manca. */
+          const nomiCampi = (gi.campi_nomi != null ? gi.campi_nomi : (((am.torneo || tab.torneo || {}).campi_nomi) || ''))
+            .split(',').map(x => x.trim()).filter(Boolean);
+          const forma = formaSerata(gi.scelti.length, campiStasera);
+          const passo = !gi.modo ? 2 : (gi.scelti.length === 0 ? 3 : (forma.ok ? 4 : 3));
+          const titolo = (n, testo, fatto) => \`<div class="row" style="gap:7px;align-items:center;margin:10px 0 5px">
+            <span style="display:inline-flex;width:20px;height:20px;border-radius:50%;align-items:center;justify-content:center;font-size:.7rem;font-weight:800;background:\${fatto ? 'var(--gold)' : (passo === n ? 'var(--navy)' : '#e9e6dc')};color:\${fatto || passo === n ? '#fff' : 'var(--mute)'}">\${fatto ? '\u2713' : n}</span>
+            <b style="font-size:.92rem;color:\${passo === n || fatto ? 'var(--navy)' : 'var(--mute)'}">\${testo}</b>
+          </div>\`;
+
+          return \`
+          \${titolo(1, 'Su quali campi', true)}
+          <div class="row" style="gap:8px;align-items:end;flex-wrap:wrap">
+            <label class="muted" style="font-size:.8rem">Quanti<br><input id="gi_campi" inputmode="numeric" value="\${campiStasera}" style="width:52px;text-align:center"></label>
+            <label class="muted" style="font-size:.8rem">Come si chiamano<br><input id="gi_campin" value="\${esc(nomiCampi.join(', '))}" placeholder="Terra 1, Terra 2" style="min-width:170px"></label>
+            <label class="muted" style="font-size:.8rem">Quando<br><input id="gi_data" type="date" value="\${esc(gi.data || '')}"></label>
           </div>
-        </div>\` : ''}\` : \`<div class="box chiama" style="margin-top:8px;padding:9px 11px">
-          <b>Il gruppo \xE8 vuoto</b>
-          <div class="muted" style="font-size:.82rem;margin:3px 0 7px">Carica chi gioca: lo fai una volta, poi a ogni giornata scegli otto fra questi.</div>
+          <div class="muted" style="font-size:.78rem;margin-top:4px">
+            \${nomiCampi.length ? nomiCampi.slice(0, campiStasera).map(x => \`<span class="tag">\${esc(x)}</span>\`).join(' ') : \`<span class="tag">\${campiStasera} senza nome</span>\`}
+            \xB7 da \${campiStasera * 2} a \${campiStasera * 4} giocatori, in numero pari
+          </div>
+
+          \${titolo(2, 'Chi fa gli accoppiamenti', !!gi.modo)}
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button class="btn \${gi.modo === 'auto' ? 'gold' : 'ghost'} sm" id="gi_auto">Sorteggia tu</button>
+            <button class="btn \${gi.modo === 'mano' ? 'gold' : 'ghost'} sm" id="gi_mano">Li scelgo io</button>
+          </div>
+          \${gi.modo ? \`<div class="muted" style="font-size:.8rem;margin-top:4px">\${gi.modo === 'mano'
+            ? 'Tocca i nomi <b>in ordine</b>: i primi due sono una coppia, i due dopo sono chi affrontano \u2014 e cos\xEC per ogni campo.'
+            : 'Sorteggio io, tenendo conto di chi ha gi\xE0 giocato con chi.'}</div>\` : ''}
+
+          \${titolo(3, 'Chi gioca', forma.ok)}
+          \${/* IL GRUPPO VUOTO SI RIEMPIE DA QUI, senza uscire e rientrare: si carica una volta
+                sola, ma la prima volta bisogna trovarlo. */
+            (!st || !st.iscritti.length) ? \`<div class="box chiama" style="padding:9px 11px">
+              <b>Il gruppo \xE8 vuoto</b>
+              <div class="muted" style="font-size:.82rem;margin:3px 0 7px">Carica chi gioca: lo fai una volta, poi a ogni giornata scegli fra questi.</div>
+              <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+                <input id="gi_nome" placeholder="Aggiungi un nome" style="min-width:150px">
+                <button class="btn ghost sm" id="gi_add">Aggiungi</button>
+                <label class="btn ghost sm" style="margin:0;cursor:pointer">Carica un elenco\u2026
+                  <input type="file" id="gi_file" accept=".csv,.xlsx,.xls,text/csv" style="display:none">
+                </label>
+              </div>
+            </div>\` : ''}
+          \${/* NOMI E RUOLI si correggono da qui, accanto ai nomi che si stanno guardando: e' il
+                momento in cui ci si accorge che uno e' scritto male o che manca un ruolo. */
+            (st && st.iscritti.length && puoGestireTornei()) ? \`<div style="margin-bottom:6px">
+              <button class="btn ghost sm" id="gi_rin">\${window.__amRin === String(apertoId) ? 'Lascia stare' : '\u270E Nomi e ruoli'}</button>
+              \${window.__amRin === String(apertoId) ? \`<div class="box chiama" style="padding:9px 11px;margin-top:6px">
+                <div class="muted" style="font-size:.82rem;margin-bottom:7px">Il nome si corregge senza perdere niente: le partite restano le sue e la classifica non si muove. I ruoli si toccano qui sotto.</div>
+                <div class="row" style="gap:8px;flex-wrap:wrap;align-items:end">
+                  <label class="muted" style="font-size:.8rem">Chi<br><select id="rin_chi" style="min-width:150px">\${st.iscritti.map(i2 => \`<option value="\${i2.id}" data-ruoli="\${esc(i2.ruoli || '')}">\${esc(i2.nome)}\${i2.ruoli ? \` \u2014 \${esc(i2.ruoli)}\` : ''}</option>\`).join('')}</select></label>
+                  <label class="muted" style="font-size:.8rem">Come si scrive<br><input id="rin_nome" placeholder="lascia vuoto per non cambiarlo" style="min-width:150px"></label>
+                  <button class="btn gold sm" id="rin_fai">Salva</button>
+                </div>
+                \${(st.ruoli_ammessi && st.ruoli_ammessi.length) ? \`<div style="margin-top:8px">
+                  <div class="muted" style="font-size:.76rem;margin-bottom:4px">Ruoli</div>
+                  <div class="row" style="gap:5px;flex-wrap:wrap">
+                    \${st.ruoli_ammessi.map(r => \`<button class="btn \${(window.__amRuoli || []).includes(r.sigla) ? 'gold' : 'ghost'} sm" data-ruolo="\${r.sigla}" title="\${esc(r.nome)}">\${esc(r.sigla)}<br><span style="font-size:.62rem;opacity:.75">\${esc(r.nome)}</span></button>\`).join('')}
+                  </div>
+                </div>\` : ''}
+              </div>\` : ''}
+            </div>\` : ''}
+          \${(st && st.iscritti.length) ? (!gi.modo
+            ? '<div class="muted" style="font-size:.8rem">Prima scegli chi fa gli accoppiamenti: da quello dipende se l\\'ordine dei tocchi conta.</div>'
+            : \`<div class="row" style="gap:6px;flex-wrap:wrap">
+                \${(st ? st.iscritti : []).map(i2 => {
+                  const pos = gi.scelti.indexOf(i2.id);
+                  return \`<button class="btn \${pos >= 0 ? 'gold' : 'ghost'} sm" data-gsel="\${i2.id}">\${gi.modo === 'mano' && pos >= 0 ? \`\${pos + 1}. \` : ''}\${esc(i2.nome)}\${i2.ruoli ? \`<br><span style="font-size:.66rem;opacity:.75">\${esc(i2.ruoli)}</span>\` : ''}</button>\`;
+                }).join('')}
+              </div>
+              <div class="muted" style="font-size:.8rem;margin-top:5px">
+                <b>\${gi.scelti.length}</b> scelti \xB7 \${forma.ok
+                  ? \`\${forma.doppi} \${forma.doppi === 1 ? 'doppio' : 'doppi'}\${forma.singoli ? \` e \${forma.singoli} \${forma.singoli === 1 ? 'singolo' : 'singoli'}\` : ''}\`
+                  : \`<span style="color:var(--coral)">\${esc(forma.error)}</span>\`}
+                \${ruoliMancanti(gi.scelti)}
+              </div>
+              \${gi.modo === 'mano' && gi.scelti.length ? \`<div class="muted" style="font-size:.78rem;margin-top:5px">\${anteprimaCoppie(gi.scelti, nomiCampi)}</div>\` : ''}\`) : ''}
+
+          \${titolo(4, 'Si comincia', false)}
           <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
-            <input id="gi_nome" placeholder="Aggiungi un nome" style="min-width:150px">
-            <button class="btn ghost sm" id="gi_add">Aggiungi</button>
-            <label class="btn ghost sm" style="margin:0;cursor:pointer">Carica un elenco\u2026
-              <input type="file" id="gi_file" accept=".csv,.xlsx,.xls,text/csv" style="display:none">
-            </label>
+            \${forma.ok && gi.data
+              ? '<button class="btn gold sm" id="gi_via">Crea la giornata</button>'
+              : \`<span class="muted" style="font-size:.8rem">\${!gi.data ? 'Manca la data.' : 'Manca chi gioca.'}</span>\`}
+            <button class="btn ghost sm" id="gi_no">Lascia stare</button>
           </div>
-        </div>\`}
-        <div class="row" style="gap:8px;margin-top:9px;align-items:center;flex-wrap:wrap">
-          <label class="muted" style="font-size:.82rem">Quando <input id="gi_data" type="date" value="\${esc(gi.data || '')}"></label>
-          \${gi.modo === 'mano' && gi.scelti.length ? \`<span class="muted" style="font-size:.8rem">\${
-            Array.from({ length: Math.ceil(gi.scelti.length / 4) }, (_, k) => gi.scelti.slice(k * 4, k * 4 + 4))
-              .map((q, k) => q.length === 4
-                ? \`\${esc((st && st.campi_nomi && st.campi_nomi[k]) || ('Campo ' + (k + 1)))}: \${q.map(id => esc(((st ? st.iscritti : []).find(x => x.id === id) || {}).nome || '')).slice(0, 2).join(' e ')} contro \${q.map(id => esc(((st ? st.iscritti : []).find(x => x.id === id) || {}).nome || '')).slice(2).join(' e ')}\`
-                : '').filter(Boolean).join(' \xB7 ')}</span>\` : ''}
-          <span class="muted" style="font-size:.82rem">Scelti \${gi.scelti.length} su \${servonoStasera}.</span>
-          \${gi.scelti.length === servonoStasera ? '<button class="btn gold sm" id="gi_via">Comincia la giornata</button>' : ''}
-          <button class="btn ghost sm" id="gi_no">Lascia stare</button>
-        </div>
+          <div class="muted" style="font-size:.76rem;margin-top:4px">Creata la giornata, dal foglio dei campi la stampi o la salvi in PDF.</div>
+        \`;
+        })()}
       </div>\` : ''}
       \${puoGestireTornei() ? \`<div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap">
         \${st && st.iscritti && st.iscritti.length > 8 && !st.giornate.some(g => g.stato !== 'conclusa') ? '<button class="btn gold sm" id="am_giornata">+ Nuova giornata</button>' : ''}
@@ -17161,15 +17205,37 @@ VIEWS.tornei = async () => {
   /* CORREGGERE UN NOME sta dove i nomi si guardano: nel gruppo, accanto ai giocatori. */
   if ($('#gi_rin')) $('#gi_rin').onclick = () => {
     window.__amRin = window.__amRin === String(apertoId) ? null : String(apertoId);
+    window.__amRuoli = undefined;   // si ricaricano da chi e' selezionato
     show('tornei');
   };
+  /* Quando si sceglie chi, i suoi ruoli compaiono gia' scritti: correggerli significa vedere
+     quelli che ha, non riscriverli a memoria. */
+  /* Scegliendo chi, i suoi ruoli si accendono: correggerli significa vedere quelli che ha, non
+     ricordarseli. */
+  const ruoliDiChi = () => {
+    const o = $('#rin_chi') && $('#rin_chi').selectedOptions[0];
+    return o ? String(o.dataset.ruoli || '').split(',').map(x => x.trim()).filter(Boolean) : [];
+  };
+  if (window.__amRin === String(apertoId) && window.__amRuoli === undefined) window.__amRuoli = ruoliDiChi();
+  if ($('#rin_chi')) $('#rin_chi').onchange = () => { window.__amRuoli = ruoliDiChi(); show('tornei'); };
+  document.querySelectorAll('[data-ruolo]').forEach(b => b.onclick = () => {
+    const r = b.dataset.ruolo, cur = window.__amRuoli || [];
+    window.__amRuoli = cur.includes(r) ? cur.filter(x => x !== r) : [...cur, r];
+    show('tornei');
+  });
   if ($('#rin_fai')) $('#rin_fai').onclick = async () => {
-    const chi = $('#rin_chi').value, nome = ($('#rin_nome').value || '').trim();
-    if (!chi || !nome) { alert('Serve chi e come si scrive.'); return; }
+    const chi = $('#rin_chi').value;
+    const nome = ($('#rin_nome').value || '').trim();
+    const ruoli = window.__amRuoli === undefined ? undefined : window.__amRuoli.join(', ');
+    if (!chi) return;
+    // Il nome vuoto vuol dire \xABnon cambiarlo\xBB: si manda quello che ha gia'.
+    const attuale = $('#rin_chi').selectedOptions[0].textContent.split(' \u2014 ')[0];
+    const corpo = { nome: nome || attuale };
+    if (ruoli !== undefined) corpo.ruoli = ruoli;
     try {
-      const r = await api('/tornei/' + apertoId + '/iscritti/' + chi, { method: 'PUT', body: JSON.stringify({ nome }) });
-      window.__amRin = null;
-      alert(\`\xAB\${r.prima}\xBB adesso si scrive \xAB\${r.adesso}\xBB.\`);
+      const r = await api('/tornei/' + apertoId + '/iscritti/' + chi, { method: 'PUT', body: JSON.stringify(corpo) });
+      window.__amRin = null; window.__amRuoli = undefined;
+      alert(\`\${r.adesso}\${r.ruoli ? \` \u2014 \${r.ruoli}\` : ' \u2014 nessun ruolo'}.\`);
       show('tornei');
     } catch (e) { alert(e.message); }
   };
@@ -19225,6 +19291,48 @@ async function scansionaTessera(quando) {
    chiama e' codice che qualcuno prima o poi richiama per sbaglio. */
 
 
+/* QUANTI DOPPI E QUANTI SINGOLI, la stessa regola del server \u2014 scritta qui perche' la schermata
+   deve dirlo MENTRE si tocca, non dopo aver chiesto. Se le due divergessero, il conto mostrato e
+   quello applicato direbbero cose diverse: per questo un test verifica che siano d'accordo. */
+function formaSerata(presenti, campi) {
+  const c = Math.max(1, Number(campi) || 2), n = Number(presenti) || 0;
+  if (n === 0) return { ok: false, error: 'Nessuno scelto.' };
+  if (n % 2 !== 0) return { ok: false, error: \`Servono giocatori in numero pari: ne hai \${n}.\` };
+  if (n < c * 2) return { ok: false, error: \`Con \${c} \${c === 1 ? 'campo' : 'campi'} servono almeno \${c * 2} giocatori: ne hai \${n}.\` };
+  if (n > c * 4) return { ok: false, error: \`Con \${c} \${c === 1 ? 'campo' : 'campi'} non se ne possono far giocare pi\xF9 di \${c * 4}: ne hai \${n}.\` };
+  const doppi = (n - c * 2) / 2;
+  return { ok: true, campi: c, doppi, singoli: c - doppi, presenti: n };
+}
+
+/* Cosa manca fra i scelti: un avviso, non un divieto \u2014 si gioca sempre. */
+function ruoliMancanti(scelti) {
+  const st2 = window.__amStato;
+  if (!st2 || !st2.ruoli_nel_gruppo || !st2.ruoli_nel_gruppo.length || !scelti.length) return '';
+  const hanno = new Set();
+  for (const id of scelti) {
+    const p = st2.iscritti.find(x => x.id === id);
+    for (const r of String((p && p.ruoli) || '').split(',').map(x => x.trim()).filter(Boolean)) hanno.add(r);
+  }
+  const mancano = st2.ruoli_nel_gruppo.filter(r => !hanno.has(r.ruolo)).map(r => r.ruolo);
+  return mancano.length ? \` \xB7 <b style="color:var(--coral)">nessuno gioca \${mancano.map(esc).join(' n\xE9 ')}</b>\` : '';
+}
+
+/* Come vengono le coppie scegliendo a mano: si vede mentre si tocca, invece di scoprirlo dopo
+   aver creato la giornata. */
+function anteprimaCoppie(scelti, nomiCampi) {
+  const st2 = window.__amStato;
+  const nome = (id) => esc(((st2 ? st2.iscritti : []).find(x => x.id === id) || {}).nome || '');
+  const out = [];
+  for (let i = 0; i < scelti.length; i += 4) {
+    const q = scelti.slice(i, i + 4), k = out.length;
+    const campo = esc(nomiCampi[k] || ('Campo ' + (k + 1)));
+    if (q.length === 4) out.push(\`\${campo}: \${nome(q[0])} e \${nome(q[1])} contro \${nome(q[2])} e \${nome(q[3])}\`);
+    else if (q.length === 2) out.push(\`\${campo}: \${nome(q[0])} contro \${nome(q[1])} <i>(singolo)</i>\`);
+    else out.push(\`\${campo}: <span class="muted">ne mancano \${4 - q.length}</span>\`);
+  }
+  return out.join('<br>');
+}
+
 function puoGestireTornei() {
   return !!(ME && (ME.gestore || ME.ruolo === 'manager' || (ME.caps || []).some(c => ['tornei', 'campi', 'tennis'].includes(c))));
 }
@@ -20251,7 +20359,7 @@ var ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAAIGNIUk0AAHomAACA
 init_authuser();
 
 // server/version.js
-var VERSION = true ? "6.90.0" : "dev";
+var VERSION = true ? "6.92.0" : "dev";
 
 // server/pwa.js
 var png192 = Buffer.from(ICON_192, "base64");
@@ -23520,6 +23628,31 @@ function comeSiChiude(t) {
   return `a ${v} punti`;
 }
 var PUNTI_AMERICANA = { vittoria: 3, pareggio: 1, sconfitta: 0 };
+var RUOLI = {
+  "dx": "destro",
+  "sx": "sinistro",
+  "pt": "portiere",
+  "df": "difensore",
+  "cc": "centrocampista",
+  "at": "attaccante"
+};
+var RUOLI_PER_SPORT = {
+  tennis: ["dx", "sx"],
+  padel: ["dx", "sx"],
+  calcio: ["pt", "df", "cc", "at"],
+  calcetto: ["pt", "df", "cc", "at"]
+};
+function ruoliAmmessi(disciplina) {
+  const d = String(disciplina || "").trim().toLowerCase();
+  for (const [sport, elenco] of Object.entries(RUOLI_PER_SPORT)) if (d.includes(sport)) return elenco;
+  return Object.keys(RUOLI);
+}
+function normalizzaRuoli(x, disciplina) {
+  const ammessi = ruoliAmmessi(disciplina);
+  const perEsteso = Object.fromEntries(Object.entries(RUOLI).map(([k, v]) => [v, k]));
+  const dentro = (Array.isArray(x) ? x : String(x || "").split(",")).map((r) => String(r).trim().toLowerCase()).map((r) => perEsteso[r] || r).filter((r) => ammessi.includes(r));
+  return [...new Set(dentro)].join(", ") || null;
+}
 function nomeCampo(t, n) {
   const nomi = String(t && t.campi_nomi || "").split(",").map((x) => x.trim()).filter(Boolean);
   return nomi[n - 1] || `Campo ${n}`;
@@ -23541,9 +23674,20 @@ async function coppieGiaViste(torneoId) {
   }
   return m;
 }
+function formaDellaSerata(presenti, campi) {
+  const c = Math.max(1, Number(campi) || 2);
+  const n = Number(presenti) || 0;
+  if (n % 2 !== 0) return { ok: false, error: `Servono giocatori in numero pari: ne hai ${n}.` };
+  if (n < c * 2) return { ok: false, error: `Con ${c} ${c === 1 ? "campo" : "campi"} servono almeno ${c * 2} giocatori: ne hai ${n}.` };
+  if (n > c * 4) return { ok: false, error: `Con ${c} ${c === 1 ? "campo" : "campi"} non se ne possono far giocare piu\u0300 di ${c * 4}: ne hai ${n}.` };
+  const doppi = (n - c * 2) / 2;
+  return { ok: true, campi: c, doppi, singoli: c - doppi, presenti: n };
+}
 function turniDiUnaSerata(giocatori, quanti, campi, viste, scontri) {
   const n = giocatori.length;
   const perTurno = Math.max(1, Number(campi) || 2);
+  const forma = formaDellaSerata(n, perTurno);
+  if (!forma.ok) return [];
   const costoTurno = (coppie) => {
     let c = 0;
     for (const [x, y] of coppie) c += 6 * (viste.get(chiaveCoppia(giocatori[x].id, giocatori[y].id)) || 0);
@@ -23562,8 +23706,8 @@ function turniDiUnaSerata(giocatori, quanti, campi, viste, scontri) {
     for (let tentativo = 0; tentativo < 400; tentativo++) {
       const ordine = mescola([...Array(n).keys()]);
       const coppie = [];
-      for (let i = 0; i + 1 < ordine.length && coppie.length < perTurno * 2; i += 2) coppie.push([ordine[i], ordine[i + 1]]);
-      if (coppie.length < perTurno * 2) break;
+      for (let i = 0; i + 1 < ordine.length; i += 2) coppie.push([ordine[i], ordine[i + 1]]);
+      if (coppie.length < forma.doppi * 2 + forma.singoli) break;
       const c = costoTurno(coppie);
       if (c < suoCosto) {
         meglio = coppie;
@@ -23573,17 +23717,24 @@ function turniDiUnaSerata(giocatori, quanti, campi, viste, scontri) {
     }
     if (!meglio) break;
     const partite = [];
-    for (let i = 0; i < meglio.length; i += 2) {
-      const [a1, a2] = meglio[i], [b1, b2] = meglio[i + 1];
+    let usate = 0;
+    for (let d = 0; d < forma.doppi; d++) {
+      const [a1, a2] = meglio[usate++], [b1, b2] = meglio[usate++];
       partite.push([[a1, a2], [b1, b2]]);
       for (const [x, y] of [[a1, a2], [b1, b2]]) {
-        const k = chiaveCoppia(giocatori[x].id, giocatori[y].id);
-        viste.set(k, (viste.get(k) || 0) + 1);
+        const kk = chiaveCoppia(giocatori[x].id, giocatori[y].id);
+        viste.set(kk, (viste.get(kk) || 0) + 1);
       }
       for (const p of [a1, a2]) for (const q of [b1, b2]) {
-        const k = chiaveCoppia(giocatori[p].id, giocatori[q].id);
-        scontri.set(k, (scontri.get(k) || 0) + 1);
+        const kk = chiaveCoppia(giocatori[p].id, giocatori[q].id);
+        scontri.set(kk, (scontri.get(kk) || 0) + 1);
       }
+    }
+    for (let sg = 0; sg < forma.singoli; sg++) {
+      const [a1, b1] = meglio[usate++];
+      partite.push([[a1, null], [b1, null]]);
+      const kk = chiaveCoppia(giocatori[a1].id, giocatori[b1].id);
+      scontri.set(kk, (scontri.get(kk) || 0) + 1);
     }
     turni2.push(partite);
   }
@@ -23629,11 +23780,15 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti, campiGiorn
   const campiSera = Math.max(1, Math.min(8, Number(campiGiornata) || Number(t.campi) || 2));
   const servono = postiAmericana(campiSera);
   const scelti = [...new Set((iscrittiScelti || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
-  if (scelti.length !== servono) return {
+  const forma = formaDellaSerata(scelti.length, campiSera);
+  if (!forma.ok) return {
     ok: false,
     serve_scelta: true,
     servono,
-    error: `Servono esattamente ${servono} giocatori per questa giornata: ne hai scelti ${scelti.length}.`
+    campi: campiSera,
+    minimo: campiSera * 2,
+    massimo: campiSera * 4,
+    error: forma.error
   };
   const dentro = await db.prepare(`SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? AND id IN (${scelti.map(() => "?").join(",")})`).all(torneoId, ...scelti);
   if (dentro.length !== scelti.length) return { ok: false, error: "Qualcuno dei giocatori scelti non e\u0300 iscritto a questo torneo." };
@@ -23647,10 +23802,12 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti, campiGiorn
   const viste = await coppieGiaViste(torneoId);
   const scontri = await scontriGiaVisti(torneoId);
   const giaViste = new Map(viste);
-  const calendario = quantiTurni >= AMERICANA_8.length && g.length === 8 ? AMERICANA_8.map((turno) => turno.map(([[a1, a2], [b1, b2]]) => [[a1, a2], [b1, b2]])) : turniDiUnaSerata(g, quantiTurni, campiSera, viste, scontri);
-  if (calendario === AMERICANA_8 || quantiTurni >= AMERICANA_8.length) {
+  const usaCalendarioFisso = quantiTurni >= AMERICANA_8.length && g.length === 8;
+  const calendario = usaCalendarioFisso ? AMERICANA_8.map((turno) => turno.map(([[a1, a2], [b1, b2]]) => [[a1, a2], [b1, b2]])) : turniDiUnaSerata(g, quantiTurni, campiSera, viste, scontri);
+  if (usaCalendarioFisso) {
     for (const turno of calendario) {
       for (const [[a1, a2], [b1, b2]] of turno) {
+        if (a2 === null || a2 === void 0) continue;
         for (const [x, y] of [[a1, a2], [b1, b2]]) {
           const k = chiaveCoppia(g[x].id, g[y].id);
           viste.set(k, (viste.get(k) || 0) + 1);
@@ -23662,9 +23819,12 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti, campiGiorn
   for (let turno = 0; turno < calendario.length; turno++) {
     for (let campo = 0; campo < calendario[turno].length; campo++) {
       const [[a1, a2], [b1, b2]] = calendario[turno][campo];
-      for (const [x, y] of [[a1, a2], [b1, b2]]) {
-        if (giaViste.get(chiaveCoppia(g[x].id, g[y].id))) ripetute++;
-        else nuove++;
+      const singolo = a2 === null || a2 === void 0;
+      if (!singolo) {
+        for (const [x, y] of [[a1, a2], [b1, b2]]) {
+          if (giaViste.get(chiaveCoppia(g[x].id, g[y].id))) ripetute++;
+          else nuove++;
+        }
       }
       await db.prepare(
         "INSERT INTO tornei_ko_partite (torneo_id,giornata_id,turno,posizione,giornata,campo,a_nome,a2_nome,b_nome,b2_nome,a_iscritto,a2_iscritto,b_iscritto,b2_iscritto) VALUES (?,?,0,?,?,?,?,?,?,?,?,?,?,?)"
@@ -23675,13 +23835,13 @@ async function creaGiornata_americana(torneoId, data, iscrittiScelti, campiGiorn
         turno + 1,
         campo + 1,
         g[a1].nome,
-        g[a2].nome,
+        singolo ? null : g[a2].nome,
         g[b1].nome,
-        g[b2].nome,
+        singolo ? null : g[b2].nome,
         g[a1].id,
-        g[a2].id,
+        singolo ? null : g[a2].id,
         g[b1].id,
-        g[b2].id
+        singolo ? null : g[b2].id
       );
     }
   }
@@ -28304,7 +28464,7 @@ adminRouter.post("/tornei/:id/iscritti", requireCapTorneo, async (req, res) => {
   } else if (!nome) {
     return res.status(400).json({ error: "Serve un nome, oppure la tessera" });
   }
-  const ins = await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,socio_id,tessera_code,nome,pagato,attesa) VALUES (?,?,?,?,?,?)").run(t.id, socioId, tess || null, nome, req.body?.pagato ? 1 : 0, attesa);
+  const ins = await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,socio_id,tessera_code,nome,pagato,attesa,ruoli) VALUES (?,?,?,?,?,?,?)").run(t.id, socioId, tess || null, nome, req.body?.pagato ? 1 : 0, attesa, normalizzaRuoli(req.body?.ruoli, t.disciplina));
   const ora = (await db.prepare("SELECT COUNT(*) n FROM tornei_ko_iscritti WHERE torneo_id=? AND attesa IS NULL").get(t.id)).n;
   res.status(201).json({
     ok: true,
@@ -28422,8 +28582,19 @@ adminRouter.post("/tornei/:id/iscritti/import", requireCapTorneo, async (req, re
   }
   const norm = (s) => String(s || "").trim().toLowerCase();
   const alias = ["nome", "giocatore", "nominativo", "name", "cognome e nome", "nome e cognome"];
+  const aliasRuoli = ["ruolo", "ruoli", "posizione", "role"];
   const colonne = Object.keys(righe[0] || {});
   const colonnaNome = colonne.find((x) => alias.includes(norm(x)));
+  const colonnaRuoli = colonne.find((x) => aliasRuoli.includes(norm(x)));
+  const tImp = await db.prepare("SELECT disciplina FROM tornei_ko WHERE id=?").get(tid);
+  const ruoliPerNome = /* @__PURE__ */ new Map();
+  if (colonnaNome && colonnaRuoli) {
+    for (const r of righe) {
+      const n2 = String(r[colonnaNome] || "").trim();
+      const ru = String(r[colonnaRuoli] || "").trim();
+      if (n2 && ru) ruoliPerNome.set(norm(n2), normalizzaRuoli(ru, tImp && tImp.disciplina));
+    }
+  }
   const sembraUnNome = (s) => /[A-Za-z\u00C0-\u024F]/.test(String(s || ""));
   const nomi = (colonnaNome ? righe.map((r) => String(r[colonnaNome] || "").trim()) : colonne.length === 1 && sembraUnNome(colonne[0]) ? [colonne[0].trim(), ...righe.map((r) => String(Object.values(r)[0] || "").trim())] : []).filter(Boolean).filter(sembraUnNome);
   if (!nomi.length) return res.status(400).json({
@@ -28437,9 +28608,9 @@ adminRouter.post("/tornei/:id/iscritti/import", requireCapTorneo, async (req, re
     else nuovi.push(n);
   }
   if (req.body?.dryRun) return res.json({ ok: true, prova: true, nuovi, doppi, letti: nomi.length });
-  for (const n of nuovi) await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,nome) VALUES (?,?)").run(tid, n);
+  for (const n of nuovi) await db.prepare("INSERT INTO tornei_ko_iscritti (torneo_id,nome,ruoli) VALUES (?,?,?)").run(tid, n, ruoliPerNome.get(norm(n)) || null);
   audit(req.adminUser.username, "import_iscritti", "tornei", tid, `${nuovi.length} aggiunti \xB7 ${doppi.length} gi\xE0 c'erano`);
-  res.status(201).json({ ok: true, aggiunti: nuovi.length, gia_presenti: doppi.length, nuovi, doppi });
+  res.status(201).json({ ok: true, aggiunti: nuovi.length, gia_presenti: doppi.length, nuovi, doppi, con_ruolo: nuovi.filter((n) => ruoliPerNome.has(norm(n))).length });
 });
 adminRouter.post("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
@@ -28578,11 +28749,14 @@ adminRouter.put("/tornei/:id/giornate/:gid", requireCapTorneo, async (req, res) 
   });
   const tutti = await db.prepare("SELECT id FROM tornei_ko_iscritti WHERE torneo_id=?").all(tid);
   const scelti = [...new Set((req.body?.giocatori || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
-  const servono = Number(t0.campi || 2) * 4;
-  if (scelti.length !== servono) return res.status(409).json({
+  const campiSera = Number(g.campi) || Number(t0.campi) || 2;
+  const forma = formaDellaSerata(scelti.length, campiSera);
+  if (!forma.ok) return res.status(409).json({
     serve_scelta: true,
-    servono,
-    error: `Servono esattamente ${servono} giocatori per questa giornata: ne hai scelti ${scelti.length}.`
+    campi: campiSera,
+    minimo: campiSera * 2,
+    massimo: campiSera * 4,
+    error: forma.error
   });
   if (!scelti.every((x) => tutti.some((y) => y.id === x))) return res.status(409).json({
     error: "Qualcuno dei giocatori scelti non e\u0300 nel gruppo di questo torneo."
@@ -28639,11 +28813,20 @@ adminRouter.get("/tornei/:id/giornate", requireCapTorneo, async (req, res) => {
       da_giocare: partite.filter((p) => p.turno === 0 && p.punti_a === null).length
     });
   }
+  const gruppo = await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY nome").all(tid);
+  const ruoliNelGruppo = Object.entries(gruppo.reduce((m, i) => {
+    for (const r of String(i.ruoli || "").split(",").map((x) => x.trim()).filter(Boolean)) m[r] = (m[r] || 0) + 1;
+    return m;
+  }, {})).map(([ruolo, quanti]) => ({ ruolo, quanti })).sort((a, b) => b.quanti - a.quanti);
   res.json({
     torneo: t,
     come_si_chiude: comeSiChiude(t),
     campi_nomi: Array.from({ length: Number(t.campi) || 2 }, (_, i) => nomeCampo(t, i + 1)),
-    iscritti: await db.prepare("SELECT * FROM tornei_ko_iscritti WHERE torneo_id=? ORDER BY nome").all(tid),
+    ruoli_nel_gruppo: ruoliNelGruppo,
+    /* Quali ruoli si possono dare in QUESTO torneo, con il nome per esteso: la schermata fa i
+       tasti con questi invece di lasciare scrivere a mano. */
+    ruoli_ammessi: ruoliAmmessi(t.disciplina).map((r) => ({ sigla: r, nome: RUOLI[r] })),
+    iscritti: gruppo,
     giornate: dettaglio,
     classifica: await classificaGeneraleAmericana(tid)
   });
@@ -28862,14 +29045,20 @@ adminRouter.get("/tornei/:id/giornate/:gid/foglio.html", requireCapTorneo, async
   if (!g) return res.status(404).json({ error: "Giornata non trovata" });
   const suoi = { campi: g.campi || t.campi, campi_nomi: g.campi_nomi || t.campi_nomi };
   const partite = await db.prepare("SELECT * FROM tornei_ko_partite WHERE giornata_id=? AND turno=0 ORDER BY giornata, campo").all(gid);
+  const gruppo = await db.prepare("SELECT nome, ruoli FROM tornei_ko_iscritti WHERE torneo_id=?").all(tid);
   const e = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const turni2 = [...new Set(partite.map((p) => p.giornata))].sort((a, b) => a - b);
+  const ruoliDi = (nome) => {
+    const i = gruppo.find((x) => x.nome === nome);
+    return i && i.ruoli ? `<span class="ruolo">${e(i.ruoli)}</span>` : "";
+  };
+  const lato = (n1, n2) => [n1, n2].filter(Boolean).map((n) => `${e(n)}${ruoliDi(n)}`).join(" \xB7 ");
   const campo = (p) => `<div class="campo">
     <div class="nomecampo">${e(nomeCampo(suoi, p.campo))}</div>
     <div class="rett">
-      <div class="lato">${e([p.a_nome, p.a2_nome].filter(Boolean).join(" \xB7 "))}</div>
+      <div class="lato">${lato(p.a_nome, p.a2_nome)}</div>
       <div class="rete"><span>rete</span></div>
-      <div class="lato">${e([p.b_nome, p.b2_nome].filter(Boolean).join(" \xB7 "))}</div>
+      <div class="lato">${lato(p.b_nome, p.b2_nome)}</div>
     </div>
     ${p.punti_a !== null && p.punti_a !== void 0 ? `<div class="ris">${p.punti_a}\u2013${p.punti_b}${p.set_dettaglio ? ` <span class="det">${e(p.set_dettaglio)}</span>` : ""}</div>` : '<div class="ris vuoto">\u2014</div>'}
   </div>`;
@@ -28888,6 +29077,7 @@ adminRouter.get("/tornei/:id/giornate/:gid/foglio.html", requireCapTorneo, async
   .nomecampo{font-size:.66rem;text-transform:uppercase;letter-spacing:.09em;color:#8a5a12;font-weight:700;margin-bottom:4px}
   .rett{border:2px solid #12324F;border-radius:4px;overflow:hidden}
   .lato{padding:13px 10px;text-align:center;font-weight:700;font-size:.92rem;line-height:1.35}
+  .ruolo{display:block;font-weight:400;font-size:.62rem;color:#5a6b75;text-transform:uppercase;letter-spacing:.06em}
   .rete{border-top:2px dashed #12324F;border-bottom:2px dashed #12324F;background:#f4f2ea;text-align:center}
   .rete span{font-size:.56rem;text-transform:uppercase;letter-spacing:.2em;color:#9aa7b0}
   .ris{text-align:center;font-weight:700;margin-top:5px;font-size:1.02rem}
@@ -28960,13 +29150,17 @@ adminRouter.put("/tornei/:id/iscritti/:iscrittoId", requireCapTorneo, async (req
   const gia = await db.prepare("SELECT id FROM tornei_ko_iscritti WHERE torneo_id=? AND id<>? AND LOWER(nome)=LOWER(?)").get(tid, iid, nome);
   if (gia) return res.status(409).json({ error: `Nel gruppo c'e\u0300 gia\u0300 un ${nome}.` });
   await db.prepare("UPDATE tornei_ko_iscritti SET nome=? WHERE id=?").run(nome, iid);
+  if (req.body?.ruoli !== void 0) {
+    const t2 = await db.prepare("SELECT disciplina FROM tornei_ko WHERE id=?").get(tid);
+    await db.prepare("UPDATE tornei_ko_iscritti SET ruoli=? WHERE id=?").run(normalizzaRuoli(req.body.ruoli, t2 && t2.disciplina), iid);
+  }
   for (const [idc, nomec] of [["a_iscritto", "a_nome"], ["a2_iscritto", "a2_nome"], ["b_iscritto", "b_nome"], ["b2_iscritto", "b2_nome"]]) {
     await db.prepare(`UPDATE tornei_ko_partite SET ${nomec}=? WHERE torneo_id=? AND ${idc}=?`).run(nome, tid, iid);
   }
   await db.prepare("UPDATE tornei_ko_partite SET vincitore=? WHERE torneo_id=? AND vincitore=?").run(nome, tid, i.nome);
   await db.prepare("UPDATE tornei_ko SET vincitore=? WHERE id=? AND vincitore=?").run(nome, tid, i.nome);
   audit(req.adminUser.username, "rinomina_iscritto", "tornei", tid, `${i.nome} \u2192 ${nome}`);
-  res.json({ ok: true, prima: i.nome, adesso: nome });
+  res.json({ ok: true, prima: i.nome, adesso: nome, ruoli: (await db.prepare("SELECT ruoli FROM tornei_ko_iscritti WHERE id=?").get(iid)).ruoli });
 });
 adminRouter.post("/tornei/:id/archivia", requireCapTorneo, async (req, res) => {
   const tid = await torneoDi(req, res);
@@ -32997,7 +33191,7 @@ if (import.meta.url === `file://${process.argv[1]}` && /(^|\/)seed\.js$/.test(St
 var FRONTEND = frontend_default.replace("</head>", pwaHead("socio") + "\n</head>");
 var ADMIN = admin_default.replace("</head>", pwaHead("admin") + "\n</head>");
 var CHIOSCO = chiosco_default.replace("</head>", pwaHead("chiosco") + "\n</head>");
-var BUILD = true ? "2026-09-14 15:26" : "online";
+var BUILD = true ? "2026-09-18 13:22" : "online";
 var MAJOR = Number(process.versions.node.split(".")[0]);
 if (Number.isNaN(MAJOR) || MAJOR < 22) {
   console.error("\n  Serve Node.js 22 o superiore. Versione attuale: " + process.version + "\n  Scarica Node 22 LTS da https://nodejs.org\n");
